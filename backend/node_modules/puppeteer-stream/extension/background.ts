@@ -1,0 +1,3 @@
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== 'invoke-action') return; // noop to fix (Extension has not been invoked for the current page (see activeTab permission))
+});
