@@ -58,7 +58,7 @@ function App() {
         const frame = latestFrameRef.current;
         latestFrameRef.current = null;
 
-        const blob = new Blob([frame], { type: "image/jpeg" });
+        const blob = new Blob([frame], { type: "image/png" });
         const bitmap = await createImageBitmap(blob);
 
         ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
