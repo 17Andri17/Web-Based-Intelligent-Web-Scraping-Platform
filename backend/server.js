@@ -12,7 +12,8 @@ const server = http.createServer(app);
 
 // Attach Socket.IO
 const io = new Server(server, {
-  cors: { origin: '*' }
+  cors: { origin: '*' },
+  transports: ['websocket']
 });
 
 // Create scraper service (mode per user)
@@ -26,43 +27,77 @@ io.on("connection", (socket) => {
 
   socket.on("navigate", async (data) => {
     try {
-      // Open Puppeteer page and navigate
       const page = await browserManager.getPage(userId);
-      await page.setViewport({ width: 800, height: 600, deviceScaleFactor: 1 });
+
+      await page.setViewport({
+        width: 1400,
+        height: 600,
+        deviceScaleFactor: 1,
+        hasTouch: false,
+        isMobile: false
+      });
+
       await page.goto(data.url, { waitUntil: "networkidle2" });
 
-      await page.addScriptTag({ url: "https://cdn.socket.io/4.7.2/socket.io.min.js" });
-      // Inject `window.socket = io(...)` with your backend URL and userId
+      await page.addScriptTag({
+        url: "https://cdn.socket.io/4.7.2/socket.io.min.js"
+      });
+
       await page.evaluate((userId) => {
         window.socket = io("http://localhost:3001", { query: { userId } });
       }, userId);
-      // await page.addScriptTag({ path: './browser/inject/SelectorTool.js' });
 
       const session = await page.target().createCDPSession();
-      // Start streaming frames
+
       let streaming = true;
-      async function sendFrame() {
+
+      // Start CDP screencast
+      await session.send("Page.startScreencast", {
+        format: "png",        // or "png" (higher quality, heavier)
+        quality: 90,           // only applies to jpeg
+        maxWidth: 1400,
+        maxHeight: 600,
+        everyNthFrame: 1       // send every frame
+      });
+
+      const onFrame = async (frame) => {
         if (!streaming) return;
-        // Take screenshot as base64 PNG
-        const buf = await page.screenshot({ type: "png" });
-        socket.emit("frame", { image: buf.toString("base64") });
-        setTimeout(sendFrame, 50); // send ~20 FPS
-      }
-      while (streaming) {
-        const { data } = await session.send("Page.captureScreenshot", {
-          format: "jpeg",
-          quality: 70,
-          fromSurface: true,
-        });
-        socket.emit("frame", { image: data });
-        await new Promise(r => setTimeout(r, 100));
-      }
 
-      // Stop stream on disconnect or explicit stop signal
-      socket.on("disconnect", () => { streaming = false; });
-      socket.on("stopStreaming", () => { streaming = false; });
+        try {
+          // Convert base64 → binary buffer
+          const buffer = Buffer.from(frame.data, "base64");
 
-      socket.emit("message", "Navigation started and streaming video.");
+          // Send binary directly (NO base64)
+          socket.emit("frame", buffer);
+
+          // Ack frame (REQUIRED)
+          await session.send("Page.screencastFrameAck", {
+            sessionId: frame.sessionId
+          });
+        } catch (err) {
+          console.error("Frame error:", err);
+        }
+      };
+
+      session.on("Page.screencastFrame", onFrame);
+
+      // Stop streaming cleanly
+      const stopStreaming = async () => {
+        if (!streaming) return;
+        streaming = false;
+
+        try {
+          await session.send("Page.stopScreencast");
+        } catch (e) {}
+
+        session.removeListener("Page.screencastFrame", onFrame);
+      };
+
+      socket.on("disconnect", stopStreaming);
+      socket.on("stopStreaming", stopStreaming);
+
+      socket.emit("message", "Navigation started and streaming (binary streaming enabled).");
+
     } catch (err) {
       socket.emit("message", `❌ Navigation error: ${err.message}`);
     }

@@ -1,6 +1,6 @@
-const puppeteer = require('puppeteer-extra');
+const puppeteer = require('puppeteer');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-puppeteer.use(StealthPlugin());
+// puppeteer.use(StealthPlugin());
 
 class BrowserManager {
   constructor() {
@@ -12,9 +12,22 @@ class BrowserManager {
   async initBrowser() {
     if (!this.browser) {
       this.browser = await puppeteer.launch({
-        headless: false, // set true for production
+        headless: 'new', // set true for production
         defaultViewport: null,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu-sandbox',
+          '--enable-gpu-rasterization',
+          '--enable-accelerated-2d-canvas',
+          '--disable-background-timer-throttling',
+          '--disable-renderer-backgrounding',
+          '--force-color-profile=srgb',
+          '--enable-font-antialiasing',
+          '--font-render-hinting=medium'
+        ],
+        ignoreDefaultArgs: ['--hide-scrollbars']
       });
       console.log('Browser launched');
     }

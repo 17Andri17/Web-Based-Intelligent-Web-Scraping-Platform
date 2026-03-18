@@ -14,6 +14,23 @@ module.exports = (io) => {
 
       try {
         await page.goto(url, { waitUntil: 'networkidle2' });
+        await page.addStyleTag({
+          content: `
+            * { scrollbar-width: auto !important; }
+            ::-webkit-scrollbar { 
+              display: block !important; 
+              width: 12px !important; 
+              height: 12px !important; 
+            }
+            ::-webkit-scrollbar-thumb { 
+              background: #888 !important; 
+              border-radius: 6px !important; 
+            }
+            ::-webkit-scrollbar-track { 
+              background: #f1f1f1 !important; 
+            }
+          `
+        });
         console.log(`User ${userId} navigated to ${url}`);
         // No need to send content—server.js streams screenshots
         if (io) {
