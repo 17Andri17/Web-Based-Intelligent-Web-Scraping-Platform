@@ -11,3 +11,5 @@ npm run dev
 - [x] Sync cursor
 - [ ] Fix multiple context opening error
 - [ ] Fix scrolling when ending ousid canvas
+- [ ] Move backend selection UI to frontend
+- [ ] Create workflow designer
