@@ -11,6 +11,8 @@ function App() {
 
   const [status, setStatus] = useState("");
   const [urlInput, setUrlInput] = useState("https://efortuna.pl");
+  const [mode, setMode] = useState("navigation"); 
+  const [cursorType, setCursorType] = useState('default');
 
   // Frame handling
   const latestFrameRef = useRef(null);
@@ -25,13 +27,17 @@ function App() {
     socketRef.current = socket;
 
     socket.on("connect", () => setStatus("Connected"));
+
     socket.on("message", msg =>
       setStatus(typeof msg === "string" ? msg : (msg.msg || ""))
     );
 
-    // Receive binary frames directly
     socket.on("frame", (data) => {
-      latestFrameRef.current = data; // Uint8Array / ArrayBuffer
+      latestFrameRef.current = data;
+    });
+
+    socket.on("cursorType", (data) => {
+      setCursorType(data.cursor);
     });
 
     socket.on("actionResult", res =>
@@ -72,11 +78,25 @@ function App() {
     renderLoop();
   }, []);
 
+  // === MODE CHANGE ===
+  const changeMode = (newMode) => {
+    setMode(newMode);
+
+    if (socketRef.current) {
+      socketRef.current.emit("setMode", { mode: newMode });
+    }
+  };
+
   // === NAVIGATION ===
   const handleNavigate = () => {
     if (socketRef.current && urlInput.startsWith("http")) {
       setStatus("Navigating...");
-      socketRef.current.emit("navigate", { url: urlInput });
+
+      // 🔥 send mode together with navigation
+      socketRef.current.emit("navigate", {
+        url: urlInput,
+        mode
+      });
     }
   };
 
@@ -88,14 +108,16 @@ function App() {
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
 
-    const x = Math.round((e.clientX - rect.left) * scaleX);
-    const y = Math.round((e.clientY - rect.top) * scaleY);
-
-    return { x, y };
+    return {
+      x: Math.round((e.clientX - rect.left) * scaleX),
+      y: Math.round((e.clientY - rect.top) * scaleY)
+    };
   };
 
   // === USER ACTIONS ===
   const handleClick = (e) => {
+    // if (mode === "selection") return; // 🔥 disable click in selection mode
+
     e.preventDefault();
     if (!socketRef.current) return;
 
@@ -105,6 +127,8 @@ function App() {
   };
 
   const handleMouseMove = (e) => {
+    // if (mode === "selection") return;
+
     if (!socketRef.current) return;
 
     const { x, y } = getScaledCoords(e);
@@ -112,6 +136,8 @@ function App() {
   };
 
   const handleMouseDown = (e) => {
+    // if (mode === "selection") return;
+
     e.preventDefault();
     if (!socketRef.current) return;
 
@@ -120,6 +146,8 @@ function App() {
   };
 
   const handleMouseUp = (e) => {
+    // if (mode === "selection") return;
+
     e.preventDefault();
     if (!socketRef.current) return;
 
@@ -131,6 +159,29 @@ function App() {
     <div style={{ padding: "1em", maxWidth: 900 }}>
       <h2>Browser Streaming (Binary, Optimized)</h2>
 
+      {/* 🔥 MODE SWITCH */}
+      <div style={{ marginBottom: "10px" }}>
+        <button
+          onClick={() => changeMode("navigation")}
+          style={{
+            marginRight: "10px",
+            background: mode === "navigation" ? "#4caf50" : "#ccc"
+          }}
+        >
+          Navigation Mode
+        </button>
+
+        <button
+          onClick={() => changeMode("selection")}
+          style={{
+            background: mode === "selection" ? "#ff9800" : "#ccc"
+          }}
+        >
+          Selection Mode
+        </button>
+      </div>
+
+      {/* NAVIGATION */}
       <div>
         <input
           style={{ width: "300px" }}
@@ -141,8 +192,11 @@ function App() {
         <button onClick={handleNavigate}>Go</button>
       </div>
 
-      <div style={{ margin: "1em 0" }}>{status}</div>
+      <div style={{ margin: "1em 0" }}>
+        {status} | Mode: <b>{mode}</b>
+      </div>
 
+      {/* CANVAS */}
       <div
         style={{
           border: "2px solid #888",
@@ -158,9 +212,9 @@ function App() {
             width: "100%",
             maxWidth: "1400px",
             height: "auto",
-            cursor: "crosshair",
             display: "block",
-            background: "#eee"
+            background: "#eee",
+            cursor: cursorType
           }}
           onClick={handleClick}
           onMouseMove={handleMouseMove}
@@ -170,7 +224,11 @@ function App() {
       </div>
 
       <div style={{ margin: "1em 0" }}>
-        <small>Click anywhere in the browser preview to interact</small>
+        <small>
+          {mode === "selection"
+            ? "Selection mode: pick elements"
+            : "Navigation mode: interact with page"}
+        </small>
       </div>
     </div>
   );

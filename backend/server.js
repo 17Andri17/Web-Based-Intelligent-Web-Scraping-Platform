@@ -5,6 +5,9 @@ const scraperServiceFactory = require('./services/scraper.service');
 const scraperRoutesFactory = require('./routes/scraper.routes');
 const { Server } = require('socket.io');
 const browserManager = require('./browser/BrowserManager');
+const fs = require("fs");
+const path = require("path");
+
 const PORT = process.env.PORT || 3001;
 
 // Create HTTP server
@@ -16,18 +19,32 @@ const io = new Server(server, {
   transports: ['websocket']
 });
 
-// Create scraper service (mode per user)
+// Create scraper service
 const scraperService = scraperServiceFactory(io);
 
-// === Socket.IO Commands & Streaming ===
+// Load your injected script (the big one you pasted)
+const injectedScript = fs.readFileSync(
+  path.join(__dirname, "./browser/inject/SelectorTool.js"),
+  "utf8"
+);
+
+// === SOCKET.IO ===
 io.on("connection", (socket) => {
   const userId = socket.handshake.query.userId || socket.id;
   console.log(`🔌 User connected: ${userId}`);
   socket.join(userId);
 
   socket.on("navigate", async (data) => {
+    let session = null;
+    let streaming = true;
+
     try {
       const page = await browserManager.getPage(userId);
+
+      // ✅ Expose bridge (Puppeteer → Node → Frontend)
+      await page.exposeFunction("sendToNode", (event) => {
+        socket.emit("browserEvent", event);
+      });
 
       await page.setViewport({
         width: 1400,
@@ -39,38 +56,41 @@ io.on("connection", (socket) => {
 
       await page.goto(data.url, { waitUntil: "networkidle2" });
 
-      await page.addScriptTag({
-        url: "https://cdn.socket.io/4.7.2/socket.io.min.js"
+      await page.exposeFunction("sendCursorType", (cursorType) => {
+        socket.emit("cursorType", { cursor: cursorType });
       });
 
-      await page.evaluate((userId) => {
-        window.socket = io("http://localhost:3001", { query: { userId } });
-      }, userId);
+      await page.evaluate(() => {
+        window.__SELECTION_MODE__ = false;
+      });
 
-      const session = await page.target().createCDPSession();
+      await page.addScriptTag({ content: injectedScript });
 
-      let streaming = true;
+      await page.evaluate(() => {
+        window.__SELECTION_MODE__ = false;
+      });
 
-      // Start CDP screencast
+      
+
+      // === SCREENCAST ===
+      const client = await page.target().createCDPSession();
+      session = client;
+
       await session.send("Page.startScreencast", {
-        format: "png",        // or "png" (higher quality, heavier)
-        quality: 90,           // only applies to jpeg
+        format: "png",
         maxWidth: 1400,
         maxHeight: 600,
-        everyNthFrame: 1       // send every frame
+        everyNthFrame: 1
       });
 
       const onFrame = async (frame) => {
         if (!streaming) return;
 
         try {
-          // Convert base64 → binary buffer
           const buffer = Buffer.from(frame.data, "base64");
 
-          // Send binary directly (NO base64)
           socket.emit("frame", buffer);
 
-          // Ack frame (REQUIRED)
           await session.send("Page.screencastFrameAck", {
             sessionId: frame.sessionId
           });
@@ -81,7 +101,6 @@ io.on("connection", (socket) => {
 
       session.on("Page.screencastFrame", onFrame);
 
-      // Stop streaming cleanly
       const stopStreaming = async () => {
         if (!streaming) return;
         streaming = false;
@@ -96,14 +115,30 @@ io.on("connection", (socket) => {
       socket.on("disconnect", stopStreaming);
       socket.on("stopStreaming", stopStreaming);
 
-      socket.emit("message", "Navigation started and streaming (binary streaming enabled).");
+      socket.emit("message", "✅ Navigation + streaming started (bridge enabled)");
 
     } catch (err) {
+      console.error(err);
       socket.emit("message", `❌ Navigation error: ${err.message}`);
     }
   });
 
-  // Handle user actions (clicks, input, selection)
+  // === MODE SWITCHING (navigation vs selection) ===
+  socket.on("setMode", async ({ mode }) => {
+    try {
+      const page = await browserManager.getPage(userId);
+
+      await page.evaluate((mode) => {
+        window.__SELECTION_MODE__ = mode === "selection";
+      }, mode);
+
+      socket.emit("message", `Mode switched to: ${mode}`);
+    } catch (err) {
+      console.error(err);
+    }
+  });
+
+  // === USER ACTIONS ===
   socket.on("userAction", async (action) => {
     try {
       await scraperService.performAction(userId, action, socket);
@@ -113,24 +148,13 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
+  socket.on("disconnect", () => {
     console.log(`🔌 User disconnected: ${userId}`);
     scraperService.clearUser(userId);
   });
-
-  // socket.on("setViewport", async ({width, height}) => {
-  //   console.log(`Setting viewport for user ${userId} to ${width}x${height}`);
-  //   try {
-  //     const page = await browserManager.getPage(userId);
-  //     await page.setViewport({ width: width, height: height, deviceScaleFactor: 1 });
-  //     console.log(`Set viewport for user ${userId}: ${width}x${height}`);
-  //   } catch (err) {
-  //     console.error("Error setting viewport:", err);
-  //   }
-  // });
 });
 
-// REST API routes (if needed for metadata)
+// REST API
 app.use('/api/scraper', scraperRoutesFactory(io));
 
 // Start server

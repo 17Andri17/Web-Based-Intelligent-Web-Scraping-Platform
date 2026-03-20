@@ -7,12 +7,21 @@ class BrowserManager {
     this.browser = null;
     this.contexts = new Map(); // userId -> context
     this.pages = new Map();    // userId -> page
+    this.pagePromises = new Map();
   }
 
   async initBrowser() {
-    if (!this.browser) {
+    if (this.browser) return;
+
+    // 🔥 Prevent multiple launches
+    if (this.browserLaunching) {
+      await this.browserLaunching;
+      return;
+    }
+
+    this.browserLaunching = (async () => {
       this.browser = await puppeteer.launch({
-        headless: 'new', // set true for production
+        headless: 'new',
         defaultViewport: null,
         args: [
           '--no-sandbox',
@@ -29,8 +38,12 @@ class BrowserManager {
         ],
         ignoreDefaultArgs: ['--hide-scrollbars']
       });
-      console.log('Browser launched');
-    }
+
+      console.log('✅ Browser launched');
+    })();
+
+    await this.browserLaunching;
+    this.browserLaunching = null;
   }
 
   async getContext(userId) {
@@ -47,28 +60,32 @@ class BrowserManager {
     }
     return this.contexts.get(userId);
   }
-
+  
   async getPage(userId) {
-    // If the page already exists for the user, return it
-    if (this.pages.has(userId)) {
-      return this.pages.get(userId);
-    }
-    // Otherwise, create a new page in the correct context
+  if (this.pages.has(userId)) {
+    return this.pages.get(userId);
+  }
+
+  if (this.pagePromises.has(userId)) {
+    return this.pagePromises.get(userId);
+  }
+
+  const promise = (async () => {
     const context = await this.getContext(userId);
     const page = await context.newPage();
-    this.pages.set(userId, page);
 
-    // Optional: attach error/close handlers for cleanup
-    page.on('close', () => {
-      this.pages.delete(userId);
-    });
-    page.on('error', (err) => {
-      console.warn(`Page error for user ${userId}:`, err);
-      this.pages.delete(userId);
-    });
+    this.pages.set(userId, page);
+    this.pagePromises.delete(userId);
+
+    page.on('close', () => this.pages.delete(userId));
 
     return page;
-  }
+  })();
+
+  this.pagePromises.set(userId, promise);
+
+  return promise;
+}
 
   async closeContext(userId) {
     // Close and remove persistent page

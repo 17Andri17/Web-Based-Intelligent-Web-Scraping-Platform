@@ -85,6 +85,15 @@ module.exports = (io) => {
           }
         } else if (action.type === "hover") {
           await page.mouse.move(action.x, action.y);
+
+          const cursor = await page.evaluate(({x, y}) => {
+            const el = document.elementFromPoint(x, y);
+            return el ? window.getComputedStyle(el).cursor || 'default' : 'default';
+          }, { x: action.x, y: action.y });
+          
+          // Send to frontend
+          socket.emit("cursorType", { cursor });
+          
         } else if (action.type === "mousedown") {
           await page.mouse.down(action.x, action.y);
         } else if (action.type === "mouseup") {

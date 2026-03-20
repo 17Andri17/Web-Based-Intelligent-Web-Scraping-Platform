@@ -75,6 +75,7 @@
 
   // Highlight hovered element
   function highlightElement(e) {
+    if (!window.__SELECTION_MODE__) return;
     const target = e.target;
     if (inspector && inspector.contains(target)) {
       tooltip.style.display = 'none';
@@ -294,6 +295,7 @@
   document.addEventListener('mousemove', highlightElement, true);
 
   document.addEventListener('click', (e) => {
+    if (!window.__SELECTION_MODE__) return;
     if (inspector && inspector.contains(e.target)) return;
     if (allowNextClick) { allowNextClick = false; return; }
     e.preventDefault(); e.stopPropagation();
