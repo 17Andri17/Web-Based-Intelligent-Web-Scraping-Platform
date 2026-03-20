@@ -156,7 +156,7 @@ function App() {
   };
 
   return (
-    <div style={{ padding: "1em", maxWidth: 900 }}>
+    <div style={{ padding: "1em", paddingTop: 0}}>
       <h2>Browser Streaming (Binary, Optimized)</h2>
 
       {/* 🔥 MODE SWITCH */}
