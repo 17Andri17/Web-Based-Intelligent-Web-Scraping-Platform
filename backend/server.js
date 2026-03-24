@@ -22,9 +22,13 @@ const io = new Server(server, {
 // Create scraper service
 const scraperService = scraperServiceFactory(io);
 
-// Load your injected script (the big one you pasted)
+// Load your injected scripts
 const injectedScript = fs.readFileSync(
   path.join(__dirname, "./browser/inject/SelectorTool.js"),
+  "utf8"
+);
+const injectedSelectors = fs.readFileSync(
+  path.join(__dirname, "./browser/selectors.js"),
   "utf8"
 );
 
@@ -65,6 +69,7 @@ io.on("connection", (socket) => {
       });
 
       await page.addScriptTag({ content: injectedScript });
+      await page.addScriptTag({ content: injectedSelectors });
 
       await page.evaluate(() => {
         window.__SELECTION_MODE__ = false;

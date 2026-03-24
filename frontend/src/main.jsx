@@ -1,11 +1,15 @@
 import React, { useRef, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import io from "socket.io-client";
+import { useWorkflow } from "./workflow/useWorkflow";
+import { createAction } from "./workflow/stepFactory";
+import WorkflowPanel from "./components/WorkflowPanel";
 
 const SERVER_URL = "http://localhost:3001";
 const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
 
 function App() {
+  const { steps, addStep, updateStep } = useWorkflow();
   const canvasRef = useRef(null);
   const socketRef = useRef(null);
 
@@ -43,6 +47,23 @@ function App() {
     socket.on("actionResult", res =>
       setStatus(res.success ? "Action executed." : "Action failed: " + (res.error || ""))
     );
+
+    socket.on("browserEvent", (data) => {
+      console.log("📦 Browser event:", data);
+
+      if (data.type === "workflowStep") {
+        
+        const fallbackSelectorsValues = (data.fallbackSelectors || []).map(
+          item => item.value
+        );
+        console.log(fallbackSelectorsValues);
+
+        addStep(createAction(data.action, {
+          selector: data.primarySelector?.value,
+          fallbackSelectors: fallbackSelectorsValues
+        }));
+      }
+    });
 
     socket.on("disconnect", () => setStatus("Disconnected"));
 
@@ -98,6 +119,8 @@ function App() {
         mode
       });
     }
+
+    addStep(createAction("NAVIGATE", { url: urlInput }));
   };
 
   // === COORDINATE MAPPING ===
@@ -157,7 +180,7 @@ function App() {
 
   return (
     <div style={{ padding: "1em", paddingTop: 0}}>
-      <h2>Browser Streaming (Binary, Optimized)</h2>
+      {/* <h2>Browser Streaming (Binary, Optimized)</h2> */}
 
       {/* 🔥 MODE SWITCH */}
       <div style={{ marginBottom: "10px" }}>
@@ -222,6 +245,8 @@ function App() {
           onMouseUp={handleMouseUp}
         />
       </div>
+
+      <WorkflowPanel steps={steps} onUpdate={updateStep} />
 
       <div style={{ margin: "1em 0" }}>
         <small>

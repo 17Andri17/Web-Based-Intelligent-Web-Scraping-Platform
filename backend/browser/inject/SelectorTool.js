@@ -157,29 +157,33 @@
 
     actions.appendChild(mkBtn('Extract text', () => {
       const text = (selectedEl.textContent || '').trim();
-      window.postMessage({ type: 'workflowStep', action: 'extractText', text }, '*');
+      const { primary, fallbacks, meta } = window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'extractText' });
+      window.sendToNode({ type: 'workflowStep', action: 'EXTRACT_TEXT', primarySelector: primary, fallbackSelectors: fallbacks, text }, '*');
       console.log('Extracted text:', text);
     }));
 
     actions.appendChild(mkBtn('Extract data', () => {
       const data = extractLeafElements(selectedEl);
-      window.postMessage({ type: 'workflowStep', action: 'extractData', data }, '*');
+      window.sendToNode({ type: 'workflowStep', action: 'extractData', data }, '*');
       console.log('Extracted data:', data);
     }));
 
     actions.appendChild(mkBtn('Click element', () => {
-      allowNextClick = true;
-      selectedEl.click();
-      window.socket.emit('userAction', {
-        type: 'clickElement',
-        xpath: getShortHtmlPath(selectedEl),
+      // allowNextClick = true;
+      // selectedEl.click();
+      const { primary, fallbacks, meta } = window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'CLICK_ELEMENT' });
+      window.sendToNode({
+        type: 'userAction',
+        action: 'CLICK_ELEMENT',
+        primarySelector: primary, 
+        fallbackSelectors: fallbacks
       });
     }));
 
     actions.appendChild(mkBtn('Select similar elements', () => {
       const matches = selectSimilarElements(selectedEl);
       matches.forEach(el => el.style.outline = '2px solid red');
-      window.postMessage({ type: 'workflowStep', action: 'selectSimilar', count: matches.length }, '*');
+      window.sendToNode({ type: 'workflowStep', action: 'selectSimilar', count: matches.length }, '*');
       console.log('Similar elements found:', matches);
     }));
 
