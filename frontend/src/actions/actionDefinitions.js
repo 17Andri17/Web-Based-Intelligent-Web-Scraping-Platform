@@ -3,6 +3,7 @@ import { ACTION_TYPES } from "./actionTypes";
 export const actionDefinitions = {
   [ACTION_TYPES.NAVIGATE]: {
     label: "Go to URL",
+    category: "Navigation",
     description: "Navigate the browser to a given URL",
     inputs: {
       url: {
@@ -95,7 +96,9 @@ while (true) {
 
   [`${ACTION_TYPES.EXTRACT_TEXT}`]: {
     label: "Extract Text",
+    category: "Extraction",
     description: "Extract text content from an element using CSS selectors",
+
     inputs: {
       selector: {
         type: "string",
@@ -104,17 +107,16 @@ while (true) {
       },
       fallbackSelectors: {
         type: "array",
-        required: false,
-        label: "Fallback Selectors",
-        default: []
+        default: [],
+        label: "Fallback Selectors"
       },
       multiple: {
         type: "boolean",
-        required: false,
-        label: "Extract multiple elements",
-        default: false
+        default: false,
+        label: "Extract multiple elements"
       }
     },
+
     advanced: {
       onMultipleFound: {
         type: "select",
@@ -137,72 +139,86 @@ while (true) {
         default: "fail"
       }
     },
+
     outputs: {
       result: {
-        type: "array|string",
-        description: "Extracted text, either a single string or an array if multiple"
+        type: "array|string"
       }
     },
-    generateCode: ({ selectorVar, fallbackVar, multipleVar, outputVar, advancedOptions }) => {
-      const { onMultipleFound = "first", onNotFound = "fail" } = advancedOptions || {};
+
+    generateCode: (step) => {
+      const { params, advanced, outputVar } = step;
+
+      const selector = JSON.stringify(params.selector);
+      const fallback = JSON.stringify(params.fallbackSelectors || []);
+      const multiple = params.multiple;
+
+      const onMultiple = advanced?.onMultipleFound || "first";
+      const onNotFound = advanced?.onNotFound || "fail";
 
       return `
-      let ${outputVar} = null;
+let ${outputVar} = null;
 
-      const handleMultiple = (values) => {
-        if (${multipleVar}) return values;
-        switch ("${onMultipleFound}") {
-          case "fail":
-            if (values.length > 1) throw new Error("Multiple elements found for single-value extraction");
-            return values[0] || null;
-          case "first":
-            return values[0] || null;
-          case "join":
-            return values.join(" ");
-          default:
-            return values[0] || null;
-        }
-      };
+const handleMultiple = (values) => {
+  if (${multiple}) return values;
 
-      const handleNotFound = () => {
-        switch ("${onNotFound}") {
-          case "fail":
-            throw new Error("Element not found for selector ${selectorVar}");
-          case "null":
-            return null;
-          case "empty":
-            return "";
-          default:
-            return null;
-        }
-      };
+  switch ("${onMultiple}") {
+    case "fail":
+      if (values.length > 1) throw new Error("Multiple elements found");
+      return values[0] || null;
+    case "first":
+      return values[0] || null;
+    case "join":
+      return values.join(" ");
+    default:
+      return values[0] || null;
+  }
+};
 
-      try {
-        const values = await page.$$eval(${selectorVar}, els => els.map(e => e.textContent.trim()));
-        if (!values || values.length === 0) {
-          ${outputVar} = handleNotFound();
-        } else {
-          ${outputVar} = handleMultiple(values);
-        }
-      } catch (err) {
-        for (const fallback of ${fallbackVar}) {
-          try {
-            const values = await page.$$eval(fallback, els => els.map(e => e.textContent.trim()));
-            if (!values || values.length === 0) {
-              ${outputVar} = handleNotFound();
-            } else {
-              ${outputVar} = handleMultiple(values);
-            }
-            break;
-          } catch {}
-        }
+const handleNotFound = () => {
+  switch ("${onNotFound}") {
+    case "fail":
+      throw new Error("Element not found: ${params.selector}");
+    case "null":
+      return null;
+    case "empty":
+      return "";
+    default:
+      return null;
+  }
+};
+
+try {
+  const values = await page.$$eval(${selector}, els => els.map(e => e.textContent.trim()));
+
+  if (!values || values.length === 0) {
+    ${outputVar} = handleNotFound();
+  } else {
+    ${outputVar} = handleMultiple(values);
+  }
+
+} catch (err) {
+  for (const fallbackSelector of ${fallback}) {
+    try {
+      const values = await page.$$eval(fallbackSelector, els => els.map(e => e.textContent.trim()));
+
+      if (!values || values.length === 0) {
+        ${outputVar} = handleNotFound();
+      } else {
+        ${outputVar} = handleMultiple(values);
       }
-      `;
+
+      break;
+    } catch {}
+  }
+}
+`;
     }
   },
 
   [ACTION_TYPES.CLICK_ELEMENT]: {
     label: "Click Element",
+    category: "Interaction",
     inputs: {
       selector: {
         type: "string",

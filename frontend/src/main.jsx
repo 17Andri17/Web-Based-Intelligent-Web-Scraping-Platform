@@ -9,7 +9,13 @@ const SERVER_URL = "http://localhost:3001";
 const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
 
 function App() {
-  const { steps, addStep, updateStep } = useWorkflow();
+  const { steps, addStep, updateStep, setSteps } = useWorkflow();
+  // for debugging
+   useEffect(() => {
+    window.steps = steps;
+    window.addStep = addStep;
+    window.updateStep = updateStep;
+  }, [steps, addStep, updateStep]);
   const canvasRef = useRef(null);
   const socketRef = useRef(null);
 
@@ -51,17 +57,25 @@ function App() {
     socket.on("browserEvent", (data) => {
       console.log("📦 Browser event:", data);
 
-      if (data.type === "workflowStep") {
+      // if (data.type === "workflowStep") {
         
-        const fallbackSelectorsValues = (data.fallbackSelectors || []).map(
-          item => item.value
-        );
-        console.log(fallbackSelectorsValues);
+      //   const fallbackSelectorsValues = (data.fallbackSelectors || []).map(
+      //     item => item.value
+      //   );
+      //   console.log(fallbackSelectorsValues);
 
-        addStep(createAction(data.action, {
-          selector: data.primarySelector?.value,
-          fallbackSelectors: fallbackSelectorsValues
-        }));
+      //   addStep(createAction(data.action, {
+      //     selector: data.primarySelector?.value,
+      //     fallbackSelectors: fallbackSelectorsValues
+      //   }));
+      // }
+
+      if (data.type === "workflowStep") {
+        addStep(createAction(
+          data.action,
+          data.params || {},
+          data.advanced || {}
+        ));
       }
     });
 
@@ -148,6 +162,15 @@ function App() {
     socketRef.current.emit("userAction", { type: "click", x, y });
     setStatus(`Clicked: x=${x}, y=${y}`);
   };
+
+  // const handleAddStep = (action, index) => {
+  //   const action = createAction(
+  //         "NAVIGATE",
+  //         {url: "test"},
+  //         {}
+  //       );
+  //   addStep(action, index);
+  // }
 
   const handleMouseMove = (e) => {
     // if (mode === "selection") return;
@@ -246,7 +269,13 @@ function App() {
         />
       </div>
 
-      <WorkflowPanel steps={steps} onUpdate={updateStep} />
+      <WorkflowPanel
+        steps={steps}
+        onUpdate={updateStep}
+        onAddStep={addStep}
+        setSteps={setSteps}
+      />
+      
 
       <div style={{ margin: "1em 0" }}>
         <small>

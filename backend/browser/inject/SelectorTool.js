@@ -5,6 +5,78 @@
   let inspector = null;
   let allowNextClick = false;
 
+  // Map to store original styles of modified elements
+  const originalStyles = new Map(); // element -> { property: originalValue }
+
+  // Helper: store original style before applying new one
+  function storeOriginalStyle(el, property) {
+    if (!originalStyles.has(el)) {
+      originalStyles.set(el, {});
+    }
+    const styles = originalStyles.get(el);
+    if (!(property in styles)) {
+      // Get current inline style value (empty string if none)
+      styles[property] = el.style[property] || '';
+    }
+  }
+
+  // Helper: apply a style with storage of original
+  function setStyleWithStore(el, property, value, important = false) {
+    storeOriginalStyle(el, property);
+    if (important) {
+      el.style.setProperty(property, value, 'important');
+    } else {
+      el.style[property] = value;
+    }
+  }
+
+  // Helper: restore original style for a property
+  function restoreStyle(el, property) {
+    const styles = originalStyles.get(el);
+    if (styles && property in styles) {
+      const original = styles[property];
+      if (original === '') {
+        el.style.removeProperty(property);
+      } else {
+        el.style[property] = original;
+      }
+      delete styles[property];
+      if (Object.keys(styles).length === 0) {
+        originalStyles.delete(el);
+      }
+    }
+  }
+
+  // Cleanup all modifications and hide UI elements
+  function cleanupSelectionMode() {
+    // Restore all modified styles
+    for (const [el, styles] of originalStyles) {
+      for (const prop in styles) {
+        const original = styles[prop];
+        if (original === '') {
+          el.style.removeProperty(prop);
+        } else {
+          el.style[prop] = original;
+        }
+      }
+    }
+    originalStyles.clear();
+
+    // Remove any outstanding outlines
+    if (highlightedEl) {
+      restoreStyle(highlightedEl, 'outline');
+      highlightedEl = null;
+    }
+    if (selectedEl) {
+      restoreStyle(selectedEl, 'outline');
+      selectedEl = null;
+    }
+
+    // Hide tooltip and inspector
+    if (tooltip) tooltip.style.display = 'none';
+    if (inspector) inspector.style.display = 'none';
+  }
+
   // Tooltip
   function createTooltip() {
     tooltip = document.createElement('div');
@@ -19,6 +91,7 @@
     tooltip.style.boxShadow = '0 2px 6px rgba(0,0,0,0.4)';
     tooltip.style.pointerEvents = 'none';
     tooltip.style.zIndex = 9999;
+    tooltip.style.display = 'none'; // initially hidden
     document.body.appendChild(tooltip);
   }
 
@@ -79,14 +152,20 @@
     const target = e.target;
     if (inspector && inspector.contains(target)) {
       tooltip.style.display = 'none';
-      if (highlightedEl && highlightedEl !== selectedEl) highlightedEl.style.outline = '';
+      if (highlightedEl && highlightedEl !== selectedEl) {
+        restoreStyle(highlightedEl, 'outline');
+      }
       highlightedEl = null;
       return;
     }
     if (target === selectedEl) return;
-    if (highlightedEl && highlightedEl !== selectedEl) highlightedEl.style.outline = '';
+    if (highlightedEl && highlightedEl !== selectedEl) {
+      restoreStyle(highlightedEl, 'outline');
+    }
     highlightedEl = target;
-    if (highlightedEl !== selectedEl) highlightedEl.style.setProperty('outline', '1px solid red', 'important');
+    if (highlightedEl !== selectedEl) {
+      setStyleWithStore(highlightedEl, 'outline', '1px solid red', true);
+    }
     tooltip.style.display = 'block';
     tooltip.textContent = getShortHtmlPath(highlightedEl, 5);
     placeTooltipNearMouse(e);
@@ -94,10 +173,19 @@
 
   // Selection handler
   function selectElement(el) {
-    if (highlightedEl && highlightedEl !== selectedEl) highlightedEl.style.outline = '';
-    if (selectedEl) selectedEl.style.outline = '';
+    if (!window.__SELECTION_MODE__) return;
+
+    // Restore previous selected element
+    if (selectedEl) {
+      restoreStyle(selectedEl, 'outline');
+    }
+    // Restore highlighted if it's different
+    if (highlightedEl && highlightedEl !== el) {
+      restoreStyle(highlightedEl, 'outline');
+    }
+
     selectedEl = el;
-    selectedEl.style.setProperty('outline', '2px solid lime', 'important');
+    setStyleWithStore(selectedEl, 'outline', '2px solid lime', true);
 
     inspector.innerHTML = ``;
     inspector.style.display = 'block';
@@ -125,7 +213,10 @@
     closeBtn.style.color = '#aaa';
     closeBtn.onclick = (evt) => {
       evt.preventDefault(); evt.stopPropagation();
-      if (selectedEl) { selectedEl.style.outline = ''; selectedEl = null; }
+      if (selectedEl) {
+        restoreStyle(selectedEl, 'outline');
+        selectedEl = null;
+      }
       inspector.style.display = 'none';
     };
     header.appendChild(closeBtn);
@@ -156,35 +247,40 @@
     };
 
     actions.appendChild(mkBtn('Extract text', () => {
-      const text = (selectedEl.textContent || '').trim();
       const { primary, fallbacks, meta } = window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'extractText' });
-      window.sendToNode({ type: 'workflowStep', action: 'EXTRACT_TEXT', primarySelector: primary, fallbackSelectors: fallbacks, text }, '*');
-      console.log('Extracted text:', text);
+      window.sendToNode({
+        type: "workflowStep",
+        action: "EXTRACT_TEXT",
+        params: {
+          "selector": primary.value,
+          "fallbackSelectors": fallbacks.map(item => item.value)
+        },
+        "advanced": {}
+      });
     }));
 
     actions.appendChild(mkBtn('Extract data', () => {
       const data = extractLeafElements(selectedEl);
       window.sendToNode({ type: 'workflowStep', action: 'extractData', data }, '*');
-      console.log('Extracted data:', data);
     }));
 
     actions.appendChild(mkBtn('Click element', () => {
-      // allowNextClick = true;
-      // selectedEl.click();
       const { primary, fallbacks, meta } = window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'CLICK_ELEMENT' });
       window.sendToNode({
-        type: 'userAction',
+        type: 'workflowStep',
         action: 'CLICK_ELEMENT',
-        primarySelector: primary, 
-        fallbackSelectors: fallbacks
+        params: {
+          "selector": primary.value,
+          "fallbackSelectors": fallbacks.map(item => item.value)
+        },
+        "advanced": {}
       });
     }));
 
     actions.appendChild(mkBtn('Select similar elements', () => {
       const matches = selectSimilarElements(selectedEl);
-      matches.forEach(el => el.style.outline = '2px solid red');
+      matches.forEach(el => setStyleWithStore(el, 'outline', '2px solid red', true));
       window.sendToNode({ type: 'workflowStep', action: 'selectSimilar', count: matches.length }, '*');
-      console.log('Similar elements found:', matches);
     }));
 
     inspector.appendChild(actions);
@@ -276,8 +372,8 @@
               item.style.color = '#eee';
               item.style.fontFamily = 'monospace';
               item.style.fontSize = '13px';
-              item.onmouseenter = () => { if (ch !== selectedEl) ch.style.outline = '1px dashed #888'; item.style.background = '#3a3a3a'; };
-              item.onmouseleave = () => { if (ch !== selectedEl) ch.style.outline = ''; item.style.background = 'transparent'; };
+              item.onmouseenter = () => { if (ch !== selectedEl) setStyleWithStore(ch, 'outline', '1px dashed #888', true); item.style.background = '#3a3a3a'; };
+              item.onmouseleave = () => { if (ch !== selectedEl) restoreStyle(ch, 'outline'); item.style.background = 'transparent'; };
               item.onclick = (evt2) => { evt2.preventDefault(); evt2.stopPropagation(); selectElement(ch); };
               dropdown.appendChild(item);
             });
@@ -292,6 +388,21 @@
 
     return wrapper;
   }
+
+  // Intercept mode changes via property setter
+  let _selectionMode = window.__SELECTION_MODE__;
+  Object.defineProperty(window, '__SELECTION_MODE__', {
+    get: () => _selectionMode,
+    set: (value) => {
+      if (_selectionMode !== value) {
+        _selectionMode = value;
+        if (!value) {
+          cleanupSelectionMode();
+        }
+      }
+    },
+    configurable: true
+  });
 
   // Initialization
   createTooltip();
