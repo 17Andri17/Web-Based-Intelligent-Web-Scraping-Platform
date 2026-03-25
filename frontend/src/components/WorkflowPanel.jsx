@@ -26,7 +26,6 @@ export default function WorkflowPanel({
   const [pickerIndex, setPickerIndex] = useState(null);
 
   /* ========================= DRAG ========================= */
-
   const handleDragEnd = (event) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -38,22 +37,25 @@ export default function WorkflowPanel({
   };
 
   /* ========================= ADD STEP ========================= */
-
   const handleAddClick = (index) => {
     setPickerIndex(index);
   };
 
   const handleSelectAction = (type) => {
     const def = actionDefinitions[type];
-
     const params = buildDefaultParams(def);
     const advanced = buildDefaultAdvanced(def);
-
     const step = createAction(type, params, advanced);
 
     onAddStep(step, pickerIndex);
-
     setPickerIndex(null);
+  };
+
+  /* ========================= DELETE STEP ========================= */
+  const handleDeleteStep = (index) => {
+    if (window.confirm("Delete this step?")) {
+      setSteps((prev) => prev.filter((_, i) => i !== index));
+    }
   };
 
   return (
@@ -78,6 +80,7 @@ export default function WorkflowPanel({
                     step={step}
                     def={def}
                     onEdit={() => setEditingStep({ step, index })}
+                    onDelete={() => handleDeleteStep(index)}
                   />
                 </div>
               );
@@ -115,7 +118,7 @@ export default function WorkflowPanel({
 
 /* ========================= SORTABLE STEP ========================= */
 
-function SortableStep({ step, def, onEdit }) {
+function SortableStep({ step, def, onEdit, onDelete }) {
   const {
     attributes,
     listeners,
@@ -136,6 +139,7 @@ function SortableStep({ step, def, onEdit }) {
         def={def}
         dragHandleProps={{ ...attributes, ...listeners }}
         onEdit={onEdit}
+        onDelete={onDelete}
       />
     </div>
   );
@@ -143,7 +147,7 @@ function SortableStep({ step, def, onEdit }) {
 
 /* ========================= STEP CARD ========================= */
 
-function StepCard({ step, def, dragHandleProps, onEdit }) {
+function StepCard({ step, def, dragHandleProps, onEdit, onDelete }) {
   return (
     <div
       style={{
@@ -182,7 +186,10 @@ function StepCard({ step, def, dragHandleProps, onEdit }) {
         </div>
       </div>
 
-      <button onClick={onEdit}>Edit</button>
+      <div>
+        <button onClick={onEdit} style={{ marginRight: "8px" }}>Edit</button>
+        <button onClick={onDelete}>Delete</button>
+      </div>
     </div>
   );
 }
