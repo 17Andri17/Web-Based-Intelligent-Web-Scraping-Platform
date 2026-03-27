@@ -45,10 +45,12 @@ io.on("connection", (socket) => {
     try {
       const page = await browserManager.getPage(userId);
 
-      // ✅ Expose bridge (Puppeteer → Node → Frontend)
-      await page.exposeFunction("sendToNode", (event) => {
+      await browserManager.ensureBinding(userId, "sendToNode", (event) => {
         socket.emit("browserEvent", event);
       });
+      // await page.exposeFunction("sendToNode", (event) => {
+      //   socket.emit("browserEvent", event);
+      // });
 
       await page.setViewport({
         width: 1400,
@@ -60,7 +62,7 @@ io.on("connection", (socket) => {
 
       await page.goto(data.url, { waitUntil: "networkidle2" });
 
-      await page.exposeFunction("sendCursorType", (cursorType) => {
+      await browserManager.ensureBinding(userId, "sendCursorType", (cursorType) => {
         socket.emit("cursorType", { cursor: cursorType });
       });
 
@@ -77,7 +79,7 @@ io.on("connection", (socket) => {
 
       
 
-      // === SCREENCAST ===
+      // SCREENCAST
       const client = await page.target().createCDPSession();
       session = client;
 

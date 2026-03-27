@@ -47,6 +47,25 @@
     }
   }
 
+  function withTemporaryStyle(el, property, callback) {
+    // Restore original (this also removes the stored value)
+    restoreStyle(el, property);
+    let result;
+    try {
+      result = callback();
+    } finally {
+      // Reapply the style we had (if any) – but we must know what it was.
+      // Since we don't store the applied value separately, we rely on the fact
+      // that the element still has its outline in the map (it was removed by restoreStyle).
+      // However, we want to reapply the lime outline that we had for selectedEl.
+      // We'll reapply if this element is currently the selected element.
+      if (el === selectedEl) {
+        setStyleWithStore(el, property, '2px solid lime', true);
+      }
+    }
+    return result;
+  }
+
   // Cleanup all modifications and hide UI elements
   function cleanupSelectionMode() {
     // Restore all modified styles
@@ -247,7 +266,9 @@
     };
 
     actions.appendChild(mkBtn('Extract text', () => {
-      const { primary, fallbacks, meta } = window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'extractText' });
+      const { primary, fallbacks, meta } = withTemporaryStyle(selectedEl, 'outline', () =>
+        window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'extractText' })
+      );
       window.sendToNode({
         type: "workflowStep",
         action: "EXTRACT_TEXT",
@@ -265,7 +286,9 @@
     }));
 
     actions.appendChild(mkBtn('Click element', () => {
-      const { primary, fallbacks, meta } = window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'CLICK_ELEMENT' });
+      const { primary, fallbacks, meta } = withTemporaryStyle(selectedEl, 'outline', () =>
+        window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'CLICK_ELEMENT' })
+      );
       window.sendToNode({
         type: 'workflowStep',
         action: 'CLICK_ELEMENT',

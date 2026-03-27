@@ -34,8 +34,7 @@
 
     while (
       node &&
-      node.nodeType === Node.ELEMENT_NODE &&
-      node !== document.documentElement
+      node.nodeType === Node.ELEMENT_NODE
     ) {
       const attrs = node.attributes;
       const attrMap = {};
@@ -313,6 +312,7 @@
    */
   function getSelectorsForElement(el, options = {}) {
     const ctx = buildContext(el);
+    window.sendToNode(ctx);
     const allCandidates = [
       ...generateCssCandidates(ctx),
       ...generateXPathCandidates(ctx)

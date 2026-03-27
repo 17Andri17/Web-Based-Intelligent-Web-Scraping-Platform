@@ -8,6 +8,7 @@ class BrowserManager {
     this.contexts = new Map(); // userId -> context
     this.pages = new Map();    // userId -> page
     this.pagePromises = new Map();
+    this.exposedBindings = new Map();
   }
 
   async initBrowser() {
@@ -87,6 +88,17 @@ class BrowserManager {
   return promise;
 }
 
+async ensureBinding(userId, name, fn) {
+    const page = await this.getPage(userId);
+    const bindings = this.exposedBindings.get(userId) || new Set();
+
+    if (!bindings.has(name)) {
+      await page.exposeFunction(name, fn);
+      bindings.add(name);
+      this.exposedBindings.set(userId, bindings);
+    }
+  }
+
   async closeContext(userId) {
     // Close and remove persistent page
     if (this.pages.has(userId)) {
@@ -95,6 +107,7 @@ class BrowserManager {
       } catch (err) {
         console.warn(`Error closing page for user ${userId}:`, err);
       }
+      this.exposedBindings.delete(userId);
       this.pages.delete(userId);
     }
 
@@ -120,6 +133,7 @@ class BrowserManager {
       this.browser = null;
       this.contexts.clear();
       this.pages.clear();
+      this.exposedBindings.clear()
     }
   }
 }

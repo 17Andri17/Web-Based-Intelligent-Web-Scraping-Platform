@@ -47,43 +47,12 @@ module.exports = (io) => {
       const page = await browserManager.getPage(userId);
       if (!page) {
         console.warn(`No page found for user ${userId}`);
+        socket.emit("actionResult", { success: false, error: "Page not found" });
         return false;
       }
 
       try {
-        if (action.type === "click") {
-          if (!typeof action.x === "number" && typeof action.y === "number") {
-            // Click by coordinates
-            await page.mouse.click(action.x, action.y);
-            await page.evaluate(({ x, y }) => {
-              // Remove previous marker if present
-              const old = document.getElementById('__scraper_click_marker__');
-              if (old) old.remove();
-
-              const marker = document.createElement('div');
-              marker.id = '__scraper_click_marker__';
-              marker.style.position = 'absolute';
-              marker.style.left = `${x - 10}px`;
-              marker.style.top = `${y - 10}px`;
-              marker.style.width = '20px';
-              marker.style.height = '20px';
-              marker.style.background = 'rgba(255,0,0,0.7)';
-              marker.style.borderRadius = '50%';
-              marker.style.zIndex = 99999;
-              marker.style.pointerEvents = 'none';
-
-              document.body.appendChild(marker);
-
-              setTimeout(() => marker.remove(), 1500); // Remove after 1.5s
-            }, { x: action.x, y: action.y });
-            socket.emit("actionResult", { success: true });
-            return true;
-          } else {
-            console.warn("Click action missing XPath or coordinates.");
-            socket.emit("actionResult", { success: false });
-            return false;
-          }
-        } else if (action.type === "hover") {
+        if (action.type === "hover") {
           await page.mouse.move(action.x, action.y);
 
           const cursor = await page.evaluate(({x, y}) => {
