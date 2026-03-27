@@ -20,7 +20,7 @@ function App() {
   const socketRef = useRef(null);
 
   const [status, setStatus] = useState("");
-  const [urlInput, setUrlInput] = useState("https://efortuna.pl");
+  const [urlInput, setUrlInput] = useState("https://examtopics.com");
   const [mode, setMode] = useState("navigation"); 
   const [cursorType, setCursorType] = useState('default');
 
@@ -201,6 +201,11 @@ function App() {
     socketRef.current.emit("userAction", { type: "mouseup", x, y });
   };
 
+  const handleMouseLeave = () => {
+    if (!socketRef.current) return;
+    socketRef.current.emit("userAction", { type: "leave" });
+  };
+
   return (
     <div style={{ padding: "1em", paddingTop: 0}}>
       {/* <h2>Browser Streaming (Binary, Optimized)</h2> */}
@@ -266,6 +271,7 @@ function App() {
           onMouseMove={handleMouseMove}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
         />
       </div>
 

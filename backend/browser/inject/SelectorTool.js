@@ -1,3 +1,28 @@
+  console.log("=== FINGERPRINT DEBUG ===");
+
+  // 1. UA + headless traces
+  console.log("User Agent:", navigator.userAgent);
+  console.log("Has Headless in UA:", /HeadlessChrome/i.test(navigator.userAgent));
+
+  // 2. navigator properties
+  console.log("navigator.plugins.length:", navigator.plugins.length);
+  console.log("navigator.languages:", navigator.languages);
+  console.log("navigator.webdriver:", navigator.webdriver);
+
+  // 3. window chrome
+  console.log("window.chrome:", window.chrome);
+
+  // 4. Canvas/WebGL fingerprint (simplified)
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  ctx.font = "14px Arial";
+  ctx.fillText("Z", 2, 14);
+  const canvasHash = canvas.toDataURL();
+  console.log("Canvas hash start:", canvasHash.substr(0, 64));
+
+  // 5. Screen size + viewport
+  console.log("Screen size:", screen.width, "×", screen.height);
+  console.log("Window size:", window.innerWidth, "×", window.innerHeight);
 (function enableDevToolsMode() {
   let highlightedEl = null;
   let selectedEl = null;

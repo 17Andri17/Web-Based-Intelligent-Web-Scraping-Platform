@@ -1,8 +1,8 @@
 const http = require('http');
-const express = require('express');
+// const express = require('express');
 const app = require('./app');
 const scraperServiceFactory = require('./services/scraper.service');
-const scraperRoutesFactory = require('./routes/scraper.routes');
+// const scraperRoutesFactory = require('./routes/scraper.routes');
 const { Server } = require('socket.io');
 const browserManager = require('./browser/BrowserManager');
 const fs = require("fs");
@@ -44,6 +44,17 @@ io.on("connection", (socket) => {
 
     try {
       const page = await browserManager.getPage(userId);
+
+      await page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => false,
+        });
+        // Some sites also check for Chrome/Chromium internals
+        window.chrome = {
+          runtime: {},
+          loadTimes: () => ({ firstPaintAfterLoadTime: 100 })
+        };
+      });
 
       await browserManager.ensureBinding(userId, "sendToNode", (event) => {
         socket.emit("browserEvent", event);
@@ -162,7 +173,7 @@ io.on("connection", (socket) => {
 });
 
 // REST API
-app.use('/api/scraper', scraperRoutesFactory(io));
+// app.use('/api/scraper', scraperRoutesFactory(io));
 
 // Start server
 server.listen(PORT, () => {
