@@ -58,40 +58,152 @@ export default function WorkflowPanel({
     }
   };
 
+  /* ========================= GET ACTION ICON ========================= */
+  const getActionIcon = (type) => {
+    switch (type) {
+      case 'NAVIGATE':
+        return (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="2" y1="12" x2="22" y2="12"/>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+        );
+      case 'EXTRACT_TEXT':
+        return (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14,2 14,8 20,8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+            <polyline points="10,9 9,9 8,9"/>
+          </svg>
+        );
+      case 'CLICK_ELEMENT':
+        return (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>
+            <path d="M13 13l6 6"/>
+          </svg>
+        );
+      default:
+        return (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+        );
+    }
+  };
+
   return (
-    <div style={{ marginTop: "20px" }}>
-      <h3>Workflow</h3>
+    <div className="workflow-designer">
+      <div className="workflow-header">
+        <div className="workflow-title">
+          <h2>Flow Designer</h2>
+          <span className="step-count">{steps.length} {steps.length === 1 ? 'step' : 'steps'}</span>
+        </div>
+        <div className="workflow-actions">
+          <button className="header-btn secondary" onClick={() => handleAddClick(steps.length)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            Add Step
+          </button>
+        </div>
+      </div>
 
-      <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext
-          items={steps.map((s) => s.id)}
-          strategy={verticalListSortingStrategy}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {steps.map((step, index) => {
-              const def = actionDefinitions[step.type];
-              if (!def) return null;
+      <div className="workflow-canvas">
+        <DndContext collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext
+            items={steps.map((s) => s.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="flow-container">
+              {/* Start Node */}
+              <div className="flow-start">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5,3 19,12 5,21"/>
+                </svg>
+                Start
+              </div>
 
-              return (
-                <div key={step.id}>
-                  <AddStepButton onClick={() => handleAddClick(index)} />
-
-                  <SortableStep
-                    step={step}
-                    def={def}
-                    onEdit={() => setEditingStep({ step, index })}
-                    onDelete={() => handleDeleteStep(index)}
-                  />
+              {steps.length === 0 ? (
+                <div className="empty-state">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/>
+                    <path d="M2 12l10 5 10-5"/>
+                  </svg>
+                  <h3>No steps yet</h3>
+                  <p>Start building your workflow by adding steps. Use the Live Browser to navigate and select elements.</p>
+                  <button className="add-step-btn" onClick={() => handleAddClick(0)}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <line x1="12" y1="5" x2="12" y2="19"/>
+                      <line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    Add First Step
+                  </button>
                 </div>
-              );
-            })}
+              ) : (
+                <>
+                  {steps.map((step, index) => {
+                    const def = actionDefinitions[step.type];
+                    if (!def) return null;
 
-            <AddStepButton onClick={() => handleAddClick(steps.length)} />
-          </div>
-        </SortableContext>
-      </DndContext>
+                    return (
+                      <div key={step.id}>
+                        {/* Connector line */}
+                        <div className="flow-connector" />
+                        
+                        {/* Add step button (inline) */}
+                        <button 
+                          className="add-step-inline"
+                          onClick={() => handleAddClick(index)}
+                          title="Add step here"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <line x1="12" y1="5" x2="12" y2="19"/>
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                          </svg>
+                        </button>
 
-      {/* 🔥 STEP PICKER */}
+                        {/* Connector line */}
+                        <div className="flow-connector" />
+
+                        <SortableStep
+                          step={step}
+                          def={def}
+                          icon={getActionIcon(step.type)}
+                          onEdit={() => setEditingStep({ step, index })}
+                          onDelete={() => handleDeleteStep(index)}
+                        />
+                      </div>
+                    );
+                  })}
+
+                  {/* Final connector and add button */}
+                  <div className="flow-connector" />
+                  <button 
+                    className="add-step-btn"
+                    onClick={() => handleAddClick(steps.length)}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <line x1="12" y1="5" x2="12" y2="19"/>
+                      <line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    Add Step
+                  </button>
+                </>
+              )}
+            </div>
+          </SortableContext>
+        </DndContext>
+      </div>
+
+      {/* Step Picker Modal */}
       {pickerIndex !== null && (
         <StepPicker
           onSelect={handleSelectAction}
@@ -99,7 +211,7 @@ export default function WorkflowPanel({
         />
       )}
 
-      {/* 🔥 EDITOR */}
+      {/* Editor Modal */}
       {editingStep && (
         <StepEditorOverlay
           step={editingStep.step}
@@ -118,7 +230,7 @@ export default function WorkflowPanel({
 
 /* ========================= SORTABLE STEP ========================= */
 
-function SortableStep({ step, def, onEdit, onDelete }) {
+function SortableStep({ step, def, icon, onEdit, onDelete }) {
   const {
     attributes,
     listeners,
@@ -137,6 +249,7 @@ function SortableStep({ step, def, onEdit, onDelete }) {
       <StepCard
         step={step}
         def={def}
+        icon={icon}
         dragHandleProps={{ ...attributes, ...listeners }}
         onEdit={onEdit}
         onDelete={onDelete}
@@ -147,75 +260,57 @@ function SortableStep({ step, def, onEdit, onDelete }) {
 
 /* ========================= STEP CARD ========================= */
 
-function StepCard({ step, def, dragHandleProps, onEdit, onDelete }) {
+function StepCard({ step, def, icon, dragHandleProps, onEdit, onDelete }) {
   return (
-    <div
-      style={{
-        border: "1px solid #ddd",
-        borderRadius: "12px",
-        padding: "12px",
-        background: "#fff",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center"
-      }}
-    >
-      <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-        <div
-          {...dragHandleProps}
-          style={{
-            cursor: "grab",
-            padding: "4px",
-            background: "#eee",
-            borderRadius: "6px"
-          }}
-        >
-          ☰
+    <div className="step-card">
+      <div className="step-card-header">
+        <div className="step-drag-handle" {...dragHandleProps}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="9" cy="6" r="1.5"/>
+            <circle cx="15" cy="6" r="1.5"/>
+            <circle cx="9" cy="12" r="1.5"/>
+            <circle cx="15" cy="12" r="1.5"/>
+            <circle cx="9" cy="18" r="1.5"/>
+            <circle cx="15" cy="18" r="1.5"/>
+          </svg>
+        </div>
+        
+        <div className="step-icon">
+          {icon}
         </div>
 
-        <div>
-          <b>{def.label}</b>
-          <div style={{ fontSize: "12px", color: "#666" }}>
-            {Object.entries(step.params || {})
-              .map(([k, v]) =>
-                `${k}: ${Array.isArray(v) ? v.join(",") : v}`
-              )
-              .join(" | ")}
-          </div>
+        <div className="step-info">
+          <div className="step-label">{def.label}</div>
+          <div className="step-type">{def.category || 'Action'}</div>
+        </div>
+
+        <div className="step-actions">
+          <button className="step-action-btn" onClick={onEdit} title="Edit">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+          </button>
+          <button className="step-action-btn delete" onClick={onDelete} title="Delete">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="3,6 5,6 21,6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+          </button>
         </div>
       </div>
 
-      <div>
-        <button onClick={onEdit} style={{ marginRight: "8px" }}>Edit</button>
-        <button onClick={onDelete}>Delete</button>
-      </div>
-    </div>
-  );
-}
-
-/* ========================= ADD STEP ========================= */
-
-function AddStepButton({ onClick }) {
-  return (
-    <div
-      style={{
-        textAlign: "center",
-        opacity: 0.4,
-        cursor: "pointer"
-      }}
-      onClick={onClick}
-    >
-      <div
-        style={{
-          display: "inline-block",
-          padding: "4px 10px",
-          border: "1px dashed #aaa",
-          borderRadius: "20px",
-          fontSize: "12px"
-        }}
-      >
-        + Add Step
+      <div className="step-card-body">
+        <div className="step-params">
+          {Object.entries(step.params || {}).map(([key, value]) => (
+            <div key={key} className="step-param">
+              <span className="step-param-key">{key}:</span>
+              <span className="step-param-value">
+                {Array.isArray(value) ? value.join(', ') : String(value)}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -226,30 +321,22 @@ function AddStepButton({ onClick }) {
 function StepPicker({ onSelect, onClose }) {
   const [search, setSearch] = useState("");
 
-  /* ========================= GROUP BY CATEGORY ========================= */
-
   const grouped = {};
-
   Object.entries(actionDefinitions).forEach(([type, def]) => {
     if (!def) return;
     const category = def.category || "Other";
-
     if (!grouped[category]) grouped[category] = [];
-
     grouped[category].push({ type, def });
   });
 
-  /* ========================= SEARCH FILTER ========================= */
-
   const searchLower = search.toLowerCase();
-
   const filtered = Object.entries(actionDefinitions)
     .filter(([_, def]) => {
       if (!searchLower) return true;
-
       return (
         def.label.toLowerCase().includes(searchLower) ||
-        (def.category || "").toLowerCase().includes(searchLower)
+        (def.category || "").toLowerCase().includes(searchLower) ||
+        (def.description || "").toLowerCase().includes(searchLower)
       );
     })
     .map(([type, def]) => ({ type, def }));
@@ -257,141 +344,71 @@ function StepPicker({ onSelect, onClose }) {
   const isSearching = search.trim().length > 0;
 
   return (
-    <div style={overlayStyle}>
-      <div style={modalStyleLarge}>
-        <h3>Add Step</h3>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Add Step</h3>
+          <button className="modal-close-btn" onClick={onClose}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
 
-        {/* 🔍 SEARCH */}
-        <input
-          placeholder="Search actions..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={searchInputStyle}
-        />
+        <div className="modal-search">
+          <input
+            placeholder="Search actions..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            autoFocus
+          />
+        </div>
 
-        {/* 🔥 CONTENT */}
-        <div style={{ marginTop: "15px" }}>
+        <div className="modal-body">
           {!isSearching ? (
-            /* ========================= CATEGORY VIEW ========================= */
             Object.entries(grouped).map(([category, actions]) => (
-              <div key={category} style={{ marginBottom: "20px" }}>
-                <h4 style={categoryStyle}>{category}</h4>
-
-                <div style={gridStyle}>
+              <div key={category} className="action-category">
+                <div className="category-title">{category}</div>
+                <div className="action-grid">
                   {actions.map(({ type, def }) => (
-                    <StepTile
+                    <div 
                       key={type}
-                      def={def}
+                      className="action-tile"
                       onClick={() => onSelect(type)}
-                    />
+                    >
+                      <div className="action-tile-label">{def.label}</div>
+                      <div className="action-tile-desc">{def.description}</div>
+                    </div>
                   ))}
                 </div>
               </div>
             ))
           ) : (
-            /* ========================= SEARCH VIEW ========================= */
-            <div style={gridStyle}>
-              {filtered.length === 0 && (
-                <div style={{ color: "#999" }}>No results</div>
+            <div className="action-grid">
+              {filtered.length === 0 ? (
+                <div style={{ color: 'var(--text-muted)', padding: '20px' }}>No results found</div>
+              ) : (
+                filtered.map(({ type, def }) => (
+                  <div 
+                    key={type}
+                    className="action-tile"
+                    onClick={() => onSelect(type)}
+                  >
+                    <div className="action-tile-label">{def.label}</div>
+                    <div className="action-tile-desc">{def.description}</div>
+                  </div>
+                ))
               )}
-
-              {filtered.map(({ type, def }) => (
-                <StepTile
-                  key={type}
-                  def={def}
-                  highlight={search}
-                  onClick={() => onSelect(type)}
-                />
-              ))}
             </div>
           )}
         </div>
-
-        <button onClick={onClose} style={{ marginTop: "15px" }}>
-          Cancel
-        </button>
       </div>
     </div>
   );
 }
 
-function StepTile({ def, onClick, highlight }) {
-  return (
-    <div onClick={onClick} style={tileStyle}>
-      <div style={{ fontWeight: "bold" }}>
-        {highlightText(def.label, highlight)}
-      </div>
-
-      <div style={{ fontSize: "12px", color: "#666" }}>
-        {def.description}
-      </div>
-
-      <div style={categoryBadge}>
-        {def.category || "Other"}
-      </div>
-    </div>
-  );
-}
-
-function highlightText(text, search) {
-  if (!search) return text;
-
-  const regex = new RegExp(`(${search})`, "gi");
-
-  return text.split(regex).map((part, i) =>
-    part.toLowerCase() === search.toLowerCase() ? (
-      <span key={i} style={{ background: "#ffe58a" }}>
-        {part}
-      </span>
-    ) : (
-      part
-    )
-  );
-}
-
-const modalStyleLarge = {
-  background: "#fff",
-  padding: "20px",
-  borderRadius: "12px",
-  width: "600px",
-  maxHeight: "80vh",
-  overflow: "auto"
-};
-
-const searchInputStyle = {
-  width: "100%",
-  padding: "10px",
-  borderRadius: "8px",
-  border: "1px solid #ccc"
-};
-
-const gridStyle = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-  gap: "10px"
-};
-
-const tileStyle = {
-  border: "1px solid #ddd",
-  borderRadius: "10px",
-  padding: "10px",
-  cursor: "pointer",
-  background: "#fafafa",
-  transition: "0.2s"
-};
-
-const categoryStyle = {
-  marginBottom: "10px",
-  color: "#555"
-};
-
-const categoryBadge = {
-  marginTop: "6px",
-  fontSize: "10px",
-  color: "#888"
-};
-
-/* ========================= EDITOR ========================= */
+/* ========================= STEP EDITOR ========================= */
 
 function StepEditorOverlay({ step, def, onClose, onUpdate }) {
   const [localStep, setLocalStep] = useState(step);
@@ -417,41 +434,53 @@ function StepEditorOverlay({ step, def, onClose, onUpdate }) {
   };
 
   return (
-    <div style={overlayStyle}>
-      <div style={modalStyle}>
-        <h3>{def.label}</h3>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content editor-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Edit: {def.label}</h3>
+          <button className="modal-close-btn" onClick={onClose}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
 
-        {Object.entries(def.inputs || {}).map(([key, inputDef]) => (
-          <FieldRenderer
-            key={key}
-            label={inputDef.label}
-            type={inputDef.type}
-            value={localStep.params?.[key]}
-            options={inputDef.options}
-            onChange={(val) => updateParam(key, val)}
-          />
-        ))}
+        <div className="editor-form">
+          {Object.entries(def.inputs || {}).map(([key, inputDef]) => (
+            <FieldRenderer
+              key={key}
+              label={inputDef.label}
+              type={inputDef.type}
+              value={localStep.params?.[key]}
+              options={inputDef.options}
+              onChange={(val) => updateParam(key, val)}
+            />
+          ))}
 
-        {def.advanced && (
-          <>
-            <h4>Advanced</h4>
-            {Object.entries(def.advanced).map(([key, advDef]) => (
-              <FieldRenderer
-                key={key}
-                label={advDef.label}
-                type={advDef.type}
-                value={localStep.advanced?.[key]}
-                options={advDef.options}
-                onChange={(val) => updateAdvanced(key, val)}
-              />
-            ))}
-          </>
-        )}
+          {def.advanced && Object.keys(def.advanced).length > 0 && (
+            <>
+              <div className="form-section-title">Advanced Options</div>
+              {Object.entries(def.advanced).map(([key, advDef]) => (
+                <FieldRenderer
+                  key={key}
+                  label={advDef.label}
+                  type={advDef.type}
+                  value={localStep.advanced?.[key]}
+                  options={advDef.options}
+                  onChange={(val) => updateAdvanced(key, val)}
+                />
+              ))}
+            </>
+          )}
+        </div>
 
-        <div style={{ marginTop: "15px" }}>
-          <button onClick={() => onUpdate(localStep)}>Save</button>
-          <button onClick={onClose} style={{ marginLeft: "10px" }}>
+        <div className="modal-footer">
+          <button className="modal-btn secondary" onClick={onClose}>
             Cancel
+          </button>
+          <button className="modal-btn primary" onClick={() => onUpdate(localStep)}>
+            Save Changes
           </button>
         </div>
       </div>
@@ -459,15 +488,19 @@ function StepEditorOverlay({ step, def, onClose, onUpdate }) {
   );
 }
 
-/* ========================= FIELD ========================= */
+/* ========================= FIELD RENDERER ========================= */
 
 function FieldRenderer({ label, type, value, options, onChange }) {
   return (
-    <div style={{ marginBottom: "10px" }}>
+    <div className="form-group">
       <label>{label}</label>
 
       {type === "string" && (
-        <input value={value || ""} onChange={(e) => onChange(e.target.value)} />
+        <input 
+          type="text"
+          value={value || ""} 
+          onChange={(e) => onChange(e.target.value)} 
+        />
       )}
 
       {type === "number" && (
@@ -479,11 +512,16 @@ function FieldRenderer({ label, type, value, options, onChange }) {
       )}
 
       {type === "boolean" && (
-        <input
-          type="checkbox"
-          checked={!!value}
-          onChange={(e) => onChange(e.target.checked)}
-        />
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <input
+            type="checkbox"
+            checked={!!value}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+            {value ? 'Enabled' : 'Disabled'}
+          </span>
+        </label>
       )}
 
       {type === "select" && (
@@ -498,10 +536,12 @@ function FieldRenderer({ label, type, value, options, onChange }) {
 
       {type === "array" && (
         <input
+          type="text"
           value={(value || []).join(", ")}
           onChange={(e) =>
-            onChange(e.target.value.split(",").map((v) => v.trim()))
+            onChange(e.target.value.split(",").map((v) => v.trim()).filter(Boolean))
           }
+          placeholder="Comma-separated values"
         />
       )}
     </div>
@@ -535,27 +575,3 @@ function buildDefaultAdvanced(def) {
 
   return advanced;
 }
-
-/* ========================= STYLES ========================= */
-
-const overlayStyle = {
-  position: "fixed",
-  top: 0,
-  left: 0,
-  width: "100%",
-  height: "100%",
-  background: "rgba(0,0,0,0.4)",
-  display: "flex",
-  justifyContent: "center",
-  alignItems: "center",
-  zIndex: 1000
-};
-
-const modalStyle = {
-  background: "#fff",
-  padding: "20px",
-  borderRadius: "10px",
-  width: "400px",
-  maxHeight: "80vh",
-  overflow: "auto"
-};

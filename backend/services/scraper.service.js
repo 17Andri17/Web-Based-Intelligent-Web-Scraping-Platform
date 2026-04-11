@@ -70,6 +70,10 @@ module.exports = (io) => {
         } else if (action.type === "leave") {
           await page.mouse.move(-1, -1);
           socket.emit("cursorType", { cursor: "default" });
+        } else if (action.type === "keydown") {
+          await page.keyboard.down(action.key);
+        } else if (action.type === "keyup") {
+          await page.keyboard.up(action.key);
         }
         // Add support for other types such as keypress, input, etc as needed
       } catch (err) {

@@ -4,27 +4,30 @@ import io from "socket.io-client";
 import { useWorkflow } from "./workflow/useWorkflow";
 import { createAction } from "./workflow/stepFactory";
 import WorkflowPanel from "./components/WorkflowPanel";
+import "./styles/app.css";
 
 const SERVER_URL = "http://localhost:3001";
 const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
 
 function App() {
   const { steps, addStep, updateStep, setSteps } = useWorkflow();
-  // for debugging
-   useEffect(() => {
+  const [activeTab, setActiveTab] = useState("stream"); // "stream" or "workflow"
+
+  useEffect(() => {
     window.steps = steps;
     window.addStep = addStep;
     window.updateStep = updateStep;
   }, [steps, addStep, updateStep]);
+
   const canvasRef = useRef(null);
   const socketRef = useRef(null);
 
   const [status, setStatus] = useState("");
-  const [urlInput, setUrlInput] = useState("https://examtopics.com");
-  const [mode, setMode] = useState("navigation"); 
+  const [urlInput, setUrlInput] = useState("https://deviceandbrowserinfo.com/are_you_a_bot");
+  const [mode, setMode] = useState("navigation");
   const [cursorType, setCursorType] = useState('default');
+  const [isConnected, setIsConnected] = useState(false);
 
-  // Frame handling
   const latestFrameRef = useRef(null);
   const isRenderingRef = useRef(false);
 
@@ -36,7 +39,10 @@ function App() {
     });
     socketRef.current = socket;
 
-    socket.on("connect", () => setStatus("Connected"));
+    socket.on("connect", () => {
+      setStatus("Connected");
+      setIsConnected(true);
+    });
 
     socket.on("message", msg =>
       setStatus(typeof msg === "string" ? msg : (msg.msg || ""))
@@ -57,19 +63,6 @@ function App() {
     socket.on("browserEvent", (data) => {
       console.log("📦 Browser event:", data);
 
-      // if (data.type === "workflowStep") {
-        
-      //   const fallbackSelectorsValues = (data.fallbackSelectors || []).map(
-      //     item => item.value
-      //   );
-      //   console.log(fallbackSelectorsValues);
-
-      //   addStep(createAction(data.action, {
-      //     selector: data.primarySelector?.value,
-      //     fallbackSelectors: fallbackSelectorsValues
-      //   }));
-      // }
-
       if (data.type === "workflowStep") {
         addStep(createAction(
           data.action,
@@ -79,7 +72,10 @@ function App() {
       }
     });
 
-    socket.on("disconnect", () => setStatus("Disconnected"));
+    socket.on("disconnect", () => {
+      setStatus("Disconnected");
+      setIsConnected(false);
+    });
 
     return () => socket.disconnect();
   }, []);
@@ -87,6 +83,7 @@ function App() {
   // === RENDER LOOP ===
   useEffect(() => {
     const canvas = canvasRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d");
 
     async function renderLoop() {
@@ -101,6 +98,11 @@ function App() {
 
         const blob = new Blob([frame], { type: "image/png" });
         const bitmap = await createImageBitmap(blob);
+
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+        }
 
         ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
       } catch (err) {
@@ -127,7 +129,6 @@ function App() {
     if (socketRef.current && urlInput.startsWith("http")) {
       setStatus("Navigating...");
 
-      // 🔥 send mode together with navigation
       socketRef.current.emit("navigate", {
         url: urlInput,
         mode
@@ -153,8 +154,6 @@ function App() {
 
   // === USER ACTIONS ===
   const handleClick = (e) => {
-    // if (mode === "selection") return; // 🔥 disable click in selection mode
-
     e.preventDefault();
     if (!socketRef.current) return;
 
@@ -163,18 +162,7 @@ function App() {
     setStatus(`Clicked: x=${x}, y=${y}`);
   };
 
-  // const handleAddStep = (action, index) => {
-  //   const action = createAction(
-  //         "NAVIGATE",
-  //         {url: "test"},
-  //         {}
-  //       );
-  //   addStep(action, index);
-  // }
-
   const handleMouseMove = (e) => {
-    // if (mode === "selection") return;
-
     if (!socketRef.current) return;
 
     const { x, y } = getScaledCoords(e);
@@ -182,8 +170,6 @@ function App() {
   };
 
   const handleMouseDown = (e) => {
-    // if (mode === "selection") return;
-
     e.preventDefault();
     if (!socketRef.current) return;
 
@@ -192,8 +178,6 @@ function App() {
   };
 
   const handleMouseUp = (e) => {
-    // if (mode === "selection") return;
-
     e.preventDefault();
     if (!socketRef.current) return;
 
@@ -206,90 +190,173 @@ function App() {
     socketRef.current.emit("userAction", { type: "leave" });
   };
 
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") {
+      handleNavigate();
+    }
+  };
+
   return (
-    <div style={{ padding: "1em", paddingTop: 0}}>
-      {/* <h2>Browser Streaming (Binary, Optimized)</h2> */}
+    <div className="app-container">
+      {/* Header */}
+      <header className="app-header">
+        <div className="header-left">
+          <div className="logo">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+            <span>WebScraper</span>
+          </div>
+        </div>
+        <div className="header-center">
+          <div className="connection-status">
+            <span className={`status-dot ${isConnected ? 'connected' : 'disconnected'}`}></span>
+            <span className="status-text">{status || (isConnected ? 'Ready' : 'Connecting...')}</span>
+          </div>
+        </div>
+        <div className="header-right">
+          <button className="header-btn" title="Run Workflow">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="5,3 19,12 5,21" />
+            </svg>
+            Run
+          </button>
+          <button className="header-btn secondary" title="Save">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <polyline points="17,21 17,13 7,13 7,21" />
+              <polyline points="7,3 7,8 15,8" />
+            </svg>
+            Save
+          </button>
+        </div>
+      </header>
 
-      {/* 🔥 MODE SWITCH */}
-      <div style={{ marginBottom: "10px" }}>
+      {/* Tab Navigation */}
+      <div className="tab-bar">
         <button
-          onClick={() => changeMode("navigation")}
-          style={{
-            marginRight: "10px",
-            background: mode === "navigation" ? "#4caf50" : "#ccc"
-          }}
+          className={`tab-btn ${activeTab === 'stream' ? 'active' : ''}`}
+          onClick={() => setActiveTab('stream')}
         >
-          Navigation Mode
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+            <line x1="8" y1="21" x2="16" y2="21" />
+            <line x1="12" y1="17" x2="12" y2="21" />
+          </svg>
+          Live Browser
         </button>
-
         <button
-          onClick={() => changeMode("selection")}
-          style={{
-            background: mode === "selection" ? "#ff9800" : "#ccc"
-          }}
+          className={`tab-btn ${activeTab === 'workflow' ? 'active' : ''}`}
+          onClick={() => setActiveTab('workflow')}
         >
-          Selection Mode
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="16,3 21,3 21,8" />
+            <line x1="4" y1="20" x2="21" y2="3" />
+            <polyline points="21,16 21,21 16,21" />
+            <line x1="15" y1="15" x2="21" y2="21" />
+            <line x1="4" y1="4" x2="9" y2="9" />
+          </svg>
+          Workflow
+          {steps.length > 0 && <span className="tab-badge">{steps.length}</span>}
         </button>
       </div>
 
-      {/* NAVIGATION */}
-      <div>
-        <input
-          style={{ width: "300px" }}
-          type="text"
-          value={urlInput}
-          onChange={e => setUrlInput(e.target.value)}
-        />
-        <button onClick={handleNavigate}>Go</button>
-      </div>
+      {/* Main Content */}
+      <main className="main-content">
+        {activeTab === 'stream' ? (
+          <div className="stream-panel">
+            {/* URL Bar & Controls */}
+            <div className="control-bar">
+              <div className="mode-toggle">
+                <button
+                  className={`mode-btn ${mode === 'navigation' ? 'active' : ''}`}
+                  onClick={() => changeMode("navigation")}
+                  title="Navigation Mode - Interact with the page"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
+                  </svg>
+                  Navigate
+                </button>
+                <button
+                  className={`mode-btn ${mode === 'selection' ? 'active' : ''}`}
+                  onClick={() => changeMode("selection")}
+                  title="Selection Mode - Pick elements for scraping"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M5 9l7 7 7-7" />
+                  </svg>
+                  Select
+                </button>
+              </div>
 
-      <div style={{ margin: "1em 0" }}>
-        {status} | Mode: <b>{mode}</b>
-      </div>
+              <div className="url-input-wrapper">
+                <svg className="url-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="2" y1="12" x2="22" y2="12" />
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                </svg>
+                <input
+                  className="url-input"
+                  type="text"
+                  value={urlInput}
+                  onChange={e => setUrlInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Enter URL to navigate..."
+                />
+                <button className="go-btn" onClick={handleNavigate}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="5" y1="12" x2="19" y2="12" />
+                    <polyline points="12,5 19,12 12,19" />
+                  </svg>
+                </button>
+              </div>
+            </div>
 
-      {/* CANVAS */}
-      <div
-        style={{
-          border: "2px solid #888",
-          display: "inline-block",
-          position: "relative"
-        }}
-      >
-        <canvas
-          ref={canvasRef}
-          width={1400}
-          height={600}
-          style={{
-            width: "100%",
-            maxWidth: "1400px",
-            height: "auto",
-            display: "block",
-            background: "#eee",
-            cursor: cursorType
-          }}
-          onClick={handleClick}
-          onMouseMove={handleMouseMove}
-          onMouseDown={handleMouseDown}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseLeave}
-        />
-      </div>
+            {/* Browser Canvas */}
+            <div className="canvas-container">
+              <canvas
+                ref={canvasRef}
+                className="browser-canvas"
+                style={{ cursor: cursorType }}
+                onClick={handleClick}
+                onMouseMove={handleMouseMove}
+                onMouseDown={handleMouseDown}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseLeave}
+              />
 
-      <WorkflowPanel
-        steps={steps}
-        onUpdate={updateStep}
-        onAddStep={addStep}
-        setSteps={setSteps}
-      />
-      
-
-      <div style={{ margin: "1em 0" }}>
-        <small>
-          {mode === "selection"
-            ? "Selection mode: pick elements"
-            : "Navigation mode: interact with page"}
-        </small>
-      </div>
+              {/* Mode indicator overlay */}
+              <div className={`mode-indicator ${mode}`}>
+                {mode === 'selection' ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M5 9l7 7 7-7" />
+                    </svg>
+                    Selection Mode - Click elements to capture
+                  </>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
+                    </svg>
+                    Navigation Mode - Interact normally
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <WorkflowPanel
+            steps={steps}
+            onUpdate={updateStep}
+            onAddStep={addStep}
+            setSteps={setSteps}
+          />
+        )}
+      </main>
     </div>
   );
 }

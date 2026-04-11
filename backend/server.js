@@ -1,67 +1,59 @@
 const http = require('http');
-// const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { Server } = require('socket.io');
+
 const app = require('./app');
 const scraperServiceFactory = require('./services/scraper.service');
-// const scraperRoutesFactory = require('./routes/scraper.routes');
-const { Server } = require('socket.io');
 const browserManager = require('./browser/BrowserManager');
-const fs = require("fs");
-const path = require("path");
 
 const PORT = process.env.PORT || 3001;
 
-// Create HTTP server
 const server = http.createServer(app);
 
-// Attach Socket.IO
 const io = new Server(server, {
   cors: { origin: '*' },
   transports: ['websocket']
 });
 
-// Create scraper service
 const scraperService = scraperServiceFactory(io);
 
-// Load your injected scripts
 const injectedScript = fs.readFileSync(
-  path.join(__dirname, "./browser/inject/SelectorTool.js"),
-  "utf8"
-);
-const injectedSelectors = fs.readFileSync(
-  path.join(__dirname, "./browser/selectors.js"),
-  "utf8"
+  path.join(__dirname, './browser/inject/SelectorTool.js'),
+  'utf8'
 );
 
-// === SOCKET.IO ===
-io.on("connection", (socket) => {
+const injectedSelectors = fs.readFileSync(
+  path.join(__dirname, './browser/selectors.js'),
+  'utf8'
+);
+
+io.on('connection', (socket) => {
   const userId = socket.handshake.query.userId || socket.id;
   console.log(`🔌 User connected: ${userId}`);
   socket.join(userId);
 
-  socket.on("navigate", async (data) => {
+  socket.on('navigate', async (data) => {
     let session = null;
     let streaming = true;
 
     try {
       const page = await browserManager.getPage(userId);
 
-      await page.evaluateOnNewDocument(() => {
-        Object.defineProperty(navigator, 'webdriver', {
-          get: () => false,
-        });
-        // Some sites also check for Chrome/Chromium internals
-        window.chrome = {
-          runtime: {},
-          loadTimes: () => ({ firstPaintAfterLoadTime: 100 })
-        };
+      await page.setCookie({
+        name: 'cookie_preferences_accepted',
+        value: 'true',
+        domain: 'google.com',
+        path: '/'
       });
 
-      await browserManager.ensureBinding(userId, "sendToNode", (event) => {
-        socket.emit("browserEvent", event);
+      await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
+        socket.emit('browserEvent', event);
       });
-      // await page.exposeFunction("sendToNode", (event) => {
-      //   socket.emit("browserEvent", event);
-      // });
+
+      await browserManager.ensureBinding(userId, 'sendCursorType', (cursorType) => {
+        socket.emit('cursorType', { cursor: cursorType });
+      });
 
       await page.setViewport({
         width: 1400,
@@ -71,11 +63,8 @@ io.on("connection", (socket) => {
         isMobile: false
       });
 
-      await page.goto(data.url, { waitUntil: "networkidle2" });
+      await page.goto(data.url, { waitUntil: 'networkidle2' });
 
-      await browserManager.ensureBinding(userId, "sendCursorType", (cursorType) => {
-        socket.emit("cursorType", { cursor: cursorType });
-      });
 
       await page.evaluate(() => {
         window.__SELECTION_MODE__ = false;
@@ -88,14 +77,11 @@ io.on("connection", (socket) => {
         window.__SELECTION_MODE__ = false;
       });
 
-      
-
-      // SCREENCAST
       const client = await page.target().createCDPSession();
       session = client;
 
-      await session.send("Page.startScreencast", {
-        format: "png",
+      await session.send('Page.startScreencast', {
+        format: 'png',
         maxWidth: 1400,
         maxHeight: 600,
         everyNthFrame: 1
@@ -105,77 +91,69 @@ io.on("connection", (socket) => {
         if (!streaming) return;
 
         try {
-          const buffer = Buffer.from(frame.data, "base64");
+          const buffer = Buffer.from(frame.data, 'base64');
+          socket.emit('frame', buffer);
 
-          socket.emit("frame", buffer);
-
-          await session.send("Page.screencastFrameAck", {
+          await session.send('Page.screencastFrameAck', {
             sessionId: frame.sessionId
           });
         } catch (err) {
-          console.error("Frame error:", err);
+          console.error('Frame error:', err);
         }
       };
 
-      session.on("Page.screencastFrame", onFrame);
+      session.on('Page.screencastFrame', onFrame);
 
       const stopStreaming = async () => {
         if (!streaming) return;
         streaming = false;
 
         try {
-          await session.send("Page.stopScreencast");
+          await session.send('Page.stopScreencast');
         } catch (e) {}
 
-        session.removeListener("Page.screencastFrame", onFrame);
+        session.removeListener('Page.screencastFrame', onFrame);
       };
 
-      socket.on("disconnect", stopStreaming);
-      socket.on("stopStreaming", stopStreaming);
+      socket.on('disconnect', stopStreaming);
+      socket.on('stopStreaming', stopStreaming);
 
-      socket.emit("message", "✅ Navigation + streaming started (bridge enabled)");
-
+      socket.emit('message', '✅ Navigation + streaming started (bridge enabled)');
     } catch (err) {
       console.error(err);
-      socket.emit("message", `❌ Navigation error: ${err.message}`);
+      socket.emit('message', `❌ Navigation error: ${err.message}`);
     }
   });
 
-  // === MODE SWITCHING (navigation vs selection) ===
-  socket.on("setMode", async ({ mode }) => {
+  socket.on('setMode', async ({ mode }) => {
     try {
       const page = await browserManager.getPage(userId);
 
-      await page.evaluate((mode) => {
-        window.__SELECTION_MODE__ = mode === "selection";
+      await page.evaluate((modeValue) => {
+        window.__SELECTION_MODE__ = modeValue === 'selection';
       }, mode);
 
-      socket.emit("message", `Mode switched to: ${mode}`);
+      socket.emit('message', `Mode switched to: ${mode}`);
     } catch (err) {
       console.error(err);
     }
   });
 
-  // === USER ACTIONS ===
-  socket.on("userAction", async (action) => {
+  socket.on('userAction', async (action) => {
     try {
       await scraperService.performAction(userId, action, socket);
-      socket.emit("message", `Action ${action.type} executed`);
+      socket.emit('message', `Action ${action.type} executed`);
     } catch (err) {
-      socket.emit("message", `Error executing action: ${err.message}`);
+      socket.emit('message', `Error executing action: ${err.message}`);
     }
   });
 
-  socket.on("disconnect", () => {
+  socket.on('disconnect', () => {
     console.log(`🔌 User disconnected: ${userId}`);
     scraperService.clearUser(userId);
   });
 });
 
-// REST API
-// app.use('/api/scraper', scraperRoutesFactory(io));
-
-// Start server
 server.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
