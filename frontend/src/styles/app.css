@@ -201,8 +201,9 @@ body {
 /* ==================== MAIN CONTENT ==================== */
 .main-content {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   background: var(--bg-primary);
+  position: relative;
 }
 
 /* ==================== STREAM PANEL ==================== */
@@ -211,6 +212,14 @@ body {
   flex-direction: column;
   height: 100%;
   padding: 16px 20px;
+}
+
+.stream-panel.hidden-panel {
+  position: absolute;
+  left: -9999px;
+  top: -9999px;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .control-bar {
@@ -326,6 +335,7 @@ body {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
   overflow: hidden;
+  min-height: 0; 
 }
 
 .browser-canvas {
@@ -333,7 +343,7 @@ body {
   height: 100%;
   display: block;
   background: #1a1a2e;
-  object-fit: contain;
+  object-fit: fill;
 }
 
 .mode-indicator {

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
+import React, { useRef, useEffect, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import io from "socket.io-client";
 import { useWorkflow } from "./workflow/useWorkflow";
@@ -20,6 +20,7 @@ function App() {
   }, [steps, addStep, updateStep]);
 
   const canvasRef = useRef(null);
+  const canvasContainerRef = useRef(null);
   const socketRef = useRef(null);
 
   const [status, setStatus] = useState("");
@@ -27,6 +28,11 @@ function App() {
   const [mode, setMode] = useState("navigation");
   const [cursorType, setCursorType] = useState('default');
   const [isConnected, setIsConnected] = useState(false);
+  
+  // Track viewport dimensions synced with backend
+  const [viewportSize, setViewportSize] = useState({ width: 1280, height: 720 });
+  const resizeTimeoutRef = useRef(null);
+  const isStreamingRef = useRef(false);
 
   const latestFrameRef = useRef(null);
   const isRenderingRef = useRef(false);
@@ -71,16 +77,23 @@ function App() {
         ));
       }
     });
+    
+    // Listen for viewport size updates from backend
+    socket.on("viewportUpdated", (data) => {
+      setViewportSize({ width: data.width, height: data.height });
+      console.log("📐 Viewport updated:", data);
+    });
 
     socket.on("disconnect", () => {
       setStatus("Disconnected");
       setIsConnected(false);
+      isStreamingRef.current = false;
     });
 
     return () => socket.disconnect();
   }, []);
 
-  // === RENDER LOOP ===
+  // === RENDER LOOP (runs continuously even when on workflow tab) ===
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -115,6 +128,52 @@ function App() {
     renderLoop();
   }, []);
 
+  // === RESIZE HANDLER - Update viewport when container resizes ===
+  const handleResize = useCallback(() => {
+    if (!canvasContainerRef.current || !socketRef.current || !isStreamingRef.current) return;
+    
+    // Clear any pending resize timeout
+    if (resizeTimeoutRef.current) {
+      clearTimeout(resizeTimeoutRef.current);
+    }
+    
+    // Debounce resize events to avoid too many updates
+    resizeTimeoutRef.current = setTimeout(() => {
+      const container = canvasContainerRef.current;
+      if (!container) return;
+      
+      const rect = container.getBoundingClientRect();
+      // Use the actual container size for the viewport
+      const newWidth = Math.floor(rect.width);
+      const newHeight = Math.floor(rect.height);
+      
+      if (newWidth > 0 && newHeight > 0) {
+        console.log(`📐 Requesting viewport resize: ${newWidth}x${newHeight}`);
+        socketRef.current.emit("resizeViewport", { width: newWidth, height: newHeight });
+      }
+    }, 150); // 150ms debounce
+  }, []);
+
+  // === RESIZE OBSERVER - Watch for container size changes ===
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container) return;
+    
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(container);
+    
+    // Also listen to window resize
+    window.addEventListener('resize', handleResize);
+    
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', handleResize);
+      if (resizeTimeoutRef.current) {
+        clearTimeout(resizeTimeoutRef.current);
+      }
+    };
+  }, [handleResize]);
+
   // === MODE CHANGE ===
   const changeMode = (newMode) => {
     setMode(newMode);
@@ -128,11 +187,26 @@ function App() {
   const handleNavigate = () => {
     if (socketRef.current && urlInput.startsWith("http")) {
       setStatus("Navigating...");
+      
+      // Get the initial viewport size from the container
+      const container = canvasContainerRef.current;
+      let initialWidth = 1280;
+      let initialHeight = 720;
+      
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        initialWidth = Math.floor(rect.width) || 1280;
+        initialHeight = Math.floor(rect.height) || 720;
+      }
 
       socketRef.current.emit("navigate", {
         url: urlInput,
-        mode
+        mode,
+        viewportWidth: initialWidth,
+        viewportHeight: initialHeight
       });
+      
+      isStreamingRef.current = true;
     }
 
     addStep(createAction("NAVIGATE", { url: urlInput }));
@@ -265,90 +339,92 @@ function App() {
 
       {/* Main Content */}
       <main className="main-content">
-        {activeTab === 'stream' ? (
-          <div className="stream-panel">
-            {/* URL Bar & Controls */}
-            <div className="control-bar">
-              <div className="mode-toggle">
-                <button
-                  className={`mode-btn ${mode === 'navigation' ? 'active' : ''}`}
-                  onClick={() => changeMode("navigation")}
-                  title="Navigation Mode - Interact with the page"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
-                  </svg>
-                  Navigate
-                </button>
-                <button
-                  className={`mode-btn ${mode === 'selection' ? 'active' : ''}`}
-                  onClick={() => changeMode("selection")}
-                  title="Selection Mode - Pick elements for scraping"
-                >
+        {/* Stream Panel - Always mounted, hidden when on workflow tab */}
+        <div className={`stream-panel ${activeTab !== 'stream' ? 'hidden-panel' : ''}`}>
+          {/* URL Bar & Controls */}
+          <div className="control-bar">
+            <div className="mode-toggle">
+              <button
+                className={`mode-btn ${mode === 'navigation' ? 'active' : ''}`}
+                onClick={() => changeMode("navigation")}
+                title="Navigation Mode - Interact with the page"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
+                </svg>
+                Navigate
+              </button>
+              <button
+                className={`mode-btn ${mode === 'selection' ? 'active' : ''}`}
+                onClick={() => changeMode("selection")}
+                title="Selection Mode - Pick elements for scraping"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M5 9l7 7 7-7" />
+                </svg>
+                Select
+              </button>
+            </div>
+
+            <div className="url-input-wrapper">
+              <svg className="url-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="2" y1="12" x2="22" y2="12" />
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+              </svg>
+              <input
+                className="url-input"
+                type="text"
+                value={urlInput}
+                onChange={e => setUrlInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Enter URL to navigate..."
+              />
+              <button className="go-btn" onClick={handleNavigate}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                  <polyline points="12,5 19,12 12,19" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Browser Canvas */}
+          <div className="canvas-container" ref={canvasContainerRef}>
+            <canvas
+              ref={canvasRef}
+              className="browser-canvas"
+              style={{ cursor: cursorType }}
+              onClick={handleClick}
+              onMouseMove={handleMouseMove}
+              onMouseDown={handleMouseDown}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseLeave}
+            />
+
+            {/* Mode indicator overlay */}
+            <div className={`mode-indicator ${mode}`}>
+              {mode === 'selection' ? (
+                <>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M5 9l7 7 7-7" />
                   </svg>
-                  Select
-                </button>
-              </div>
-
-              <div className="url-input-wrapper">
-                <svg className="url-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="2" y1="12" x2="22" y2="12" />
-                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-                </svg>
-                <input
-                  className="url-input"
-                  type="text"
-                  value={urlInput}
-                  onChange={e => setUrlInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Enter URL to navigate..."
-                />
-                <button className="go-btn" onClick={handleNavigate}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                    <polyline points="12,5 19,12 12,19" />
+                  Selection Mode - Click elements to capture
+                </>
+              ) : (
+                <>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
                   </svg>
-                </button>
-              </div>
-            </div>
-
-            {/* Browser Canvas */}
-            <div className="canvas-container">
-              <canvas
-                ref={canvasRef}
-                className="browser-canvas"
-                style={{ cursor: cursorType }}
-                onClick={handleClick}
-                onMouseMove={handleMouseMove}
-                onMouseDown={handleMouseDown}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseLeave}
-              />
-
-              {/* Mode indicator overlay */}
-              <div className={`mode-indicator ${mode}`}>
-                {mode === 'selection' ? (
-                  <>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M5 9l7 7 7-7" />
-                    </svg>
-                    Selection Mode - Click elements to capture
-                  </>
-                ) : (
-                  <>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
-                    </svg>
-                    Navigation Mode - Interact normally
-                  </>
-                )}
-              </div>
+                  Navigation Mode - Interact normally
+                </>
+              )}
             </div>
           </div>
-        ) : (
+        </div>
+
+        {/* Workflow Panel */}
+        {activeTab === 'workflow' && (
           <WorkflowPanel
             steps={steps}
             onUpdate={updateStep}
