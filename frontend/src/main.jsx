@@ -4,6 +4,7 @@ import io from "socket.io-client";
 import { useWorkflow } from "./workflow/useWorkflow";
 import { createAction } from "./workflow/stepFactory";
 import WorkflowPanel from "./components/WorkflowPanel";
+import ElementInspector from "./components/ElementInspector";
 import "./styles/app.css";
 
 const SERVER_URL = "http://localhost:3001";
@@ -11,7 +12,7 @@ const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
 
 function App() {
   const { steps, addStep, updateStep, setSteps } = useWorkflow();
-  const [activeTab, setActiveTab] = useState("stream"); // "stream" or "workflow"
+  const [activeTab, setActiveTab] = useState("stream");
 
   useEffect(() => {
     window.steps = steps;
@@ -28,12 +29,13 @@ function App() {
   const [mode, setMode] = useState("navigation");
   const [cursorType, setCursorType] = useState('default');
   const [isConnected, setIsConnected] = useState(false);
-  
-  // Track viewport dimensions synced with backend
   const [viewportSize, setViewportSize] = useState({ width: 1280, height: 720 });
+
+  // ── Element inspector state ──────────────────────────────────────────────
+  const [selectedElement, setSelectedElement] = useState(null);
+
   const resizeTimeoutRef = useRef(null);
   const isStreamingRef = useRef(false);
-
   const latestFrameRef = useRef(null);
   const isRenderingRef = useRef(false);
 
@@ -76,12 +78,15 @@ function App() {
           data.advanced || {}
         ));
       }
+
+      // ── Element selected from injection script ─────────────────────────
+      if (data.type === "elementSelected") {
+        setSelectedElement(data.element);
+      }
     });
-    
-    // Listen for viewport size updates from backend
+
     socket.on("viewportUpdated", (data) => {
       setViewportSize({ width: data.width, height: data.height });
-      console.log("📐 Viewport updated:", data);
     });
 
     socket.on("disconnect", () => {
@@ -93,7 +98,7 @@ function App() {
     return () => socket.disconnect();
   }, []);
 
-  // === RENDER LOOP (runs continuously even when on workflow tab) ===
+  // === RENDER LOOP ===
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -101,83 +106,61 @@ function App() {
 
     async function renderLoop() {
       requestAnimationFrame(renderLoop);
-
       if (!latestFrameRef.current || isRenderingRef.current) return;
       isRenderingRef.current = true;
-
       try {
         const frame = latestFrameRef.current;
         latestFrameRef.current = null;
-
         const blob = new Blob([frame], { type: "image/png" });
         const bitmap = await createImageBitmap(blob);
-
         if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
           canvas.width = bitmap.width;
           canvas.height = bitmap.height;
         }
-
         ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
       } catch (err) {
         console.error("Frame render error:", err);
       }
-
       isRenderingRef.current = false;
     }
 
     renderLoop();
   }, []);
 
-  // === RESIZE HANDLER - Update viewport when container resizes ===
+  // === RESIZE HANDLER ===
   const handleResize = useCallback(() => {
     if (!canvasContainerRef.current || !socketRef.current || !isStreamingRef.current) return;
-    
-    // Clear any pending resize timeout
-    if (resizeTimeoutRef.current) {
-      clearTimeout(resizeTimeoutRef.current);
-    }
-    
-    // Debounce resize events to avoid too many updates
+    if (resizeTimeoutRef.current) clearTimeout(resizeTimeoutRef.current);
     resizeTimeoutRef.current = setTimeout(() => {
       const container = canvasContainerRef.current;
       if (!container) return;
-      
       const rect = container.getBoundingClientRect();
-      // Use the actual container size for the viewport
       const newWidth = Math.floor(rect.width);
       const newHeight = Math.floor(rect.height);
-      
       if (newWidth > 0 && newHeight > 0) {
-        console.log(`📐 Requesting viewport resize: ${newWidth}x${newHeight}`);
         socketRef.current.emit("resizeViewport", { width: newWidth, height: newHeight });
       }
-    }, 150); // 150ms debounce
+    }, 150);
   }, []);
 
-  // === RESIZE OBSERVER - Watch for container size changes ===
   useEffect(() => {
     const container = canvasContainerRef.current;
     if (!container) return;
-    
     const resizeObserver = new ResizeObserver(handleResize);
     resizeObserver.observe(container);
-    
-    // Also listen to window resize
     window.addEventListener('resize', handleResize);
-    
     return () => {
       resizeObserver.disconnect();
       window.removeEventListener('resize', handleResize);
-      if (resizeTimeoutRef.current) {
-        clearTimeout(resizeTimeoutRef.current);
-      }
+      if (resizeTimeoutRef.current) clearTimeout(resizeTimeoutRef.current);
     };
   }, [handleResize]);
 
   // === MODE CHANGE ===
   const changeMode = (newMode) => {
     setMode(newMode);
-
+    // Clear inspector when leaving selection mode
+    if (newMode !== 'selection') setSelectedElement(null);
     if (socketRef.current) {
       socketRef.current.emit("setMode", { mode: newMode });
     }
@@ -187,28 +170,21 @@ function App() {
   const handleNavigate = () => {
     if (socketRef.current && urlInput.startsWith("http")) {
       setStatus("Navigating...");
-      
-      // Get the initial viewport size from the container
       const container = canvasContainerRef.current;
-      let initialWidth = 1280;
-      let initialHeight = 720;
-      
+      let initialWidth = 1280, initialHeight = 720;
       if (container) {
         const rect = container.getBoundingClientRect();
-        initialWidth = Math.floor(rect.width) || 1280;
+        initialWidth  = Math.floor(rect.width)  || 1280;
         initialHeight = Math.floor(rect.height) || 720;
       }
-
       socketRef.current.emit("navigate", {
         url: urlInput,
         mode,
         viewportWidth: initialWidth,
         viewportHeight: initialHeight
       });
-      
       isStreamingRef.current = true;
     }
-
     addStep(createAction("NAVIGATE", { url: urlInput }));
   };
 
@@ -216,13 +192,9 @@ function App() {
   const getScaledCoords = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
-
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-
     return {
-      x: Math.round((e.clientX - rect.left) * scaleX),
-      y: Math.round((e.clientY - rect.top) * scaleY)
+      x: Math.round((e.clientX - rect.left) * (canvas.width / rect.width)),
+      y: Math.round((e.clientY - rect.top)  * (canvas.height / rect.height))
     };
   };
 
@@ -230,7 +202,6 @@ function App() {
   const handleClick = (e) => {
     e.preventDefault();
     if (!socketRef.current) return;
-
     const { x, y } = getScaledCoords(e);
     socketRef.current.emit("userAction", { type: "click", x, y });
     setStatus(`Clicked: x=${x}, y=${y}`);
@@ -238,7 +209,6 @@ function App() {
 
   const handleMouseMove = (e) => {
     if (!socketRef.current) return;
-
     const { x, y } = getScaledCoords(e);
     socketRef.current.emit("userAction", { type: "hover", x, y });
   };
@@ -246,7 +216,6 @@ function App() {
   const handleMouseDown = (e) => {
     e.preventDefault();
     if (!socketRef.current) return;
-
     const { x, y } = getScaledCoords(e);
     socketRef.current.emit("userAction", { type: "mousedown", x, y });
   };
@@ -254,7 +223,6 @@ function App() {
   const handleMouseUp = (e) => {
     e.preventDefault();
     if (!socketRef.current) return;
-
     const { x, y } = getScaledCoords(e);
     socketRef.current.emit("userAction", { type: "mouseup", x, y });
   };
@@ -265,10 +233,14 @@ function App() {
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === "Enter") {
-      handleNavigate();
-    }
+    if (e.key === "Enter") handleNavigate();
   };
+
+  // ── Add step from inspector ──────────────────────────────────────────────
+  const handleAddStepFromInspector = useCallback((step) => {
+    addStep(step);
+    setStatus(`Added: ${step.type}`);
+  }, [addStep]);
 
   return (
     <div className="app-container">
@@ -339,7 +311,7 @@ function App() {
 
       {/* Main Content */}
       <main className="main-content">
-        {/* Stream Panel - Always mounted, hidden when on workflow tab */}
+        {/* Stream Panel */}
         <div className={`stream-panel ${activeTab !== 'stream' ? 'hidden-panel' : ''}`}>
           {/* URL Bar & Controls */}
           <div className="control-bar">
@@ -347,7 +319,7 @@ function App() {
               <button
                 className={`mode-btn ${mode === 'navigation' ? 'active' : ''}`}
                 onClick={() => changeMode("navigation")}
-                title="Navigation Mode - Interact with the page"
+                title="Navigation Mode"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
@@ -357,7 +329,7 @@ function App() {
               <button
                 className={`mode-btn ${mode === 'selection' ? 'active' : ''}`}
                 onClick={() => changeMode("selection")}
-                title="Selection Mode - Pick elements for scraping"
+                title="Selection Mode"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M5 9l7 7 7-7" />
@@ -394,7 +366,7 @@ function App() {
             <canvas
               ref={canvasRef}
               className="browser-canvas"
-              style={{ cursor: cursorType }}
+              style={{ cursor: mode === 'selection' ? 'crosshair' : cursorType }}
               onClick={handleClick}
               onMouseMove={handleMouseMove}
               onMouseDown={handleMouseDown}
@@ -402,24 +374,33 @@ function App() {
               onMouseLeave={handleMouseLeave}
             />
 
-            {/* Mode indicator overlay */}
+            {/* Mode indicator */}
             <div className={`mode-indicator ${mode}`}>
               {mode === 'selection' ? (
                 <>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M5 9l7 7 7-7" />
                   </svg>
-                  Selection Mode - Click elements to capture
+                  Selection Mode — click an element to inspect it
                 </>
               ) : (
                 <>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
                   </svg>
-                  Navigation Mode - Interact normally
+                  Navigation Mode
                 </>
               )}
             </div>
+
+            {/* ── Element Inspector overlay ──────────────────────────────── */}
+            {selectedElement && (
+              <ElementInspector
+                element={selectedElement}
+                onClose={() => setSelectedElement(null)}
+                onAddStep={handleAddStepFromInspector}
+              />
+            )}
           </div>
         </div>
 
@@ -437,7 +418,6 @@ function App() {
   );
 }
 
-// Mount app
 const container = document.getElementById("root");
 const root = createRoot(container);
 root.render(<App />);

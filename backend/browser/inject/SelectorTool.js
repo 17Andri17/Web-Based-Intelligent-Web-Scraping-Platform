@@ -1,472 +1,208 @@
-(function enableDevToolsMode() {
+(function enableSelectionMode() {
   let highlightedEl = null;
   let selectedEl = null;
   let tooltip = null;
-  let inspector = null;
-  let allowNextClick = false;
+  const originalStyles = new Map();
 
-  // Map to store original styles of modified elements
-  const originalStyles = new Map(); // element -> { property: originalValue }
+  // ─── Style helpers ────────────────────────────────────────────────────────
 
-  // Helper: store original style before applying new one
   function storeOriginalStyle(el, property) {
-    if (!originalStyles.has(el)) {
-      originalStyles.set(el, {});
-    }
+    if (!originalStyles.has(el)) originalStyles.set(el, {});
     const styles = originalStyles.get(el);
-    if (!(property in styles)) {
-      // Get current inline style value (empty string if none)
-      styles[property] = el.style[property] || '';
-    }
+    if (!(property in styles)) styles[property] = el.style[property] || '';
   }
 
-  // Helper: apply a style with storage of original
   function setStyleWithStore(el, property, value, important = false) {
     storeOriginalStyle(el, property);
-    if (important) {
-      el.style.setProperty(property, value, 'important');
-    } else {
-      el.style[property] = value;
-    }
+    if (important) el.style.setProperty(property, value, 'important');
+    else el.style[property] = value;
   }
 
-  // Helper: restore original style for a property
   function restoreStyle(el, property) {
     const styles = originalStyles.get(el);
-    if (styles && property in styles) {
-      const original = styles[property];
-      if (original === '') {
-        el.style.removeProperty(property);
-      } else {
-        el.style[property] = original;
-      }
-      delete styles[property];
-      if (Object.keys(styles).length === 0) {
-        originalStyles.delete(el);
-      }
-    }
+    if (!styles || !(property in styles)) return;
+    const original = styles[property];
+    if (original === '') el.style.removeProperty(property);
+    else el.style[property] = original;
+    delete styles[property];
+    if (Object.keys(styles).length === 0) originalStyles.delete(el);
   }
 
-  function withTemporaryStyle(el, property, callback) {
-    // Restore original (this also removes the stored value)
-    restoreStyle(el, property);
-    let result;
-    try {
-      result = callback();
-    } finally {
-      // Reapply the style we had (if any) – but we must know what it was.
-      // Since we don't store the applied value separately, we rely on the fact
-      // that the element still has its outline in the map (it was removed by restoreStyle).
-      // However, we want to reapply the lime outline that we had for selectedEl.
-      // We'll reapply if this element is currently the selected element.
-      if (el === selectedEl) {
-        setStyleWithStore(el, property, '2px solid lime', true);
-      }
-    }
-    return result;
-  }
-
-  // Cleanup all modifications and hide UI elements
   function cleanupSelectionMode() {
-    // Restore all modified styles
     for (const [el, styles] of originalStyles) {
       for (const prop in styles) {
-        const original = styles[prop];
-        if (original === '') {
-          el.style.removeProperty(prop);
-        } else {
-          el.style[prop] = original;
-        }
+        const v = styles[prop];
+        if (v === '') el.style.removeProperty(prop);
+        else el.style[prop] = v;
       }
     }
     originalStyles.clear();
-
-    // Remove any outstanding outlines
-    if (highlightedEl) {
-      restoreStyle(highlightedEl, 'outline');
-      highlightedEl = null;
-    }
-    if (selectedEl) {
-      restoreStyle(selectedEl, 'outline');
-      selectedEl = null;
-    }
-
-    // Hide tooltip and inspector
+    highlightedEl = null;
+    selectedEl = null;
     if (tooltip) tooltip.style.display = 'none';
-    if (inspector) inspector.style.display = 'none';
   }
 
-  // Tooltip
+  // ─── Tooltip ─────────────────────────────────────────────────────────────
+
   function createTooltip() {
     tooltip = document.createElement('div');
-    tooltip.style.all = 'initial';
-    tooltip.style.position = 'fixed';
-    tooltip.style.background = 'rgba(0,0,0,0.85)';
-    tooltip.style.color = '#fff';
-    tooltip.style.padding = '4px 8px';
-    tooltip.style.fontSize = '11px';
-    tooltip.style.fontFamily = 'monospace';
-    tooltip.style.borderRadius = '4px';
-    tooltip.style.boxShadow = '0 2px 6px rgba(0,0,0,0.4)';
-    tooltip.style.pointerEvents = 'none';
-    tooltip.style.zIndex = 9999;
-    tooltip.style.display = 'none'; // initially hidden
+    tooltip.style.cssText = [
+      'all:initial', 'position:fixed',
+      'background:rgba(13,17,23,0.92)', 'color:#58a6ff',
+      'padding:5px 10px', 'font-size:11px',
+      'font-family:ui-monospace,monospace',
+      'border-radius:5px', 'border:1px solid #30363d',
+      'pointer-events:none', 'z-index:2147483647', 'display:none',
+      'box-shadow:0 2px 8px rgba(0,0,0,0.5)',
+      'max-width:360px', 'white-space:nowrap',
+      'overflow:hidden', 'text-overflow:ellipsis'
+    ].join(';');
     document.body.appendChild(tooltip);
   }
 
-  // Inspector
-  function createInspector() {
-    inspector = document.createElement('div');
-    inspector.style.all = 'initial';
-    inspector.style.position = 'fixed';
-    inspector.style.bottom = '12px';
-    inspector.style.right = '12px';
-    inspector.style.background = '#222';
-    inspector.style.color = '#eee';
-    inspector.style.padding = '14px';
-    inspector.style.fontFamily = 'monospace';
-    inspector.style.fontSize = '13px';
-    inspector.style.borderRadius = '8px';
-    inspector.style.boxShadow = '0 3px 10px rgba(0,0,0,0.6)';
-    inspector.style.zIndex = 10000;
-    inspector.style.maxWidth = '480px';
-    inspector.style.maxHeight = '60vh';
-    inspector.style.overflow = 'auto';
-    inspector.style.display = 'none';
-    document.body.appendChild(inspector);
+  function placeTooltip(e) {
+    const vw = window.innerWidth, vh = window.innerHeight, m = 14;
+    const r = tooltip.getBoundingClientRect();
+    let left = e.clientX + m, top = e.clientY + m;
+    if (left + r.width > vw - m) left = e.clientX - r.width - m;
+    if (top + r.height > vh - m) top = e.clientY - r.height - m;
+    tooltip.style.left = Math.max(m, left) + 'px';
+    tooltip.style.top  = Math.max(m, top)  + 'px';
   }
 
-  function placeTooltipNearMouse(e) {
-    const vw = window.innerWidth, vh = window.innerHeight;
-    const ttRect = tooltip.getBoundingClientRect(), margin = 12;
-    let left = e.clientX + margin, top = e.clientY + margin;
-    if (left + ttRect.width + 10 > vw) left = e.clientX - ttRect.width - margin;
-    if (top + ttRect.height + 10 > vh) top = e.clientY - ttRect.height - margin;
-    if (left < margin) left = margin;
-    if (top < margin) top = margin;
-    tooltip.style.left = left + 'px';
-    tooltip.style.top  = top  + 'px';
-  }
-
-  function getShortHtmlPath(el, depth = 5) {
-    if (!(el instanceof Element)) return '';
+  function getElPath(el, depth = 4) {
     const parts = [];
     let cur = el, count = 0;
-    while (cur && cur.tagName.toLowerCase() !== 'html') {
-      let tag = cur.tagName.toLowerCase();
-      if (count === 0 && cur.classList.length) tag += '.' + [...cur.classList].join('.');
-      parts.unshift(tag);
+    while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'html') {
+      let seg = cur.tagName.toLowerCase();
+      if (cur.id) seg += '#' + cur.id;
+      else if (cur.classList.length) seg += '.' + [...cur.classList].slice(0, 2).join('.');
+      parts.unshift(seg);
       cur = cur.parentElement;
       count++;
+      if (count >= depth) { parts.unshift('...'); break; }
     }
-    if (cur) parts.unshift('html');
-    const truncated = count > depth;
-    const body = (truncated ? '>> ' : '') + (truncated ? parts.slice(-depth) : parts).join(' > ');
-    return body + (el.children.length ? ' >' : '');
+    return parts.join(' > ');
   }
 
-  // Highlight hovered element
-  function highlightElement(e) {
+  // ─── Build element info payload for frontend ──────────────────────────────
+
+  function buildSimpleSelector(el) {
+    if (el.id) return '#' + el.id;
+    let sel = el.tagName.toLowerCase();
+    if (el.classList.length) sel += '.' + [...el.classList].slice(0, 2).join('.');
+    return sel;
+  }
+
+  function buildElementInfo(el) {
+    let primarySelector = '';
+    let fallbackSelectors = [];
+    try {
+      const result = window.SelectorGenerator.getSelectorsForElement(el, { actionType: 'generic' });
+      primarySelector = result.primary.value;
+      fallbackSelectors = (result.fallbacks || []).map(f => f.value);
+    } catch (_) {
+      primarySelector = buildSimpleSelector(el);
+    }
+
+    const tag    = el.tagName.toLowerCase();
+    const isLink  = tag === 'a' || !!el.closest('a');
+    const isInput = ['input', 'textarea', 'select'].includes(tag);
+    const isImg   = tag === 'img';
+    const isTable = tag === 'table' || !!el.querySelector('table');
+    const text    = (el.textContent || '').trim().slice(0, 120);
+    const href    = el.getAttribute('href') || null;
+    const src     = el.getAttribute('src')  || null;
+
+    const breadcrumb = [];
+    let cur = el;
+    while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'html') {
+      let seg = cur.tagName.toLowerCase();
+      if (cur.id) seg += '#' + cur.id;
+      else if (cur.classList.length) seg += '.' + [...cur.classList].slice(0, 2).join('.');
+      breadcrumb.unshift({ label: seg, selector: buildSimpleSelector(cur) });
+      cur = cur.parentElement;
+    }
+
+    const attrs = {};
+    for (const a of el.attributes) {
+      if (a.name === 'style') continue;
+      attrs[a.name] = a.value.slice(0, 100);
+    }
+
+    let similarCount = 0;
+    try { similarCount = selectSimilarElements(el).length; } catch (_) {}
+
+    return {
+      selector: primarySelector,
+      fallbackSelectors,
+      tag, text, href, src,
+      isLink, isInput, isImg, isTable,
+      attrs, breadcrumb, similarCount,
+      classes: [...el.classList].join(' '),
+    };
+  }
+
+  // ─── Events ───────────────────────────────────────────────────────────────
+
+  function onMouseMove(e) {
     if (!window.__SELECTION_MODE__) return;
     const target = e.target;
-    if (inspector && inspector.contains(target)) {
-      tooltip.style.display = 'none';
-      if (highlightedEl && highlightedEl !== selectedEl) {
-        restoreStyle(highlightedEl, 'outline');
-      }
-      highlightedEl = null;
-      return;
-    }
-    if (target === selectedEl) return;
+    if (target === highlightedEl) { placeTooltip(e); return; }
+
     if (highlightedEl && highlightedEl !== selectedEl) {
       restoreStyle(highlightedEl, 'outline');
     }
     highlightedEl = target;
     if (highlightedEl !== selectedEl) {
-      setStyleWithStore(highlightedEl, 'outline', '1px solid red', true);
+      setStyleWithStore(highlightedEl, 'outline', '2px solid #58a6ff', true);
     }
     tooltip.style.display = 'block';
-    tooltip.textContent = getShortHtmlPath(highlightedEl, 5);
-    placeTooltipNearMouse(e);
+    tooltip.textContent = getElPath(highlightedEl);
+    placeTooltip(e);
   }
 
-  // Selection handler
-  function selectElement(el) {
+  function onClick(e) {
     if (!window.__SELECTION_MODE__) return;
+    e.preventDefault();
+    e.stopPropagation();
 
-    // Restore previous selected element
-    if (selectedEl) {
-      restoreStyle(selectedEl, 'outline');
-    }
-    // Restore highlighted if it's different
-    if (highlightedEl && highlightedEl !== el) {
-      restoreStyle(highlightedEl, 'outline');
-    }
+    if (selectedEl) restoreStyle(selectedEl, 'outline');
+    if (highlightedEl && highlightedEl !== e.target) restoreStyle(highlightedEl, 'outline');
 
-    selectedEl = el;
-    setStyleWithStore(selectedEl, 'outline', '2px solid lime', true);
+    selectedEl = e.target;
+    highlightedEl = e.target;
+    setStyleWithStore(selectedEl, 'outline', '2px solid #3fb950', true);
+    tooltip.style.display = 'none';
 
-    inspector.innerHTML = ``;
-    inspector.style.display = 'block';
-
-    // Header
-    const header = document.createElement('div');
-    header.style.display = 'flex';
-    header.style.justifyContent = 'space-between';
-    header.style.alignItems = 'center';
-    header.style.marginBottom = '10px';
-
-    const title = document.createElement('span');
-    title.style.color = '#fff';
-    title.style.fontWeight = 'bold';
-    title.style.fontSize = '14px';
-    title.textContent = 'Element inspector';
-    header.appendChild(title);
-
-    const closeBtn = document.createElement('span');
-    closeBtn.innerHTML = '&times;';
-    closeBtn.style.cursor = 'pointer';
-    closeBtn.style.fontSize = '18px';
-    closeBtn.style.fontWeight = 'bold';
-    closeBtn.style.marginLeft = '14px';
-    closeBtn.style.color = '#aaa';
-    closeBtn.onclick = (evt) => {
-      evt.preventDefault(); evt.stopPropagation();
-      if (selectedEl) {
-        restoreStyle(selectedEl, 'outline');
-        selectedEl = null;
-      }
-      inspector.style.display = 'none';
-    };
-    header.appendChild(closeBtn);
-    inspector.appendChild(header);
-
-    // Actions
-    const actions = document.createElement('div');
-    actions.style.display = 'flex';
-    actions.style.flexWrap = 'wrap';
-    actions.style.gap = '6px';
-    actions.style.marginBottom = '12px';
-
-    const mkBtn = (label, handler) => {
-      const btn = document.createElement('button');
-      btn.textContent = label;
-      btn.style.padding = '5px 10px';
-      btn.style.background = '#333';
-      btn.style.color = '#eee';
-      btn.style.border = '1px solid #555';
-      btn.style.borderRadius = '4px';
-      btn.style.cursor = 'pointer';
-      btn.style.fontFamily = 'monospace';
-      btn.style.fontSize = '13px';
-      btn.onmouseenter = () => btn.style.background = '#444';
-      btn.onmouseleave = () => btn.style.background = '#333';
-      btn.onclick = (evt) => { evt.preventDefault(); evt.stopPropagation(); handler(); };
-      return btn;
-    };
-
-    actions.appendChild(mkBtn('Extract text', () => {
-      const { primary, fallbacks, meta } = withTemporaryStyle(selectedEl, 'outline', () =>
-        window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'extractText' })
-      );
-      window.sendToNode({
-        type: "workflowStep",
-        action: "EXTRACT_TEXT",
-        params: {
-          "selector": primary.value,
-          "fallbackSelectors": fallbacks.map(item => item.value)
-        },
-        "advanced": {}
-      });
-    }));
-
-    actions.appendChild(mkBtn('Extract data', () => {
-      const data = extractLeafElements(selectedEl);
-      window.sendToNode({ type: 'workflowStep', action: 'extractData', data }, '*');
-    }));
-
-    actions.appendChild(mkBtn('Click element', () => {
-      const { primary, fallbacks, meta } = withTemporaryStyle(selectedEl, 'outline', () =>
-        window.SelectorGenerator.getSelectorsForElement(selectedEl, { actionType: 'CLICK_ELEMENT' })
-      );
-      window.sendToNode({
-        type: 'workflowStep',
-        action: 'CLICK_ELEMENT',
-        params: {
-          "selector": primary.value,
-          "fallbackSelectors": fallbacks.map(item => item.value)
-        },
-        "advanced": {}
-      });
-    }));
-
-    actions.appendChild(mkBtn('Select similar elements', () => {
-      const matches = selectSimilarElements(selectedEl);
-      matches.forEach(el => setStyleWithStore(el, 'outline', '2px solid red', true));
-      window.sendToNode({ type: 'workflowStep', action: 'selectSimilar', count: matches.length }, '*');
-    }));
-
-    inspector.appendChild(actions);
-    inspector.appendChild(buildClickablePath(el));
-  }
-
-  // Clickable breadcrumbs with child dropdown on last node
-  function buildClickablePath(el, depth = 5) {
-    const wrapper = document.createElement('div');
-    wrapper.style.marginTop = '12px';
-    wrapper.style.paddingTop = '8px';
-    wrapper.style.borderTop = '1px solid #444';
-    wrapper.style.lineHeight = '1.6';
-
-    const nodes = [];
-    let cur = el;
-    while (cur && cur.tagName.toLowerCase() !== 'html') {
-      nodes.unshift(cur);
-      cur = cur.parentElement;
-    }
-    if (cur) nodes.unshift(cur);
-
-    const tooLong = nodes.length > depth + 2;
-    const shown = tooLong ? nodes.slice(-depth) : nodes;
-
-    if (tooLong) {
-      const more = document.createElement('span');
-      more.textContent = '>> ';
-      more.style.cursor = 'pointer';
-      more.style.color = '#0ff';
-      more.onclick = (evt) => {
-        evt.preventDefault(); evt.stopPropagation();
-        selectElement(nodes[nodes.length - depth - 1]);
-      };
-      wrapper.appendChild(more);
-    }
-
-    shown.forEach((node, i) => {
-      const seg = document.createElement('span');
-      seg.textContent = node.tagName.toLowerCase();
-      seg.style.cursor = 'pointer';
-      seg.style.color = '#0ff';
-      seg.style.fontFamily = 'monospace';
-      seg.style.fontSize = '13px';
-      seg.onclick = (evt) => { evt.preventDefault(); evt.stopPropagation(); selectElement(node); };
-      wrapper.appendChild(seg);
-
-      // Add separator
-      if (i < shown.length - 1) {
-        const arrow = document.createElement('span');
-        arrow.textContent = ' > ';
-        arrow.style.color = '#aaa';
-        wrapper.appendChild(arrow);
-      } else {
-        // For the last shown node, if it has children, add expandable caret + dropdown
-        if (node.children && node.children.length) {
-          const expand = document.createElement('span');
-          expand.textContent = ' >';
-          expand.style.cursor = 'pointer';
-          expand.style.color = '#ff0';
-          expand.style.marginLeft = '6px';
-
-          expand.onclick = (evt) => {
-            evt.preventDefault(); evt.stopPropagation();
-            // toggle dropdown
-            const existing = wrapper.querySelector('[data-dropdown-for="last-node"]');
-            if (existing) { existing.remove(); return; }
-
-            const dropdown = document.createElement('div');
-            dropdown.style.all = 'initial';
-            dropdown.dataset.dropdownFor = 'last-node';
-            dropdown.style.background = '#2a2a2a';
-            dropdown.style.border = '1px solid #444';
-            dropdown.style.marginTop = '6px';
-            dropdown.style.borderRadius = '4px';
-            dropdown.style.boxShadow = '0 2px 6px rgba(0,0,0,0.4)';
-            dropdown.style.maxHeight = '25vh';
-            dropdown.style.overflow = 'auto';
-            dropdown.style.display = 'block';
-            dropdown.style.padding = '4px 0';
-
-            Array.from(node.children).forEach((ch, idx) => {
-              const item = document.createElement('div');
-              item.style.all = 'initial';
-              const cls = ch.classList.length ? '.' + [...ch.classList].join('.') : '';
-              item.textContent = `${idx + 1}. ${ch.tagName.toLowerCase()}${cls}`;
-              item.style.cursor = 'pointer';
-              item.style.padding = '6px 10px';
-              item.style.color = '#eee';
-              item.style.fontFamily = 'monospace';
-              item.style.fontSize = '13px';
-              item.onmouseenter = () => { if (ch !== selectedEl) setStyleWithStore(ch, 'outline', '1px dashed #888', true); item.style.background = '#3a3a3a'; };
-              item.onmouseleave = () => { if (ch !== selectedEl) restoreStyle(ch, 'outline'); item.style.background = 'transparent'; };
-              item.onclick = (evt2) => { evt2.preventDefault(); evt2.stopPropagation(); selectElement(ch); };
-              dropdown.appendChild(item);
-            });
-
-            wrapper.appendChild(dropdown);
-          };
-
-          wrapper.appendChild(expand);
-        }
-      }
+    window.sendToNode({
+      type: 'elementSelected',
+      element: buildElementInfo(selectedEl),
     });
-
-    return wrapper;
   }
 
-  // Intercept mode changes via property setter
+  // ─── Mode watcher ─────────────────────────────────────────────────────────
+
   let _selectionMode = window.__SELECTION_MODE__;
   Object.defineProperty(window, '__SELECTION_MODE__', {
     get: () => _selectionMode,
     set: (value) => {
       if (_selectionMode !== value) {
         _selectionMode = value;
-        if (!value) {
-          cleanupSelectionMode();
-        }
+        if (!value) cleanupSelectionMode();
       }
     },
     configurable: true
   });
 
-  // Initialization
+  // ─── Init ─────────────────────────────────────────────────────────────────
   createTooltip();
-  createInspector();
-  document.addEventListener('mousemove', highlightElement, true);
-
-  document.addEventListener('click', (e) => {
-    if (!window.__SELECTION_MODE__) return;
-    if (inspector && inspector.contains(e.target)) return;
-    if (allowNextClick) { allowNextClick = false; return; }
-    e.preventDefault(); e.stopPropagation();
-    selectElement(e.target);
-  }, true);
-
-  console.log('✅ DevTools selection mode enabled');
+  document.addEventListener('mousemove', onMouseMove, true);
+  document.addEventListener('click', onClick, true);
+  console.log('✅ SelectorTool injected');
 })();
 
-/* === Utility functions remain unchanged === */
-function extractLeafElements(el) {
-  const fields = {};
-  let counter = 1;
-  function walk(node) {
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      if (node.tagName.toLowerCase() === 'a' && node.hasAttribute('href')) {
-        try {
-          fields[`field${counter++}`] = node.href || node.getAttribute('href');
-        } catch (e) {
-          fields[`field${counter++}`] = node.getAttribute('href');
-        }
-      }
-      if (node.children.length === 0) {
-        const text = (node.textContent || '').trim();
-        if (text) fields[`field${counter++}`] = text;
-      } else {
-        Array.from(node.children).forEach(walk);
-      }
-    }
-  }
-  walk(el);
-  return fields;
-}
+/* ─── Shared utilities ───────────────────────────────────────────────────── */
 
 function getFeatures(el) {
   return {
@@ -475,12 +211,12 @@ function getFeatures(el) {
     attrs: Array.from(el.attributes).map(a => a.name),
     childTags: Array.from(el.children).map(c => c.tagName),
     textType: (() => {
-      const txt = (el.textContent || "").trim();
-      if (!txt) return "empty";
-      if (/^\d+$/.test(txt)) return "number";
-      if (/[\$€£]/.test(txt)) return "money";
-      if (txt.length < 30) return "short";
-      return "long";
+      const txt = (el.textContent || '').trim();
+      if (!txt) return 'empty';
+      if (/^\d+$/.test(txt)) return 'number';
+      if (/[\$€£]/.test(txt)) return 'money';
+      if (txt.length < 30) return 'short';
+      return 'long';
     })()
   };
 }
@@ -488,64 +224,35 @@ function getFeatures(el) {
 function similarityScore(f1, f2) {
   const tagScore = f1.tag === f2.tag ? 1 : 0;
   const c1 = new Set(f1.classes), c2 = new Set(f2.classes);
-  let classScore;
-  if (c1.size === 0 && c2.size === 0) {
-    classScore = 1;
-  } else if (c1.size === 0 || c2.size === 0) {
-    classScore = 0.3;
-  } else {
-    const inter = [...c1].filter(x => c2.has(x)).length;
-    const union = new Set([...c1, ...c2]).size || 1;
-    classScore = inter / union;
-  }
+  const classScore = (c1.size === 0 && c2.size === 0) ? 1
+    : (c1.size === 0 || c2.size === 0) ? 0.3
+    : [...c1].filter(x => c2.has(x)).length / new Set([...c1, ...c2]).size;
   const a1 = new Set(f1.attrs), a2 = new Set(f2.attrs);
-  let attrScore;
-  if (a1.size === 0 && a2.size === 0) {
-    attrScore = 1;
-  } else if (a1.size === 0 || a2.size === 0) {
-    attrScore = 0.3;
-  } else {
-    const interA = [...a1].filter(x => a2.has(x)).length;
-    const unionA = new Set([...a1, ...a2]).size || 1;
-    attrScore = interA / unionA;
-  }
+  const attrScore = (a1.size === 0 && a2.size === 0) ? 1
+    : (a1.size === 0 || a2.size === 0) ? 0.3
+    : [...a1].filter(x => a2.has(x)).length / new Set([...a1, ...a2]).size;
   const ct1 = new Set(f1.childTags), ct2 = new Set(f2.childTags);
-  const interCT = [...ct1].filter(x => ct2.has(x)).length;
-  const unionCT = new Set([...ct1, ...ct2]).size || 1;
-  const childScore = interCT / unionCT;
+  const childScore = new Set([...ct1, ...ct2]).size === 0 ? 1
+    : [...ct1].filter(x => ct2.has(x)).length / new Set([...ct1, ...ct2]).size;
   const textScore = f1.textType === f2.textType ? 1 : 0;
-
-  const weights = (new Set(f1.classes).size === 0 && new Set(f2.classes).size === 0)
-    ? { tag: 0.45, class: 0, attr: 0.15, child: 0.3, text: 0.1 }
-    : { tag: 0.4, class: 0.25, attr: 0.15, child: 0.2, text: 0.1 };
-
-  return (
-    weights.tag * tagScore +
-    weights.class * classScore +
-    weights.attr * attrScore +
-    weights.child * childScore +
-    weights.text * textScore
-  );
+  const w = c1.size === 0 && c2.size === 0
+    ? { tag: 0.45, cls: 0, attr: 0.15, child: 0.3, txt: 0.1 }
+    : { tag: 0.4, cls: 0.25, attr: 0.15, child: 0.2, txt: 0.1 };
+  return w.tag*tagScore + w.cls*classScore + w.attr*attrScore + w.child*childScore + w.txt*textScore;
 }
 
 function selectSimilarElements(selectedEl, threshold = 0.7) {
   if (!selectedEl) return [];
   const parent = selectedEl.parentElement;
   if (!parent) return [selectedEl];
-  const selectedFeatures = getFeatures(selectedEl);
-  let candidates = Array.from(parent.children);
-  let matches = candidates.filter(el => {
-    if (el === selectedEl) return true;
-    const score = similarityScore(selectedFeatures, getFeatures(el));
-    return score >= threshold;
-  });
+  const sf = getFeatures(selectedEl);
+  let matches = Array.from(parent.children).filter(el =>
+    el === selectedEl || similarityScore(sf, getFeatures(el)) >= threshold
+  );
   if (matches.length <= 1) {
-    candidates = Array.from(document.getElementsByTagName(selectedEl.tagName));
-    matches = candidates.filter(el => {
-      if (el === selectedEl) return true;
-      const score = similarityScore(selectedFeatures, getFeatures(el));
-      return score >= threshold;
-    });
+    matches = Array.from(document.getElementsByTagName(selectedEl.tagName)).filter(el =>
+      el === selectedEl || similarityScore(sf, getFeatures(el)) >= threshold
+    );
   }
   return matches;
 }
