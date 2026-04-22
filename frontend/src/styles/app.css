@@ -1465,3 +1465,327 @@ body {
 }
 
 .ei-kv-add:hover { opacity: 0.75; }
+
+/* ==================== WORKFLOW CONTROL BLOCKS ====================
+   Append this to app.css
+   ================================================================== */
+
+/* ── Step list (used at every nesting level) ────────────────────── */
+.step-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.step-list-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 560px;
+}
+
+/* ── Insert-between button (small + that appears between steps) ── */
+.step-insert-row {
+  display: flex;
+  justify-content: center;
+  height: 0;
+  overflow: visible;
+  z-index: 10;
+  position: relative;
+}
+
+.insert-between-btn {
+  position: absolute;
+  top: -10px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary);
+  border: 1.5px solid var(--border-default);
+  border-radius: 50%;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: all var(--transition-fast);
+  z-index: 10;
+}
+
+.step-list-item:hover .insert-between-btn,
+.insert-between-btn:focus {
+  opacity: 1;
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+  background: rgba(88, 166, 255, 0.1);
+}
+
+/* ── End node ───────────────────────────────────────────────────── */
+.flow-end {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 20px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 20px;
+  letter-spacing: 0.5px;
+}
+
+/* ── Control block container ────────────────────────────────────── */
+.control-block {
+  width: 100%;
+  max-width: 560px;
+  border: 1.5px solid var(--ctrl-color, var(--border-default));
+  border-radius: var(--radius-lg);
+  background: var(--ctrl-bg, var(--bg-secondary));
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition-normal);
+}
+
+.control-block:hover {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ctrl-color) 20%, transparent), var(--shadow-md);
+}
+
+/* ── Control block header ───────────────────────────────────────── */
+.control-block-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--ctrl-color) 12%, var(--bg-tertiary));
+  border-bottom: 1px solid color-mix(in srgb, var(--ctrl-color) 25%, transparent);
+}
+
+.control-type-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 6px;
+  background: color-mix(in srgb, var(--ctrl-color) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ctrl-color) 40%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--ctrl-color);
+  font-size: 13px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+}
+
+.control-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.control-label {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ctrl-color);
+  flex-shrink: 0;
+}
+
+.control-expr {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: rgba(0,0,0,0.2);
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+/* ── Collapse button ────────────────────────────────────────────── */
+.collapse-btn {
+  margin-left: 2px;
+}
+
+/* ── Collapsed hint ─────────────────────────────────────────────── */
+.control-collapsed-hint {
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ── Block body (branches area) ─────────────────────────────────── */
+.control-block-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Individual branch ──────────────────────────────────────────── */
+.control-branch {
+  display: flex;
+  flex-direction: column;
+}
+
+.branch-label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.branch-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  flex-shrink: 0;
+}
+
+.branch-line {
+  flex: 1;
+  height: 1px;
+  opacity: 0.3;
+}
+
+.branch-body {
+  /* Indent nested content with a colored left border */
+  padding-left: 16px;
+  border-left: 2px solid color-mix(in srgb, var(--ctrl-color) 35%, transparent);
+  margin-left: 4px;
+  margin-bottom: 4px;
+  min-height: 40px;
+}
+
+/* ── Empty branch placeholder ───────────────────────────────────── */
+.branch-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border: 1.5px dashed color-mix(in srgb, var(--ctrl-color) 35%, transparent);
+  border-radius: var(--radius-md);
+  margin: 4px 0;
+  gap: 12px;
+}
+
+.branch-empty span {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.branch-add-btn {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.branch-add-btn:hover {
+  filter: brightness(1.15);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+/* ── Branch separator (between IF/ELSE, TRY/CATCH) ─────────────── */
+.branch-separator {
+  height: 1px;
+  background: var(--border-muted);
+  margin: 12px 0;
+}
+
+/* ── Step picker modal upgrades ─────────────────────────────────── */
+.picker-modal {
+  max-width: 680px;
+}
+
+.picker-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.picker-tab {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: 20px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.picker-tab:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.picker-tab.active {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border-color: var(--accent-primary);
+}
+
+/* ── Control tiles in picker ────────────────────────────────────── */
+.control-grid {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+
+.control-tile {
+  border-color: color-mix(in srgb, var(--tile-color) 40%, transparent) !important;
+  background: color-mix(in srgb, var(--tile-color) 7%, var(--bg-tertiary)) !important;
+}
+
+.control-tile:hover {
+  border-color: var(--tile-color) !important;
+  background: color-mix(in srgb, var(--tile-color) 15%, var(--bg-tertiary)) !important;
+  transform: translateY(-2px);
+}
+
+.control-tile-icon {
+  font-size: 22px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  color: var(--tile-color);
+  margin-bottom: 4px;
+}
+
+/* ── Advanced toggle inside editor ─────────────────────────────── */
+.adv-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 0;
+  margin-top: 4px;
+  transition: color var(--transition-fast);
+}
+
+.adv-toggle-btn:hover { color: var(--text-secondary); }
