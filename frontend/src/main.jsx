@@ -5,7 +5,9 @@ import { useWorkflow } from "./workflow/useWorkflow";
 import { createAction } from "./workflow/stepFactory";
 import WorkflowPanel from "./components/WorkflowPanel";
 import ElementInspector from "./components/ElementInspector";
+import ExecutionPanel from "./components/ExecutionPanel";
 import "./styles/app.css";
+import "./styles/ExecutionPanel.css";
 
 const SERVER_URL = "http://localhost:3001";
 const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
@@ -13,6 +15,7 @@ const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
 function App() {
   const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps } = useWorkflow();
   const [activeTab, setActiveTab] = useState("stream");
+
   const canvasRef = useRef(null);
   const canvasContainerRef = useRef(null);
   const socketRef = useRef(null);
@@ -20,6 +23,7 @@ function App() {
   const isStreamingRef = useRef(false);
   const latestFrameRef = useRef(null);
   const isRenderingRef = useRef(false);
+
   const [status, setStatus] = useState("");
   const [urlInput, setUrlInput] = useState("https://deviceandbrowserinfo.com/are_you_a_bot");
   const [mode, setMode] = useState("navigation");
@@ -27,23 +31,59 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [selectedElement, setSelectedElement] = useState(null);
 
+  // ── Execution state ────────────────────────────────────────────────
+  const [execPanelOpen, setExecPanelOpen]   = useState(false);
+  const [execStatus,    setExecStatus]      = useState("idle");  // idle | running | done | error
+  const [execLogs,      setExecLogs]        = useState([]);
+  const [execResults,   setExecResults]     = useState(null);
+
+  const sessionMetaRef = useRef({});  // { startUrl, viewportWidth, viewportHeight }
+
+  // ── Socket ────────────────────────────────────────────────────────
   useEffect(() => {
     const socket = io(SERVER_URL, { query: { userId: USER_ID }, transports: ["websocket"] });
     socketRef.current = socket;
+
     socket.on("connect",    () => { setStatus("Connected"); setIsConnected(true); });
     socket.on("disconnect", () => { setStatus("Disconnected"); setIsConnected(false); isStreamingRef.current = false; });
     socket.on("message",    msg  => setStatus(typeof msg === "string" ? msg : (msg.msg || "")));
     socket.on("frame",      data => { latestFrameRef.current = data; });
     socket.on("cursorType", data => setCursorType(data.cursor));
     socket.on("actionResult", res => setStatus(res.success ? "Action executed." : "Action failed: " + (res.error || "")));
-    socket.on("viewportUpdated", () => {});
+    socket.on("viewportUpdated", (data) => {
+      sessionMetaRef.current.viewportWidth  = data.width;
+      sessionMetaRef.current.viewportHeight = data.height;
+    });
+
     socket.on("browserEvent", (data) => {
       if (data.type === "workflowStep") addStep(createAction(data.action, data.params || {}, data.advanced || {}), [], null);
       if (data.type === "elementSelected") setSelectedElement(data.element);
     });
+
+    // ── Execution events ───────────────────────────────────────────
+    socket.on("executionStarted", () => {
+      setExecStatus("running");
+      setExecLogs([]);
+      setExecResults(null);
+    });
+
+    socket.on("executionLog", (entry) => {
+      setExecLogs(prev => [...prev, entry]);
+    });
+
+    socket.on("executionDone", ({ success, results }) => {
+      setExecStatus(success ? "done" : "error");
+      if (results && Object.keys(results).length > 0) setExecResults(results);
+    });
+
+    socket.on("codeReady", ({ code }) => {
+      downloadTextFile(code, "workflow.js", "text/javascript");
+    });
+
     return () => socket.disconnect();
   }, []);
 
+  // ── Render loop ───────────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -55,7 +95,9 @@ function App() {
       try {
         const frame = latestFrameRef.current; latestFrameRef.current = null;
         const bitmap = await createImageBitmap(new Blob([frame], { type: "image/png" }));
-        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) { canvas.width = bitmap.width; canvas.height = bitmap.height; }
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width; canvas.height = bitmap.height;
+        }
         ctx.drawImage(bitmap, 0, 0);
       } catch (_) {}
       isRenderingRef.current = false;
@@ -63,6 +105,7 @@ function App() {
     renderLoop();
   }, []);
 
+  // ── Resize ────────────────────────────────────────────────────────
   const handleResize = useCallback(() => {
     if (!canvasContainerRef.current || !socketRef.current || !isStreamingRef.current) return;
     clearTimeout(resizeTimeoutRef.current);
@@ -82,6 +125,7 @@ function App() {
     return () => { ro.disconnect(); window.removeEventListener("resize", handleResize); clearTimeout(resizeTimeoutRef.current); };
   }, [handleResize]);
 
+  // ── Actions ───────────────────────────────────────────────────────
   const changeMode = (newMode) => {
     setMode(newMode);
     if (newMode !== "selection") setSelectedElement(null);
@@ -92,16 +136,62 @@ function App() {
     if (!socketRef.current || !urlInput.startsWith("http")) return;
     setStatus("Navigating...");
     const rect = canvasContainerRef.current?.getBoundingClientRect();
-    socketRef.current.emit("navigate", { url: urlInput, mode, viewportWidth: Math.floor(rect?.width) || 1280, viewportHeight: Math.floor(rect?.height) || 720 });
+    const vpW  = Math.floor(rect?.width)  || 1280;
+    const vpH  = Math.floor(rect?.height) || 720;
+    sessionMetaRef.current = { startUrl: urlInput, viewportWidth: vpW, viewportHeight: vpH };
+    socketRef.current.emit("navigate", { url: urlInput, mode, viewportWidth: vpW, viewportHeight: vpH });
     isStreamingRef.current = true;
     addStep(createAction("NAVIGATE", { url: urlInput }), [], null);
   };
 
-  const scaled = (e) => { const c = canvasRef.current, r = c.getBoundingClientRect(); return { x: Math.round((e.clientX - r.left) * (c.width / r.width)), y: Math.round((e.clientY - r.top) * (c.height / r.height)) }; };
+  // ── Run workflow ───────────────────────────────────────────────────
+  const handleRun = () => {
+    if (!socketRef.current || steps.length === 0) return;
+    setExecPanelOpen(true);
+    setExecStatus("idle");
+    setExecLogs([]);
+    setExecResults(null);
+    socketRef.current.emit("executeWorkflow", {
+      steps,
+      meta: sessionMetaRef.current,
+    });
+  };
+
+  // ── Download code ──────────────────────────────────────────────────
+  const handleDownloadCode = () => {
+    if (!socketRef.current) return;
+    socketRef.current.emit("downloadCode", {
+      steps,
+      meta: sessionMetaRef.current,
+    });
+  };
+
+  // ── Cancel execution ───────────────────────────────────────────────
+  const handleCancelExecution = () => {
+    socketRef.current?.emit("cancelExecution");
+  };
+
+  // ── Download helper ────────────────────────────────────────────────
+  const downloadTextFile = (content, filename, mime) => {
+    const blob = new Blob([content], { type: mime });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ── Canvas helpers ─────────────────────────────────────────────────
+  const scaled = (e) => {
+    const c = canvasRef.current, r = c.getBoundingClientRect();
+    return { x: Math.round((e.clientX - r.left) * (c.width / r.width)), y: Math.round((e.clientY - r.top) * (c.height / r.height)) };
+  };
   const emit = (type, extra = {}) => socketRef.current?.emit("userAction", { type, ...extra });
+
+  const isRunDisabled = steps.length === 0 || execStatus === "running";
 
   return (
     <div className="app-container">
+      {/* ── Header ──────────────────────────────────────────────────── */}
       <header className="app-header">
         <div className="header-left">
           <div className="logo">
@@ -118,20 +208,44 @@ function App() {
           </div>
         </div>
         <div className="header-right">
-          <button className="header-btn">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
-            Run
-          </button>
-          <button className="header-btn secondary">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-              <polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/>
+          {/* Download code button */}
+          <button className="header-btn secondary" onClick={handleDownloadCode}
+            disabled={steps.length === 0} title="Download as Node.js script">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
-            Save
+            Download Code
           </button>
+
+          {/* Run button */}
+          <button
+            className={`header-btn run-btn ${execStatus === "running" ? "running" : ""}`}
+            onClick={execStatus === "running" ? () => setExecPanelOpen(true) : handleRun}
+            disabled={isRunDisabled && execStatus !== "running"}
+            title={execStatus === "running" ? "View execution progress" : "Run workflow"}
+          >
+            {execStatus === "running" ? (
+              <><SpinnerIcon /> Running…</>
+            ) : (
+              <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Run</>
+            )}
+          </button>
+
+          {/* Show results badge if done */}
+          {(execStatus === "done" || execStatus === "error") && (
+            <button
+              className={`header-btn secondary ${execStatus === "error" ? "error-badge" : "success-badge"}`}
+              onClick={() => setExecPanelOpen(true)}
+              title="View results"
+            >
+              {execStatus === "done" ? "✅ Results" : "❌ Error"}
+            </button>
+          )}
         </div>
       </header>
 
+      {/* ── Tabs ─────────────────────────────────────────────────────── */}
       <div className="tab-bar">
         <button className={`tab-btn ${activeTab === "stream" ? "active" : ""}`} onClick={() => setActiveTab("stream")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -149,6 +263,7 @@ function App() {
         </button>
       </div>
 
+      {/* ── Main ─────────────────────────────────────────────────────── */}
       <main className="main-content">
         <div className={`stream-panel ${activeTab !== "stream" ? "hidden-panel" : ""}`}>
           <div className="control-bar">
@@ -167,8 +282,10 @@ function App() {
                 <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
                 <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
               </svg>
-              <input className="url-input" type="text" value={urlInput} onChange={e => setUrlInput(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleNavigate()} placeholder="Enter URL to navigate…" />
+              <input className="url-input" type="text" value={urlInput}
+                onChange={e => setUrlInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleNavigate()}
+                placeholder="Enter URL to navigate…" />
               <button className="go-btn" onClick={handleNavigate}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/>
@@ -201,17 +318,31 @@ function App() {
 
         {activeTab === "workflow" && (
           <WorkflowPanel
-            steps={steps}
-            totalCount={totalCount}
-            setSteps={setSteps}
-            onAdd={addStep}
-            onUpdate={updateStep}
-            onDelete={deleteStep}
-            onReorder={reorderSteps}
+            steps={steps} totalCount={totalCount} setSteps={setSteps}
+            onAdd={addStep} onUpdate={updateStep} onDelete={deleteStep} onReorder={reorderSteps}
           />
         )}
       </main>
+
+      {/* ── Execution Panel ───────────────────────────────────────────── */}
+      <ExecutionPanel
+        isOpen={execPanelOpen}
+        onClose={() => setExecPanelOpen(false)}
+        logs={execLogs}
+        status={execStatus}
+        results={execResults}
+        onCancel={handleCancelExecution}
+      />
     </div>
+  );
+}
+
+function SpinnerIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+      style={{ animation: "spin 0.8s linear infinite" }}>
+      <path d="M21 12a9 9 0 1 1-6.22-8.56"/>
+    </svg>
   );
 }
 

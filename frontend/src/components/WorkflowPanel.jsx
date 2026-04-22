@@ -6,6 +6,11 @@ import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from 
 import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
+const EXTRACTION_TYPES = new Set([
+  "EXTRACT_TEXT", "EXTRACT_ATTRIBUTE", "EXTRACT_HTML",
+  "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON",
+]);
+
 /* ── Icons ── */
 function DragDotsIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>; }
 function ChevronIcon({ open }) { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ transform: open ? "rotate(0)" : "rotate(-90deg)", transition: "200ms" }}><polyline points="6,9 12,15 18,9"/></svg>; }
@@ -196,20 +201,30 @@ function ActionCard({ step, dragHandleProps, onEdit, onDelete }) {
           <div className="step-type">{def.category || "Action"}</div>
         </div>
         <div className="step-actions">
+          {step.label && EXTRACTION_TYPES.has(step.type) && (
+            <div className="step-label-badge" title="Named result — will appear in exported data">
+              <span>◈</span> {step.label}
+            </div>
+          )}
           <button className="step-action-btn" onClick={onEdit} title="Edit"><EditIcon /></button>
           <button className="step-action-btn delete" onClick={onDelete} title="Delete"><TrashIcon /></button>
         </div>
       </div>
-      {summary.length > 0 && (
+      {(summary.length > 0 || step.label) && (
         <div className="step-card-body">
-          <div className="step-params">
-            {summary.map(([k, v]) => (
-              <div key={k} className="step-param">
-                <span className="step-param-key">{k}:</span>
-                <span className="step-param-value">{v}</span>
-              </div>
-            ))}
-          </div>
+          {step.label && !EXTRACTION_TYPES.has(step.type) && (
+            <div className="step-name-display">{step.label}</div>
+          )}
+          {summary.length > 0 && (
+            <div className="step-params">
+              {summary.map(([k, v]) => (
+                <div key={k} className="step-param">
+                  <span className="step-param-key">{k}:</span>
+                  <span className="step-param-value">{v}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -404,6 +419,32 @@ function StepEditorModal({ step, onClose, onSave }) {
           </button>
         </div>
         <div className="editor-form">
+          {/* Step name / result key — always first */}
+          <div className="form-group label-group">
+            <label>
+              Step name
+              {!isCtrl && EXTRACTION_TYPES.has(step.type) && (
+                <span className="label-extraction-hint"> — becomes the result key in exported data</span>
+              )}
+            </label>
+            <input
+              type="text"
+              value={local.label || ""}
+              placeholder={!isCtrl && EXTRACTION_TYPES.has(step.type)
+                ? "e.g. products, prices, titles…"
+                : "Optional label"}
+              onChange={e => setLocal(s => ({ ...s, label: e.target.value }))}
+              style={!isCtrl && EXTRACTION_TYPES.has(step.type) ? { borderColor: "var(--accent-primary)" } : {}}
+            />
+            {!isCtrl && EXTRACTION_TYPES.has(step.type) && (
+              <div className="label-extraction-banner">
+                <span>◈</span>
+                Named extraction steps are automatically exported when you run the workflow.
+                Use a clear name like <code>prices</code> or <code>product_links</code>.
+              </div>
+            )}
+          </div>
+
           {Object.entries(inputs).map(([k, s]) => (
             <FieldRenderer key={k} label={s.label || k} type={s.type} value={local.params?.[k]}
               options={s.options} placeholder={s.placeholder} onChange={v => setParam(k, v)} />

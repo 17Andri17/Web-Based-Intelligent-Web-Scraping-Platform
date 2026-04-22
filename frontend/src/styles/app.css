@@ -1789,3 +1789,127 @@ body {
 }
 
 .adv-toggle-btn:hover { color: var(--text-secondary); }
+
+/* ==================== EXECUTION & LABEL EXTRAS ====================
+   Append to app.css
+   ================================================================== */
+
+/* ── Step label badge (shown on extraction cards) ─────────────────── */
+.step-label-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: rgba(88, 166, 255, 0.12);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  white-space: nowrap;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+/* ── Step name display for non-extraction labeled steps ───────────── */
+.step-name-display {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 0 2px;
+}
+
+/* ── Extraction label group in editor ────────────────────────────── */
+.label-group label {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.label-extraction-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--accent-primary);
+  font-style: italic;
+}
+
+.label-extraction-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px 12px;
+  background: rgba(88, 166, 255, 0.08);
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.label-extraction-banner > span:first-child {
+  color: var(--accent-primary);
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.label-extraction-banner code {
+  font-family: ui-monospace, monospace;
+  background: rgba(88, 166, 255, 0.15);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--accent-primary);
+}
+
+/* ── Run button states in app header ─────────────────────────────── */
+.header-btn.run-btn {
+  background: var(--accent-success, #3fb950);
+  color: #000;
+  border: none;
+  gap: 6px;
+  font-weight: 700;
+}
+
+.header-btn.run-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.header-btn.run-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.header-btn.run-btn.running {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent-primary);
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  cursor: pointer;
+  opacity: 1;
+}
+
+.header-btn.success-badge {
+  background: rgba(63, 185, 80, 0.12);
+  color: var(--accent-success);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+}
+
+.header-btn.error-badge {
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--accent-danger);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+/* ── Spinner keyframe ─────────────────────────────────────────────── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── Download Code button ─────────────────────────────────────────── */
+.header-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
