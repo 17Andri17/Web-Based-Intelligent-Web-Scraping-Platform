@@ -951,6 +951,8 @@ body {
 }
 
 /* ==================== ELEMENT INSPECTOR OVERLAY ==================== */
+/* Appended to app.css                                                  */
+
 /* Backdrop — sits inside .canvas-container so it doesn't cover the whole app */
 .ei-overlay {
   position: absolute;
@@ -1466,6 +1468,221 @@ body {
 
 .ei-kv-add:hover { opacity: 0.75; }
 
+/* ── Selector type badge (CSS / XP) ────────────────────────────────── */
+.ei-sel-type-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+.ei-sel-type-badge.css   { background: rgba(63,185,80,0.18);  color: #3fb950; }
+.ei-sel-type-badge.xpath { background: rgba(210,153,34,0.18); color: #d29922; }
+
+/* ── Selector block in ActionConfigurator (primary + fallbacks) ─────── */
+.ei-config-selector-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.ei-config-selector {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.ei-config-selector code {
+  font-family: ui-monospace, monospace;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.ei-fallback-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.ei-fallback-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-muted);
+}
+
+.ei-fallback-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.ei-fallback-value {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.ei-fb-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.ei-fb-remove:hover { color: var(--accent-danger); }
+
+/* ── Inline selector list editor in configurator ────────────────────── */
+.ei-inline-sel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ei-fb-add-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.ei-fb-input { flex: 1; }
+
+.ei-fb-add-btn {
+  padding: 4px 10px;
+  font-size: 16px;
+  font-weight: 700;
+  background: transparent;
+  border: 1px solid;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+}
+.ei-fb-add-btn:hover { filter: brightness(1.3); }
+
+/* ── SelectorListEditor in WorkflowPanel editor modal ───────────────── */
+.sel-list-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sel-list-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.sel-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.sel-chip-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+}
+.sel-chip-type.css   { background: rgba(63,185,80,0.18);  color: #3fb950; }
+.sel-chip-type.xpath { background: rgba(210,153,34,0.18); color: #d29922; }
+
+.sel-chip-value {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sel-chip-strategy {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-family: ui-monospace, monospace;
+}
+
+.sel-chip-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.sel-chip-remove:hover { color: var(--accent-danger); }
+
+.sel-list-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.sel-add-input {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  outline: none;
+}
+.sel-add-input:focus { border-color: var(--accent-primary); }
+
+.sel-add-btn {
+  padding: 4px 12px;
+  font-size: 18px;
+  font-weight: 700;
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
+}
+.sel-add-btn:hover { color: var(--accent-primary); border-color: var(--accent-primary); }
+
 /* ==================== WORKFLOW CONTROL BLOCKS ====================
    Append this to app.css
    ================================================================== */
@@ -1906,6 +2123,15 @@ body {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
+}
+
+/* Export filename hint inside the button */
+.ep-export-filename {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.75;
+  font-family: ui-monospace, monospace;
+  margin-left: 2px;
 }
 
 /* ── Download Code button ─────────────────────────────────────────── */

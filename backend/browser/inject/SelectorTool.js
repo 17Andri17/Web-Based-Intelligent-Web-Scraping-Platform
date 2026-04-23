@@ -95,14 +95,22 @@
   }
 
   function buildElementInfo(el) {
-    let primarySelector = '';
+    // primary: { value, type, strategy }
+    // fallbackSelectors: [{ value, type, strategy }, ...]
+    let primary = null;
     let fallbackSelectors = [];
     try {
-      const result = window.SelectorGenerator.getSelectorsForElement(el, { actionType: 'generic' });
-      primarySelector = result.primary.value;
-      fallbackSelectors = (result.fallbacks || []).map(f => f.value);
+      const result = window.SelectorGenerator.getSelectorsForElement(el, { actionType: 'generic', maxFallbacks: 5 });
+      primary = result.primary
+        ? { value: result.primary.value, type: result.primary.type, strategy: result.primary.strategy }
+        : null;
+      fallbackSelectors = (result.fallbacks || []).map(f => ({
+        value:    f.value,
+        type:     f.type,
+        strategy: f.strategy,
+      }));
     } catch (_) {
-      primarySelector = buildSimpleSelector(el);
+      primary = { value: buildSimpleSelector(el), type: 'css', strategy: 'fallback' };
     }
 
     const tag    = el.tagName.toLowerCase();
@@ -134,8 +142,10 @@
     try { similarCount = selectSimilarElements(el).length; } catch (_) {}
 
     return {
-      selector: primarySelector,
-      fallbackSelectors,
+      selector:          primary?.value || '',
+      selectorType:      primary?.type  || 'css',
+      selectorStrategy:  primary?.strategy || '',
+      fallbackSelectors, // [{ value, type, strategy }, ...]
       tag, text, href, src,
       isLink, isInput, isImg, isTable,
       attrs, breadcrumb, similarCount,

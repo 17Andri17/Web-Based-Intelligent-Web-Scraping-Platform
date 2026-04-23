@@ -16,34 +16,44 @@ const CATEGORIES = [
         type: "CLICK_ELEMENT",
         icon: "▶",
         needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector, fallbackSelectors: el.fallbackSelectors }),
+        smartDefault: (el) => ({
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+        }),
         quickAdd: true,
       },
       {
         type: "HOVER_ELEMENT",
         icon: "✋",
         needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector }),
+        smartDefault: (el) => ({
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+        }),
       },
       {
         type: "TYPE_TEXT",
         icon: "✏️",
         needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector, clearFirst: true, pressEnter: false }),
+        smartDefault: (el) => ({
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], clearFirst: true, pressEnter: false
+        }),
         showWhen: (el) => el.isInput,
       },
       {
         type: "CLEAR_INPUT",
         icon: "🗑️",
         needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector }),
+        smartDefault: (el) => ({
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+        }),
         showWhen: (el) => el.isInput,
       },
       {
         type: "SCROLL_TO_ELEMENT",
         icon: "⬇",
         needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector }),
+        smartDefault: (el) => ({
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+        }),
       },
       {
         type: "PRESS_KEY",
@@ -61,7 +71,9 @@ const CATEGORIES = [
         type: "UPLOAD_FILE",
         icon: "📎",
         needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector }),
+        smartDefault: (el) => ({
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+        }),
         showWhen: (el) => el.tag === "input",
       },
     ],
@@ -75,7 +87,9 @@ const CATEGORIES = [
         type: "EXTRACT_TEXT",
         icon: "📝",
         needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector, fallbackSelectors: el.fallbackSelectors, multiple: false }),
+        smartDefault: (el) => ({
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], multiple: false
+        }),
         quickAdd: true,
       },
       {
@@ -83,8 +97,7 @@ const CATEGORIES = [
         icon: "🔗",
         needsEl: true,
         smartDefault: (el) => ({
-          selector: el.selector,
-          attribute: el.href ? "href" : el.src ? "src" : "",
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], attribute: el.href ? "href" : el.src ? "src" : "",
           multiple: false,
         }),
         showWhen: (el) => el.isLink || el.isImg || el.href || el.src,
@@ -93,13 +106,17 @@ const CATEGORIES = [
         type: "EXTRACT_HTML",
         icon: "🧩",
         needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector, mode: "inner" }),
+        smartDefault: (el) => ({
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], mode: "inner"
+        }),
       },
       {
         type: "EXTRACT_TABLE",
         icon: "📋",
         needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector, hasHeader: true }),
+        smartDefault: (el) => ({
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], hasHeader: true
+        }),
         showWhen: (el) => el.isTable,
         quickAdd: true,
       },
@@ -107,7 +124,7 @@ const CATEGORIES = [
         type: "EXTRACT_LIST",
         icon: "📑",
         needsEl: true,
-        smartDefault: (el) => ({ containerSelector: el.selector }),
+        smartDefault: (el) => ({ containerSelector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }),
       },
       {
         type: "EXTRACT_JSON",
@@ -424,19 +441,51 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
         {def.description && <span className="ei-config-desc">{def.description}</span>}
       </div>
 
-      {/* Selector chip (read-only, for element-bound actions) */}
+      {/* Selector chip + fallbacks (read-only, for element-bound actions) */}
       {actionMeta.needsEl && element?.selector && (
-        <div className="ei-config-selector">
-          <span className="ei-attr-name">selector</span>
-          <code>{params.selector || element.selector}</code>
+        <div className="ei-config-selector-block">
+          <div className="ei-config-selector">
+            <span className={`ei-sel-type-badge ${element.selectorType || 'css'}`}>
+              {element.selectorType === 'xpath' ? 'XP' : 'CSS'}
+            </span>
+            <code>{params.selector || element.selector}</code>
+          </div>
+          {(params.fallbackSelectors || element.fallbackSelectors || []).length > 0 && (
+            <div className="ei-fallback-list">
+              <span className="ei-fallback-label">Fallbacks:</span>
+              {(params.fallbackSelectors || element.fallbackSelectors || []).slice(0, 3).map((f, i) => {
+                const s = typeof f === 'string' ? { value: f, type: 'css' } : f;
+                return (
+                  <div key={i} className="ei-fallback-chip">
+                    <span className={`ei-sel-type-badge ${s.type}`}>{s.type === 'xpath' ? 'XP' : 'CSS'}</span>
+                    <code className="ei-fallback-value" title={s.value}>{s.value}</code>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
       {/* Main inputs */}
       <div className="ei-config-fields">
         {Object.entries(def.inputs || {}).map(([key, inputDef]) => {
-          // Skip selector / fallbackSelectors — shown separately or auto-filled
-          if (key === 'selector' || key === 'fallbackSelectors') return null;
+          // These are handled by the selector block above or are internal
+          if (key === 'selector' || key === 'selectorType' || key === 'containerSelector') return null;
+          if (inputDef.type === 'hidden') return null;
+          // Show fallbackSelectors as typed chip list
+          if (key === 'fallbackSelectors') {
+            return (
+              <div key={key} className="ei-field">
+                <label className="ei-field-label">Fallback selectors</label>
+                <InlineSelectorListEditor
+                  value={params[key] || []}
+                  onChange={v => setParam(key, v)}
+                  accentColor={accentColor}
+                />
+              </div>
+            );
+          }
           return (
             <ConfigField
               key={key}
@@ -496,6 +545,9 @@ function ConfigField({ fieldKey, def, value, onChange, accentColor }) {
   const label = def.label || fieldKey;
   const required = def.required;
 
+  // Never render hidden fields
+  if (def.type === 'hidden') return null;
+
   return (
     <div className="ei-field">
       <label className="ei-field-label">
@@ -503,66 +555,81 @@ function ConfigField({ fieldKey, def, value, onChange, accentColor }) {
       </label>
 
       {def.type === 'string' && (
-        <input
-          className="ei-input"
-          type="text"
-          value={value ?? ''}
-          placeholder={def.placeholder || ''}
-          onChange={e => onChange(e.target.value)}
-          style={{ '--accent': accentColor }}
-        />
+        <input className="ei-input" type="text" value={value ?? ''} placeholder={def.placeholder || ''}
+          onChange={e => onChange(e.target.value)} style={{ '--accent': accentColor }} />
       )}
-
       {def.type === 'number' && (
-        <input
-          className="ei-input"
-          type="number"
-          value={value ?? (def.default ?? '')}
-          onChange={e => onChange(Number(e.target.value))}
-          style={{ '--accent': accentColor }}
-        />
+        <input className="ei-input" type="number" value={value ?? (def.default ?? '')}
+          onChange={e => onChange(Number(e.target.value))} style={{ '--accent': accentColor }} />
       )}
-
       {def.type === 'boolean' && (
         <label className="ei-checkbox-label">
-          <input
-            type="checkbox"
-            className="ei-checkbox"
-            checked={!!value}
-            onChange={e => onChange(e.target.checked)}
-            style={{ accentColor }}
-          />
+          <input type="checkbox" className="ei-checkbox" checked={!!value}
+            onChange={e => onChange(e.target.checked)} style={{ accentColor }} />
           <span>{value ? 'Enabled' : 'Disabled'}</span>
         </label>
       )}
-
       {def.type === 'select' && (
-        <select
-          className="ei-select"
-          value={value ?? def.default ?? ''}
-          onChange={e => onChange(e.target.value)}
-        >
+        <select className="ei-select" value={value ?? def.default ?? ''}
+          onChange={e => onChange(e.target.value)}>
           {(def.options || []).map(opt => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
       )}
-
       {def.type === 'array' && (
-        <input
-          className="ei-input"
-          type="text"
-          value={(value || []).join(', ')}
+        <input className="ei-input" type="text" value={(value || []).join(', ')}
           placeholder="Comma-separated values"
           onChange={e => onChange(e.target.value.split(',').map(v => v.trim()).filter(Boolean))}
-          style={{ '--accent': accentColor }}
-        />
+          style={{ '--accent': accentColor }} />
       )}
-
-      {/* keyvalue type used by EXTRACT_LIST fields */}
+      {def.type === 'selectorList' && (
+        <InlineSelectorListEditor value={value || []} onChange={onChange} accentColor={accentColor} />
+      )}
       {def.type === 'keyvalue' && (
         <KeyValueEditor value={value || {}} onChange={onChange} accentColor={accentColor} />
       )}
+    </div>
+  );
+}
+
+// ─── Inline selector list editor (compact, used inside ActionConfigurator) ──
+
+function InlineSelectorListEditor({ value, onChange, accentColor }) {
+  const [draft, setDraft] = useState('');
+  const items = value || [];
+
+  const remove = (i) => onChange(items.filter((_, idx) => idx !== i));
+
+  const addDraft = () => {
+    const v = draft.trim();
+    if (!v) return;
+    const isXPath = v.startsWith('/') || v.startsWith('(');
+    onChange([...items, { value: v, type: isXPath ? 'xpath' : 'css', strategy: 'manual' }]);
+    setDraft('');
+  };
+
+  return (
+    <div className="ei-inline-sel-list">
+      {items.map((item, i) => {
+        const s = typeof item === 'string' ? { value: item, type: 'css' } : item;
+        return (
+          <div key={i} className="ei-fallback-chip">
+            <span className={`ei-sel-type-badge ${s.type}`}>{s.type === 'xpath' ? 'XP' : 'CSS'}</span>
+            <code className="ei-fallback-value" title={s.value}>{s.value}</code>
+            <button className="ei-fb-remove" onClick={() => remove(i)}>×</button>
+          </div>
+        );
+      })}
+      <div className="ei-fb-add-row">
+        <input className="ei-input ei-fb-input" type="text" value={draft}
+          placeholder="Add selector (CSS or /xpath)…"
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && addDraft()}
+          style={{ '--accent': accentColor }} />
+        <button className="ei-fb-add-btn" onClick={addDraft}
+          style={{ color: accentColor, borderColor: accentColor }}>+</button>
+      </div>
     </div>
   );
 }

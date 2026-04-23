@@ -40,27 +40,16 @@ export default function ExecutionPanel({ isOpen, onClose, logs, status, results,
     URL.revokeObjectURL(url);
   };
 
-  const handleExport = (key) => {
-    const data = results?.[key];
-    if (data === undefined) return;
-
-    if (exportFormat === 'json') {
-      downloadFile(JSON.stringify(data, null, 2), `${key}.json`, 'application/json');
-    } else {
-      downloadFile(toCSV(data), `${key}.csv`, 'text/csv');
-    }
-  };
-
-  const handleExportAll = () => {
+  // Single combined file — all extraction results in one download
+  const handleExport = () => {
     if (!results) return;
     if (exportFormat === 'json') {
-      downloadFile(JSON.stringify(results, null, 2), 'workflow_results.json', 'application/json');
+      downloadFile(JSON.stringify(results, null, 2), 'results.json', 'application/json');
     } else {
-      // One CSV per key, zipped... or just export JSON for "all" in CSV mode
-      const combined = Object.entries(results)
-        .map(([k, v]) => `# ${k}\n${toCSV(v)}`)
-        .join('\n\n');
-      downloadFile(combined, 'workflow_results.csv', 'text/csv');
+      const sections = Object.entries(results).map(([key, data]) =>
+        `# ${key}\n${toCSV(data)}`
+      );
+      downloadFile(sections.join('\n\n'), 'results.csv', 'text/csv');
     }
   };
 
@@ -154,14 +143,13 @@ export default function ExecutionPanel({ isOpen, onClose, logs, status, results,
                             <button className={exportFormat === 'json' ? 'active' : ''} onClick={() => setExportFormat('json')}>JSON</button>
                             <button className={exportFormat === 'csv'  ? 'active' : ''} onClick={() => setExportFormat('csv')}>CSV</button>
                           </div>
-                          <button className="ep-btn" onClick={() => handleExport(selectedKey)}>
-                            <DownloadIcon /> Export {selectedKey}
+                          <button className="ep-btn" onClick={handleExport}>
+                            <DownloadIcon />
+                            Export all results
+                            <span className="ep-export-filename">
+                              results.{exportFormat}
+                            </span>
                           </button>
-                          {resultKeys.length > 1 && (
-                            <button className="ep-btn secondary" onClick={handleExportAll}>
-                              <DownloadIcon /> Export all
-                            </button>
-                          )}
                         </div>
                       </div>
 

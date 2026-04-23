@@ -240,8 +240,13 @@ const ${outputVar} = page.url();
         required: true,
         label: "Primary Selector"
       },
+      selectorType: {
+        type: "hidden",
+        default: "css",
+        label: "Selector type"
+      },
       fallbackSelectors: {
-        type: "array",
+        type: "selectorList",
         required: false,
         label: "Fallback Selectors",
         default: []
@@ -307,6 +312,11 @@ await page.hover(${JSON.stringify(params.selector)}, { timeout: ${timeout} });
         type: "string",
         required: true,
         label: "Selector"
+      },
+      selectorType: {
+        type: "hidden",
+        default: "css",
+        label: "Selector type"
       },
       text: {
         type: "string",
@@ -745,8 +755,13 @@ while ((${params.whileExpression || "false"}) && _loopGuard < ${maxIterations}) 
         required: true,
         label: "Primary Selector"
       },
+      selectorType: {
+        type: "hidden",
+        default: "css",
+        label: "Selector type"
+      },
       fallbackSelectors: {
-        type: "array",
+        type: "selectorList",
         default: [],
         label: "Fallback Selectors"
       },
@@ -859,6 +874,11 @@ try {
         required: true,
         label: "Selector"
       },
+      selectorType: {
+        type: "hidden",
+        default: "css",
+        label: "Selector type"
+      },
       attribute: {
         type: "string",
         required: true,
@@ -913,6 +933,11 @@ ${onNotFound === "fail" ? `const ${outputVar} = await ${outputVar}_el.getAttribu
         type: "string",
         required: true,
         label: "Selector"
+      },
+      selectorType: {
+        type: "hidden",
+        default: "css",
+        label: "Selector type"
       },
       mode: {
         type: "select",

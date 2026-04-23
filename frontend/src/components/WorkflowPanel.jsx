@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import React from "react";
 import { actionDefinitions } from "../actions/actionDefinitions";
 import { controlDefinitions, isControlStep } from "../workflow/controlDefinitions";
 import { createAction, createControl } from "../workflow/stepFactory";
@@ -33,7 +34,11 @@ function ActionIcon({ type }) {
 /* ── Helpers ── */
 function buildDefaultParams(def) {
   const p = {};
-  for (const [k, v] of Object.entries(def.inputs || {})) p[k] = v.default !== undefined ? v.default : (v.type === "array" ? [] : "");
+  for (const [k, v] of Object.entries(def.inputs || {})) {
+    if (v.default !== undefined) { p[k] = v.default; continue; }
+    if (v.type === "array" || v.type === "selectorList") { p[k] = []; continue; }
+    p[k] = "";
+  }
   return p;
 }
 function buildDefaultAdvanced(def) {
@@ -476,6 +481,9 @@ function StepEditorModal({ step, onClose, onSave }) {
 
 /* ── Field Renderer ── */
 function FieldRenderer({ label, type, value, options, placeholder, onChange }) {
+  // hidden fields are stored in params but not shown in UI
+  if (type === "hidden") return null;
+
   return (
     <div className="form-group">
       <label>{label}</label>
@@ -484,6 +492,57 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange }) {
       {type === "boolean" && <label style={{ display: "flex", alignItems: "center", gap: 8 }}><input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)} /><span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{value ? "Enabled" : "Disabled"}</span></label>}
       {type === "select"  && <select value={value ?? ""} onChange={e => onChange(e.target.value)}>{(options || []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>}
       {type === "array"   && <input type="text" value={(value || []).join(", ")} placeholder="Comma-separated values" onChange={e => onChange(e.target.value.split(",").map(v => v.trim()).filter(Boolean))} />}
+      {type === "selectorList" && <SelectorListEditor value={value} onChange={onChange} />}
+    </div>
+  );
+}
+
+/* ── SelectorListEditor ─────────────────────────────────────────────────────
+   Renders the fallback selector list as typed chips with a badge showing
+   css/xpath. Each entry is { value: string, type: 'css'|'xpath', strategy? }.
+   Users can remove entries or add plain-CSS ones manually.
+   ─────────────────────────────────────────────────────────────────────────── */
+function SelectorListEditor({ value, onChange }) {
+  const items = (value || []);
+  const [draft, setDraft] = React.useState("");
+
+  const remove = (i) => onChange(items.filter((_, idx) => idx !== i));
+
+  const addDraft = () => {
+    const v = draft.trim();
+    if (!v) return;
+    const isXPath = v.startsWith("/") || v.startsWith("(");
+    onChange([...items, { value: v, type: isXPath ? "xpath" : "css", strategy: "manual" }]);
+    setDraft("");
+  };
+
+  return (
+    <div className="sel-list-editor">
+      {items.length === 0 && (
+        <div className="sel-list-empty">No fallback selectors</div>
+      )}
+      {items.map((item, i) => {
+        const s = typeof item === "string" ? { value: item, type: "css" } : item;
+        return (
+          <div key={i} className="sel-chip">
+            <span className={`sel-chip-type ${s.type}`}>{s.type === "xpath" ? "XP" : "CSS"}</span>
+            <code className="sel-chip-value" title={s.value}>{s.value}</code>
+            {s.strategy && <span className="sel-chip-strategy">{s.strategy}</span>}
+            <button className="sel-chip-remove" onClick={() => remove(i)} title="Remove">×</button>
+          </div>
+        );
+      })}
+      <div className="sel-list-add">
+        <input
+          type="text"
+          className="sel-add-input"
+          value={draft}
+          placeholder="Add selector (CSS or /xpath)…"
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && addDraft()}
+        />
+        <button className="sel-add-btn" onClick={addDraft}>+</button>
+      </div>
     </div>
   );
 }
