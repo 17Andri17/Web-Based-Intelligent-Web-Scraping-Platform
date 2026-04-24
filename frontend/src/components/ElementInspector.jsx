@@ -17,7 +17,7 @@ const CATEGORIES = [
         icon: "▶",
         needsEl: true,
         smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
         }),
         quickAdd: true,
       },
@@ -26,7 +26,7 @@ const CATEGORIES = [
         icon: "✋",
         needsEl: true,
         smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
         }),
       },
       {
@@ -43,7 +43,7 @@ const CATEGORIES = [
         icon: "🗑️",
         needsEl: true,
         smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
         }),
         showWhen: (el) => el.isInput,
       },
@@ -52,7 +52,7 @@ const CATEGORIES = [
         icon: "⬇",
         needsEl: true,
         smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
         }),
       },
       {
@@ -72,7 +72,7 @@ const CATEGORIES = [
         icon: "📎",
         needsEl: true,
         smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
         }),
         showWhen: (el) => el.tag === "input",
       },
@@ -88,7 +88,7 @@ const CATEGORIES = [
         icon: "📝",
         needsEl: true,
         smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], multiple: false
+          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], multiple: false
         }),
         quickAdd: true,
       },
