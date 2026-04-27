@@ -339,6 +339,15 @@ function genControl(step, ctx, depth) {
       return `for (let ${idx} = 0; ${idx} < (${src} || []).length; ${idx}++) {\n  const ${item} = ${src}[${idx}];\n${body}}\n`;
     }
 
+    case 'FOR_EACH_ELEMENTS': {
+      const sel    = JSON.stringify(params.selector || '');
+      const item   = params.itemVar  || 'el';
+      const idx    = params.indexVar || 'i';
+      const tmpVar = `_els_${idx}_${Math.random().toString(36).slice(2,6)}`;
+      const body   = genStepList(step.body || [], ctx, depth + 1);
+      return `{\n  const ${tmpVar} = await page.$$(${sel});\n  for (let ${idx} = 0; ${idx} < ${tmpVar}.length; ${idx}++) {\n    const ${item} = ${tmpVar}[${idx}];\n${body}  }\n}\n`;
+    }
+
     case 'WHILE': {
       const expr = params.expression || 'false';
       const max  = num(params.maxIterations, 1000);

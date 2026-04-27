@@ -5,11 +5,12 @@
 //   - `params` schema mirrors actionDefinitions.inputs for the field renderer
 
 export const CONTROL_TYPES = {
-  IF:        'IF',
-  FOR_EACH:  'FOR_EACH',
-  WHILE:     'WHILE',
-  REPEAT:    'REPEAT',
-  TRY_CATCH: 'TRY_CATCH',
+  IF:                'IF',
+  FOR_EACH:          'FOR_EACH',
+  FOR_EACH_ELEMENTS: 'FOR_EACH_ELEMENTS',
+  WHILE:             'WHILE',
+  REPEAT:            'REPEAT',
+  TRY_CATCH:         'TRY_CATCH',
 };
 
 export const controlDefinitions = {
@@ -59,6 +60,36 @@ export const controlDefinitions = {
         label: 'Index variable name',
         default: 'index',
         placeholder: 'index',
+      },
+    },
+  },
+
+  [CONTROL_TYPES.FOR_EACH_ELEMENTS]: {
+    label:       'For Each Element',
+    description: 'Query all elements matching a CSS selector and iterate over each one',
+    color:       '#58a6ff',   // blue
+    bgColor:     'rgba(88, 166, 255, 0.08)',
+    icon:        '⟳',
+    branches: [
+      { key: 'body', label: 'Loop body', emptyLabel: 'Add steps to run on each matched element' },
+    ],
+    params: {
+      selector: {
+        type: 'string', required: true,
+        label: 'CSS Selector (matches elements to iterate)',
+        placeholder: '.product-card',
+      },
+      itemVar: {
+        type: 'string',
+        label: 'Element handle variable name',
+        default: 'el',
+        placeholder: 'el',
+      },
+      indexVar: {
+        type: 'string',
+        label: 'Index variable name',
+        default: 'i',
+        placeholder: 'i',
       },
     },
   },

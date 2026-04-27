@@ -31,6 +31,49 @@ io.on('connection', (socket) => {
   console.log(`🔌 User connected: ${userId}`);
   socket.join(userId);
 
+  // ── Reset selection ───────────────────────────────────────────────────────
+  socket.on('resetSelection', async () => {
+    try {
+      const s = userSessions.get(userId);
+      if (s?.page) await s.page.evaluate(() => { if (typeof window.__resetSelection__ === 'function') window.__resetSelection__(); });
+    } catch (_) {}
+  });
+
+  // ── Breadcrumb: navigate to ancestor ─────────────────────────────────────
+  socket.on('navigateAncestor', async ({ levelsUp }) => {
+    try {
+      const s = userSessions.get(userId);
+      if (s?.page) await s.page.evaluate((levels) => {
+        if (typeof window.__selectAncestor__ === 'function') window.__selectAncestor__(levels);
+      }, levelsUp);
+    } catch (_) {}
+  });
+
+  // ── Breadcrumb: get children of ancestor for picker ───────────────────────
+  socket.on('getChildrenOf', async ({ levelsUp }) => {
+    try {
+      const s = userSessions.get(userId);
+      if (!s?.page) { socket.emit('childrenList', { levelsUp, children: [] }); return; }
+      const children = await s.page.evaluate((levels) => {
+        if (typeof window.__getChildrenOf__ === 'function') return window.__getChildrenOf__(levels);
+        return [];
+      }, levelsUp);
+      socket.emit('childrenList', { levelsUp, children: children || [] });
+    } catch (err) {
+      socket.emit('childrenList', { levelsUp, children: [] });
+    }
+  });
+
+  // ── Breadcrumb: select a specific child by index ──────────────────────────
+  socket.on('selectChildByIndex', async ({ levelsUp, childIndex }) => {
+    try {
+      const s = userSessions.get(userId);
+      if (s?.page) await s.page.evaluate((levels, idx) => {
+        if (typeof window.__selectChildByIndex__ === 'function') window.__selectChildByIndex__(levels, idx);
+      }, levelsUp, childIndex);
+    } catch (_) {}
+  });
+
   // ── Navigate ────────────────────────────────────────────────────────────
   socket.on('navigate', async (data) => {
     try {

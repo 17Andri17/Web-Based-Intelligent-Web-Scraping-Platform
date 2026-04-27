@@ -333,9 +333,14 @@
       const href = elInfo.attributes['href'];
       if (href && !isRandomLike(href) && href !== '#' && href.length < 120) {
         add(`a[href="${cssAttrValue(href)}"]`, 'href', 78);
-        // Partial href match for cleaner URLs
-        if (href.startsWith('/') || href.startsWith('http')) {
-          add(`a[href*="${cssAttrValue(href.split('?')[0])}"]`, 'href-contains', 70);
+        // href-contains is ONLY useful when the exact href is dynamic/query-heavy.
+        // Never add it when the exact href already uniquely identifies the element —
+        // it would just be a redundant weaker variant of the same basis.
+        // We still generate it here so it can act as fallback if exact isn't unique,
+        // but basis-dedup in getSelectorsForElement will discard it when exact wins.
+        const cleanHref = href.split('?')[0];
+        if (cleanHref !== href && (cleanHref.startsWith('/') || cleanHref.startsWith('http'))) {
+          add(`a[href*="${cssAttrValue(cleanHref)}"]`, 'href-contains', 65);
         }
       }
     }
@@ -498,12 +503,17 @@
 
     // ── Tier 4: Exact text match (≤80 chars, visible text) ──────────────
     if (innerText && innerText.length >= 2 && innerText.length <= 80) {
-      // Exact match is most precise
+      // Exact is always preferred — contains is strictly weaker for the same text.
+      // We generate contains only as a structural-fallback at lower priority,
+      // and basis-dedup in getSelectorsForElement will drop it when exact is unique.
       add(`//${elInfo.tag}[normalize-space(.)=${xpathString(innerText)}]`,
           'text-exact', 82);
-      // Fallback: contains
-      add(`//${elInfo.tag}[contains(normalize-space(.), ${xpathString(innerText)})]`,
-          'text-contains', 75);
+      // Only generate text-contains when text is long enough that a partial
+      // match could survive template changes (>= 20 chars) and exact may be fragile.
+      if (innerText.length >= 20) {
+        add(`//${elInfo.tag}[contains(normalize-space(.), ${xpathString(innerText)})]`,
+            'text-contains', 68);
+      }
     }
 
     // ── Tier 5: Semantic attributes ─────────────────────────────────────
@@ -730,6 +740,75 @@
      ========================================================================= */
 
   /**
+   * Classify a candidate into a coarse "semantic basis" group.
+   * Used to prevent multiple selectors testing the exact same attribute/method
+   * from all appearing as separate fallbacks.
+   */
+  function getBasis(candidate) {
+    const s = candidate.strategy;
+    // Href family: exact CSS, contains CSS, XPath attr-href
+    if (s === 'href' || s === 'href-contains' || s === 'attr-href') return 'href';
+    // Text family: exact XPath, contains XPath
+    if (s === 'text-exact' || s === 'text-contains') return 'text';
+    // ID
+    if (s === 'id' || s === 'id-tag') return 'id';
+    // Test automation IDs
+    if (s === 'test-id' || s === 'test-id-tag') return 'test-id';
+    // ARIA
+    if (s.startsWith('aria')) return 'aria';
+    // Semantic input attrs (name, placeholder, type, for)
+    if (s === 'semantic-input' || s === 'type+name') return 'semantic-input';
+    // Class-based (any combination)
+    if (s.startsWith('class') || s.startsWith('multi-class') || s === 'bem-contains') return 'class';
+    // Ancestor-anchored (all share the concept of using a parent as anchor)
+    if (s.startsWith('ancestor+')) return 'ancestor';
+    // Structural paths
+    if (s === 'structural-path' || s === 'full-path' || s === 'robula-path' || s === 'absolute-path') return 'structural';
+    // Data attributes
+    if (s.startsWith('data-attr')) return 'data-attr';
+    // Image alt
+    if (s === 'img-alt') return 'img-alt';
+    // Role
+    if (s === 'role') return 'role';
+    return s; // fallback: treat strategy as its own basis
+  }
+
+  /**
+   * Maximum number of candidates to keep per basis group.
+   * Lower = more aggressive deduplication.
+   */
+  const BASIS_LIMITS = {
+    'href':           1,   // exact wins — never keep contains alongside it
+    'text':           1,   // exact wins — never keep contains alongside it
+    'id':             1,
+    'test-id':        1,
+    'aria':           1,
+    'semantic-input': 1,
+    'class':          2,   // allow e.g. tag+class AND multi-class
+    'ancestor':       2,
+    'structural':     1,
+    'data-attr':      1,
+    'img-alt':        1,
+    'role':           1,
+  };
+
+  /**
+   * Filter a sorted list of candidates so that no basis group exceeds its
+   * allowed quota. Preserves order (best score first within each group).
+   */
+  function applyBasisDedup(candidates) {
+    const basisCounts = {};
+    return candidates.filter(c => {
+      const basis = getBasis(c);
+      const limit = BASIS_LIMITS[basis] ?? 2;
+      const count = basisCounts[basis] || 0;
+      if (count >= limit) return false;
+      basisCounts[basis] = count + 1;
+      return true;
+    });
+  }
+
+  /**
    * Generate robust primary + fallback selectors for a DOM element.
    *
    * @param {Element} el
@@ -772,14 +851,24 @@
 
     // Deduplicate again after uniquification (some may produce same selector)
     const finalSeen = new Set();
-    const finalList = scored.filter(c => {
+    const deduped = scored.filter(c => {
       if (finalSeen.has(c.value)) return false;
       finalSeen.add(c.value);
       return true;
     });
 
+    // Apply basis-level deduplication: prevent e.g. href exact + href contains
+    // + XPath attr-href all appearing, or text-exact + text-contains together.
+    // We run dedup twice: once for the full list (to pick primary correctly),
+    // and once again for fallbacks to ensure diversity across bases.
+    const finalList = applyBasisDedup(deduped);
+
     const primary   = finalList[0] || null;
-    const fallbacks = finalList.slice(1, 1 + maxFallbacks);
+    // For fallbacks: exclude primary's basis from first slot, ensuring we use
+    // truly different methods. Then apply another round of basis dedup.
+    const primaryBasis = primary ? getBasis(primary) : null;
+    const fallbackPool = finalList.slice(1);
+    const fallbacks = applyBasisDedup(fallbackPool).slice(0, maxFallbacks);
 
     return {
       primary,

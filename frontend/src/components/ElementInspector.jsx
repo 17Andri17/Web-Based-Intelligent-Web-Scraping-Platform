@@ -1,416 +1,579 @@
-import { useState, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { actionDefinitions } from "../actions/actionDefinitions";
-import { createAction } from "../workflow/stepFactory";
+import { createAction, createControl } from "../workflow/stepFactory";
+import { CONTROL_TYPES } from "../workflow/controlDefinitions";
 
-// ─── Action catalogue ─────────────────────────────────────────────────────
-// Groups actions by category with metadata for the UI.
-// "smartDefault" functions receive the element info and return pre-filled param values.
+// Human-readable label for the detection strategy sent from SelectorTool
+function strategyLabel(strategy) {
+  if (!strategy) return '';
+  if (strategy.startsWith('A')) return '⚭ siblings';
+  if (strategy.startsWith('B')) return '⬡ ancestor-relative';
+  if (strategy.startsWith('C')) return '▣ ancestor-cards';
+  if (strategy.startsWith('D')) return '◎ global-class';
+  return strategy;
+}
+
+// ─── Action catalogue ──────────────────────────────────────────────────────
 
 const CATEGORIES = [
   {
-    id: "interaction",
-    label: "Interaction",
-    color: "#3fb950",
+    id: "interaction", label: "Interaction", color: "#3fb950",
     actions: [
-      {
-        type: "CLICK_ELEMENT",
-        icon: "▶",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
-        }),
-        quickAdd: true,
-      },
-      {
-        type: "HOVER_ELEMENT",
-        icon: "✋",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
-        }),
-      },
-      {
-        type: "TYPE_TEXT",
-        icon: "✏️",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], clearFirst: true, pressEnter: false
-        }),
-        showWhen: (el) => el.isInput,
-      },
-      {
-        type: "CLEAR_INPUT",
-        icon: "🗑️",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
-        }),
-        showWhen: (el) => el.isInput,
-      },
-      {
-        type: "SCROLL_TO_ELEMENT",
-        icon: "⬇",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
-        }),
-      },
-      {
-        type: "PRESS_KEY",
-        icon: "⌨️",
-        needsEl: false,
-        smartDefault: () => ({ key: "Enter", count: 1 }),
-      },
-      {
-        type: "SCROLL_PAGE",
-        icon: "📜",
-        needsEl: false,
-        smartDefault: () => ({ direction: "down", amount: 500 }),
-      },
-      {
-        type: "UPLOAD_FILE",
-        icon: "📎",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || []
-        }),
-        showWhen: (el) => el.tag === "input",
-      },
+      { type: "CLICK_ELEMENT",    icon: "▶", needsEl: true,  quickAdd: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
+      { type: "HOVER_ELEMENT",    icon: "✋", needsEl: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
+      { type: "TYPE_TEXT",        icon: "✏️", needsEl: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], clearFirst: true, pressEnter: false }),
+        showWhen: (el) => el.isInput },
+      { type: "CLEAR_INPUT",      icon: "🗑️", needsEl: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }),
+        showWhen: (el) => el.isInput },
+      { type: "SCROLL_TO_ELEMENT",icon: "⬇", needsEl: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
+      { type: "PRESS_KEY",        icon: "⌨️", needsEl: false, smartDefault: () => ({ key: "Enter", count: 1 }) },
+      { type: "SCROLL_PAGE",      icon: "📜", needsEl: false, smartDefault: () => ({ direction: "down", amount: 500 }) },
+      { type: "UPLOAD_FILE",      icon: "📎", needsEl: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }),
+        showWhen: (el) => el.tag === "input" },
     ],
   },
   {
-    id: "extraction",
-    label: "Extraction",
-    color: "#58a6ff",
+    id: "extraction", label: "Extraction", color: "#58a6ff",
     actions: [
-      {
-        type: "EXTRACT_TEXT",
-        icon: "📝",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], multiple: false
-        }),
-        quickAdd: true,
-      },
-      {
-        type: "EXTRACT_ATTRIBUTE",
-        icon: "🔗",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], attribute: el.href ? "href" : el.src ? "src" : "",
-          multiple: false,
-        }),
-        showWhen: (el) => el.isLink || el.isImg || el.href || el.src,
-      },
-      {
-        type: "EXTRACT_HTML",
-        icon: "🧩",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], mode: "inner"
-        }),
-      },
-      {
-        type: "EXTRACT_TABLE",
-        icon: "📋",
-        needsEl: true,
-        smartDefault: (el) => ({
-          selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], hasHeader: true
-        }),
-        showWhen: (el) => el.isTable,
-        quickAdd: true,
-      },
-      {
-        type: "EXTRACT_LIST",
-        icon: "📑",
-        needsEl: true,
-        smartDefault: (el) => ({ containerSelector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }),
-      },
-      {
-        type: "EXTRACT_JSON",
-        icon: "{ }",
-        needsEl: false,
-        smartDefault: () => ({ source: "jsonld" }),
-      },
+      { type: "EXTRACT_TEXT",      icon: "📝", needsEl: true, quickAdd: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], multiple: false }) },
+      { type: "EXTRACT_ATTRIBUTE", icon: "🔗", needsEl: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], attribute: el.href ? "href" : el.src ? "src" : "", multiple: false }),
+        showWhen: (el) => el.isLink || el.isImg || el.href || el.src },
+      { type: "EXTRACT_HTML",      icon: "🧩", needsEl: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], mode: "inner" }) },
+      { type: "EXTRACT_TABLE",     icon: "📋", needsEl: true, quickAdd: true,
+        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], hasHeader: true }),
+        showWhen: (el) => el.isTable },
+      { type: "EXTRACT_LIST",      icon: "📑", needsEl: true,
+        smartDefault: (el) => ({ containerSelector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
+      { type: "EXTRACT_JSON",      icon: "{ }", needsEl: false, smartDefault: () => ({ source: "jsonld" }) },
     ],
   },
   {
-    id: "navigation",
-    label: "Navigation",
-    color: "#d29922",
+    id: "navigation", label: "Navigation", color: "#d29922",
     actions: [
-      {
-        type: "NAVIGATE",
-        icon: "🌐",
-        needsEl: false,
-        smartDefault: () => ({ url: "" }),
-      },
-      {
-        type: "GO_BACK",
-        icon: "◀",
-        needsEl: false,
-        smartDefault: () => ({}),
-        quickAdd: true,
-      },
-      {
-        type: "RELOAD_PAGE",
-        icon: "🔄",
-        needsEl: false,
-        smartDefault: () => ({}),
-        quickAdd: true,
-      },
-      {
-        type: "OPEN_NEW_TAB",
-        icon: "➕",
-        needsEl: false,
-        smartDefault: () => ({ url: "" }),
-      },
-      {
-        type: "SWITCH_TAB",
-        icon: "⇄",
-        needsEl: false,
-        smartDefault: () => ({ tabIndex: 0 }),
-      },
+      { type: "NAVIGATE",          icon: "🌐", needsEl: false, smartDefault: () => ({ url: "" }) },
+      { type: "GO_BACK",           icon: "◀",  needsEl: false, smartDefault: () => ({}), quickAdd: true },
+      { type: "RELOAD_PAGE",       icon: "🔄", needsEl: false, smartDefault: () => ({}), quickAdd: true },
+      { type: "OPEN_NEW_TAB",      icon: "➕", needsEl: false, smartDefault: () => ({ url: "" }) },
+      { type: "SWITCH_TAB",        icon: "⇄",  needsEl: false, smartDefault: () => ({ tabIndex: 0 }) },
     ],
   },
   {
-    id: "flow",
-    label: "Flow Control",
-    color: "#a371f7",
+    id: "flow", label: "Flow Control", color: "#a371f7",
     actions: [
-      {
-        type: "WAIT",
-        icon: "⏱️",
-        needsEl: false,
-        smartDefault: () => ({ duration: 1000 }),
-        quickAdd: true,
-      },
-      {
-        type: "WAIT_FOR_SELECTOR",
-        icon: "👁️",
-        needsEl: false,
-        smartDefault: (el) => ({ selector: el?.selector || "", state: "visible", timeout: 30000 }),
-      },
-      {
-        type: "WAIT_FOR_NAVIGATION",
-        icon: "⏳",
-        needsEl: false,
-        smartDefault: () => ({}),
-      },
-      {
-        type: "CONDITION",
-        icon: "🔀",
-        needsEl: false,
-        smartDefault: () => ({ expression: "" }),
-      },
-      {
-        type: "LOOP",
-        icon: "🔁",
-        needsEl: false,
-        smartDefault: () => ({ mode: "forEach", source: "", count: 10 }),
-      },
-      {
-        type: "BREAK_LOOP",
-        icon: "⛔",
-        needsEl: false,
-        smartDefault: () => ({}),
-        quickAdd: true,
-      },
+      { type: "WAIT",              icon: "⏱️", needsEl: false, smartDefault: () => ({ duration: 1000 }), quickAdd: true },
+      { type: "WAIT_FOR_SELECTOR", icon: "👁️", needsEl: false, smartDefault: (el) => ({ selector: el?.selector || "", state: "visible", timeout: 30000 }) },
+      { type: "WAIT_FOR_NAVIGATION", icon: "⏳", needsEl: false, smartDefault: () => ({}) },
+      { type: "CONDITION",         icon: "🔀", needsEl: false, smartDefault: () => ({ expression: "" }) },
+      { type: "LOOP",              icon: "🔁", needsEl: false, smartDefault: () => ({ mode: "forEach", source: "", count: 10 }) },
+      { type: "BREAK_LOOP",        icon: "⛔", needsEl: false, smartDefault: () => ({}), quickAdd: true },
     ],
   },
   {
-    id: "data",
-    label: "Data",
-    color: "#f78166",
+    id: "data", label: "Data", color: "#f78166",
     actions: [
-      {
-        type: "SET_VARIABLE",
-        icon: "📦",
-        needsEl: false,
-        smartDefault: () => ({ name: "", value: "" }),
-      },
-      {
-        type: "TRANSFORM_DATA",
-        icon: "🔧",
-        needsEl: false,
-        smartDefault: () => ({ source: "", operation: "trim" }),
-      },
-      {
-        type: "APPEND_TO_LIST",
-        icon: "➕",
-        needsEl: false,
-        smartDefault: () => ({ listName: "results", item: "" }),
-      },
-      {
-        type: "SAVE_DATA",
-        icon: "💾",
-        needsEl: false,
-        smartDefault: () => ({ source: "results", format: "json", destination: "./output/results.json" }),
-      },
+      { type: "SET_VARIABLE",   icon: "📦", needsEl: false, smartDefault: () => ({ name: "", value: "" }) },
+      { type: "TRANSFORM_DATA", icon: "🔧", needsEl: false, smartDefault: () => ({ source: "", operation: "trim" }) },
+      { type: "APPEND_TO_LIST", icon: "➕", needsEl: false, smartDefault: () => ({ listName: "results", item: "" }) },
+      { type: "SAVE_DATA",      icon: "💾", needsEl: false, smartDefault: () => ({ source: "results", format: "json", destination: "./output/results.json" }) },
     ],
   },
 ];
 
-// Flatten for lookups
-const ALL_ACTIONS = CATEGORIES.flatMap(cat =>
-  cat.actions.map(a => ({ ...a, categoryId: cat.id, categoryLabel: cat.label, categoryColor: cat.color }))
-);
+// Multi-selection: only extraction-safe actions (no single-element interaction)
+const MULTI_CATEGORIES = [
+  {
+    id: "extraction", label: "Extraction", color: "#58a6ff",
+    actions: [
+      { type: "EXTRACT_TEXT",  icon: "📝", quickAdd: true,
+        smartDefault: (sel) => ({ selector: sel.commonSelector, selectorType: "css", fallbackSelectors: [], multiple: true }) },
+      { type: "EXTRACT_ATTRIBUTE", icon: "🔗",
+        smartDefault: (sel) => ({ selector: sel.commonSelector, selectorType: "css", fallbackSelectors: [], attribute: "", multiple: true }) },
+      { type: "EXTRACT_HTML",  icon: "🧩",
+        smartDefault: (sel) => ({ selector: sel.commonSelector, selectorType: "css", fallbackSelectors: [], mode: "inner" }) },
+      { type: "EXTRACT_LIST",  icon: "📑", quickAdd: true,
+        smartDefault: (sel) => ({ containerSelector: sel.commonSelector, selectorType: "css", fallbackSelectors: {}, fields: {} }) },
+    ],
+  },
+  {
+    id: "flow", label: "Flow", color: "#a371f7",
+    actions: [
+      { type: "WAIT",              icon: "⏱️", quickAdd: true, smartDefault: () => ({ duration: 1000 }) },
+      { type: "WAIT_FOR_SELECTOR", icon: "👁️",
+        smartDefault: (sel) => ({ selector: sel.commonSelector, state: "visible", timeout: 30000 }) },
+    ],
+  },
+];
 
 // ─── Main component ────────────────────────────────────────────────────────
 
-export default function ElementInspector({ element, onClose, onAddStep }) {
+export default function ElementInspector({
+  element, childrenList, forEachCtx,
+  onClose, onAddStep,
+  onSelectAncestor, onGetChildren, onSelectChild,
+  onClearForEachCtx,
+}) {
+  if (!element) return null;
+
+  if (element.isMultiSelection) {
+    return (
+      <MultiInspector
+        selection={element}
+        childrenList={childrenList}
+        forEachCtx={forEachCtx}
+        onClose={onClose}
+        onAddStep={onAddStep}
+        onClearForEachCtx={onClearForEachCtx}
+      />
+    );
+  }
+
+  return (
+    <SingleInspector
+      element={element}
+      childrenList={childrenList}
+      forEachCtx={forEachCtx}
+      onClose={onClose}
+      onAddStep={onAddStep}
+      onSelectAncestor={onSelectAncestor}
+      onGetChildren={onGetChildren}
+      onSelectChild={onSelectChild}
+      onClearForEachCtx={onClearForEachCtx}
+    />
+  );
+}
+
+// ─── Single element inspector ──────────────────────────────────────────────
+
+function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep, onSelectAncestor, onGetChildren, onSelectChild, onClearForEachCtx }) {
   const [activeCategory, setActiveCategory] = useState("interaction");
   const [selectedAction, setSelectedAction] = useState(null);
-  const [addedFlash, setAddedFlash] = useState(false);
+  const [addedFlash, setAddedFlash] = useState(null);
 
   const cat = CATEGORIES.find(c => c.id === activeCategory);
   const visibleActions = cat ? cat.actions.filter(a => !a.showWhen || a.showWhen(element)) : [];
 
-  const handleSelectAction = (actionMeta) => {
-    setSelectedAction(actionMeta);
-  };
-
-  const handleAdd = useCallback((params, advanced) => {
-    const step = createAction(actionMeta.type, params, advanced);
-    onAddStep(step);
-    setAddedFlash(true);
-    setTimeout(() => setAddedFlash(false), 1200);
-  }, [selectedAction, onAddStep]);
-
-  // Smart quick-add (no config needed)
   const handleQuickAdd = (actionMeta) => {
     const def = actionDefinitions[actionMeta.type];
     if (!def) return;
     const smartParams = actionMeta.smartDefault ? actionMeta.smartDefault(element) : {};
-    const advanced = buildDefaultAdvanced(def);
-    const step = createAction(actionMeta.type, { ...buildDefaultParams(def), ...smartParams }, advanced);
+    const step = createAction(actionMeta.type, { ...buildDefaultParams(def), ...smartParams }, buildDefaultAdvanced(def));
     onAddStep(step);
-
-    // Visual flash on the card
     setAddedFlash(actionMeta.type);
-    setTimeout(() => setAddedFlash(null), 1000);
+    setTimeout(() => setAddedFlash(null), 800);
   };
 
-  if (!element) return null;
-
   return (
-    <div className="ei-overlay" onClick={onClose}>
-      <div className="ei-panel" onClick={e => e.stopPropagation()}>
+    <div className="ei-panel">
+      {/* ── ForEach context banner ──────────────────────────────────────── */}
+      {forEachCtx && (
+        <ForEachContextBanner onClear={onClearForEachCtx} />
+      )}
 
-        {/* ── Header ────────────────────────────────────────────────────── */}
-        <div className="ei-header">
-          <div className="ei-header-info">
-            <span className="ei-tag">&lt;{element.tag}&gt;</span>
-            {element.classes && (
-              <span className="ei-classes">{element.classes.slice(0, 60)}</span>
-            )}
-          </div>
-          <button className="ei-close" onClick={onClose} title="Close">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
+      {/* ── Header ─────────────────────────────────────────────────────── */}
+      <div className="ei-header">
+        <div className="ei-header-info">
+          <span className="ei-tag">&lt;{element.tag}&gt;</span>
+          {element.classes && <span className="ei-classes">{element.classes.slice(0, 50)}</span>}
         </div>
+        <button className="ei-close" onClick={onClose} title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
 
-        {/* ── Selector pill ──────────────────────────────────────────────── */}
-        <div className="ei-selector-row">
-          <span className="ei-selector-icon">🎯</span>
-          <code className="ei-selector">{element.selector}</code>
-          {element.similarCount > 1 && (
-            <span className="ei-similar-badge">{element.similarCount} similar</span>
-          )}
-        </div>
-
-        {/* ── Breadcrumb ─────────────────────────────────────────────────── */}
-        {element.breadcrumb?.length > 0 && (
-          <div className="ei-breadcrumb">
-            {element.breadcrumb.map((seg, i) => (
-              <span key={i}>
-                <span className="ei-breadcrumb-seg">{seg.label}</span>
-                {i < element.breadcrumb.length - 1 && <span className="ei-breadcrumb-sep"> › </span>}
-              </span>
-            ))}
-          </div>
+      {/* ── Selector pill ───────────────────────────────────────────────── */}
+      <div className="ei-selector-row">
+        <span className="ei-selector-icon">🎯</span>
+        <code className="ei-selector">{element.selector}</code>
+        {element.softHighlightCount > 0 && (
+          <span className="ei-similar-badge" title="Similar elements are highlighted in amber — click one to select the group">
+            +{element.softHighlightCount} similar
+          </span>
         )}
+      </div>
 
-        {/* ── Element preview ────────────────────────────────────────────── */}
-        {(element.text || element.href || element.src) && (
-          <div className="ei-preview">
-            {element.text && <div className="ei-preview-text">"{element.text}"</div>}
-            {element.href && <div className="ei-preview-attr"><span className="ei-attr-name">href</span> {element.href}</div>}
-            {element.src  && <div className="ei-preview-attr"><span className="ei-attr-name">src</span> {element.src}</div>}
-          </div>
-        )}
+      {/* ── Interactive breadcrumb ──────────────────────────────────────── */}
+      {element.breadcrumb?.length > 0 && (
+        <InteractiveBreadcrumb
+          breadcrumb={element.breadcrumb}
+          childrenList={childrenList}
+          onSelectAncestor={onSelectAncestor}
+          onGetChildren={onGetChildren}
+          onSelectChild={onSelectChild}
+        />
+      )}
 
-        <div className="ei-body">
-          {/* ── Category tabs ──────────────────────────────────────────── */}
-          <div className="ei-tabs">
-            {CATEGORIES.map(c => (
-              <button
-                key={c.id}
-                className={`ei-tab ${activeCategory === c.id ? 'active' : ''}`}
-                style={activeCategory === c.id ? { borderColor: c.color, color: c.color } : {}}
-                onClick={() => { setActiveCategory(c.id); setSelectedAction(null); }}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
-
-          {/* ── Action cards ───────────────────────────────────────────── */}
-          <div className="ei-action-grid">
-            {visibleActions.map(actionMeta => {
-              const def = actionDefinitions[actionMeta.type];
-              if (!def) return null;
-              const isSelected = selectedAction?.type === actionMeta.type;
-              const isFlashing = addedFlash === actionMeta.type;
-
-              return (
-                <div
-                  key={actionMeta.type}
-                  className={`ei-action-card ${isSelected ? 'selected' : ''} ${isFlashing ? 'flash' : ''}`}
-                  style={isSelected ? { borderColor: cat.color } : {}}
-                  onClick={() => handleSelectAction(actionMeta)}
-                >
-                  <div className="ei-action-icon">{actionMeta.icon}</div>
-                  <div className="ei-action-label">{def.label}</div>
-                  {actionMeta.quickAdd && (
-                    <button
-                      className="ei-quick-add"
-                      title="Add with defaults"
-                      onClick={e => { e.stopPropagation(); handleQuickAdd(actionMeta); }}
-                    >
-                      +
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {/* ── Action configurator ────────────────────────────────────── */}
-          {selectedAction && (
-            <ActionConfigurator
-              key={selectedAction.type}
-              actionMeta={selectedAction}
-              element={element}
-              accentColor={cat?.color}
-              onAdd={(params, advanced) => {
-                const step = createAction(selectedAction.type, params, advanced);
-                onAddStep(step);
-                setAddedFlash(selectedAction.type);
-                setTimeout(() => setAddedFlash(null), 1000);
-              }}
-            />
-          )}
+      {/* ── Element preview ──────────────────────────────────────────────── */}
+      {(element.text || element.href || element.src) && (
+        <div className="ei-preview">
+          {element.text && <div className="ei-preview-text">"{element.text}"</div>}
+          {element.href && <div className="ei-preview-attr"><span className="ei-attr-name">href</span> {element.href}</div>}
+          {element.src  && <div className="ei-preview-attr"><span className="ei-attr-name">src</span> {element.src}</div>}
         </div>
+      )}
+
+      {/* ── Subtle hint when similar elements are soft-highlighted ──────── */}
+      {element.softHighlightCount > 0 && (
+        <div className="ei-similar-hint">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          {element.softHighlightCount} similar element{element.softHighlightCount !== 1 ? "s" : ""} highlighted in amber — click one to select all of them
+        </div>
+      )}
+
+      <div className="ei-body">
+        {/* ── Category tabs ─────────────────────────────────────────────── */}
+        <div className="ei-tabs">
+          {CATEGORIES.map(c => (
+            <button key={c.id}
+              className={`ei-tab ${activeCategory === c.id ? "active" : ""}`}
+              style={activeCategory === c.id ? { borderColor: c.color, color: c.color } : {}}
+              onClick={() => { setActiveCategory(c.id); setSelectedAction(null); }}>
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Action cards ──────────────────────────────────────────────── */}
+        <div className="ei-action-grid">
+          {visibleActions.map(actionMeta => {
+            const def = actionDefinitions[actionMeta.type];
+            if (!def) return null;
+            const isSelected = selectedAction?.type === actionMeta.type;
+            const isFlashing = addedFlash === actionMeta.type;
+            return (
+              <div key={actionMeta.type}
+                className={`ei-action-card ${isSelected ? "selected" : ""} ${isFlashing ? "flash" : ""}`}
+                style={isSelected ? { borderColor: cat.color } : {}}
+                onClick={() => setSelectedAction(actionMeta)}>
+                <div className="ei-action-icon">{actionMeta.icon}</div>
+                <div className="ei-action-label">{def.label}</div>
+                {actionMeta.quickAdd && (
+                  <button className="ei-quick-add" title="Add with defaults"
+                    onClick={e => { e.stopPropagation(); handleQuickAdd(actionMeta); }}>+</button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ── Action configurator ───────────────────────────────────────── */}
+        {selectedAction && (
+          <ActionConfigurator
+            key={selectedAction.type}
+            actionMeta={selectedAction}
+            element={element}
+            accentColor={cat?.color}
+            onAdd={(params, advanced) => {
+              const step = createAction(selectedAction.type, params, advanced);
+              onAddStep(step);
+              setAddedFlash(selectedAction.type);
+              setTimeout(() => setAddedFlash(null), 800);
+            }}
+          />
+        )}
       </div>
     </div>
   );
 }
 
-// ─── Action configurator ──────────────────────────────────────────────────
-// Shows the full input form for the selected action and handles Add.
+// ─── Multi-element inspector ───────────────────────────────────────────────
+
+function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForEachCtx }) {
+  const [activeCategory, setActiveCategory] = useState("extraction");
+  const [selectedAction, setSelectedAction] = useState(null);
+  const [addedFlash, setAddedFlash] = useState(null);
+
+  const cat = MULTI_CATEGORIES.find(c => c.id === activeCategory);
+
+  const handleQuickAdd = (actionMeta) => {
+    const def = actionDefinitions[actionMeta.type];
+    if (!def) return;
+    const smartParams = actionMeta.smartDefault ? actionMeta.smartDefault(selection) : {};
+    const step = createAction(actionMeta.type, { ...buildDefaultParams(def), ...smartParams }, buildDefaultAdvanced(def));
+    onAddStep(step);
+    setAddedFlash(actionMeta.type);
+    setTimeout(() => setAddedFlash(null), 800);
+  };
+
+  const handleAddForEach = () => {
+    const control = createControl(CONTROL_TYPES.FOR_EACH_ELEMENTS, {
+      selector: selection.commonSelector,
+      itemVar: "el",
+      indexVar: "i",
+    });
+    onAddStep(control, { isForEach: true });
+    setAddedFlash("FOREACH");
+    setTimeout(() => setAddedFlash(null), 800);
+  };
+
+  return (
+    <div className="ei-panel ei-multi-panel">
+      {/* ── ForEach context banner ──────────────────────────────────────── */}
+      {forEachCtx && <ForEachContextBanner onClear={onClearForEachCtx} />}
+
+      {/* ── Header ─────────────────────────────────────────────────────── */}
+      <div className="ei-header ei-multi-header">
+        <div className="ei-header-info">
+          <span className="ei-multi-icon">⬡</span>
+          <span className="ei-multi-title">{selection.matchCount} elements selected</span>
+        </div>
+        <button className="ei-close" onClick={onClose} title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      {/* ── Selector pill ───────────────────────────────────────────────── */}
+      <div className="ei-selector-row ei-multi-selector-row">
+        <span className="ei-selector-icon">🎯</span>
+        <code className="ei-selector">{selection.commonSelector}</code>
+        <span className="ei-multi-match-badge">{selection.matchCount}</span>
+      </div>
+
+      {/* ── CSS Selector display ─────────────────────────────────────────── */}
+      <div className="ei-multi-selector-block">
+        <div className="ei-multi-selector-header">
+          <span className="ei-multi-selector-label">CSS Selector</span>
+          {selection.strategy && (
+            <span className="ei-multi-strategy-badge" title={`Detection strategy: ${selection.strategy}`}>
+              {strategyLabel(selection.strategy)}
+            </span>
+          )}
+          <button
+            className="ei-multi-selector-copy"
+            title="Copy selector"
+            onClick={() => { try { navigator.clipboard.writeText(selection.commonSelector); } catch (_) {} }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          </button>
+        </div>
+        {selection.commonSelector ? (
+          <code className="ei-multi-selector-code">{selection.commonSelector}</code>
+        ) : (
+          <span className="ei-multi-selector-empty">No selector generated — elements selected by position</span>
+        )}
+        <div className="ei-multi-selector-meta">
+          Matches exactly <strong>{selection.matchCount}</strong> element{selection.matchCount !== 1 ? 's' : ''}
+        </div>
+      </div>
+
+      {/* ── ForEach banner ───────────────────────────────────────────────── */}
+      {!forEachCtx && (
+        <div className="ei-foreach-banner">
+          <div className="ei-foreach-banner-text">
+            <span className="ei-foreach-icon">∀</span>
+            <div>
+              <div className="ei-foreach-title">Add as ForEach Loop</div>
+              <div className="ei-foreach-desc">Iterate over all {selection.matchCount} matched elements</div>
+            </div>
+          </div>
+          <button
+            className={`ei-foreach-btn ${addedFlash === "FOREACH" ? "flash" : ""}`}
+            onClick={handleAddForEach}>
+            {addedFlash === "FOREACH" ? <><CheckIcon /> Added!</> : <><PlusIcon /> Add Loop</>}
+          </button>
+        </div>
+      )}
+
+      <div className="ei-body">
+        {/* ── Notice ───────────────────────────────────────────────────── */}
+        <div className="ei-multi-notice">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          Single-element actions (Click, Hover…) are hidden for multi-selections.
+        </div>
+
+        {/* ── Category tabs ─────────────────────────────────────────────── */}
+        <div className="ei-tabs">
+          {MULTI_CATEGORIES.map(c => (
+            <button key={c.id}
+              className={`ei-tab ${activeCategory === c.id ? "active" : ""}`}
+              style={activeCategory === c.id ? { borderColor: c.color, color: c.color } : {}}
+              onClick={() => { setActiveCategory(c.id); setSelectedAction(null); }}>
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Action cards ──────────────────────────────────────────────── */}
+        <div className="ei-action-grid">
+          {(cat?.actions || []).map(actionMeta => {
+            const def = actionDefinitions[actionMeta.type];
+            if (!def) return null;
+            const isSelected = selectedAction?.type === actionMeta.type;
+            const isFlashing = addedFlash === actionMeta.type;
+            return (
+              <div key={actionMeta.type}
+                className={`ei-action-card ${isSelected ? "selected" : ""} ${isFlashing ? "flash" : ""}`}
+                style={isSelected ? { borderColor: cat.color } : {}}
+                onClick={() => setSelectedAction(actionMeta)}>
+                <div className="ei-action-icon">{actionMeta.icon}</div>
+                <div className="ei-action-label">{def.label}</div>
+                {actionMeta.quickAdd && (
+                  <button className="ei-quick-add" title="Add with defaults"
+                    onClick={e => { e.stopPropagation(); handleQuickAdd(actionMeta); }}>+</button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {selectedAction && (
+          <ActionConfigurator
+            key={selectedAction.type}
+            actionMeta={selectedAction}
+            element={{ ...selection, selector: selection.commonSelector }}
+            accentColor={cat?.color}
+            onAdd={(params, advanced) => {
+              const step = createAction(selectedAction.type, params, advanced);
+              onAddStep(step);
+              setAddedFlash(selectedAction.type);
+              setTimeout(() => setAddedFlash(null), 800);
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── ForEach context banner ───────────────────────────────────────────────
+
+function ForEachContextBanner({ onClear }) {
+  return (
+    <div className="ei-foreach-ctx-banner">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+        <polyline points="17,1 21,5 17,9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+        <polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+      </svg>
+      <span>Adding steps <strong>inside ForEach loop</strong></span>
+      <button className="ei-foreach-ctx-clear" onClick={onClear} title="Stop adding to loop">✕</button>
+    </div>
+  );
+}
+
+// ─── Interactive breadcrumb ────────────────────────────────────────────────
+
+function InteractiveBreadcrumb({ breadcrumb, childrenList, onSelectAncestor, onGetChildren, onSelectChild }) {
+  const [openPickerAt, setOpenPickerAt] = useState(null); // breadcrumb index whose children are shown
+  const pickerRef = useRef(null);
+
+  // Close picker on outside click
+  useEffect(() => {
+    if (openPickerAt === null) return;
+    const handler = (e) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target)) setOpenPickerAt(null);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [openPickerAt]);
+
+  // When childrenList arrives for this picker index, keep it open
+  const pickerChildren = (childrenList && openPickerAt !== null) ? childrenList.children : null;
+
+  const handleChevronClick = (breadcrumbIdx) => {
+    // levelsUp = distance from last breadcrumb item to this breadcrumb item
+    const levelsUp = breadcrumb.length - 1 - breadcrumbIdx;
+    if (openPickerAt === breadcrumbIdx) {
+      setOpenPickerAt(null);
+    } else {
+      setOpenPickerAt(breadcrumbIdx);
+      onGetChildren(levelsUp);
+    }
+  };
+
+  const handleAncestorClick = (breadcrumbIdx) => {
+    const levelsUp = breadcrumb.length - 1 - breadcrumbIdx;
+    if (levelsUp === 0) return; // that's the selected element itself
+    onSelectAncestor(levelsUp);
+    setOpenPickerAt(null);
+  };
+
+  const handleChildPick = (breadcrumbIdx, childIndex) => {
+    const levelsUp = breadcrumb.length - 1 - breadcrumbIdx;
+    onSelectChild(levelsUp, childIndex);
+    setOpenPickerAt(null);
+  };
+
+  return (
+    <div className="ei-breadcrumb" style={{ position: "relative" }}>
+      {breadcrumb.map((seg, i) => {
+        const isLast = i === breadcrumb.length - 1;
+        const isPickerOpen = openPickerAt === i;
+        return (
+          <span key={i} className="ei-bc-item-wrap">
+            {/* Ancestor label — clickable to navigate up */}
+            <button
+              className={`ei-bc-seg ${isLast ? "ei-bc-seg--current" : "ei-bc-seg--ancestor"}`}
+              onClick={() => handleAncestorClick(i)}
+              title={isLast ? "Current element" : `Select ${seg.label}`}
+              disabled={isLast}>
+              {seg.label}
+            </button>
+
+            {/* Chevron separator — clicking shows children picker */}
+            {!isLast && (
+              <span className="ei-bc-sep-wrap" ref={isPickerOpen ? pickerRef : null}>
+                <button
+                  className={`ei-bc-chevron ${isPickerOpen ? "open" : ""}`}
+                  onClick={() => handleChevronClick(i)}
+                  title={`Browse children of ${seg.label}`}>
+                  ›
+                </button>
+
+                {/* Children picker dropdown */}
+                {isPickerOpen && (
+                  <div className="ei-bc-children-picker" ref={pickerRef}>
+                    <div className="ei-bc-picker-title">Children of <code>{seg.label}</code></div>
+                    {!pickerChildren ? (
+                      <div className="ei-bc-picker-loading">Loading…</div>
+                    ) : pickerChildren.length === 0 ? (
+                      <div className="ei-bc-picker-loading">No children</div>
+                    ) : (
+                      <div className="ei-bc-picker-list">
+                        {pickerChildren.slice(0, 20).map((child, ci) => (
+                          <button
+                            key={ci}
+                            className="ei-bc-picker-item"
+                            onClick={() => handleChildPick(i, child.childIndex ?? ci)}>
+                            <span className="ei-bc-picker-tag">&lt;{child.tag}&gt;</span>
+                            {child.classes && <span className="ei-bc-picker-cls">{child.classes.slice(0, 30)}</span>}
+                            {child.text && <span className="ei-bc-picker-text">{child.text.slice(0, 40)}</span>}
+                          </button>
+                        ))}
+                        {pickerChildren.length > 20 && (
+                          <div className="ei-bc-picker-more">+{pickerChildren.length - 20} more</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Action configurator ───────────────────────────────────────────────────
 
 function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
   const def = actionDefinitions[actionMeta.type];
@@ -421,13 +584,13 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
   const [advanced, setAdvanced] = useState(buildDefaultAdvanced(def));
   const [added,    setAdded]    = useState(false);
 
-  const setParam   = (k, v) => setParams(p => ({ ...p, [k]: v }));
-  const setAdv     = (k, v) => setAdvanced(a => ({ ...a, [k]: v }));
+  const setParam = (k, v) => setParams(p => ({ ...p, [k]: v }));
+  const setAdv   = (k, v) => setAdvanced(a => ({ ...a, [k]: v }));
 
   const handleAdd = () => {
     onAdd(params, advanced);
     setAdded(true);
-    setTimeout(() => setAdded(false), 1200);
+    setTimeout(() => setAdded(false), 1000);
   };
 
   const hasAdvanced = def.advanced && Object.keys(def.advanced).length > 0;
@@ -441,12 +604,11 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
         {def.description && <span className="ei-config-desc">{def.description}</span>}
       </div>
 
-      {/* Selector chip + fallbacks (read-only, for element-bound actions) */}
       {actionMeta.needsEl && element?.selector && (
         <div className="ei-config-selector-block">
           <div className="ei-config-selector">
-            <span className={`ei-sel-type-badge ${element.selectorType || 'css'}`}>
-              {element.selectorType === 'xpath' ? 'XP' : 'CSS'}
+            <span className={`ei-sel-type-badge ${element.selectorType || "css"}`}>
+              {element.selectorType === "xpath" ? "XP" : "CSS"}
             </span>
             <code>{params.selector || element.selector}</code>
           </div>
@@ -454,10 +616,10 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
             <div className="ei-fallback-list">
               <span className="ei-fallback-label">Fallbacks:</span>
               {(params.fallbackSelectors || element.fallbackSelectors || []).slice(0, 3).map((f, i) => {
-                const s = typeof f === 'string' ? { value: f, type: 'css' } : f;
+                const s = typeof f === "string" ? { value: f, type: "css" } : f;
                 return (
                   <div key={i} className="ei-fallback-chip">
-                    <span className={`ei-sel-type-badge ${s.type}`}>{s.type === 'xpath' ? 'XP' : 'CSS'}</span>
+                    <span className={`ei-sel-type-badge ${s.type}`}>{s.type === "xpath" ? "XP" : "CSS"}</span>
                     <code className="ei-fallback-value" title={s.value}>{s.value}</code>
                   </div>
                 );
@@ -467,155 +629,115 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
         </div>
       )}
 
-      {/* Main inputs */}
       <div className="ei-config-fields">
         {Object.entries(def.inputs || {}).map(([key, inputDef]) => {
-          // These are handled by the selector block above or are internal
-          if (key === 'selector' || key === 'selectorType' || key === 'containerSelector') return null;
-          if (inputDef.type === 'hidden') return null;
-          // Show fallbackSelectors as typed chip list
-          if (key === 'fallbackSelectors') {
+          if (key === "selector" || key === "selectorType" || key === "containerSelector") return null;
+          if (inputDef.type === "hidden") return null;
+          if (key === "fallbackSelectors") {
             return (
               <div key={key} className="ei-field">
                 <label className="ei-field-label">Fallback selectors</label>
-                <InlineSelectorListEditor
-                  value={params[key] || []}
-                  onChange={v => setParam(key, v)}
-                  accentColor={accentColor}
-                />
+                <InlineSelectorListEditor value={params[key] || []} onChange={v => setParam(key, v)} accentColor={accentColor} />
               </div>
             );
           }
           return (
-            <ConfigField
-              key={key}
-              fieldKey={key}
-              def={inputDef}
-              value={params[key]}
-              onChange={v => setParam(key, v)}
-              accentColor={accentColor}
-            />
+            <ConfigField key={key} fieldKey={key} def={inputDef} value={params[key]}
+              onChange={v => setParam(key, v)} accentColor={accentColor} />
           );
         })}
       </div>
 
-      {/* Advanced toggle */}
       {hasAdvanced && (
         <button className="ei-adv-toggle" onClick={() => setShowAdv(v => !v)}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-            style={{ transform: showAdv ? 'rotate(180deg)' : 'rotate(0)', transition: '150ms' }}>
+            style={{ transform: showAdv ? "rotate(180deg)" : "rotate(0)", transition: "150ms" }}>
             <polyline points="6,9 12,15 18,9"/>
           </svg>
-          {showAdv ? 'Hide' : 'Show'} advanced options
+          {showAdv ? "Hide" : "Show"} advanced options
         </button>
       )}
-
       {showAdv && hasAdvanced && (
         <div className="ei-config-fields ei-adv-fields">
           {Object.entries(def.advanced).map(([key, advDef]) => (
-            <ConfigField
-              key={key}
-              fieldKey={key}
-              def={advDef}
-              value={advanced[key]}
-              onChange={v => setAdv(key, v)}
-              accentColor={accentColor}
-            />
+            <ConfigField key={key} fieldKey={key} def={advDef} value={advanced[key]}
+              onChange={v => setAdv(key, v)} accentColor={accentColor} />
           ))}
         </div>
       )}
 
-      <button
-        className="ei-add-btn"
-        style={{ background: added ? '#3fb950' : accentColor }}
-        onClick={handleAdd}
-      >
-        {added
-          ? <><CheckIcon /> Added!</>
-          : <><PlusIcon /> Add to workflow</>
-        }
+      <button className="ei-add-btn" style={{ background: added ? "#3fb950" : accentColor }} onClick={handleAdd}>
+        {added ? <><CheckIcon /> Added!</> : <><PlusIcon /> Add to workflow</>}
       </button>
     </div>
   );
 }
 
-// ─── Individual field renderer ────────────────────────────────────────────
+// ─── Field renderer ────────────────────────────────────────────────────────
 
 function ConfigField({ fieldKey, def, value, onChange, accentColor }) {
-  const label = def.label || fieldKey;
+  const label    = def.label || fieldKey;
   const required = def.required;
-
-  // Never render hidden fields
-  if (def.type === 'hidden') return null;
+  if (def.type === "hidden") return null;
 
   return (
     <div className="ei-field">
       <label className="ei-field-label">
         {label}{required && <span className="ei-required">*</span>}
       </label>
-
-      {def.type === 'string' && (
-        <input className="ei-input" type="text" value={value ?? ''} placeholder={def.placeholder || ''}
-          onChange={e => onChange(e.target.value)} style={{ '--accent': accentColor }} />
+      {def.type === "string" && (
+        <input className="ei-input" type="text" value={value ?? ""} placeholder={def.placeholder || ""}
+          onChange={e => onChange(e.target.value)} style={{ "--accent": accentColor }} />
       )}
-      {def.type === 'number' && (
-        <input className="ei-input" type="number" value={value ?? (def.default ?? '')}
-          onChange={e => onChange(Number(e.target.value))} style={{ '--accent': accentColor }} />
+      {def.type === "number" && (
+        <input className="ei-input" type="number" value={value ?? (def.default ?? "")}
+          onChange={e => onChange(Number(e.target.value))} style={{ "--accent": accentColor }} />
       )}
-      {def.type === 'boolean' && (
+      {def.type === "boolean" && (
         <label className="ei-checkbox-label">
           <input type="checkbox" className="ei-checkbox" checked={!!value}
             onChange={e => onChange(e.target.checked)} style={{ accentColor }} />
-          <span>{value ? 'Enabled' : 'Disabled'}</span>
+          <span>{value ? "Enabled" : "Disabled"}</span>
         </label>
       )}
-      {def.type === 'select' && (
-        <select className="ei-select" value={value ?? def.default ?? ''}
-          onChange={e => onChange(e.target.value)}>
-          {(def.options || []).map(opt => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
+      {def.type === "select" && (
+        <select className="ei-select" value={value ?? def.default ?? ""} onChange={e => onChange(e.target.value)}>
+          {(def.options || []).map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
         </select>
       )}
-      {def.type === 'array' && (
-        <input className="ei-input" type="text" value={(value || []).join(', ')}
+      {def.type === "array" && (
+        <input className="ei-input" type="text" value={(value || []).join(", ")}
           placeholder="Comma-separated values"
-          onChange={e => onChange(e.target.value.split(',').map(v => v.trim()).filter(Boolean))}
-          style={{ '--accent': accentColor }} />
+          onChange={e => onChange(e.target.value.split(",").map(v => v.trim()).filter(Boolean))}
+          style={{ "--accent": accentColor }} />
       )}
-      {def.type === 'selectorList' && (
+      {def.type === "selectorList" && (
         <InlineSelectorListEditor value={value || []} onChange={onChange} accentColor={accentColor} />
       )}
-      {def.type === 'keyvalue' && (
+      {def.type === "keyvalue" && (
         <KeyValueEditor value={value || {}} onChange={onChange} accentColor={accentColor} />
       )}
     </div>
   );
 }
 
-// ─── Inline selector list editor (compact, used inside ActionConfigurator) ──
-
 function InlineSelectorListEditor({ value, onChange, accentColor }) {
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState("");
   const items = value || [];
-
   const remove = (i) => onChange(items.filter((_, idx) => idx !== i));
-
   const addDraft = () => {
-    const v = draft.trim();
-    if (!v) return;
-    const isXPath = v.startsWith('/') || v.startsWith('(');
-    onChange([...items, { value: v, type: isXPath ? 'xpath' : 'css', strategy: 'manual' }]);
-    setDraft('');
+    const v = draft.trim(); if (!v) return;
+    const isXPath = v.startsWith("/") || v.startsWith("(");
+    onChange([...items, { value: v, type: isXPath ? "xpath" : "css", strategy: "manual" }]);
+    setDraft("");
   };
-
   return (
     <div className="ei-inline-sel-list">
       {items.map((item, i) => {
-        const s = typeof item === 'string' ? { value: item, type: 'css' } : item;
+        const s = typeof item === "string" ? { value: item, type: "css" } : item;
         return (
           <div key={i} className="ei-fallback-chip">
-            <span className={`ei-sel-type-badge ${s.type}`}>{s.type === 'xpath' ? 'XP' : 'CSS'}</span>
+            <span className={`ei-sel-type-badge ${s.type}`}>{s.type === "xpath" ? "XP" : "CSS"}</span>
             <code className="ei-fallback-value" title={s.value}>{s.value}</code>
             <button className="ei-fb-remove" onClick={() => remove(i)}>×</button>
           </div>
@@ -625,56 +747,30 @@ function InlineSelectorListEditor({ value, onChange, accentColor }) {
         <input className="ei-input ei-fb-input" type="text" value={draft}
           placeholder="Add selector (CSS or /xpath)…"
           onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && addDraft()}
-          style={{ '--accent': accentColor }} />
-        <button className="ei-fb-add-btn" onClick={addDraft}
-          style={{ color: accentColor, borderColor: accentColor }}>+</button>
+          onKeyDown={e => e.key === "Enter" && addDraft()}
+          style={{ "--accent": accentColor }} />
+        <button className="ei-fb-add-btn" onClick={addDraft} style={{ color: accentColor, borderColor: accentColor }}>+</button>
       </div>
     </div>
   );
 }
 
-// ─── Key-value editor (for EXTRACT_LIST fields map) ───────────────────────
-
 function KeyValueEditor({ value, onChange, accentColor }) {
   const entries = Object.entries(value);
-
-  const setEntry = (i, k, v) => {
-    const next = [...entries];
-    next[i] = [k, v];
-    onChange(Object.fromEntries(next));
-  };
-
-  const addEntry = () => onChange({ ...value, '': '' });
-
-  const removeEntry = (i) => {
-    const next = entries.filter((_, idx) => idx !== i);
-    onChange(Object.fromEntries(next));
-  };
-
+  const setEntry = (i, k, v) => { const next = [...entries]; next[i] = [k, v]; onChange(Object.fromEntries(next)); };
+  const addEntry = () => onChange({ ...value, "": "" });
+  const removeEntry = (i) => onChange(Object.fromEntries(entries.filter((_, idx) => idx !== i)));
   return (
     <div className="ei-kv">
       {entries.map(([k, v], i) => (
         <div key={i} className="ei-kv-row">
-          <input
-            className="ei-input ei-kv-input"
-            placeholder="field name"
-            value={k}
-            onChange={e => setEntry(i, e.target.value, v)}
-          />
+          <input className="ei-input ei-kv-input" placeholder="field name" value={k} onChange={e => setEntry(i, e.target.value, v)} />
           <span className="ei-kv-arrow">→</span>
-          <input
-            className="ei-input ei-kv-input"
-            placeholder="child selector"
-            value={v}
-            onChange={e => setEntry(i, k, e.target.value)}
-          />
+          <input className="ei-input ei-kv-input" placeholder="child selector" value={v} onChange={e => setEntry(i, k, e.target.value)} />
           <button className="ei-kv-remove" onClick={() => removeEntry(i)} title="Remove">×</button>
         </div>
       ))}
-      <button className="ei-kv-add" onClick={addEntry} style={{ color: accentColor }}>
-        + Add field
-      </button>
+      <button className="ei-kv-add" onClick={addEntry} style={{ color: accentColor }}>+ Add field</button>
     </div>
   );
 }
@@ -682,19 +778,10 @@ function KeyValueEditor({ value, onChange, accentColor }) {
 // ─── Icons ────────────────────────────────────────────────────────────────
 
 function PlusIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-      <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-    </svg>
-  );
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
 }
-
 function CheckIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-      <polyline points="20,6 9,17 4,12"/>
-    </svg>
-  );
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20,6 9,17 4,12"/></svg>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -702,7 +789,7 @@ function CheckIcon() {
 function buildDefaultParams(def) {
   const params = {};
   for (const [key, input] of Object.entries(def.inputs || {})) {
-    params[key] = input.default !== undefined ? input.default : (input.type === 'array' ? [] : '');
+    params[key] = input.default !== undefined ? input.default : (input.type === "array" ? [] : "");
   }
   return params;
 }
