@@ -237,6 +237,14 @@ function App() {
     socketRef.current?.emit("selectChildByIndex", { levelsUp, childIndex });
   }, []);
 
+  const handleHoverPickerChild = useCallback((selector) => {
+    socketRef.current?.emit("hoverPickerChild", { selector });
+  }, []);
+
+  const handleUnhoverPickerChild = useCallback(() => {
+    socketRef.current?.emit("unhoverPickerChild");
+  }, []);
+
   // ── Close inspector ───────────────────────────────────────────────────────
   const handleCloseInspector = useCallback(() => {
     socketRef.current?.emit("resetSelection");
@@ -427,6 +435,8 @@ function App() {
                   onSelectAncestor={handleSelectAncestor}
                   onGetChildren={handleGetChildren}
                   onSelectChild={handleSelectChild}
+                  onHoverPickerChild={handleHoverPickerChild}
+                  onUnhoverPickerChild={handleUnhoverPickerChild}
                   onClearForEachCtx={handleClearForEachCtx}
                 />
               </div>

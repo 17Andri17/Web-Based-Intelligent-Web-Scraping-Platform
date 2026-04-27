@@ -119,6 +119,7 @@ export default function ElementInspector({
   element, childrenList, forEachCtx,
   onClose, onAddStep,
   onSelectAncestor, onGetChildren, onSelectChild,
+  onHoverPickerChild, onUnhoverPickerChild,
   onClearForEachCtx,
 }) {
   if (!element) return null;
@@ -146,6 +147,8 @@ export default function ElementInspector({
       onSelectAncestor={onSelectAncestor}
       onGetChildren={onGetChildren}
       onSelectChild={onSelectChild}
+      onHoverPickerChild={onHoverPickerChild}
+      onUnhoverPickerChild={onUnhoverPickerChild}
       onClearForEachCtx={onClearForEachCtx}
     />
   );
@@ -153,7 +156,7 @@ export default function ElementInspector({
 
 // ─── Single element inspector ──────────────────────────────────────────────
 
-function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep, onSelectAncestor, onGetChildren, onSelectChild, onClearForEachCtx }) {
+function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep, onSelectAncestor, onGetChildren, onSelectChild, onHoverPickerChild, onUnhoverPickerChild, onClearForEachCtx }) {
   const [activeCategory, setActiveCategory] = useState("interaction");
   const [selectedAction, setSelectedAction] = useState(null);
   const [addedFlash, setAddedFlash] = useState(null);
@@ -206,10 +209,13 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
       {element.breadcrumb?.length > 0 && (
         <InteractiveBreadcrumb
           breadcrumb={element.breadcrumb}
+          element={element}
           childrenList={childrenList}
           onSelectAncestor={onSelectAncestor}
           onGetChildren={onGetChildren}
           onSelectChild={onSelectChild}
+          onHoverPickerChild={onHoverPickerChild}
+          onUnhoverPickerChild={onUnhoverPickerChild}
         />
       )}
 
@@ -470,105 +476,163 @@ function ForEachContextBanner({ onClear }) {
 
 // ─── Interactive breadcrumb ────────────────────────────────────────────────
 
-function InteractiveBreadcrumb({ breadcrumb, childrenList, onSelectAncestor, onGetChildren, onSelectChild }) {
-  const [openPickerAt, setOpenPickerAt] = useState(null); // breadcrumb index whose children are shown
-  const pickerRef = useRef(null);
+function InteractiveBreadcrumb({ breadcrumb, element, childrenList, onSelectAncestor, onGetChildren, onSelectChild, onHoverPickerChild, onUnhoverPickerChild }) {
+  const [openPickerAt, setOpenPickerAt] = useState(null); // breadcrumb index (or 'current')
+  const [pickerPos,    setPickerPos]    = useState({ top: 0, left: 0 });
+  const pickerRef  = useRef(null);
+  const chevronRefs = useRef({}); // keyed by index or 'current'
 
   // Close picker on outside click
   useEffect(() => {
     if (openPickerAt === null) return;
     const handler = (e) => {
-      if (pickerRef.current && !pickerRef.current.contains(e.target)) setOpenPickerAt(null);
+      if (pickerRef.current && !pickerRef.current.contains(e.target)) {
+        setOpenPickerAt(null);
+      }
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
   }, [openPickerAt]);
 
-  // When childrenList arrives for this picker index, keep it open
+  // Compute fixed position from the chevron button's bounding rect
+  function openPicker(key, buttonEl) {
+    const rect = buttonEl.getBoundingClientRect();
+    // Try to show below; if not enough space show above
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const pickerH = 260; // estimated max height
+    const top = spaceBelow >= pickerH
+      ? rect.bottom + 4
+      : rect.top - pickerH - 4;
+    setPickerPos({ top: Math.max(4, top), left: rect.left });
+    setOpenPickerAt(key);
+  }
+
+  function closePicker() {
+    setOpenPickerAt(null);
+    onUnhoverPickerChild?.();
+  }
+
+  // levelsUp relative to the current element
+  // breadcrumb[last] = current element (levelsUp=0)
+  // breadcrumb[last-1] = parent (levelsUp=1), etc.
+  const lastIdx = breadcrumb.length - 1;
+
+  function levelsUpForIdx(i) {
+    return lastIdx - i; // index i in breadcrumb → how many levels above current
+  }
+
+  function handleAncestorClick(i) {
+    const lvl = levelsUpForIdx(i);
+    if (lvl === 0) return; // current element — no-op on label click
+    onSelectAncestor(lvl);
+    closePicker();
+  }
+
+  function handleChevronClick(key, buttonEl) {
+    if (openPickerAt === key) { closePicker(); return; }
+    // key is either a breadcrumb index (ancestor) or 'current'
+    const lvl = key === 'current' ? 0 : levelsUpForIdx(key);
+    openPicker(key, buttonEl);
+    onGetChildren(lvl);
+  }
+
+  function handleChildPick(key, childIndex) {
+    const lvl = key === 'current' ? 0 : levelsUpForIdx(key);
+    onSelectChild(lvl, childIndex);
+    closePicker();
+  }
+
+  // Which children to show in the picker
   const pickerChildren = (childrenList && openPickerAt !== null) ? childrenList.children : null;
 
-  const handleChevronClick = (breadcrumbIdx) => {
-    // levelsUp = distance from last breadcrumb item to this breadcrumb item
-    const levelsUp = breadcrumb.length - 1 - breadcrumbIdx;
-    if (openPickerAt === breadcrumbIdx) {
-      setOpenPickerAt(null);
-    } else {
-      setOpenPickerAt(breadcrumbIdx);
-      onGetChildren(levelsUp);
-    }
-  };
-
-  const handleAncestorClick = (breadcrumbIdx) => {
-    const levelsUp = breadcrumb.length - 1 - breadcrumbIdx;
-    if (levelsUp === 0) return; // that's the selected element itself
-    onSelectAncestor(levelsUp);
-    setOpenPickerAt(null);
-  };
-
-  const handleChildPick = (breadcrumbIdx, childIndex) => {
-    const levelsUp = breadcrumb.length - 1 - breadcrumbIdx;
-    onSelectChild(levelsUp, childIndex);
-    setOpenPickerAt(null);
-  };
+  // Does the current element have children? We show the trailing chevron
+  // regardless and let "No children" appear if needed.
+  const hasChildren = element && (element.tag !== 'input' && element.tag !== 'img' && element.tag !== 'br' && element.tag !== 'hr');
 
   return (
-    <div className="ei-breadcrumb" style={{ position: "relative" }}>
+    <div className="ei-breadcrumb">
       {breadcrumb.map((seg, i) => {
-        const isLast = i === breadcrumb.length - 1;
-        const isPickerOpen = openPickerAt === i;
+        const isLast  = i === lastIdx;
+        const isOpen  = openPickerAt === i;
+
         return (
           <span key={i} className="ei-bc-item-wrap">
-            {/* Ancestor label — clickable to navigate up */}
+            {/* Segment label */}
             <button
-              className={`ei-bc-seg ${isLast ? "ei-bc-seg--current" : "ei-bc-seg--ancestor"}`}
+              className={`ei-bc-seg ${isLast ? 'ei-bc-seg--current' : 'ei-bc-seg--ancestor'}`}
               onClick={() => handleAncestorClick(i)}
-              title={isLast ? "Current element" : `Select ${seg.label}`}
-              disabled={isLast}>
+              disabled={isLast}
+              title={isLast ? 'Current element' : `Select ${seg.label}`}
+              onMouseEnter={() => !isLast && seg.selector && onHoverPickerChild?.(seg.selector)}
+              onMouseLeave={() => !isLast && onUnhoverPickerChild?.()}
+            >
               {seg.label}
             </button>
 
-            {/* Chevron separator — clicking shows children picker */}
+            {/* Chevron between segments (ancestor → next) */}
             {!isLast && (
-              <span className="ei-bc-sep-wrap" ref={isPickerOpen ? pickerRef : null}>
-                <button
-                  className={`ei-bc-chevron ${isPickerOpen ? "open" : ""}`}
-                  onClick={() => handleChevronClick(i)}
-                  title={`Browse children of ${seg.label}`}>
-                  ›
-                </button>
-
-                {/* Children picker dropdown */}
-                {isPickerOpen && (
-                  <div className="ei-bc-children-picker" ref={pickerRef}>
-                    <div className="ei-bc-picker-title">Children of <code>{seg.label}</code></div>
-                    {!pickerChildren ? (
-                      <div className="ei-bc-picker-loading">Loading…</div>
-                    ) : pickerChildren.length === 0 ? (
-                      <div className="ei-bc-picker-loading">No children</div>
-                    ) : (
-                      <div className="ei-bc-picker-list">
-                        {pickerChildren.slice(0, 20).map((child, ci) => (
-                          <button
-                            key={ci}
-                            className="ei-bc-picker-item"
-                            onClick={() => handleChildPick(i, child.childIndex ?? ci)}>
-                            <span className="ei-bc-picker-tag">&lt;{child.tag}&gt;</span>
-                            {child.classes && <span className="ei-bc-picker-cls">{child.classes.slice(0, 30)}</span>}
-                            {child.text && <span className="ei-bc-picker-text">{child.text.slice(0, 40)}</span>}
-                          </button>
-                        ))}
-                        {pickerChildren.length > 20 && (
-                          <div className="ei-bc-picker-more">+{pickerChildren.length - 20} more</div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </span>
+              <button
+                ref={el => { chevronRefs.current[i] = el; }}
+                className={`ei-bc-chevron ${isOpen ? 'open' : ''}`}
+                onClick={e => handleChevronClick(i, e.currentTarget)}
+                title={`Browse children of ${seg.label}`}
+              >›</button>
             )}
           </span>
         );
       })}
+
+      {/* Trailing chevron for the current element — drill into its children */}
+      {hasChildren && (
+        <button
+          ref={el => { chevronRefs.current['current'] = el; }}
+          className={`ei-bc-chevron ei-bc-chevron--trail ${openPickerAt === 'current' ? 'open' : ''}`}
+          onClick={e => handleChevronClick('current', e.currentTarget)}
+          title="Browse children of current element"
+        >›</button>
+      )}
+
+      {/* Picker rendered with position:fixed so it escapes overflow:auto */}
+      {openPickerAt !== null && (
+        <div
+          ref={pickerRef}
+          className="ei-bc-children-picker"
+          style={{ position: 'fixed', top: pickerPos.top, left: pickerPos.left, zIndex: 9999 }}
+        >
+          <div className="ei-bc-picker-title">
+            Children of{' '}
+            <code>
+              {openPickerAt === 'current'
+                ? breadcrumb[lastIdx]?.label
+                : breadcrumb[openPickerAt]?.label}
+            </code>
+          </div>
+          {!pickerChildren ? (
+            <div className="ei-bc-picker-loading">Loading…</div>
+          ) : pickerChildren.length === 0 ? (
+            <div className="ei-bc-picker-loading">No children</div>
+          ) : (
+            <div className="ei-bc-picker-list">
+              {pickerChildren.slice(0, 24).map((child, ci) => (
+                <button
+                  key={ci}
+                  className="ei-bc-picker-item"
+                  onClick={() => handleChildPick(openPickerAt, child.childIndex ?? ci)}
+                  onMouseEnter={() => child.selector && onHoverPickerChild?.(child.selector)}
+                  onMouseLeave={() => onUnhoverPickerChild?.()}
+                >
+                  <span className="ei-bc-picker-tag">&lt;{child.tag}&gt;</span>
+                  {child.classes && <span className="ei-bc-picker-cls">{child.classes.slice(0, 28)}</span>}
+                  {child.text   && <span className="ei-bc-picker-text">{child.text.slice(0, 40)}</span>}
+                </button>
+              ))}
+              {pickerChildren.length > 24 && (
+                <div className="ei-bc-picker-more">+{pickerChildren.length - 24} more children</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

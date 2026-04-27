@@ -821,6 +821,32 @@
 
   window.__resetSelection__ = () => fullReset();
 
+  // Highlight a single element with a purple hover ring (for picker preview)
+  let _hoverHighlightEl = null;
+  const HOVER_PICK_OUTLINE = '2px solid #a371f7';
+
+  window.__highlightElement__ = (selector) => {
+    window.__clearHoverHighlight__();
+    try {
+      const el = document.querySelector(selector);
+      if (!el) return;
+      _hoverHighlightEl = el;
+      setStyle(el, 'outline', HOVER_PICK_OUTLINE, true);
+      setStyle(el, 'box-shadow', 'inset 0 0 0 9999px rgba(163,113,247,0.10)', true);
+    } catch (_) {}
+  };
+
+  window.__clearHoverHighlight__ = () => {
+    if (!_hoverHighlightEl) return;
+    const el = _hoverHighlightEl;
+    _hoverHighlightEl = null;
+    // Only remove if the element isn't part of the hard/soft selection
+    if (!hardEls.includes(el) && !softEls.includes(el)) {
+      restoreStyle(el, 'outline');
+      restoreStyle(el, 'box-shadow');
+    }
+  };
+
   window.__selectAncestor__ = (levelsUp) => {
     if (!currentEl) return;
     let el = currentEl;

@@ -74,6 +74,25 @@ io.on('connection', (socket) => {
     } catch (_) {}
   });
 
+  // ── Picker hover highlight ───────────────────────────────────────────────
+  socket.on('hoverPickerChild', async ({ selector }) => {
+    try {
+      const s = userSessions.get(userId);
+      if (s?.page) await s.page.evaluate((sel) => {
+        if (typeof window.__highlightElement__ === 'function') window.__highlightElement__(sel);
+      }, selector);
+    } catch (_) {}
+  });
+
+  socket.on('unhoverPickerChild', async () => {
+    try {
+      const s = userSessions.get(userId);
+      if (s?.page) await s.page.evaluate(() => {
+        if (typeof window.__clearHoverHighlight__ === 'function') window.__clearHoverHighlight__();
+      });
+    } catch (_) {}
+  });
+
   // ── Navigate ────────────────────────────────────────────────────────────
   socket.on('navigate', async (data) => {
     try {
