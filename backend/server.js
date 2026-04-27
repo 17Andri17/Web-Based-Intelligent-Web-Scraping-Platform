@@ -75,12 +75,21 @@ io.on('connection', (socket) => {
   });
 
   // ── Picker hover highlight ───────────────────────────────────────────────
-  socket.on('hoverPickerChild', async ({ selector }) => {
+  socket.on('hoverAncestor', async ({ levelsUp }) => {
     try {
       const s = userSessions.get(userId);
-      if (s?.page) await s.page.evaluate((sel) => {
-        if (typeof window.__highlightElement__ === 'function') window.__highlightElement__(sel);
-      }, selector);
+      if (s?.page) await s.page.evaluate((lvl) => {
+        if (typeof window.__highlightAncestor__ === 'function') window.__highlightAncestor__(lvl);
+      }, levelsUp);
+    } catch (_) {}
+  });
+
+  socket.on('hoverPickerChild', async ({ levelsUp, childIndex }) => {
+    try {
+      const s = userSessions.get(userId);
+      if (s?.page) await s.page.evaluate((lvl, idx) => {
+        if (typeof window.__highlightPickerChild__ === 'function') window.__highlightPickerChild__(lvl, idx);
+      }, levelsUp, childIndex);
     } catch (_) {}
   });
 

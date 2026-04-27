@@ -119,7 +119,7 @@ export default function ElementInspector({
   element, childrenList, forEachCtx,
   onClose, onAddStep,
   onSelectAncestor, onGetChildren, onSelectChild,
-  onHoverPickerChild, onUnhoverPickerChild,
+  onHoverPickerChild, onHoverAncestor, onUnhoverPickerChild,
   onClearForEachCtx,
 }) {
   if (!element) return null;
@@ -148,6 +148,7 @@ export default function ElementInspector({
       onGetChildren={onGetChildren}
       onSelectChild={onSelectChild}
       onHoverPickerChild={onHoverPickerChild}
+      onHoverAncestor={onHoverAncestor}
       onUnhoverPickerChild={onUnhoverPickerChild}
       onClearForEachCtx={onClearForEachCtx}
     />
@@ -156,7 +157,7 @@ export default function ElementInspector({
 
 // ─── Single element inspector ──────────────────────────────────────────────
 
-function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep, onSelectAncestor, onGetChildren, onSelectChild, onHoverPickerChild, onUnhoverPickerChild, onClearForEachCtx }) {
+function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep, onSelectAncestor, onGetChildren, onSelectChild, onHoverPickerChild, onHoverAncestor, onUnhoverPickerChild, onClearForEachCtx }) {
   const [activeCategory, setActiveCategory] = useState("interaction");
   const [selectedAction, setSelectedAction] = useState(null);
   const [addedFlash, setAddedFlash] = useState(null);
@@ -214,6 +215,7 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
           onSelectAncestor={onSelectAncestor}
           onGetChildren={onGetChildren}
           onSelectChild={onSelectChild}
+          onHoverAncestor={onHoverAncestor}
           onHoverPickerChild={onHoverPickerChild}
           onUnhoverPickerChild={onUnhoverPickerChild}
         />
@@ -476,7 +478,7 @@ function ForEachContextBanner({ onClear }) {
 
 // ─── Interactive breadcrumb ────────────────────────────────────────────────
 
-function InteractiveBreadcrumb({ breadcrumb, element, childrenList, onSelectAncestor, onGetChildren, onSelectChild, onHoverPickerChild, onUnhoverPickerChild }) {
+function InteractiveBreadcrumb({ breadcrumb, element, childrenList, onSelectAncestor, onGetChildren, onSelectChild, onHoverAncestor, onHoverPickerChild, onUnhoverPickerChild }) {
   const [openPickerAt, setOpenPickerAt] = useState(null); // breadcrumb index (or 'current')
   const [pickerPos,    setPickerPos]    = useState({ top: 0, left: 0 });
   const pickerRef  = useRef(null);
@@ -563,7 +565,7 @@ function InteractiveBreadcrumb({ breadcrumb, element, childrenList, onSelectAnce
               onClick={() => handleAncestorClick(i)}
               disabled={isLast}
               title={isLast ? 'Current element' : `Select ${seg.label}`}
-              onMouseEnter={() => !isLast && seg.selector && onHoverPickerChild?.(seg.selector)}
+              onMouseEnter={() => !isLast && onHoverAncestor?.(levelsUpForIdx(i))}
               onMouseLeave={() => !isLast && onUnhoverPickerChild?.()}
             >
               {seg.label}
@@ -597,7 +599,7 @@ function InteractiveBreadcrumb({ breadcrumb, element, childrenList, onSelectAnce
         <div
           ref={pickerRef}
           className="ei-bc-children-picker"
-          style={{ position: 'fixed', top: pickerPos.top, left: pickerPos.left, zIndex: 9999 }}
+          style={{ position: 'fixed', top: pickerPos.top, right: pickerPos.right, zIndex: 9999 }}
         >
           <div className="ei-bc-picker-title">
             Children of{' '}
@@ -618,7 +620,10 @@ function InteractiveBreadcrumb({ breadcrumb, element, childrenList, onSelectAnce
                   key={ci}
                   className="ei-bc-picker-item"
                   onClick={() => handleChildPick(openPickerAt, child.childIndex ?? ci)}
-                  onMouseEnter={() => child.selector && onHoverPickerChild?.(child.selector)}
+                  onMouseEnter={() => onHoverPickerChild?.(
+                    openPickerAt === 'current' ? 0 : levelsUpForIdx(openPickerAt),
+                    child.childIndex ?? ci
+                  )}
                   onMouseLeave={() => onUnhoverPickerChild?.()}
                 >
                   <span className="ei-bc-picker-tag">&lt;{child.tag}&gt;</span>

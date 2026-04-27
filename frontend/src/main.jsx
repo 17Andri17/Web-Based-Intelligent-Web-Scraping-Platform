@@ -237,8 +237,12 @@ function App() {
     socketRef.current?.emit("selectChildByIndex", { levelsUp, childIndex });
   }, []);
 
-  const handleHoverPickerChild = useCallback((selector) => {
-    socketRef.current?.emit("hoverPickerChild", { selector });
+  const handleHoverAncestor = useCallback((levelsUp) => {
+    socketRef.current?.emit("hoverAncestor", { levelsUp });
+  }, []);
+
+  const handleHoverPickerChild = useCallback((levelsUp, childIndex) => {
+    socketRef.current?.emit("hoverPickerChild", { levelsUp, childIndex });
   }, []);
 
   const handleUnhoverPickerChild = useCallback(() => {
@@ -436,6 +440,7 @@ function App() {
                   onGetChildren={handleGetChildren}
                   onSelectChild={handleSelectChild}
                   onHoverPickerChild={handleHoverPickerChild}
+                  onHoverAncestor={handleHoverAncestor}
                   onUnhoverPickerChild={handleUnhoverPickerChild}
                   onClearForEachCtx={handleClearForEachCtx}
                 />

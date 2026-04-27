@@ -821,31 +821,52 @@
 
   window.__resetSelection__ = () => fullReset();
 
-  // Highlight a single element with a purple hover ring (for picker preview)
+  window.__resetSelection__ = () => fullReset();
+
+  // ── Hover highlight (picker + breadcrumb preview) ─────────────────────────
+  // Uses the same DOM walking logic as __selectAncestor__ / __selectChildByIndex__
+  // so hover and click always target the identical element — single source of truth.
+
   let _hoverHighlightEl = null;
   const HOVER_PICK_OUTLINE = '2px solid #a371f7';
 
-  window.__highlightElement__ = (selector) => {
-    window.__clearHoverHighlight__();
-    try {
-      const el = document.querySelector(selector);
-      if (!el) return;
-      _hoverHighlightEl = el;
-      setStyle(el, 'outline', HOVER_PICK_OUTLINE, true);
-      setStyle(el, 'box-shadow', 'inset 0 0 0 9999px rgba(163,113,247,0.10)', true);
-    } catch (_) {}
-  };
+  function applyHoverHighlight(el) {
+    clearHoverHighlight();
+    if (!el || !el.tagName) return;
+    _hoverHighlightEl = el;
+    setStyle(el, 'outline', HOVER_PICK_OUTLINE, true);
+    setStyle(el, 'box-shadow', 'inset 0 0 0 9999px rgba(163,113,247,0.10)', true);
+  }
 
-  window.__clearHoverHighlight__ = () => {
+  function clearHoverHighlight() {
     if (!_hoverHighlightEl) return;
     const el = _hoverHighlightEl;
     _hoverHighlightEl = null;
-    // Only remove if the element isn't part of the hard/soft selection
     if (!hardEls.includes(el) && !softEls.includes(el)) {
       restoreStyle(el, 'outline');
       restoreStyle(el, 'box-shadow');
     }
+  }
+
+  // Highlight the ancestor levelsUp steps above currentEl —
+  // same walk as __selectAncestor__ so hover === click target.
+  window.__highlightAncestor__ = (levelsUp) => {
+    if (!currentEl) return;
+    let el = currentEl;
+    for (let i = 0; i < levelsUp; i++) el = el?.parentElement;
+    applyHoverHighlight(el || null);
   };
+
+  // Highlight a child by index inside the ancestor levelsUp above currentEl —
+  // same walk as __selectChildByIndex__ so hover === click target.
+  window.__highlightPickerChild__ = (levelsUp, childIndex) => {
+    if (!currentEl) return;
+    let el = currentEl;
+    for (let i = 0; i < levelsUp; i++) el = el?.parentElement;
+    applyHoverHighlight(el?.children[childIndex] || null);
+  };
+
+  window.__clearHoverHighlight__ = () => clearHoverHighlight();
 
   window.__selectAncestor__ = (levelsUp) => {
     if (!currentEl) return;
