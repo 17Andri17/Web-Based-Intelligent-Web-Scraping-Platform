@@ -1,20 +1,21 @@
+const { executablePath } = require('puppeteer');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 // ==================== ANTI-DETECTION CONFIG ====================
 const STEALTH_CONFIG = {
-  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  platform: 'Win32',
-  vendor: 'Google Inc.',
-  languages: ['en-US', 'en'],
-  hardwareConcurrency: 8,
-  deviceMemory: 8,
-  maxTouchPoints: 0,
-  webglVendor: 'Google Inc. (NVIDIA)',
-  webglRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)',
-  screenResolution: { width: 1920, height: 1080 },
-  colorDepth: 24
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    platform: 'Win32',
+    vendor: 'Google Inc.',
+    languages: ['en-US', 'en'],
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+    maxTouchPoints: 0,
+    webglVendor: 'Google Inc. (NVIDIA)',
+    webglRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    screenResolution: { width: 1920, height: 1080 },
+    colorDepth: 24
 };
 
 // ==================== NAVIGATOR OVERRIDE SCRIPT ====================
@@ -263,231 +264,232 @@ const getNavigatorOverrideScript = (config) => `
 `;
 
 class BrowserManager {
-  constructor() {
-    this.browser = null;
-    this.contexts = new Map();
-    this.pages = new Map();
-    this.pagePromises = new Map();
-    this.exposedBindings = new Map();
-    this.workerListeners = new Map();
-  }
-
-  async initBrowser() {
-    if (this.browser) return;
-
-    if (this.browserLaunching) {
-      await this.browserLaunching;
-      return;
+    constructor() {
+        this.browser = null;
+        this.contexts = new Map();
+        this.pages = new Map();
+        this.pagePromises = new Map();
+        this.exposedBindings = new Map();
+        this.workerListeners = new Map();
     }
 
-    this.browserLaunching = (async () => {
-      this.browser = await puppeteer.launch({
-        headless: true,
-        defaultViewport: null,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu-sandbox',
-          '--enable-gpu-rasterization',
-          '--enable-accelerated-2d-canvas',
-          '--disable-background-timer-throttling',
-          '--disable-renderer-backgrounding',
-          '--force-color-profile=srgb',
-          '--enable-font-antialiasing',
-          '--font-render-hinting=medium',
-          
-          // Anti-detection flags
-          '--disable-blink-features=AutomationControlled',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--disable-web-security',
-          '--disable-features=BlockInsecurePrivateNetworkRequests',
-          '--disable-features=WebRtcHideLocalIpsWithMdns',
-          
-          // Consistent User-Agent
-          `--user-agent=${STEALTH_CONFIG.userAgent}`,
-          
-          // Window size for consistency
-          '--window-size=1920,1080',
-          
-          // Disable automation extensions
-          '--disable-extensions',
-          '--disable-component-extensions-with-background-pages',
-          '--disable-default-apps',
-          '--disable-hang-monitor',
-          '--disable-popup-blocking',
-          '--disable-prompt-on-repost',
-          '--disable-sync',
-          '--disable-translate',
-          '--metrics-recording-only',
-          '--no-first-run',
-          '--safebrowsing-disable-auto-update',
-          
-          // Memory/performance
-          '--disable-background-networking',
-          '--disable-client-side-phishing-detection',
-          '--disable-component-update'
-        ],
-        ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars']
-      });
+    async initBrowser() {
+        if (this.browser) return;
 
-      // Set up worker interception at browser level
-      await this._setupWorkerInterception();
+        if (this.browserLaunching) {
+            await this.browserLaunching;
+            return;
+        }
 
-      console.log('✅ Browser launched with enhanced anti-detection');
-    })();
+        this.browserLaunching = (async() => {
+            this.browser = await puppeteer.launch({
+                executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+                headless: true,
+                defaultViewport: null,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu-sandbox',
+                    '--enable-gpu-rasterization',
+                    '--enable-accelerated-2d-canvas',
+                    '--disable-background-timer-throttling',
+                    '--disable-renderer-backgrounding',
+                    '--force-color-profile=srgb',
+                    '--enable-font-antialiasing',
+                    '--font-render-hinting=medium',
 
-    await this.browserLaunching;
-    this.browserLaunching = null;
-  }
+                    // Anti-detection flags
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--disable-web-security',
+                    '--disable-features=BlockInsecurePrivateNetworkRequests',
+                    '--disable-features=WebRtcHideLocalIpsWithMdns',
 
-  // ==================== WORKER INTERCEPTION ====================
-  async _setupWorkerInterception() {
-    if (!this.browser) return;
+                    // Consistent User-Agent
+                    `--user-agent=${STEALTH_CONFIG.userAgent}`,
 
-    this.browser.on('targetcreated', async (target) => {
-      const type = target.type();
-      
-      // Handle all worker types
-      if (type === 'worker' || type === 'service_worker' || type === 'shared_worker') {
-        await this._injectIntoWorker(target);
-      }
-    });
-  }
+                    // Window size for consistency
+                    '--window-size=1920,1080',
 
-  async _injectIntoWorker(target) {
-    try {
-      const client = await target.createCDPSession();
-      
-      // Enable Runtime to execute code in worker
-      await client.send('Runtime.enable');
-      
-      // Inject the navigator override script
-      await client.send('Runtime.evaluate', {
-        expression: getNavigatorOverrideScript(STEALTH_CONFIG),
-        awaitPromise: true
-      });
-      
-      console.log(`✅ Injected stealth into ${target.type()}`);
-    } catch (err) {
-      // Worker might have already closed or not support CDP
-      if (!err.message.includes('Target closed') && !err.message.includes('Session closed')) {
-        console.warn(`⚠️ Could not inject into worker: ${err.message}`);
-      }
-    }
-  }
+                    // Disable automation extensions
+                    '--disable-extensions',
+                    '--disable-component-extensions-with-background-pages',
+                    '--disable-default-apps',
+                    '--disable-hang-monitor',
+                    '--disable-popup-blocking',
+                    '--disable-prompt-on-repost',
+                    '--disable-sync',
+                    '--disable-translate',
+                    '--metrics-recording-only',
+                    '--no-first-run',
+                    '--safebrowsing-disable-auto-update',
 
-  async getContext(userId) {
-    await this.initBrowser();
-    if (!this.contexts.has(userId)) {
-      let context;
-      if (typeof this.browser.createBrowserContext === 'function') {
-        context = await this.browser.createBrowserContext();
-      } else if (typeof this.browser.createIncognitoBrowserContext === 'function') {
-        context = await this.browser.createIncognitoBrowserContext();
-      } else {
-        context = this.browser.defaultBrowserContext();
-        console.warn('Incognito context not supported, using default context.');
-      }
-      this.contexts.set(userId, context);
-    }
-    return this.contexts.get(userId);
-  }
+                    // Memory/performance
+                    '--disable-background-networking',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-component-update'
+                ],
+                ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars']
+            });
 
-  async getPage(userId) {
-    if (this.pages.has(userId)) {
-      return this.pages.get(userId);
+            // Set up worker interception at browser level
+            await this._setupWorkerInterception();
+
+            console.log('✅ Browser launched with enhanced anti-detection');
+        })();
+
+        await this.browserLaunching;
+        this.browserLaunching = null;
     }
 
-    if (this.pagePromises.has(userId)) {
-      return this.pagePromises.get(userId);
+    // ==================== WORKER INTERCEPTION ====================
+    async _setupWorkerInterception() {
+        if (!this.browser) return;
+
+        this.browser.on('targetcreated', async(target) => {
+            const type = target.type();
+
+            // Handle all worker types
+            if (type === 'worker' || type === 'service_worker' || type === 'shared_worker') {
+                await this._injectIntoWorker(target);
+            }
+        });
     }
 
-    const promise = (async () => {
-      const context = await this.getContext(userId);
-      const page = await context.newPage();
-
-      // Apply comprehensive stealth before any navigation
-      await this._applyStealthToPage(page);
-
-      this.pages.set(userId, page);
-      this.pagePromises.delete(userId);
-
-      page.on('close', () => this.pages.delete(userId));
-
-      // Handle new frames (iframes)
-      page.on('frameattached', async (frame) => {
+    async _injectIntoWorker(target) {
         try {
-          await frame.evaluate(getNavigatorOverrideScript(STEALTH_CONFIG));
+            const client = await target.createCDPSession();
+
+            // Enable Runtime to execute code in worker
+            await client.send('Runtime.enable');
+
+            // Inject the navigator override script
+            await client.send('Runtime.evaluate', {
+                expression: getNavigatorOverrideScript(STEALTH_CONFIG),
+                awaitPromise: true
+            });
+
+            console.log(`✅ Injected stealth into ${target.type()}`);
+        } catch (err) {
+            // Worker might have already closed or not support CDP
+            if (!err.message.includes('Target closed') && !err.message.includes('Session closed')) {
+                console.warn(`⚠️ Could not inject into worker: ${err.message}`);
+            }
+        }
+    }
+
+    async getContext(userId) {
+        await this.initBrowser();
+        if (!this.contexts.has(userId)) {
+            let context;
+            if (typeof this.browser.createBrowserContext === 'function') {
+                context = await this.browser.createBrowserContext();
+            } else if (typeof this.browser.createIncognitoBrowserContext === 'function') {
+                context = await this.browser.createIncognitoBrowserContext();
+            } else {
+                context = this.browser.defaultBrowserContext();
+                console.warn('Incognito context not supported, using default context.');
+            }
+            this.contexts.set(userId, context);
+        }
+        return this.contexts.get(userId);
+    }
+
+    async getPage(userId) {
+        if (this.pages.has(userId)) {
+            return this.pages.get(userId);
+        }
+
+        if (this.pagePromises.has(userId)) {
+            return this.pagePromises.get(userId);
+        }
+
+        const promise = (async() => {
+            const context = await this.getContext(userId);
+            const page = await context.newPage();
+
+            // Apply comprehensive stealth before any navigation
+            await this._applyStealthToPage(page);
+
+            this.pages.set(userId, page);
+            this.pagePromises.delete(userId);
+
+            page.on('close', () => this.pages.delete(userId));
+
+            // Handle new frames (iframes)
+            page.on('frameattached', async(frame) => {
+                try {
+                    await frame.evaluate(getNavigatorOverrideScript(STEALTH_CONFIG));
+                } catch (e) {}
+            });
+
+            return page;
+        })();
+
+        this.pagePromises.set(userId, promise);
+
+        return promise;
+    }
+
+    // ==================== STEALTH APPLICATION ====================
+    async _applyStealthToPage(page) {
+        // Set user agent via CDP for consistency
+        const client = await page.target().createCDPSession();
+
+        // Set User-Agent Override (affects main context AND workers)
+        await client.send('Emulation.setUserAgentOverride', {
+            userAgent: STEALTH_CONFIG.userAgent,
+            platform: STEALTH_CONFIG.platform,
+            userAgentMetadata: {
+                brands: [
+                    { brand: 'Chromium', version: '131' },
+                    { brand: 'Google Chrome', version: '131' },
+                    { brand: 'Not_A Brand', version: '24' }
+                ],
+                fullVersionList: [
+                    { brand: 'Chromium', version: '131.0.6778.85' },
+                    { brand: 'Google Chrome', version: '131.0.6778.85' },
+                    { brand: 'Not_A Brand', version: '24.0.0.0' }
+                ],
+                platform: 'Windows',
+                platformVersion: '15.0.0',
+                architecture: 'x86',
+                model: '',
+                mobile: false,
+                bitness: '64',
+                wow64: false
+            }
+        });
+
+        // Inject stealth script on every new document (including workers!)
+        await page.evaluateOnNewDocument(getNavigatorOverrideScript(STEALTH_CONFIG));
+
+        // Additional CDP configurations for stealth
+        try {
+            // Set locale
+            await client.send('Emulation.setLocaleOverride', {
+                locale: 'en-US'
+            });
         } catch (e) {}
-      });
 
-      return page;
-    })();
+        try {
+            // Set timezone
+            await client.send('Emulation.setTimezoneOverride', {
+                timezoneId: 'America/New_York'
+            });
+        } catch (e) {}
 
-    this.pagePromises.set(userId, promise);
+        // Override navigator.webdriver at the earliest opportunity
+        await page.evaluateOnNewDocument(() => {
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => false,
+                configurable: true
+            });
+        });
 
-    return promise;
-  }
-
-  // ==================== STEALTH APPLICATION ====================
-  async _applyStealthToPage(page) {
-    // Set user agent via CDP for consistency
-    const client = await page.target().createCDPSession();
-    
-    // Set User-Agent Override (affects main context AND workers)
-    await client.send('Emulation.setUserAgentOverride', {
-      userAgent: STEALTH_CONFIG.userAgent,
-      platform: STEALTH_CONFIG.platform,
-      userAgentMetadata: {
-        brands: [
-          { brand: 'Chromium', version: '131' },
-          { brand: 'Google Chrome', version: '131' },
-          { brand: 'Not_A Brand', version: '24' }
-        ],
-        fullVersionList: [
-          { brand: 'Chromium', version: '131.0.6778.85' },
-          { brand: 'Google Chrome', version: '131.0.6778.85' },
-          { brand: 'Not_A Brand', version: '24.0.0.0' }
-        ],
-        platform: 'Windows',
-        platformVersion: '15.0.0',
-        architecture: 'x86',
-        model: '',
-        mobile: false,
-        bitness: '64',
-        wow64: false
-      }
-    });
-
-    // Inject stealth script on every new document (including workers!)
-    await page.evaluateOnNewDocument(getNavigatorOverrideScript(STEALTH_CONFIG));
-
-    // Additional CDP configurations for stealth
-    try {
-      // Set locale
-      await client.send('Emulation.setLocaleOverride', {
-        locale: 'en-US'
-      });
-    } catch (e) {}
-
-    try {
-      // Set timezone
-      await client.send('Emulation.setTimezoneOverride', {
-        timezoneId: 'America/New_York'
-      });
-    } catch (e) {}
-
-    // Override navigator.webdriver at the earliest opportunity
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => false,
-        configurable: true
-      });
-    });
-
-    // Intercept workers created via Worker constructor
-    await page.evaluateOnNewDocument(`
+        // Intercept workers created via Worker constructor
+        await page.evaluateOnNewDocument(`
       (function() {
         const config = ${JSON.stringify(STEALTH_CONFIG)};
         
@@ -513,64 +515,64 @@ class BrowserManager {
       })();
     `);
 
-    // Set viewport
-    await page.setViewport({
-      width: 1920,
-      height: 1080,
-      deviceScaleFactor: 1,
-      hasTouch: false,
-      isMobile: false
-    });
+        // Set viewport
+        await page.setViewport({
+            width: 1920,
+            height: 1080,
+            deviceScaleFactor: 1,
+            hasTouch: false,
+            isMobile: false
+        });
 
-    console.log('✅ Stealth applied to page');
-  }
-
-  async ensureBinding(userId, name, fn) {
-    const page = await this.getPage(userId);
-    const bindings = this.exposedBindings.get(userId) || new Set();
-
-    if (!bindings.has(name)) {
-      await page.exposeFunction(name, fn);
-      bindings.add(name);
-      this.exposedBindings.set(userId, bindings);
-    }
-  }
-
-  async closeContext(userId) {
-    if (this.pages.has(userId)) {
-      try {
-        await this.pages.get(userId).close();
-      } catch (err) {
-        console.warn(`Error closing page for user ${userId}:`, err);
-      }
-      this.exposedBindings.delete(userId);
-      this.pages.delete(userId);
+        console.log('✅ Stealth applied to page');
     }
 
-    const context = this.contexts.get(userId);
-    if (context) {
-      try {
-        await context.close();
-      } catch (err) {
-        console.warn(`Error closing context for user ${userId}:`, err);
-      }
-      this.contexts.delete(userId);
-    }
-  }
+    async ensureBinding(userId, name, fn) {
+        const page = await this.getPage(userId);
+        const bindings = this.exposedBindings.get(userId) || new Set();
 
-  async closeBrowser() {
-    if (this.browser) {
-      try {
-        await this.browser.close();
-      } catch (err) {
-        console.warn('Error closing browser:', err);
-      }
-      this.browser = null;
-      this.contexts.clear();
-      this.pages.clear();
-      this.exposedBindings.clear();
+        if (!bindings.has(name)) {
+            await page.exposeFunction(name, fn);
+            bindings.add(name);
+            this.exposedBindings.set(userId, bindings);
+        }
     }
-  }
+
+    async closeContext(userId) {
+        if (this.pages.has(userId)) {
+            try {
+                await this.pages.get(userId).close();
+            } catch (err) {
+                console.warn(`Error closing page for user ${userId}:`, err);
+            }
+            this.exposedBindings.delete(userId);
+            this.pages.delete(userId);
+        }
+
+        const context = this.contexts.get(userId);
+        if (context) {
+            try {
+                await context.close();
+            } catch (err) {
+                console.warn(`Error closing context for user ${userId}:`, err);
+            }
+            this.contexts.delete(userId);
+        }
+    }
+
+    async closeBrowser() {
+        if (this.browser) {
+            try {
+                await this.browser.close();
+            } catch (err) {
+                console.warn('Error closing browser:', err);
+            }
+            this.browser = null;
+            this.contexts.clear();
+            this.pages.clear();
+            this.exposedBindings.clear();
+        }
+    }
 }
 
 module.exports = new BrowserManager();

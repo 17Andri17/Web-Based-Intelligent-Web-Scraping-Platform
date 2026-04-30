@@ -44,8 +44,47 @@ function genAction(step, ctx) {
   const { type, params = {}, advanced = {}, outputVar, label } = step;
   const varName = outputVar || `_step_${ctx.nextId()}`;
   const isExtraction = EXTRACTION_TYPES.has(type);
+
+  // ── ForEach element context ─────────────────────────────────────────────
+  // When inside a FOR_EACH_ELEMENTS loop that has extractions, generate
+  // element-relative code using `el.$eval(selector)` instead of page-level
+  // helpers, and populate the row object instead of __results__.
+  const feCtx = ctx.forEachEl; // { elVar, rowVar, hasExtractions } | undefined
+  if (feCtx && feCtx.hasExtractions && isExtraction) {
+    const fieldKey = (label && label.trim()) ? label : type.toLowerCase().replace('extract_', '');
+    const sel = params.selector || '';
+    const isSelf = sel === ':scope' || sel === '';
+
+    switch (type) {
+      case 'EXTRACT_TEXT': {
+        const expr = isSelf
+          ? `await ${feCtx.elVar}.evaluate(e => (e.textContent || '').trim()).catch(() => '')`
+          : `await ${feCtx.elVar}.$eval(${q(sel)}, e => (e.textContent || '').trim()).catch(() => '')`;
+        return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${expr};\n`;
+      }
+      case 'EXTRACT_ATTRIBUTE': {
+        const attr = params.attribute || '';
+        const expr = isSelf
+          ? `await ${feCtx.elVar}.evaluate((e, a) => e.getAttribute(a) || '', ${q(attr)}).catch(() => '')`
+          : `await ${feCtx.elVar}.$eval(${q(sel)}, (e, a) => e.getAttribute(a) || '', ${q(attr)}).catch(() => '')`;
+        return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${expr};\n`;
+      }
+      case 'EXTRACT_HTML': {
+        const prop = params.mode === 'outer' ? 'outerHTML' : 'innerHTML';
+        const expr = isSelf
+          ? `await ${feCtx.elVar}.evaluate(e => e.${prop}).catch(() => '')`
+          : `await ${feCtx.elVar}.$eval(${q(sel)}, e => e.${prop}).catch(() => '')`;
+        return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${expr};\n`;
+      }
+      default:
+        // Other extraction types (TABLE, LIST, JSON) fall through to page-level
+        break;
+    }
+  }
+
+  // ── Standard (page-level) code ──────────────────────────────────────────
   let store = '';
-  if (isExtraction) {
+  if (isExtraction && !feCtx?.hasExtractions) {
     const key = (label && label.trim()) ? label : `extracted_${varName}`;
     store = `  __results__[${JSON.stringify(key)}] = ${varName};\n`;
   }
@@ -341,12 +380,55 @@ function genControl(step, ctx, depth) {
 
     case 'FOR_EACH_ELEMENTS': {
       const sel    = JSON.stringify(params.selector || '');
-      const item   = params.itemVar  || 'el';
-      const idx    = params.indexVar || 'i';
-      const tmpVar = `_els_${idx}_${Math.random().toString(36).slice(2,6)}`;
-      const body   = genStepList(step.body || [], ctx, depth + 1);
-      return `{\n  const ${tmpVar} = await page.$$(${sel});\n  for (let ${idx} = 0; ${idx} < ${tmpVar}.length; ${idx}++) {\n    const ${item} = ${tmpVar}[${idx}];\n${body}  }\n}\n`;
+      const idxVar = params.indexVar || 'i';
+      const elsVar = `_els_${ctx.nextId()}`;
+      const elVar  = `_el_${ctx.nextId()}`;
+
+      // Detect extraction steps in the body (top level of body only)
+      const bodySteps = step.body || [];
+      const hasExtractions = bodySteps.some(
+        s => s.kind !== 'control' && EXTRACTION_TYPES.has(s.type)
+      );
+
+      const rowVar     = `_row_${ctx.nextId()}`;
+      const resultsVar = `_rows_${ctx.nextId()}`;
+      const resultsKey = (step.label && step.label.trim()) ? step.label : 'results';
+
+      // Push forEach element context so genAction generates element-relative code
+      const prevCtx = ctx.forEachEl;
+      ctx.forEachEl = { elVar, rowVar, hasExtractions };
+      const body = genStepList(bodySteps, ctx, depth + 1);
+      ctx.forEachEl = prevCtx;
+
+      if (hasExtractions) {
+        return [
+          `const ${resultsVar} = [];`,
+          `{`,
+          `  const ${elsVar} = await page.$$(${sel});`,
+          `  for (let ${idxVar} = 0; ${idxVar} < ${elsVar}.length; ${idxVar}++) {`,
+          `    const ${elVar} = ${elsVar}[${idxVar}];`,
+          `    const ${rowVar} = { _index: ${idxVar} + 1 };`,
+          body.trimEnd(),
+          `    ${resultsVar}.push(${rowVar});`,
+          `  }`,
+          `}`,
+          `__results__[${JSON.stringify(resultsKey)}] = ${resultsVar};`,
+          ``,
+        ].join('\n');
+      }
+
+      return [
+        `{`,
+        `  const ${elsVar} = await page.$$(${sel});`,
+        `  for (let ${idxVar} = 0; ${idxVar} < ${elsVar}.length; ${idxVar}++) {`,
+        `    const ${elVar} = ${elsVar}[${idxVar}];`,
+        body.trimEnd(),
+        `  }`,
+        `}`,
+        ``,
+      ].join('\n');
     }
+
 
     case 'WHILE': {
       const expr = params.expression || 'false';
@@ -446,9 +528,11 @@ async function applyStealthToPage(page) {
 async function resolveElement(page, selectors) {
   for (const { value, type } of selectors) {
     try {
-      const el = type === 'xpath'
-        ? (await page.$x(value))[0]
-        : await page.$(value);
+      const selector =
+        type === 'xpath'
+          ? \`::-p-xpath(\${value})\`
+          : value;
+      const el = await page.$(selector);
       if (el) return el;
     } catch (_) {}
   }
@@ -462,9 +546,12 @@ async function resolveElement(page, selectors) {
 async function resolveElements(page, selectors) {
   for (const { value, type } of selectors) {
     try {
-      const els = type === 'xpath'
-        ? await page.$x(value)
-        : await page.$$(value);
+      const selector =
+        type === 'xpath'
+          ? \`::-p-xpath(\${value})\`
+          : value;
+
+      const els = await page.$$(selector);
       if (els && els.length > 0) return els;
     } catch (_) {}
   }
@@ -516,6 +603,8 @@ async function run() {
   const __results__ = {};
 
   const browser = await puppeteer.launch({
+    // to delete:
+    executablePath: 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
     headless: true,
     args: [
       '--no-sandbox',
@@ -545,7 +634,26 @@ ${stepCode}
   // Output collected extraction results
   if (Object.keys(__results__).length > 0) {
     console.log('');
-    console.log('WORKFLOW_RESULTS:' + JSON.stringify(__results__));
+    for (const [key, value] of Object.entries(__results__)) {
+      if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object') {
+        // Tabular data from ForEach loop — print as table
+        console.log('\\n── ' + key + ' ──');
+        const cols = Object.keys(value[0]);
+        const widths = cols.map(c => Math.max(c.length, ...value.map(r => String(r[c] ?? '').length)));
+        const hr = widths.map(w => '─'.repeat(w + 2)).join('┼');
+        const header = cols.map((c, i) => ' ' + c.padEnd(widths[i]) + ' ').join('│');
+        console.log(header);
+        console.log(hr);
+        value.forEach(row => {
+          const line = cols.map((c, i) => ' ' + String(row[c] ?? '').padEnd(widths[i]) + ' ').join('│');
+          console.log(line);
+        });
+      } else {
+        console.log('\\n── ' + key + ' ──');
+        console.log(JSON.stringify(value, null, 2));
+      }
+    }
+    console.log('\\nWORKFLOW_RESULTS:' + JSON.stringify(__results__));
   }
 }
 

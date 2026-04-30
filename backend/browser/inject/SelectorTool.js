@@ -40,8 +40,28 @@
     if (!Object.keys(s).length) originalStyles.delete(el);
   }
   function clearArr(arr) {
-    arr.forEach(el => { restoreStyle(el, 'outline'); restoreStyle(el, 'box-shadow'); });
+    arr.forEach(el => {
+      restoreStyle(el, 'outline');
+      restoreStyle(el, 'box-shadow');
+      // If this element is a scoped iterator element, re-apply its elevation
+      // so it doesn't lose the purple scope outline
+      if (_allIteratorEls && _allIteratorEls.includes(el)) {
+        _reapplyScopeEl(el);
+      }
+    });
     arr.length = 0;
+  }
+
+  // Re-stamp scope elevation styles onto an iterator element after a restore
+  // (called lazily so _allIteratorEls / SCOPE_OUTLINE are guaranteed to exist)
+  function _reapplyScopeEl(el) {
+    if (!el) return;
+    el.style.setProperty('outline',    SCOPE_OUTLINE, 'important');
+    el.style.setProperty('box-shadow', SCOPE_SHADOW,  'important');
+    if (getComputedStyle(el).position === 'static') {
+      el.style.setProperty('position', 'relative', 'important');
+    }
+    el.style.setProperty('z-index', '2147483641', 'important');
   }
   function applySoft(els) {
     clearArr(softEls);
@@ -54,7 +74,13 @@
 
   function fullReset() {
     clearArr(softEls); clearArr(hardEls);
-    if (hoverEl && !softEls.includes(hoverEl) && !hardEls.includes(hoverEl)) restoreStyle(hoverEl, 'outline');
+    if (hoverEl && !softEls.includes(hoverEl) && !hardEls.includes(hoverEl)) {
+      if (_allIteratorEls && _allIteratorEls.includes(hoverEl)) {
+        _reapplyScopeEl(hoverEl); // keep scope elevation, just remove hover tint
+      } else {
+        restoreStyle(hoverEl, 'outline');
+      }
+    }
     hoverEl = null; currentEl = null; softSelector = null; softStrategy = null; selState = 'idle';
   }
 
@@ -672,12 +698,54 @@
 
   function buildElementInfo(el) {
     let primary = null, fallbackSelectors = [];
-    try {
-      const result = window.SelectorGenerator.getSelectorsForElement(el, { actionType: 'generic', maxFallbacks: 5 });
-      primary = result.primary ? { value: result.primary.value, type: result.primary.type, strategy: result.primary.strategy } : null;
-      fallbackSelectors = (result.fallbacks || []).map(f => ({ value: f.value, type: f.type, strategy: f.strategy }));
-    } catch (_) {
-      primary = { value: buildSimpleSelector(el), type: 'css', strategy: 'fallback' };
+
+    // When inside a forEach scope, generate selectors RELATIVE to the scope element.
+    // The selector must work for every iterated element — verified by testing it
+    // against a sample of all iterator elements (not just the active one).
+    const scopeEl = _forEachScopeEl;
+    if (scopeEl && (el === scopeEl || scopeEl.contains(el))) {
+      if (el === scopeEl) {
+        // User selected the iterator element itself.
+        // `:scope` means "this element" in Playwright's el.$eval(':scope', ...) —
+        // it's clean, portable, and requires no page-level selector in sub-queries.
+        primary = { value: ':scope', type: 'css', strategy: 'iterator-self' };
+      } else {
+        // Descendant of scope — build a relative selector
+        let relSel = buildRelativeSelector(el, scopeEl);
+
+        // Cross-check across other iterator elements — must return 0 or 1 per item
+        if (relSel && _allIteratorEls.length > 1) {
+          const sampleOthers = _allIteratorEls.filter(e => e !== scopeEl).slice(0, 5);
+          const tooAmbiguous = sampleOthers.some(iterEl => {
+            try { return iterEl.querySelectorAll(relSel).length > 1; }
+            catch (_) { return false; }
+          });
+          if (tooAmbiguous) {
+            const fullPath = buildUniquePathFromAncestor(el, scopeEl);
+            if (fullPath) {
+              const stripped = fullPath.replace(/:nth-child\(\d+\)/g, '');
+              try {
+                const hits = [...scopeEl.querySelectorAll(stripped)];
+                if (hits.length === 1 && hits[0] === el) relSel = stripped;
+              } catch (_) {}
+            }
+          }
+        }
+
+        if (relSel) {
+          primary = { value: relSel, type: 'css', strategy: 'relative-to-scope' };
+        }
+      }
+    }
+
+    if (!primary) {
+      try {
+        const result = window.SelectorGenerator.getSelectorsForElement(el, { actionType: 'generic', maxFallbacks: 5 });
+        primary = result.primary ? { value: result.primary.value, type: result.primary.type, strategy: result.primary.strategy } : null;
+        fallbackSelectors = (result.fallbacks || []).map(f => ({ value: f.value, type: f.type, strategy: f.strategy }));
+      } catch (_) {
+        primary = { value: buildSimpleSelector(el), type: 'css', strategy: 'fallback' };
+      }
     }
 
     const tag     = el.tagName.toLowerCase();
@@ -691,7 +759,9 @@
 
     const breadcrumb = [];
     let cur = el;
-    while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'html') {
+    // When scoped, only show breadcrumb from el down to (not past) the scope element
+    const stopAt = (scopeEl && el !== scopeEl) ? scopeEl : document.documentElement;
+    while (cur && cur.tagName && cur !== stopAt) {
       let seg = cur.tagName.toLowerCase();
       if (cur.id) seg += '#' + cur.id;
       else if (cur.classList.length) seg += '.' + [...cur.classList].slice(0, 2).join('.');
@@ -706,10 +776,11 @@
     }
 
     return {
-      selector: primary?.value || '',
-      selectorType: primary?.type || 'css',
+      selector:         primary?.value || '',
+      selectorType:     primary?.type  || 'css',
       selectorStrategy: primary?.strategy || '',
       fallbackSelectors,
+      isRelativeToScope: !!(scopeEl && (el === scopeEl || scopeEl.contains(el))),
       tag, text, href, src,
       isLink, isInput, isImg, isTable,
       attrs, breadcrumb,
@@ -717,9 +788,124 @@
     };
   }
 
+  /**
+   * Build a robust relative CSS selector for `el` within `scopeEl`.
+   *
+   * Goals:
+   *  1. Works for EVERY iterator element, not just the one clicked —
+   *     uses tag + class patterns (not nth-child) so it matches the
+   *     structural role, not the specific position.
+   *  2. Optional-element safe — if an element doesn't exist in some
+   *     iterator instances (e.g. pool dimensions on houses without pools),
+   *     `querySelectorAll` returns empty and the extractor gets "" — no crash.
+   *  3. Uniqueness within scope — verified against the active scope element;
+   *     if not unique, falls back to more specific path.
+   *
+   * Strategy (most to least preferred):
+   *  A. tag.class (single level) — e.g. `span.price`
+   *  B. parent.class > tag.class (two levels) — e.g. `.price-wrap > span`
+   *  C. tag-only path from scopeEl — e.g. `div > span`
+   *  D. nth-child-free path built from class names (each segment class-first)
+   *
+   * All candidates are verified with scopeEl.querySelectorAll() to confirm
+   * the selector hits exactly `el` and no other element in this scope.
+   * We do NOT use nth-child in relative selectors — it would break on other
+   * iterator elements if their children are in different order.
+   */
+  function buildRelativeSelector(el, scopeEl) {
+    // Build segments walking from el up to scopeEl (exclusive)
+    const segments = [];
+    let cur = el;
+    while (cur && cur !== scopeEl) {
+      const tag = cur.tagName.toLowerCase();
+      const cls = stableClasses(cur);
+      segments.unshift({ tag, cls, el: cur });
+      cur = cur.parentElement;
+      if (!cur) return null; // el not inside scopeEl
+    }
+    if (cur !== scopeEl) return null;
+    if (!segments.length) return null;
+
+    // Helper: try a selector, return it if it uniquely matches el within scopeEl
+    function tryRel(sel) {
+      try {
+        const hits = [...scopeEl.querySelectorAll(sel)];
+        if (hits.length === 1 && hits[0] === el) return sel;
+        if (hits.length > 1) return null; // ambiguous within scope
+        // hits.length === 0 shouldn't happen if el is truly inside scopeEl,
+        // but handle gracefully
+        return null;
+      } catch (_) { return null; }
+    }
+
+    // Strategy A: single-level tag+class or id
+    if (el.id) {
+      const r = tryRel('#' + esc(el.id)); if (r) return r;
+    }
+    {
+      const s = segments[segments.length - 1]; // leaf segment
+      if (s.cls.length >= 2) {
+        const r = tryRel(`${s.tag}.${s.cls[0]}.${s.cls[1]}`); if (r) return r;
+      }
+      if (s.cls.length >= 1) {
+        const r = tryRel(`${s.tag}.${s.cls[0]}`); if (r) return r;
+        const r2 = tryRel(`.${s.cls[0]}`); if (r2) return r2;
+      }
+    }
+
+    // Strategy B: build path from the shortest suffix that yields a unique match
+    // Try successively longer suffixes of the segment array
+    for (let start = segments.length - 1; start >= 0; start--) {
+      // Build selector from segments[start..end] without nth-child
+      const path = segments.slice(start).map(s => {
+        if (s.cls.length >= 2) return `${s.tag}.${s.cls[0]}.${s.cls[1]}`;
+        if (s.cls.length >= 1) return `${s.tag}.${s.cls[0]}`;
+        return s.tag;
+      }).join(' > ');
+
+      const r = tryRel(path);
+      if (r) return r;
+
+      // Also try descendant (space) combinator
+      const pathDesc = segments.slice(start).map(s =>
+        s.cls.length ? `${s.tag}.${s.cls[0]}` : s.tag
+      ).join(' ');
+      const r2 = tryRel(pathDesc);
+      if (r2) return r2;
+    }
+
+    // Strategy C: just the full class-free tag path (always uniqueness-optional)
+    const tagPath = segments.map(s => s.tag).join(' > ');
+    return tagPath; // may not be unique but is structurally meaningful
+  }
+
   // ── Selection actions ─────────────────────────────────────────────────────
 
   function doFirstClick(target) {
+    // ── ForEach scope mode ────────────────────────────────────────────────
+    if (_forEachScopeSel !== null) {
+      // Find which iterator element contains the click (or IS the click target)
+      const ownerIterEl = _allIteratorEls.find(
+        el => el === target || el.contains(target)
+      );
+      if (!ownerIterEl) return; // outside all scope elements — ignore
+
+      // Update the "active" scope reference so breadcrumb / element info is correct
+      _forEachScopeEl = ownerIterEl;
+
+      fullReset();
+      currentEl = target;
+      selState  = 'first_selected';
+      applyHard([target]);
+
+      tooltip.style.display = 'none';
+      const info = buildElementInfo(target);
+      info.softHighlightCount = 0; // no multi-selection in forEach scope
+      window.sendToNode({ type: 'elementSelected', element: info });
+      return;
+    }
+
+    // ── Normal selection mode ─────────────────────────────────────────────
     fullReset();
     currentEl = target;
     selState  = 'first_selected';
@@ -786,10 +972,28 @@
 
     if (hoverEl && !hardEls.includes(hoverEl) && !softEls.includes(hoverEl)) restoreStyle(hoverEl, 'outline');
     hoverEl = target;
-    if (!hardEls.includes(hoverEl) && !softEls.includes(hoverEl)) setStyle(hoverEl, 'outline', HOVER_OUTLINE, true);
+
+    // In forEach scope mode only apply hover outline to selectable elements
+    const inScope = _forEachScopeSel === null ||
+      _allIteratorEls.some(el => el === target || el.contains(target));
+    if (inScope && !hardEls.includes(hoverEl) && !softEls.includes(hoverEl) &&
+        !_allIteratorEls.includes(hoverEl)) {
+      setStyle(hoverEl, 'outline', HOVER_OUTLINE, true);
+    }
 
     tooltip.style.display = 'block';
-    if (selState === 'first_selected' && softEls.includes(target)) {
+    if (_forEachScopeSel !== null) {
+      const ownerIter = _allIteratorEls.find(el => el === target || el.contains(target));
+      if (ownerIter) {
+        if (target === ownerIter) {
+          tooltip.textContent = '⊙ Click to select this whole element (iterator)';
+        } else {
+          tooltip.textContent = '⊙ Click to select: ' + getElPath(target, 3);
+        }
+      } else {
+        tooltip.textContent = '✕ Outside loop scope — only elements inside the highlighted items are selectable';
+      }
+    } else if (selState === 'first_selected' && softEls.includes(target)) {
       tooltip.textContent = '⬡ Click to select all ' + (softEls.length + 1) + ' similar elements';
     } else if (selState === 'first_selected' && hardEls.includes(target)) {
       tooltip.textContent = '✕ Click again to deselect';
@@ -810,6 +1014,8 @@
 
     if (selState === 'idle')           { doFirstClick(target); return; }
     if (selState === 'first_selected') {
+      // In forEach scope: never confirm a multi-group — just re-select
+      if (_forEachScopeSel !== null) { doFirstClick(target); return; }
       if (softEls.includes(target))    { confirmSiblingGroup(); return; }
       if (hardEls.includes(target))    { fullReset(); window.sendToNode({ type: 'selectionCleared' }); return; }
       doFirstClick(target); return;
@@ -819,7 +1025,93 @@
 
   // ── Exposed API ───────────────────────────────────────────────────────────
 
-  window.__resetSelection__ = () => fullReset();
+  // ── ForEach scope ─────────────────────────────────────────────────────────
+  // When user is building steps inside a ForEach loop, selection is scoped to
+  // one representative iterator element. Selectors generated are relative to
+  // the iterator element so they work for EVERY iterated element (not just one).
+
+  let _forEachScopeEl   = null;  // the iterator element the user last interacted with
+  let _forEachScopeSel  = null;  // iterator CSS selector
+  let _allIteratorEls   = [];    // all elements matching the iterator selector
+  let _dimOverlay       = null;
+
+  const SCOPE_OUTLINE = '2px solid rgba(163,113,247,0.6)';
+  const SCOPE_SHADOW  = '0 0 0 3px rgba(163,113,247,0.18)';
+
+  function _createDimOverlay() {
+    if (_dimOverlay) return;
+    _dimOverlay = document.createElement('div');
+    _dimOverlay.style.cssText = [
+      'position:fixed','inset:0','pointer-events:none',
+      'z-index:2147483640',
+      'background:rgba(0,0,0,0)',
+      'transition:background 200ms ease',
+    ].join(';');
+    document.body.appendChild(_dimOverlay);
+    requestAnimationFrame(() => {
+      if (_dimOverlay) _dimOverlay.style.background = 'rgba(0,0,0,0.45)';
+    });
+  }
+
+  function _removeDimOverlay() {
+    if (!_dimOverlay) return;
+    const el = _dimOverlay;
+    _dimOverlay = null;
+    el.style.background = 'rgba(0,0,0,0)';
+    setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+  }
+
+  // Elevate an element above the dim overlay so it stays visible
+  function _elevateEl(el) {
+    if (!el) return;
+    storeOriginalStyle(el, 'outline');
+    storeOriginalStyle(el, 'box-shadow');
+    storeOriginalStyle(el, 'position');
+    storeOriginalStyle(el, 'z-index');
+    el.style.setProperty('outline',    SCOPE_OUTLINE, 'important');
+    el.style.setProperty('box-shadow', SCOPE_SHADOW,  'important');
+    if (getComputedStyle(el).position === 'static') {
+      el.style.setProperty('position', 'relative', 'important');
+    }
+    el.style.setProperty('z-index', '2147483641', 'important');
+  }
+
+  function _unelevateEl(el) {
+    if (!el) return;
+    restoreStyle(el, 'outline');
+    restoreStyle(el, 'box-shadow');
+    restoreStyle(el, 'position');
+    restoreStyle(el, 'z-index');
+  }
+
+  window.__setForEachScope__ = (iteratorSelector) => {
+    window.__clearForEachScope__();
+    _forEachScopeSel = iteratorSelector;
+    try {
+      _allIteratorEls = [...document.querySelectorAll(iteratorSelector)];
+    } catch (_) { _allIteratorEls = []; }
+
+    // Elevate ALL iterator elements above the dim — user can interact with any of them
+    _allIteratorEls.forEach(el => _elevateEl(el));
+    _forEachScopeEl = _allIteratorEls[0] || null;
+
+    _createDimOverlay();
+  };
+
+  window.__clearForEachScope__ = () => {
+    // Snapshot and clear _allIteratorEls FIRST so clearArr's re-elevation guard
+    // does not re-apply scope styles during the restore pass
+    const toUnelevate = [..._allIteratorEls];
+    _allIteratorEls  = [];
+    _forEachScopeEl  = null;
+    _forEachScopeSel = null;
+
+    toUnelevate.forEach(el => _unelevateEl(el));
+    clearArr(hardEls);
+    clearArr(softEls);
+    _removeDimOverlay();
+    fullReset();
+  };
 
   window.__resetSelection__ = () => fullReset();
 

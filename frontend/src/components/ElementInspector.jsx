@@ -179,7 +179,7 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
     <div className="ei-panel">
       {/* ── ForEach context banner ──────────────────────────────────────── */}
       {forEachCtx && (
-        <ForEachContextBanner onClear={onClearForEachCtx} />
+        <ForEachContextBanner forEachCtx={forEachCtx} onClear={onClearForEachCtx} />
       )}
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -199,6 +199,11 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
       <div className="ei-selector-row">
         <span className="ei-selector-icon">🎯</span>
         <code className="ei-selector">{element.selector}</code>
+        {element.isRelativeToScope && (
+          <span className="ei-relative-badge" title="Selector is relative to the ForEach iterator — works for every iterated element">
+            relative
+          </span>
+        )}
         {element.softHighlightCount > 0 && (
           <span className="ei-similar-badge" title="Similar elements are highlighted in amber — click one to select the group">
             +{element.softHighlightCount} similar
@@ -329,7 +334,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
   return (
     <div className="ei-panel ei-multi-panel">
       {/* ── ForEach context banner ──────────────────────────────────────── */}
-      {forEachCtx && <ForEachContextBanner onClear={onClearForEachCtx} />}
+      {forEachCtx && <ForEachContextBanner forEachCtx={forEachCtx} onClear={onClearForEachCtx} />}
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <div className="ei-header ei-multi-header">
@@ -463,15 +468,20 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
 
 // ─── ForEach context banner ───────────────────────────────────────────────
 
-function ForEachContextBanner({ onClear }) {
+function ForEachContextBanner({ forEachCtx, onClear }) {
   return (
     <div className="ei-foreach-ctx-banner">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ flexShrink: 0, marginTop: 2 }}>
         <polyline points="17,1 21,5 17,9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
         <polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
       </svg>
-      <span>Adding steps <strong>inside ForEach loop</strong></span>
-      <button className="ei-foreach-ctx-clear" onClick={onClear} title="Stop adding to loop">✕</button>
+      <div className="ei-foreach-ctx-text">
+        <span><strong>ForEach loop context</strong> — click any highlighted element or one of its children to select it</span>
+        {forEachCtx?.iteratorSelector && (
+          <code className="ei-foreach-ctx-scope">Iterating: {forEachCtx.iteratorSelector}</code>
+        )}
+      </div>
+      <button className="ei-foreach-ctx-clear" onClick={onClear} title="Exit loop context">✕</button>
     </div>
   );
 }
@@ -599,7 +609,7 @@ function InteractiveBreadcrumb({ breadcrumb, element, childrenList, onSelectAnce
         <div
           ref={pickerRef}
           className="ei-bc-children-picker"
-          style={{ position: 'fixed', top: pickerPos.top, right: pickerPos.right, zIndex: 9999 }}
+          style={{ position: 'fixed', top: pickerPos.top, left: pickerPos.left, zIndex: 9999 }}
         >
           <div className="ei-bc-picker-title">
             Children of{' '}

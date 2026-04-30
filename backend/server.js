@@ -31,6 +31,25 @@ io.on('connection', (socket) => {
   console.log(`🔌 User connected: ${userId}`);
   socket.join(userId);
 
+  // ── ForEach scope ────────────────────────────────────────────────────────
+  socket.on('setForEachScope', async ({ iteratorSelector }) => {
+    try {
+      const s = userSessions.get(userId);
+      if (s?.page) await s.page.evaluate((sel) => {
+        if (typeof window.__setForEachScope__ === 'function') window.__setForEachScope__(sel);
+      }, iteratorSelector);
+    } catch (_) {}
+  });
+ 
+  socket.on('clearForEachScope', async () => {
+    try {
+      const s = userSessions.get(userId);
+      if (s?.page) await s.page.evaluate(() => {
+        if (typeof window.__clearForEachScope__ === 'function') window.__clearForEachScope__();
+      });
+    } catch (_) {}
+  });
+ 
   // ── Reset selection ───────────────────────────────────────────────────────
   socket.on('resetSelection', async () => {
     try {
@@ -38,7 +57,7 @@ io.on('connection', (socket) => {
       if (s?.page) await s.page.evaluate(() => { if (typeof window.__resetSelection__ === 'function') window.__resetSelection__(); });
     } catch (_) {}
   });
-
+ 
   // ── Breadcrumb: navigate to ancestor ─────────────────────────────────────
   socket.on('navigateAncestor', async ({ levelsUp }) => {
     try {
@@ -48,7 +67,7 @@ io.on('connection', (socket) => {
       }, levelsUp);
     } catch (_) {}
   });
-
+ 
   // ── Breadcrumb: get children of ancestor for picker ───────────────────────
   socket.on('getChildrenOf', async ({ levelsUp }) => {
     try {
@@ -63,7 +82,7 @@ io.on('connection', (socket) => {
       socket.emit('childrenList', { levelsUp, children: [] });
     }
   });
-
+ 
   // ── Breadcrumb: select a specific child by index ──────────────────────────
   socket.on('selectChildByIndex', async ({ levelsUp, childIndex }) => {
     try {
@@ -73,7 +92,7 @@ io.on('connection', (socket) => {
       }, levelsUp, childIndex);
     } catch (_) {}
   });
-
+ 
   // ── Picker hover highlight ───────────────────────────────────────────────
   socket.on('hoverAncestor', async ({ levelsUp }) => {
     try {
@@ -83,7 +102,7 @@ io.on('connection', (socket) => {
       }, levelsUp);
     } catch (_) {}
   });
-
+ 
   socket.on('hoverPickerChild', async ({ levelsUp, childIndex }) => {
     try {
       const s = userSessions.get(userId);
@@ -92,7 +111,7 @@ io.on('connection', (socket) => {
       }, levelsUp, childIndex);
     } catch (_) {}
   });
-
+ 
   socket.on('unhoverPickerChild', async () => {
     try {
       const s = userSessions.get(userId);
@@ -101,7 +120,7 @@ io.on('connection', (socket) => {
       });
     } catch (_) {}
   });
-
+ 
   // ── Navigate ────────────────────────────────────────────────────────────
   socket.on('navigate', async (data) => {
     try {

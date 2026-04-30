@@ -193,10 +193,13 @@ function App() {
       // Add to root
       addStep(step, [], null);
       showToast("∀ ForEach loop added — select actions to add inside it", "loop");
-      // Keep selection, clear children popup only
       setChildrenList(null);
-      // Store forEach context so subsequent actions go inside the loop
-      setForEachCtx({ stepId: step.id });
+      const iteratorSelector = step.params?.selector || '';
+      setForEachCtx({ stepId: step.id, iteratorSelector });
+      // Tell the browser to enter forEach scope — scopes selection + generates relative selectors
+      if (iteratorSelector) {
+        socketRef.current?.emit("setForEachScope", { iteratorSelector });
+      }
     } else if (forEachCtx) {
       // Add step inside the current forEach loop body
       const currentSteps = stepsRef.current;
@@ -252,13 +255,15 @@ function App() {
   // ── Close inspector ───────────────────────────────────────────────────────
   const handleCloseInspector = useCallback(() => {
     socketRef.current?.emit("resetSelection");
+    if (forEachCtx) socketRef.current?.emit("clearForEachScope");
     setSelectedElement(null);
     setInspectorOpen(false);
     setChildrenList(null);
     setForEachCtx(null);
-  }, []);
+  }, [forEachCtx]);
 
   const handleClearForEachCtx = useCallback(() => {
+    socketRef.current?.emit("clearForEachScope");
     setForEachCtx(null);
   }, []);
 
