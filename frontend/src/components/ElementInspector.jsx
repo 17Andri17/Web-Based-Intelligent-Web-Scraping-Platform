@@ -609,7 +609,7 @@ function InteractiveBreadcrumb({ breadcrumb, element, childrenList, onSelectAnce
         <div
           ref={pickerRef}
           className="ei-bc-children-picker"
-          style={{ position: 'fixed', top: pickerPos.top, left: pickerPos.left, zIndex: 9999 }}
+          style={{ position: 'fixed', top: pickerPos.top, right: pickerPos.right, zIndex: 9999 }}
         >
           <div className="ei-bc-picker-title">
             Children of{' '}

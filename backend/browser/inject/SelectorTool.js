@@ -1,59 +1,67 @@
 (function enableSelectionMode() {
-  // ── State machine ─────────────────────────────────────────────────────────
-  // 'idle'           – nothing selected
-  // 'first_selected' – seed green, similar group amber (selector-driven)
-  // 'multi_selected' – group confirmed, all green
-  // ─────────────────────────────────────────────────────────────────────────
+  'use strict';
+
+  /* =========================================================================
+     STATE MACHINE
+     ─────────────────────────────────────────────────────────────────────────
+     idle           → nothing selected
+     first_selected → seed element green, similar group amber
+     multi_selected → group confirmed, all green
+     ========================================================================= */
 
   let selState     = 'idle';
-  let currentEl    = null;   // seed element
-  let softEls      = [];     // amber — from querySelectorAll(softSelector)
-  let hardEls      = [];     // green — confirmed
-  let softSelector = null;   // CSS selector that produced softEls
-  let softStrategy = null;   // description of how the group was found
+  let currentEl    = null;   // seed element (first click)
+  let softEls      = [];     // amber — proposed similar group
+  let hardEls      = [];     // green — confirmed selection
+  let softSelector = null;   // CSS selector for the soft group
+  let softStrategy = null;   // human-readable strategy label
   let hoverEl      = null;
   let tooltip      = null;
+
   const originalStyles = new Map();
 
   const SOFT_OUTLINE  = '2px dashed #d29922';
   const HARD_OUTLINE  = '2px solid #3fb950';
   const HOVER_OUTLINE = '2px solid #58a6ff';
 
-  // ── Style helpers ─────────────────────────────────────────────────────────
+  /* =========================================================================
+     STYLE HELPERS
+     ========================================================================= */
 
   function storeOriginalStyle(el, prop) {
     if (!originalStyles.has(el)) originalStyles.set(el, {});
     const s = originalStyles.get(el);
     if (!(prop in s)) s[prop] = el.style[prop] || '';
   }
-  function setStyle(el, prop, value, important = false) {
+
+  function setStyle(el, prop, value, important) {
     storeOriginalStyle(el, prop);
     if (important) el.style.setProperty(prop, value, 'important');
-    else el.style[prop] = value;
+    else           el.style[prop] = value;
   }
+
   function restoreStyle(el, prop) {
     const s = originalStyles.get(el);
     if (!s || !(prop in s)) return;
     const v = s[prop];
-    if (v === '') el.style.removeProperty(prop); else el.style[prop] = v;
+    if (v === '') el.style.removeProperty(prop);
+    else          el.style[prop] = v;
     delete s[prop];
     if (!Object.keys(s).length) originalStyles.delete(el);
   }
+
   function clearArr(arr) {
-    arr.forEach(el => {
+    arr.forEach(function(el) {
       restoreStyle(el, 'outline');
       restoreStyle(el, 'box-shadow');
-      // If this element is a scoped iterator element, re-apply its elevation
-      // so it doesn't lose the purple scope outline
-      if (_allIteratorEls && _allIteratorEls.includes(el)) {
+      // Re-apply scope elevation if this element is an iterator card
+      if (_allIteratorEls && _allIteratorEls.indexOf(el) !== -1) {
         _reapplyScopeEl(el);
       }
     });
     arr.length = 0;
   }
 
-  // Re-stamp scope elevation styles onto an iterator element after a restore
-  // (called lazily so _allIteratorEls / SCOPE_OUTLINE are guaranteed to exist)
   function _reapplyScopeEl(el) {
     if (!el) return;
     el.style.setProperty('outline',    SCOPE_OUTLINE, 'important');
@@ -63,672 +71,276 @@
     }
     el.style.setProperty('z-index', '2147483641', 'important');
   }
+
   function applySoft(els) {
     clearArr(softEls);
-    els.forEach(el => { softEls.push(el); setStyle(el, 'outline', SOFT_OUTLINE, true); setStyle(el, 'box-shadow', 'inset 0 0 0 9999px rgba(210,153,34,0.07)', true); });
+    els.forEach(function(el) {
+      softEls.push(el);
+      setStyle(el, 'outline',    SOFT_OUTLINE, true);
+      setStyle(el, 'box-shadow', 'inset 0 0 0 9999px rgba(210,153,34,0.07)', true);
+    });
   }
+
   function applyHard(els) {
     clearArr(hardEls);
-    els.forEach(el => { hardEls.push(el); setStyle(el, 'outline', HARD_OUTLINE, true); setStyle(el, 'box-shadow', 'inset 0 0 0 9999px rgba(63,185,80,0.06)', true); });
+    els.forEach(function(el) {
+      hardEls.push(el);
+      setStyle(el, 'outline',    HARD_OUTLINE, true);
+      setStyle(el, 'box-shadow', 'inset 0 0 0 9999px rgba(63,185,80,0.06)', true);
+    });
   }
 
   function fullReset() {
-    clearArr(softEls); clearArr(hardEls);
-    if (hoverEl && !softEls.includes(hoverEl) && !hardEls.includes(hoverEl)) {
-      if (_allIteratorEls && _allIteratorEls.includes(hoverEl)) {
-        _reapplyScopeEl(hoverEl); // keep scope elevation, just remove hover tint
+    clearArr(softEls);
+    clearArr(hardEls);
+    if (hoverEl &&
+        softEls.indexOf(hoverEl) === -1 &&
+        hardEls.indexOf(hoverEl) === -1) {
+      if (_allIteratorEls && _allIteratorEls.indexOf(hoverEl) !== -1) {
+        _reapplyScopeEl(hoverEl);
       } else {
         restoreStyle(hoverEl, 'outline');
       }
     }
-    hoverEl = null; currentEl = null; softSelector = null; softStrategy = null; selState = 'idle';
+    hoverEl      = null;
+    currentEl    = null;
+    softSelector = null;
+    softStrategy = null;
+    selState     = 'idle';
   }
 
   function cleanupSelectionMode() {
     fullReset();
-    for (const [el, s] of originalStyles) {
-      for (const prop in s) { const v = s[prop]; if (v === '') el.style.removeProperty(prop); else el.style[prop] = v; }
-    }
+    originalStyles.forEach(function(s, el) {
+      Object.keys(s).forEach(function(prop) {
+        var v = s[prop];
+        if (v === '') el.style.removeProperty(prop);
+        else          el.style[prop] = v;
+      });
+    });
     originalStyles.clear();
     if (tooltip) tooltip.style.display = 'none';
   }
 
-  // ── Tooltip ───────────────────────────────────────────────────────────────
-
-  function createTooltip() {
-    tooltip = document.createElement('div');
-    tooltip.style.cssText = 'all:initial;position:fixed;background:rgba(13,17,23,0.92);color:#58a6ff;padding:5px 10px;font-size:11px;font-family:ui-monospace,monospace;border-radius:5px;border:1px solid #30363d;pointer-events:none;z-index:2147483647;display:none;box-shadow:0 2px 8px rgba(0,0,0,0.5);max-width:400px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
-    document.body.appendChild(tooltip);
-  }
-  function placeTooltip(e) {
-    const vw = window.innerWidth, vh = window.innerHeight, m = 14;
-    const r = tooltip.getBoundingClientRect();
-    let left = e.clientX + m, top = e.clientY + m;
-    if (left + r.width > vw - m) left = e.clientX - r.width - m;
-    if (top + r.height > vh - m) top = e.clientY - r.height - m;
-    tooltip.style.left = Math.max(m, left) + 'px';
-    tooltip.style.top  = Math.max(m, top)  + 'px';
-  }
-  function getElPath(el, depth = 4) {
-    const parts = []; let cur = el, n = 0;
-    while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'html') {
-      let seg = cur.tagName.toLowerCase();
-      if (cur.id) seg += '#' + cur.id;
-      else if (cur.classList.length) seg += '.' + [...cur.classList].slice(0, 2).join('.');
-      parts.unshift(seg); cur = cur.parentElement;
-      if (++n >= depth) { parts.unshift('...'); break; }
-    }
-    return parts.join(' > ');
-  }
-
-  // ── CSS selector primitives ───────────────────────────────────────────────
-
-  function esc(id) { return (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : id.replace(/[^\w-]/g, '\\$&'); }
-  function buildSimpleSelector(el) {
-    if (el.id) return '#' + esc(el.id);
-    const tag = el.tagName.toLowerCase();
-    const cls = stableClasses(el);
-    return cls.length ? tag + '.' + cls[0] : tag;
-  }
-
-  /** Classes that are stable identifiers (not state/utility) */
-  function stableClasses(el) {
-    return [...el.classList].filter(c => c.length > 1 && !/^(is-|has-|js-|active|open|hover|focus|selected|disabled|show|hide|visible|hidden|loading)/.test(c));
-  }
-
-
-  /** Build a child/descendant CSS selector for a group of elements that share a parent.
-   *  Tries exact pattern match walking all ancestors up to <body>.
-   *  Returns a selector only if it matches EXACTLY the given els. */
-  function buildGroupSelector(els, parent) {
-    const { childTag, common } = buildChildPattern(els);
-
-    let cur = parent;
-    while (cur && !isRoot(cur)) {
-      const anchors = buildAllAnchorsFor(cur);
-      for (const anchor of anchors) {
-        const result = tryPatternWithScope(anchor, els, childTag, common);
-        if (result) return result;
-      }
-      cur = cur.parentElement;
-    }
-    return null;
-  }
+  /* =========================================================================
+     UTILITIES
+     ========================================================================= */
 
   function isRoot(el) {
     return !el || el === document.documentElement || el === document.body;
   }
 
-  /**
-   * Build the child pattern (tag + common classes) for a set of elements.
-   * Returns { childTag, common, childSel }
-   */
-  function buildChildPattern(els) {
-    const tag = els[0].tagName.toLowerCase();
-    const allSameTag = els.every(e => e.tagName.toLowerCase() === tag);
-    const childTag = allSameTag ? tag : '*';
-    const classSets = els.map(e => new Set(stableClasses(e)));
-    const common = classSets.length
-      ? [...classSets[0]].filter(c => classSets.every(s => s.has(c)))
-      : [];
-    const clsPart = common.length ? '.' + common[0] : '';
-    return { childTag, common, childSel: childTag + clsPart };
+  function stableClasses(el) {
+    if (window.SelectorGenerator && window.SelectorGenerator.getStableClasses) {
+      return window.SelectorGenerator.getStableClasses(el);
+    }
+    return Array.from(el.classList).filter(function(c) {
+      return c.length > 1 &&
+        !/^(is-|has-|js-)/.test(c) &&
+        !/^(active|inactive|open|closed|expanded|collapsed|visible|hidden|show|hide|selected|current|checked|disabled|enabled|loading|loaded|error|success|warning|hover|focus|focused|first|last|odd|even)$/.test(c) &&
+        !/^(flex|grid|block|inline|relative|absolute|fixed|sticky|m|p|mx|my|px|py|mt|mb|ml|mr|pt|pb|pl|pr|w|h|text|font|bg|border|ring|shadow|rounded|opacity|gap|col|row|justify|items|self|overflow|z|cursor|transition|transform|duration|ease|animate)-/.test(c);
+    });
   }
 
-  /**
-   * Try selectors of the form `${scopeSel} [>| ] ${childPattern}` for all class
-   * combinations on childPattern. Returns the first selector that matches EXACTLY `els`.
-   */
-  function tryPatternWithScope(scopeSel, els, childTag, common) {
-    for (let n = Math.min(common.length, 3); n >= 0; n--) {
-      const cls = n > 0 ? '.' + common.slice(0, n).join('.') : '';
-      const child = `${childTag}${cls}`;
-      for (const comb of ['>', ' ']) {
-        const sel = `${scopeSel} ${comb} ${child}`.trim();
-        try {
-          const matched = [...document.querySelectorAll(sel)];
-          if (setsEqual(matched, els)) return sel;
-        } catch (_) {}
-      }
-    }
-    return null;
+  function esc(id) {
+    return (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : String(id).replace(/[^\w-]/g, '\\$&');
   }
 
-  /**
-   * Walk every ancestor of `startEl` up to <body>, returning them in order
-   * from closest to farthest.
-   */
-  function ancestorChain(startEl) {
-    const chain = [];
-    let cur = startEl?.parentElement;
-    while (cur && !isRoot(cur)) { chain.push(cur); cur = cur.parentElement; }
-    return chain;
-  }
-
-
-  /**
-   * Generate every useful anchor selector string for a single element.
-   * Returns an array ordered most-specific → least-specific.
-   * Crucially: includes nth-child-scoped variants so non-unique class anchors
-   * get disambiguated (e.g. `div.item` × 3 becomes `div.item:nth-child(2)`).
-   */
-  function buildAllAnchorsFor(el, _depth) {
-    const depth = _depth || 0;
-    if (depth > 5 || !el || isRoot(el)) return [];
-    const anchors = [];
-
-    // 1. ID — globally unique, always sufficient
-    if (el.id) {
-      anchors.push('#' + esc(el.id));
-      return anchors;
-    }
-
-    // 2. Test-id attributes
-    for (const attr of ['data-testid','data-test-id','data-test','data-cy','data-qa']) {
-      const v = el.getAttribute(attr);
-      if (v) { anchors.push(`[${attr}="${v.replace(/"/g, '\\"')}"]`); break; }
-    }
-
+  function buildSimpleSelector(el) {
+    if (el.id) return '#' + esc(el.id);
     const tag = el.tagName.toLowerCase();
     const cls = stableClasses(el);
-
-    // 3. Multi → single class combinations
-    for (let n = Math.min(cls.length, 3); n >= 1; n--) {
-      anchors.push(tag + '.' + cls.slice(0, n).join('.'));
-    }
-
-    // 4. nth-child variants scoped to each parent anchor
-    // This produces e.g. `div.vendors-row > div.item:nth-child(2)` which IS unique
-    // even when `div.item` alone is not.
-    const parent = el.parentElement;
-    if (parent && !isRoot(parent)) {
-      const idx = Array.from(parent.children).indexOf(el) + 1;
-      const nthSeg = cls.length
-        ? `${tag}.${cls[0]}:nth-child(${idx})`
-        : `${tag}:nth-child(${idx})`;
-
-      const parentAnchors = buildAllAnchorsFor(parent, depth + 1);
-      for (const pa of parentAnchors.slice(0, 4)) {
-        anchors.push(`${pa} > ${nthSeg}`);
-      }
-      // Also bare nth-child in case parent anchors are too verbose
-      anchors.push(nthSeg);
-    }
-
-    return anchors;
+    return cls.length ? tag + '.' + esc(cls[0]) : tag;
   }
 
-  /**
-   * Derive a CSS selector matching EXACTLY the given element set.
-   *
-   * Strategy:
-   *   1. Walk every ancestor from NCA to <body>.
-   *      For EACH ancestor, generate ALL anchor candidates (buildAllAnchorsFor).
-   *      For EACH anchor × child pattern combination, test with setsEqual.
-   *      Return the first exact match — deepest ancestor wins (most specific scope).
-   *
-   *   2. NCA-relative :is() of unique nth-child paths — stays compact and scoped.
-   *
-   *   3. Absolute nth-child paths from body — last resort only.
-   *
-   * No uniqueness pre-filter: setsEqual IS the verification gate.
-   */
-  function deriveExactSelector(els) {
-    if (!els.length) return null;
-
-    if (els.length === 1) {
-      const anchors = buildAllAnchorsFor(els[0]);
-      for (const anchor of anchors) {
-        try {
-          const matched = [...document.querySelectorAll(anchor)];
-          if (matched.length === 1 && matched[0] === els[0]) return anchor;
-        } catch (_) {}
-      }
-      return buildUniqueNthChildPath(els[0]) || buildSimpleSelector(els[0]);
+  function isInside(target, elementArray) {
+    let el = target;
+    while (el && el !== document.body) {
+      if (elementArray.indexOf(el) !== -1) return true;
+      el = el.parentElement;
     }
-
-    const nca = nearestCommonAncestor(els);
-    const { childTag, common } = buildChildPattern(els);
-
-    // ── Step 1: Walk ancestors, try all anchor × child-pattern combos ────
-    {
-      let cur = nca;
-      while (cur && !isRoot(cur)) {
-        const anchors = buildAllAnchorsFor(cur);
-        for (const anchor of anchors) {
-          const result = tryPatternWithScope(anchor, els, childTag, common);
-          if (result) return result;
-        }
-        cur = cur.parentElement;
-      }
-    }
-
-    // ── Step 2: NCA-relative :is() of unique nth-child paths ─────────────
-    if (nca && !isRoot(nca)) {
-      const ncaAnchors = buildAllAnchorsFor(nca);
-      const ncaAnchor  = ncaAnchors[0] || buildSimpleSelector(nca);
-
-      const paths = els.map(e => buildUniquePathFromAncestor(e, nca));
-      if (paths.every(Boolean)) {
-        const isSel = `${ncaAnchor} :is(${paths.join(', ')})`;
-        try {
-          const matched = [...document.querySelectorAll(isSel)];
-          if (setsEqual(matched, els)) return isSel;
-        } catch (_) {}
-
-        const expanded = paths.map(p => `${ncaAnchor} ${p}`).join(', ');
-        try {
-          const matched = [...document.querySelectorAll(expanded)];
-          if (setsEqual(matched, els)) return expanded;
-        } catch (_) {}
-        return expanded;
-      }
-    }
-
-    // ── Step 3: Absolute nth-child — true last resort ─────────────────────
-    const absPaths = els.map(e => buildUniqueNthChildPath(e, 10));
-    if (absPaths.every(Boolean)) return absPaths.join(', ');
-
-    return null;
+    return false;
   }
 
-  /** True iff two element arrays contain exactly the same elements (order-independent) */
-  function setsEqual(a, b) {
-    if (a.length !== b.length) return false;
-    const s = new Set(a);
-    return b.every(e => s.has(e));
+  /* =========================================================================
+     TOOLTIP
+     ========================================================================= */
+
+  function createTooltip() {
+    tooltip = document.createElement('div');
+    tooltip.style.cssText = [
+      'all:initial',
+      'position:fixed',
+      'background:rgba(13,17,23,0.92)',
+      'color:#58a6ff',
+      'padding:5px 10px',
+      'font-size:11px',
+      'font-family:ui-monospace,monospace',
+      'border-radius:5px',
+      'border:1px solid #30363d',
+      'pointer-events:none',
+      'z-index:2147483647',
+      'display:none',
+      'box-shadow:0 2px 8px rgba(0,0,0,0.5)',
+      'max-width:400px',
+      'white-space:nowrap',
+      'overflow:hidden',
+      'text-overflow:ellipsis',
+    ].join(';');
+    document.body.appendChild(tooltip);
   }
 
-  /**
-   * Build a unique CSS path from `ancestor` down to `el` using nth-child at every
-   * step — guaranteed to identify exactly one element within that ancestor scope.
-   * Class names are added for readability but nth-child ensures uniqueness.
-   */
-  function buildUniquePathFromAncestor(el, ancestor) {
+  function placeTooltip(e) {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const m  = 14;
+    const r  = tooltip.getBoundingClientRect();
+    let left = e.clientX + m;
+    let top  = e.clientY + m;
+    if (left + r.width  > vw - m) left = e.clientX - r.width  - m;
+    if (top  + r.height > vh - m) top  = e.clientY - r.height - m;
+    tooltip.style.left = Math.max(m, left) + 'px';
+    tooltip.style.top  = Math.max(m, top)  + 'px';
+  }
+
+  function getElPath(el, depth) {
+    depth = depth || 4;
     const parts = [];
-    let cur = el;
-    while (cur && cur !== ancestor) {
-      const parent = cur.parentElement;
-      if (!parent) return null;
-      const idx = Array.from(parent.children).indexOf(cur) + 1;
-      const tag = cur.tagName.toLowerCase();
-      const cls = stableClasses(cur);
-      // nth-child makes it unique; class is decorative / for readability
-      const classPart = cls.length ? `.${cls[0]}` : '';
-      parts.unshift(`${tag}${classPart}:nth-child(${idx})`);
-      cur = parent;
-    }
-    if (cur !== ancestor) return null;
-    return parts.join(' > ');
-  }
-
-  /**
-   * Build an absolute unique CSS path from body to `el`.
-   * Used as last resort when there is no useful common ancestor.
-   */
-  function buildUniqueNthChildPath(el, maxDepth = 8) {
-    const parts = [];
-    let cur = el, depth = 0;
-    while (cur && !isRoot(cur) && depth < maxDepth) {
-      const parent = cur.parentElement;
-      if (!parent) break;
-      const idx = Array.from(parent.children).indexOf(cur) + 1;
-      const tag = cur.tagName.toLowerCase();
-      const cls = stableClasses(cur);
-      const classPart = cls.length ? `.${cls[0]}` : '';
-      parts.unshift(`${tag}${classPart}:nth-child(${idx})`);
-      cur = parent;
-      depth++;
-    }
-    return parts.join(' > ');
-  }
-
-
-  /**
-   * Find the deepest DOM node that contains every element in `els`.
-   */
-  function nearestCommonAncestor(els) {
-    if (!els.length) return null;
-    let cur = els[0].parentElement;
-    while (cur && !isRoot(cur)) {
-      if (els.every(e => cur.contains(e))) return cur;
+    let cur = el, n = 0;
+    while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'html') {
+      let seg = cur.tagName.toLowerCase();
+      if (cur.id) seg += '#' + cur.id;
+      else if (cur.classList.length) seg += '.' + Array.from(cur.classList).slice(0, 2).join('.');
+      parts.unshift(seg);
       cur = cur.parentElement;
+      if (++n >= depth) { parts.unshift('...'); break; }
     }
-    return null;
+    return parts.join(' > ');
   }
 
-  // ── Relative path (ancestor → descendant) ─────────────────────────────────
-  // Used to map "seed within ancestor" → "corresponding element within sibling"
+  /* =========================================================================
+     RELATIVE SELECTOR (forEach scope) — now allows nth-child as last resort
+     ========================================================================= */
 
-  /**
-   * Build a path from `ancestor` down to `target` as a sequence of steps.
-   * Each step: { tag, classes[], index } — classes preferred, index as fallback.
-   */
-  function buildRelativePath(target, ancestor) {
-    const path = [];
-    let cur = target;
-    while (cur && cur !== ancestor) {
-      const parent = cur.parentElement;
-      if (!parent) return null; // disconnected
-      path.unshift({
-        tag: cur.tagName.toLowerCase(),
-        classes: stableClasses(cur),
-        index: Array.from(parent.children).indexOf(cur),
-        tagIndex: Array.from(parent.children).filter(c => c.tagName === cur.tagName).indexOf(cur),
-      });
-      cur = parent;
-    }
-    if (cur !== ancestor) return null;
-    return path;
-  }
-
-  /**
-   * Follow `path` downward from `container`, returning the matched descendant or null.
-   * Tries class-match first, falls back to tag-index, then any-index.
-   */
-  function followRelativePath(container, path) {
-    let cur = container;
-    for (const step of path) {
+  function buildRelativeSelector(el, scopeEl) {
+    const segments = [];
+    let cur = el;
+    while (cur && cur !== scopeEl) {
+      const tag = cur.tagName.toLowerCase();
+      const cls = stableClasses(cur);
+      segments.unshift({ tag: tag, cls: cls, el: cur });
+      cur = cur.parentElement;
       if (!cur) return null;
-      const children = Array.from(cur.children);
-
-      // 1. Class + tag match
-      if (step.classes.length > 0) {
-        const byClass = children.find(c =>
-          c.tagName.toLowerCase() === step.tag &&
-          step.classes.every(cls => c.classList.contains(cls))
-        );
-        if (byClass) { cur = byClass; continue; }
-      }
-
-      // 2. Same tag, same position among same-tag siblings
-      const byTag = children.filter(c => c.tagName.toLowerCase() === step.tag);
-      if (byTag.length === 1) { cur = byTag[0]; continue; }
-      if (byTag[step.tagIndex]) { cur = byTag[step.tagIndex]; continue; }
-
-      // 3. Absolute child index
-      if (children[step.index]) { cur = children[step.index]; continue; }
-
-      return null; // couldn't follow
     }
-    return cur;
-  }
+    if (cur !== scopeEl || !segments.length) return null;
 
-  /**
-   * Build a CSS path string from `ancestor` down to `target`
-   * using tag+class notation, suitable for appending to an ancestor selector.
-   */
-  function buildCssDescendantPath(target, ancestor) {
-    const path = buildRelativePath(target, ancestor);
-    if (!path) return null;
-    return path.map(step => {
-      let seg = step.tag;
-      if (step.classes.length) seg += '.' + step.classes[0];
-      return seg;
-    }).join(' > ');
-  }
-
-  // ── Core: multi-strategy similar element finder ───────────────────────────
-  //
-  // Four complementary strategies, scored and ranked:
-  //
-  //  [A] Direct siblings   — seed's siblings that look the same
-  //  [B] Ancestor-relative — ancestor of seed is itself a repeating unit;
-  //                          find the corresponding sub-element in each sibling
-  //  [C] Ancestor-cards    — like B but select the whole ancestor card, not sub-element
-  //  [D] Global pattern    — all elements on the page with same tag+class signature
-  //
-  // The selector always drives the highlighted set, so highlight = scrape.
-
-  function findSimilarGroup(seed) {
-    const candidates = [];
-
-    // ── [A] Direct siblings ──────────────────────────────────────────────
-    const directResult = scanSiblingLevel(seed, seed.parentElement);
-    if (directResult) {
-      candidates.push({ ...directResult, strategy: 'A:direct-siblings', level: 0 });
-    }
-
-    // ── [B/C] Ancestor-relative ──────────────────────────────────────────
-    let ancestor = seed.parentElement;
-    for (let level = 1; level <= 7 && ancestor && !isRoot(ancestor); level++) {
-      const grandparent = ancestor.parentElement;
-      if (!grandparent || isRoot(grandparent)) { ancestor = grandparent; break; }
-
-      // Does this ancestor itself repeat among its siblings?
-      const ancestorSibGroup = scanSiblingLevel(ancestor, grandparent);
-      if (ancestorSibGroup && ancestorSibGroup.els.length >= 2) {
-
-        // [C] Select whole ancestor cards
-        // Verify selector matches exactly ancestorSibGroup.els
-        let cardSel = ancestorSibGroup.selector;
-        if (cardSel) {
-          try {
-            const matched = [...document.querySelectorAll(cardSel)];
-            if (!setsEqual(matched, ancestorSibGroup.els)) {
-              cardSel = deriveExactSelector(ancestorSibGroup.els);
-            }
-          } catch (_) {
-            cardSel = deriveExactSelector(ancestorSibGroup.els);
-          }
-        } else {
-          cardSel = deriveExactSelector(ancestorSibGroup.els);
-        }
-        candidates.push({
-          els:      ancestorSibGroup.els,
-          selector: cardSel,
-          strategy: 'C:ancestor-cards',
-          level,
-          coverage: 1.0,
-        });
-
-        // [B] Find element corresponding to `seed` within each ancestor sibling
-        const path = buildRelativePath(seed, ancestor);
-        if (path) {
-          const mapped = [];
-          for (const sib of ancestorSibGroup.els) {
-            if (sib === ancestor) { mapped.push(seed); continue; }
-            const found = followRelativePath(sib, path);
-            if (found) mapped.push(found);
-          }
-          const coverage = mapped.length / ancestorSibGroup.els.length;
-          if (mapped.length >= 2 && coverage >= 0.6) {
-            // Build a selector anchored to the ancestor container
-            const cssPath = buildCssDescendantPath(seed, ancestor);
-            let mappedSel = null;
-            if (cssPath && ancestorSibGroup.selector) {
-              const candidate = `${ancestorSibGroup.selector} ${cssPath}`;
-              try {
-                const matched = [...document.querySelectorAll(candidate)];
-                if (setsEqual(matched, mapped)) mappedSel = candidate; // exact
-              } catch (_) {}
-            }
-            // If pattern doesn't match exactly, derive an exact selector
-            if (!mappedSel) {
-              mappedSel = deriveExactSelector(mapped);
-            }
-            candidates.push({
-              els:             mapped,
-              selector:        mappedSel,
-              strategy:        'B:ancestor-relative',
-              level,
-              coverage,
-              ancestorEls:     ancestorSibGroup.els,
-              ancestorSelector: ancestorSibGroup.selector,
-            });
-          }
-        }
-      }
-
-      ancestor = grandparent;
-    }
-
-    // ── [D] Global class pattern ─────────────────────────────────────────
-    const globalResult = scanGlobalPattern(seed);
-    if (globalResult) {
-      candidates.push({ ...globalResult, strategy: 'D:global-class', level: 99 });
-    }
-
-    if (!candidates.length) {
-      return { els: [seed], selector: null, strategy: 'none' };
-    }
-
-    // ── Score and pick best ──────────────────────────────────────────────
-    return scoreBest(candidates, seed);
-  }
-
-  /**
-   * Scan `parent`'s children for elements similar to `el`.
-   * Returns { els: similar, selector } where selector matches EXACTLY `similar`,
-   * or null if < 2 similar children found.
-   *
-   * Invariant: querySelectorAll(selector) === similar (same set, verified).
-   */
-  function scanSiblingLevel(el, parent) {
-    if (!parent || isRoot(parent)) return null;
-
-    const sf = getFeatures(el);
-    const similar = Array.from(parent.children).filter(c =>
-      c === el || similarityScore(sf, getFeatures(c)) >= 0.68
-    );
-    if (similar.length < 2) return null;
-
-    // Try the pattern-based selector first — only accept if it matches EXACTLY similar
-    const patternSel = buildGroupSelector(similar, parent);
-    if (patternSel) {
+    function tryRel(sel) {
       try {
-        const matched = [...document.querySelectorAll(patternSel)];
-        if (setsEqual(matched, similar)) {
-          return { els: similar, selector: patternSel }; // perfect
-        }
-      } catch (_) {}
+        const hits = Array.from(scopeEl.querySelectorAll(sel));
+        if (hits.length === 1 && hits[0] === el) return sel;
+        return null;
+      } catch (_) { return null; }
     }
 
-    // Pattern over-matches or failed — derive a selector that is exact by construction
-    const exactSel = deriveExactSelector(similar);
-    return { els: similar, selector: exactSel };
-  }
-
-  /**
-   * Find all elements on the page that share the same tag + stable class signature.
-   * Only accepted if the matched set is small and the selector matches exactly what's found.
-   */
-  function scanGlobalPattern(seed) {
-    const tag = seed.tagName.toLowerCase();
-    const cls = stableClasses(seed);
-    if (!cls.length) return null;
-
-    for (let n = Math.min(cls.length, 3); n >= 1; n--) {
-      const sel = tag + '.' + cls.slice(0, n).join('.');
-      try {
-        const matched = [...document.querySelectorAll(sel)];
-        if (!matched.includes(seed)) continue;
-        if (matched.length < 2 || matched.length > 200) continue;
-        // Selector already exact by definition (it produced matched),
-        // so els === matched is guaranteed here.
-        return { els: matched, selector: sel };
-      } catch (_) {}
+    // Strategy A: id or single/dual-class at the leaf level
+    if (el.id) {
+      const r = tryRel('#' + esc(el.id));
+      if (r) return r;
     }
-    return null;
-  }
-
-  /**
-   * Score candidates and return the best.
-   *
-   * Scoring philosophy:
-   *  - Prefer selectors that are specific (parent-scoped) over global
-   *  - Prefer ancestor-relative (finds sub-elements in repeating cards) over direct siblings
-   *    when it gives better coverage
-   *  - A "sweet spot" count of 2–40 elements is rewarded; huge counts penalised
-   *  - Lower ancestor level (closer to seed) is slightly preferred
-   */
-  function scoreBest(candidates, seed) {
-    const scored = candidates.map(c => {
-      let score = 0;
-      const n = c.els.length;
-
-      // Count score: sweet spot 2–40
-      if (n >= 2  && n <= 10)  score += 50 + n * 2;
-      else if (n <= 40)         score += 70 + n * 0.5;
-      else if (n <= 100)        score += 90 - (n - 40) * 0.8;
-      else                      score += 90 - 48 - (n - 100) * 2; // heavily penalise huge sets
-
-      // Strategy bonus
-      if (c.strategy.startsWith('B')) score += 35;  // ancestor-relative: best for sub-elements
-      if (c.strategy.startsWith('A')) score += 28;  // direct siblings
-      if (c.strategy.startsWith('C')) score += 22;  // whole ancestor cards
-      if (c.strategy.startsWith('D')) score += 10;  // global — last resort
-
-      // Level penalty (prefer closest to seed)
-      score -= (c.level || 0) * 4;
-
-      // Coverage bonus (how many ancestor containers yielded a match)
-      if (c.coverage != null) score += c.coverage * 25;
-
-      // Selector specificity bonus
-      if (c.selector) {
-        if (c.selector.includes('#'))  score += 18;
-        if (c.selector.includes('>'))  score += 12;
-        if (c.selector.includes('.'))  score += 5;
-      } else {
-        score -= 15; // no selector = bad
-      }
-
-      return { ...c, _score: score };
-    });
-
-    scored.sort((a, b) => b._score - a._score);
-
-    // Debug info (stripped in production builds)
-    if (window.__SELECTOR_DEBUG__) {
-      console.table(scored.map(c => ({
-        strategy: c.strategy,
-        count:    c.els.length,
-        selector: c.selector,
-        level:    c.level,
-        coverage: c.coverage?.toFixed(2),
-        score:    c._score.toFixed(1),
-      })));
+    const leaf = segments[segments.length - 1];
+    if (leaf.cls.length >= 2) {
+      const r = tryRel(leaf.tag + '.' + esc(leaf.cls[0]) + '.' + esc(leaf.cls[1]));
+      if (r) return r;
+    }
+    if (leaf.cls.length >= 1) {
+      let r = tryRel(leaf.tag + '.' + esc(leaf.cls[0]));
+      if (r) return r;
+      r = tryRel('.' + esc(leaf.cls[0]));
+      if (r) return r;
     }
 
-    return scored[0];
+    // Strategy B: shortest suffix of the path that resolves uniquely
+    for (let start = segments.length - 1; start >= 0; start--) {
+      const path = segments.slice(start).map(function(s) {
+        if (s.cls.length >= 2) return s.tag + '.' + esc(s.cls[0]) + '.' + esc(s.cls[1]);
+        if (s.cls.length >= 1) return s.tag + '.' + esc(s.cls[0]);
+        return s.tag;
+      }).join(' > ');
+      let r = tryRel(path);
+      if (r) return r;
+
+      const pathDesc = segments.slice(start).map(function(s) {
+        return s.cls.length ? s.tag + '.' + esc(s.cls[0]) : s.tag;
+      }).join(' ');
+      r = tryRel(pathDesc);
+      if (r) return r;
+    }
+
+    // Strategy C: nth-child fallback on leaf element
+    var leafParent = el.parentElement;
+    var leafIdxChild = Array.from(leafParent.children).indexOf(el) + 1;
+    var leafTag = el.tagName.toLowerCase();
+    var leafSel = leafTag + ':nth-child(' + leafIdxChild + ')';
+    var fullSel;
+    if (leafParent === scopeEl) {
+      fullSel = leafSel;
+    } else {
+      var intermediate = segments.slice(0, -1).map(function(s) { return s.tag; }).join(' > ');
+      fullSel = intermediate + ' > ' + leafSel;
+    }
+    var r = tryRel(fullSel);
+    if (r) return r;
+
+    // Also try nth-of-type
+    var leafIdxType = Array.from(leafParent.children).filter(function(c) { return c.tagName === leafTag; }).indexOf(el) + 1;
+    leafSel = leafTag + ':nth-of-type(' + leafIdxType + ')';
+    if (leafParent === scopeEl) {
+      fullSel = leafSel;
+    } else {
+      fullSel = intermediate + ' > ' + leafSel;
+    }
+    r = tryRel(fullSel);
+    if (r) return r;
+
+    // Absolute last resort: tag-only path (may not be unique, but kept for compatibility)
+    return segments.map(function(s) { return s.tag; }).join(' > ');
   }
 
-  // ── Element info builder ──────────────────────────────────────────────────
+  /* =========================================================================
+     ELEMENT INFO
+     ========================================================================= */
 
   function buildElementInfo(el) {
-    let primary = null, fallbackSelectors = [];
+    let primary           = null;
+    let fallbackSelectors = [];
 
-    // When inside a forEach scope, generate selectors RELATIVE to the scope element.
-    // The selector must work for every iterated element — verified by testing it
-    // against a sample of all iterator elements (not just the active one).
     const scopeEl = _forEachScopeEl;
     if (scopeEl && (el === scopeEl || scopeEl.contains(el))) {
       if (el === scopeEl) {
-        // User selected the iterator element itself.
-        // `:scope` means "this element" in Playwright's el.$eval(':scope', ...) —
-        // it's clean, portable, and requires no page-level selector in sub-queries.
         primary = { value: ':scope', type: 'css', strategy: 'iterator-self' };
       } else {
-        // Descendant of scope — build a relative selector
         let relSel = buildRelativeSelector(el, scopeEl);
 
-        // Cross-check across other iterator elements — must return 0 or 1 per item
         if (relSel && _allIteratorEls.length > 1) {
-          const sampleOthers = _allIteratorEls.filter(e => e !== scopeEl).slice(0, 5);
-          const tooAmbiguous = sampleOthers.some(iterEl => {
+          const others = _allIteratorEls.filter(function(e) { return e !== scopeEl; }).slice(0, 5);
+          const tooAmbiguous = others.some(function(iterEl) {
             try { return iterEl.querySelectorAll(relSel).length > 1; }
             catch (_) { return false; }
           });
           if (tooAmbiguous) {
-            const fullPath = buildUniquePathFromAncestor(el, scopeEl);
-            if (fullPath) {
-              const stripped = fullPath.replace(/:nth-child\(\d+\)/g, '');
-              try {
-                const hits = [...scopeEl.querySelectorAll(stripped)];
-                if (hits.length === 1 && hits[0] === el) relSel = stripped;
-              } catch (_) {}
+            const parts = [];
+            let c = el;
+            while (c && c !== scopeEl) {
+              const tag = c.tagName.toLowerCase();
+              const cls = stableClasses(c);
+              parts.unshift(cls.length ? tag + '.' + esc(cls[0]) : tag);
+              c = c.parentElement;
             }
+            const candidate = parts.join(' > ');
+            try {
+              const hits = Array.from(scopeEl.querySelectorAll(candidate));
+              if (hits.length === 1 && hits[0] === el) relSel = candidate;
+            } catch (_) {}
           }
         }
 
@@ -740,9 +352,20 @@
 
     if (!primary) {
       try {
-        const result = window.SelectorGenerator.getSelectorsForElement(el, { actionType: 'generic', maxFallbacks: 5 });
-        primary = result.primary ? { value: result.primary.value, type: result.primary.type, strategy: result.primary.strategy } : null;
-        fallbackSelectors = (result.fallbacks || []).map(f => ({ value: f.value, type: f.type, strategy: f.strategy }));
+        const result = window.SelectorGenerator.getSelectorsForElement(el, {
+          actionType:   'generic',
+          maxFallbacks: 5,
+        });
+        if (result.primary) {
+          primary = {
+            value:    result.primary.value,
+            type:     result.primary.type,
+            strategy: result.primary.strategy,
+          };
+        }
+        fallbackSelectors = (result.fallbacks || []).map(function(f) {
+          return { value: f.value, type: f.type, strategy: f.strategy };
+        });
       } catch (_) {
         primary = { value: buildSimpleSelector(el), type: 'css', strategy: 'fallback' };
       }
@@ -750,149 +373,59 @@
 
     const tag     = el.tagName.toLowerCase();
     const isLink  = tag === 'a' || !!el.closest('a');
-    const isInput = ['input','textarea','select'].includes(tag);
+    const isInput = ['input', 'textarea', 'select'].indexOf(tag) !== -1;
     const isImg   = tag === 'img';
     const isTable = tag === 'table' || !!el.querySelector('table');
     const text    = (el.textContent || '').trim().slice(0, 120);
     const href    = el.getAttribute('href') || null;
     const src     = el.getAttribute('src')  || null;
 
+    const stopAt    = (scopeEl && el !== scopeEl) ? scopeEl : document.documentElement;
     const breadcrumb = [];
-    let cur = el;
-    // When scoped, only show breadcrumb from el down to (not past) the scope element
-    const stopAt = (scopeEl && el !== scopeEl) ? scopeEl : document.documentElement;
-    while (cur && cur.tagName && cur !== stopAt) {
-      let seg = cur.tagName.toLowerCase();
-      if (cur.id) seg += '#' + cur.id;
-      else if (cur.classList.length) seg += '.' + [...cur.classList].slice(0, 2).join('.');
-      breadcrumb.unshift({ label: seg, selector: buildSimpleSelector(cur) });
-      cur = cur.parentElement;
+    let c = el;
+    while (c && c.tagName && c !== stopAt) {
+      let seg = c.tagName.toLowerCase();
+      if (c.id) seg += '#' + c.id;
+      else if (c.classList.length) seg += '.' + Array.from(c.classList).slice(0, 2).join('.');
+      breadcrumb.unshift({ label: seg, selector: buildSimpleSelector(c) });
+      c = c.parentElement;
     }
 
     const attrs = {};
-    for (const a of el.attributes) {
-      if (a.name === 'style') continue;
-      attrs[a.name] = a.value.slice(0, 100);
-    }
+    Array.from(el.attributes).forEach(function(a) {
+      if (a.name !== 'style') attrs[a.name] = a.value.slice(0, 100);
+    });
 
     return {
-      selector:         primary?.value || '',
-      selectorType:     primary?.type  || 'css',
-      selectorStrategy: primary?.strategy || '',
-      fallbackSelectors,
+      selector:          primary ? primary.value    : '',
+      selectorType:      primary ? primary.type     : 'css',
+      selectorStrategy:  primary ? primary.strategy : '',
+      fallbackSelectors: fallbackSelectors,
       isRelativeToScope: !!(scopeEl && (el === scopeEl || scopeEl.contains(el))),
-      tag, text, href, src,
-      isLink, isInput, isImg, isTable,
-      attrs, breadcrumb,
-      classes: [...el.classList].join(' '),
+      tag:    tag,
+      text:   text,
+      href:   href,
+      src:    src,
+      isLink: isLink, isInput: isInput, isImg: isImg, isTable: isTable,
+      attrs:  attrs,
+      breadcrumb: breadcrumb,
+      classes: Array.from(el.classList).join(' '),
     };
   }
 
-  /**
-   * Build a robust relative CSS selector for `el` within `scopeEl`.
-   *
-   * Goals:
-   *  1. Works for EVERY iterator element, not just the one clicked —
-   *     uses tag + class patterns (not nth-child) so it matches the
-   *     structural role, not the specific position.
-   *  2. Optional-element safe — if an element doesn't exist in some
-   *     iterator instances (e.g. pool dimensions on houses without pools),
-   *     `querySelectorAll` returns empty and the extractor gets "" — no crash.
-   *  3. Uniqueness within scope — verified against the active scope element;
-   *     if not unique, falls back to more specific path.
-   *
-   * Strategy (most to least preferred):
-   *  A. tag.class (single level) — e.g. `span.price`
-   *  B. parent.class > tag.class (two levels) — e.g. `.price-wrap > span`
-   *  C. tag-only path from scopeEl — e.g. `div > span`
-   *  D. nth-child-free path built from class names (each segment class-first)
-   *
-   * All candidates are verified with scopeEl.querySelectorAll() to confirm
-   * the selector hits exactly `el` and no other element in this scope.
-   * We do NOT use nth-child in relative selectors — it would break on other
-   * iterator elements if their children are in different order.
-   */
-  function buildRelativeSelector(el, scopeEl) {
-    // Build segments walking from el up to scopeEl (exclusive)
-    const segments = [];
-    let cur = el;
-    while (cur && cur !== scopeEl) {
-      const tag = cur.tagName.toLowerCase();
-      const cls = stableClasses(cur);
-      segments.unshift({ tag, cls, el: cur });
-      cur = cur.parentElement;
-      if (!cur) return null; // el not inside scopeEl
-    }
-    if (cur !== scopeEl) return null;
-    if (!segments.length) return null;
-
-    // Helper: try a selector, return it if it uniquely matches el within scopeEl
-    function tryRel(sel) {
-      try {
-        const hits = [...scopeEl.querySelectorAll(sel)];
-        if (hits.length === 1 && hits[0] === el) return sel;
-        if (hits.length > 1) return null; // ambiguous within scope
-        // hits.length === 0 shouldn't happen if el is truly inside scopeEl,
-        // but handle gracefully
-        return null;
-      } catch (_) { return null; }
-    }
-
-    // Strategy A: single-level tag+class or id
-    if (el.id) {
-      const r = tryRel('#' + esc(el.id)); if (r) return r;
-    }
-    {
-      const s = segments[segments.length - 1]; // leaf segment
-      if (s.cls.length >= 2) {
-        const r = tryRel(`${s.tag}.${s.cls[0]}.${s.cls[1]}`); if (r) return r;
-      }
-      if (s.cls.length >= 1) {
-        const r = tryRel(`${s.tag}.${s.cls[0]}`); if (r) return r;
-        const r2 = tryRel(`.${s.cls[0]}`); if (r2) return r2;
-      }
-    }
-
-    // Strategy B: build path from the shortest suffix that yields a unique match
-    // Try successively longer suffixes of the segment array
-    for (let start = segments.length - 1; start >= 0; start--) {
-      // Build selector from segments[start..end] without nth-child
-      const path = segments.slice(start).map(s => {
-        if (s.cls.length >= 2) return `${s.tag}.${s.cls[0]}.${s.cls[1]}`;
-        if (s.cls.length >= 1) return `${s.tag}.${s.cls[0]}`;
-        return s.tag;
-      }).join(' > ');
-
-      const r = tryRel(path);
-      if (r) return r;
-
-      // Also try descendant (space) combinator
-      const pathDesc = segments.slice(start).map(s =>
-        s.cls.length ? `${s.tag}.${s.cls[0]}` : s.tag
-      ).join(' ');
-      const r2 = tryRel(pathDesc);
-      if (r2) return r2;
-    }
-
-    // Strategy C: just the full class-free tag path (always uniqueness-optional)
-    const tagPath = segments.map(s => s.tag).join(' > ');
-    return tagPath; // may not be unique but is structurally meaningful
-  }
-
-  // ── Selection actions ─────────────────────────────────────────────────────
+  /* =========================================================================
+     SELECTION ACTIONS
+     ========================================================================= */
 
   function doFirstClick(target) {
-    // ── ForEach scope mode ────────────────────────────────────────────────
+
     if (_forEachScopeSel !== null) {
-      // Find which iterator element contains the click (or IS the click target)
-      const ownerIterEl = _allIteratorEls.find(
-        el => el === target || el.contains(target)
-      );
-      if (!ownerIterEl) return; // outside all scope elements — ignore
+      const ownerIterEl = _allIteratorEls.find(function(el) {
+        return el === target || el.contains(target);
+      });
+      if (!ownerIterEl) return;
 
-      // Update the "active" scope reference so breadcrumb / element info is correct
       _forEachScopeEl = ownerIterEl;
-
       fullReset();
       currentEl = target;
       selState  = 'first_selected';
@@ -900,19 +433,24 @@
 
       tooltip.style.display = 'none';
       const info = buildElementInfo(target);
-      info.softHighlightCount = 0; // no multi-selection in forEach scope
+      info.softHighlightCount = 0;
       window.sendToNode({ type: 'elementSelected', element: info });
       return;
     }
 
-    // ── Normal selection mode ─────────────────────────────────────────────
     fullReset();
     currentEl = target;
     selState  = 'first_selected';
     applyHard([target]);
 
-    const group    = findSimilarGroup(target);
-    const siblings = group.els.filter(el => el !== target);
+    let group;
+    try {
+      group = window.SelectorGenerator.findSimilarElements(target);
+    } catch (_) {
+      group = { els: [target], selector: null, strategy: 'none' };
+    }
+
+    const siblings = group.els.filter(function(el) { return el !== target; });
 
     if (siblings.length > 0) {
       softSelector = group.selector;
@@ -929,33 +467,33 @@
   }
 
   function confirmSiblingGroup() {
-    const allEls = [currentEl, ...softEls];
+    const allEls = [currentEl].concat(softEls.slice());
     clearArr(softEls);
     applyHard(allEls);
     selState = 'multi_selected';
     tooltip.style.display = 'none';
 
-    // Guarantee a selector — derive from actual element set if softSelector is missing
-    const finalSelector = softSelector || deriveExactSelector(allEls) || '';
+    const buildGroup = (window.SelectorGenerator && window.SelectorGenerator.buildGroupSelector)
+      ? window.SelectorGenerator.buildGroupSelector
+      : function() { return null; };
 
-    // Verify the final selector actually matches what's highlighted
-    let verifiedSelector = finalSelector;
+    let finalSelector = softSelector || buildGroup(allEls) || '';
+
     if (finalSelector) {
       try {
-        const matched = [...document.querySelectorAll(finalSelector)];
-        const allCovered = allEls.every(e => matched.includes(e));
+        const matched   = Array.from(document.querySelectorAll(finalSelector));
+        const allCovered = allEls.every(function(e) { return matched.indexOf(e) !== -1; });
         if (!allCovered) {
-          // Derived selector doesn't cover all elements — force exact derivation
-          verifiedSelector = deriveExactSelector(allEls) || finalSelector;
+          finalSelector = buildGroup(allEls) || finalSelector;
         }
       } catch (_) {
-        verifiedSelector = deriveExactSelector(allEls) || finalSelector;
+        finalSelector = buildGroup(allEls) || finalSelector;
       }
     }
 
     window.sendToNode({
       type:           'multiElementSelected',
-      commonSelector: verifiedSelector,
+      commonSelector: finalSelector,
       matchCount:     allEls.length,
       selectorCount:  allEls.length,
       strategy:       softStrategy || '',
@@ -963,45 +501,61 @@
     });
   }
 
-  // ── Mouse events ──────────────────────────────────────────────────────────
+  /* =========================================================================
+     MOUSE EVENTS
+     ========================================================================= */
 
   function onMouseMove(e) {
     if (!window.__SELECTION_MODE__) return;
     const target = e.target;
-    if (target === hoverEl) { if (tooltip.style.display !== 'none') placeTooltip(e); return; }
 
-    if (hoverEl && !hardEls.includes(hoverEl) && !softEls.includes(hoverEl)) restoreStyle(hoverEl, 'outline');
+    if (target === hoverEl) {
+      if (tooltip.style.display !== 'none') placeTooltip(e);
+      return;
+    }
+
+    if (hoverEl &&
+        hardEls.indexOf(hoverEl) === -1 &&
+        softEls.indexOf(hoverEl) === -1) {
+      restoreStyle(hoverEl, 'outline');
+    }
     hoverEl = target;
 
-    // In forEach scope mode only apply hover outline to selectable elements
     const inScope = _forEachScopeSel === null ||
-      _allIteratorEls.some(el => el === target || el.contains(target));
-    if (inScope && !hardEls.includes(hoverEl) && !softEls.includes(hoverEl) &&
-        !_allIteratorEls.includes(hoverEl)) {
+      _allIteratorEls.some(function(el) { return el === target || el.contains(target); });
+
+    if (inScope &&
+        hardEls.indexOf(hoverEl)         === -1 &&
+        softEls.indexOf(hoverEl)         === -1 &&
+        _allIteratorEls.indexOf(hoverEl) === -1) {
       setStyle(hoverEl, 'outline', HOVER_OUTLINE, true);
     }
 
     tooltip.style.display = 'block';
-    if (_forEachScopeSel !== null) {
-      const ownerIter = _allIteratorEls.find(el => el === target || el.contains(target));
+
+    if (_hoverHighlightEl) {
+      tooltip.textContent = '🖱️ Click to select: ' + getElPath(_hoverHighlightEl, 3);
+    } else if (_forEachScopeSel !== null) {
+      const ownerIter = _allIteratorEls.find(function(el) {
+        return el === target || el.contains(target);
+      });
       if (ownerIter) {
-        if (target === ownerIter) {
-          tooltip.textContent = '⊙ Click to select this whole element (iterator)';
-        } else {
-          tooltip.textContent = '⊙ Click to select: ' + getElPath(target, 3);
-        }
+        tooltip.textContent = target === ownerIter
+          ? '⊙ Click to select this whole element (iterator)'
+          : '⊙ Click to select: ' + getElPath(target, 3);
       } else {
         tooltip.textContent = '✕ Outside loop scope — only elements inside the highlighted items are selectable';
       }
-    } else if (selState === 'first_selected' && softEls.includes(target)) {
+    } else if (selState === 'first_selected' && (softEls.indexOf(target) !== -1 || isInside(target, softEls))) {
       tooltip.textContent = '⬡ Click to select all ' + (softEls.length + 1) + ' similar elements';
-    } else if (selState === 'first_selected' && hardEls.includes(target)) {
+    } else if (selState === 'first_selected' && (hardEls.indexOf(target) !== -1 || isInside(target, hardEls))) {
       tooltip.textContent = '✕ Click again to deselect';
     } else if (selState === 'multi_selected') {
       tooltip.textContent = '✕ Click anywhere to restart selection';
     } else {
       tooltip.textContent = getElPath(hoverEl);
     }
+
     placeTooltip(e);
   }
 
@@ -1010,30 +564,46 @@
     e.preventDefault();
     e.stopPropagation();
 
-    const target = e.target;
-
-    if (selState === 'idle')           { doFirstClick(target); return; }
-    if (selState === 'first_selected') {
-      // In forEach scope: never confirm a multi-group — just re-select
-      if (_forEachScopeSel !== null) { doFirstClick(target); return; }
-      if (softEls.includes(target))    { confirmSiblingGroup(); return; }
-      if (hardEls.includes(target))    { fullReset(); window.sendToNode({ type: 'selectionCleared' }); return; }
-      doFirstClick(target); return;
+    let target = e.target;
+    if (_hoverHighlightEl) {
+      target = _hoverHighlightEl;
+      clearHoverHighlight();
     }
-    if (selState === 'multi_selected') { doFirstClick(target); }
+
+    if (selState === 'idle') {
+      doFirstClick(target);
+      return;
+    }
+
+    if (selState === 'first_selected') {
+      if (_forEachScopeSel !== null) { doFirstClick(target); return; }
+
+      if (softEls.indexOf(target) !== -1 || isInside(target, softEls)) {
+        confirmSiblingGroup();
+        return;
+      }
+      if (hardEls.indexOf(target) !== -1 || isInside(target, hardEls)) {
+        fullReset();
+        window.sendToNode({ type: 'selectionCleared' });
+        return;
+      }
+      doFirstClick(target);
+      return;
+    }
+
+    if (selState === 'multi_selected') {
+      doFirstClick(target);
+    }
   }
 
-  // ── Exposed API ───────────────────────────────────────────────────────────
+  /* =========================================================================
+     FOREACH SCOPE
+     ========================================================================= */
 
-  // ── ForEach scope ─────────────────────────────────────────────────────────
-  // When user is building steps inside a ForEach loop, selection is scoped to
-  // one representative iterator element. Selectors generated are relative to
-  // the iterator element so they work for EVERY iterated element (not just one).
-
-  let _forEachScopeEl   = null;  // the iterator element the user last interacted with
-  let _forEachScopeSel  = null;  // iterator CSS selector
-  let _allIteratorEls   = [];    // all elements matching the iterator selector
-  let _dimOverlay       = null;
+  let _forEachScopeEl  = null;
+  let _forEachScopeSel = null;
+  let _allIteratorEls  = [];
+  let _dimOverlay      = null;
 
   const SCOPE_OUTLINE = '2px solid rgba(163,113,247,0.6)';
   const SCOPE_SHADOW  = '0 0 0 3px rgba(163,113,247,0.18)';
@@ -1042,13 +612,13 @@
     if (_dimOverlay) return;
     _dimOverlay = document.createElement('div');
     _dimOverlay.style.cssText = [
-      'position:fixed','inset:0','pointer-events:none',
+      'position:fixed', 'inset:0', 'pointer-events:none',
       'z-index:2147483640',
       'background:rgba(0,0,0,0)',
       'transition:background 200ms ease',
     ].join(';');
     document.body.appendChild(_dimOverlay);
-    requestAnimationFrame(() => {
+    requestAnimationFrame(function() {
       if (_dimOverlay) _dimOverlay.style.background = 'rgba(0,0,0,0.45)';
     });
   }
@@ -1058,10 +628,9 @@
     const el = _dimOverlay;
     _dimOverlay = null;
     el.style.background = 'rgba(0,0,0,0)';
-    setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+    setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
   }
 
-  // Elevate an element above the dim overlay so it stays visible
   function _elevateEl(el) {
     if (!el) return;
     storeOriginalStyle(el, 'outline');
@@ -1084,49 +653,43 @@
     restoreStyle(el, 'z-index');
   }
 
-  window.__setForEachScope__ = (iteratorSelector) => {
+  window.__setForEachScope__ = function(iteratorSelector) {
     window.__clearForEachScope__();
     _forEachScopeSel = iteratorSelector;
     try {
-      _allIteratorEls = [...document.querySelectorAll(iteratorSelector)];
+      _allIteratorEls = Array.from(document.querySelectorAll(iteratorSelector));
     } catch (_) { _allIteratorEls = []; }
 
-    // Elevate ALL iterator elements above the dim — user can interact with any of them
-    _allIteratorEls.forEach(el => _elevateEl(el));
+    _allIteratorEls.forEach(function(el) { _elevateEl(el); });
     _forEachScopeEl = _allIteratorEls[0] || null;
-
     _createDimOverlay();
   };
 
-  window.__clearForEachScope__ = () => {
-    // Snapshot and clear _allIteratorEls FIRST so clearArr's re-elevation guard
-    // does not re-apply scope styles during the restore pass
-    const toUnelevate = [..._allIteratorEls];
+  window.__clearForEachScope__ = function() {
+    const toUnelevate = _allIteratorEls.slice();
     _allIteratorEls  = [];
     _forEachScopeEl  = null;
     _forEachScopeSel = null;
 
-    toUnelevate.forEach(el => _unelevateEl(el));
+    toUnelevate.forEach(function(el) { _unelevateEl(el); });
     clearArr(hardEls);
     clearArr(softEls);
     _removeDimOverlay();
     fullReset();
   };
 
-  window.__resetSelection__ = () => fullReset();
+  /* =========================================================================
+     HOVER HIGHLIGHT (breadcrumb picker preview)
+     ========================================================================= */
 
-  // ── Hover highlight (picker + breadcrumb preview) ─────────────────────────
-  // Uses the same DOM walking logic as __selectAncestor__ / __selectChildByIndex__
-  // so hover and click always target the identical element — single source of truth.
-
-  let _hoverHighlightEl = null;
+  let _hoverHighlightEl    = null;
   const HOVER_PICK_OUTLINE = '2px solid #a371f7';
 
   function applyHoverHighlight(el) {
     clearHoverHighlight();
     if (!el || !el.tagName) return;
     _hoverHighlightEl = el;
-    setStyle(el, 'outline', HOVER_PICK_OUTLINE, true);
+    setStyle(el, 'outline',    HOVER_PICK_OUTLINE, true);
     setStyle(el, 'box-shadow', 'inset 0 0 0 9999px rgba(163,113,247,0.10)', true);
   }
 
@@ -1134,134 +697,87 @@
     if (!_hoverHighlightEl) return;
     const el = _hoverHighlightEl;
     _hoverHighlightEl = null;
-    if (!hardEls.includes(el) && !softEls.includes(el)) {
+    if (hardEls.indexOf(el) === -1 && softEls.indexOf(el) === -1) {
       restoreStyle(el, 'outline');
       restoreStyle(el, 'box-shadow');
     }
   }
 
-  // Highlight the ancestor levelsUp steps above currentEl —
-  // same walk as __selectAncestor__ so hover === click target.
-  window.__highlightAncestor__ = (levelsUp) => {
+  /* =========================================================================
+     EXPOSED API
+     ========================================================================= */
+
+  window.__resetSelection__ = function() { fullReset(); };
+
+  window.__highlightAncestor__ = function(levelsUp) {
     if (!currentEl) return;
     let el = currentEl;
-    for (let i = 0; i < levelsUp; i++) el = el?.parentElement;
+    for (let i = 0; i < levelsUp; i++) el = el && el.parentElement;
     applyHoverHighlight(el || null);
   };
 
-  // Highlight a child by index inside the ancestor levelsUp above currentEl —
-  // same walk as __selectChildByIndex__ so hover === click target.
-  window.__highlightPickerChild__ = (levelsUp, childIndex) => {
+  window.__highlightPickerChild__ = function(levelsUp, childIndex) {
     if (!currentEl) return;
     let el = currentEl;
-    for (let i = 0; i < levelsUp; i++) el = el?.parentElement;
-    applyHoverHighlight(el?.children[childIndex] || null);
+    for (let i = 0; i < levelsUp; i++) el = el && el.parentElement;
+    applyHoverHighlight((el && el.children[childIndex]) || null);
   };
 
-  window.__clearHoverHighlight__ = () => clearHoverHighlight();
+  window.__clearHoverHighlight__ = function() { clearHoverHighlight(); };
 
-  window.__selectAncestor__ = (levelsUp) => {
+  window.__selectAncestor__ = function(levelsUp) {
     if (!currentEl) return;
     let el = currentEl;
-    for (let i = 0; i < levelsUp; i++) el = el?.parentElement;
-    if (el && el.tagName && !isRoot(el)) doFirstClick(el);
+    for (let i = 0; i < levelsUp; i++) el = el && el.parentElement;
+    if (el && el.tagName && !isRoot(el)) {
+      onClick({ target: el, preventDefault: function(){}, stopPropagation: function(){} });
+    }
   };
 
-  window.__getChildrenOf__ = (levelsUp) => {
+  window.__getChildrenOf__ = function(levelsUp) {
     if (!currentEl) return [];
     let el = currentEl;
-    for (let i = 0; i < levelsUp; i++) el = el?.parentElement;
+    for (let i = 0; i < levelsUp; i++) el = el && el.parentElement;
     if (!el) return [];
-    return Array.from(el.children).map((child, idx) => {
+    return Array.from(el.children).map(function(child, idx) {
       const info = buildElementInfo(child);
       info.childIndex = idx;
       return info;
     });
   };
 
-  window.__selectChildByIndex__ = (levelsUp, childIndex) => {
+  window.__selectChildByIndex__ = function(levelsUp, childIndex) {
     if (!currentEl) return;
     let el = currentEl;
-    for (let i = 0; i < levelsUp; i++) el = el?.parentElement;
-    if (el?.children[childIndex]) doFirstClick(el.children[childIndex]);
+    for (let i = 0; i < levelsUp; i++) el = el && el.parentElement;
+    if (el && el.children[childIndex]) {
+      onClick({ target: el.children[childIndex], preventDefault: function(){}, stopPropagation: function(){} });
+    }
   };
 
-  // ── Mode watcher ──────────────────────────────────────────────────────────
+  /* =========================================================================
+     SELECTION MODE WATCHER
+     ========================================================================= */
 
   let _selectionMode = window.__SELECTION_MODE__;
   Object.defineProperty(window, '__SELECTION_MODE__', {
-    get: () => _selectionMode,
-    set: (value) => { if (_selectionMode !== value) { _selectionMode = value; if (!value) cleanupSelectionMode(); } },
-    configurable: true
+    get: function()      { return _selectionMode; },
+    set: function(value) {
+      if (_selectionMode !== value) {
+        _selectionMode = value;
+        if (!value) cleanupSelectionMode();
+      }
+    },
+    configurable: true,
   });
+
+  /* =========================================================================
+     INIT
+     ========================================================================= */
 
   createTooltip();
   document.addEventListener('mousemove', onMouseMove, true);
   document.addEventListener('click',     onClick,     true);
-  console.log('✅ SelectorTool injected (multi-strategy v2)');
+  console.log('✅ SelectorTool injected (delegating to SelectorGenerator v3)');
+
 })();
-
-// ─── Shared utilities ─────────────────────────────────────────────────────────
-
-function getFeatures(el) {
-  return {
-    tag:       el.tagName,
-    classes:   Array.from(el.classList),
-    attrs:     Array.from(el.attributes).map(a => a.name),
-    childTags: Array.from(el.children).map(c => c.tagName),
-    childCount: el.children.length,
-    textType:  (() => {
-      const t = (el.textContent || '').trim();
-      if (!t) return 'empty';
-      if (/^\d+(\.\d+)?$/.test(t)) return 'number';
-      if (/[\$€£¥₹]/.test(t)) return 'money';
-      if (t.length < 30) return 'short';
-      return 'long';
-    })(),
-  };
-}
-
-function similarityScore(f1, f2) {
-  // Tag match — hard requirement: different tags = very low score
-  const tagScore = f1.tag === f2.tag ? 1 : 0;
-  if (tagScore === 0) return 0.1;
-
-  // Class overlap (Jaccard)
-  const c1 = new Set(f1.classes), c2 = new Set(f2.classes);
-  const classScore = (c1.size === 0 && c2.size === 0) ? 0.8  // both classless: neutral
-    : (c1.size === 0 || c2.size === 0)                 ? 0.2
-    : [...c1].filter(x => c2.has(x)).length / new Set([...c1,...c2]).size;
-
-  // Attribute name overlap
-  const a1 = new Set(f1.attrs), a2 = new Set(f2.attrs);
-  const attrScore = (a1.size === 0 && a2.size === 0) ? 0.8
-    : (a1.size === 0 || a2.size === 0)                ? 0.3
-    : [...a1].filter(x => a2.has(x)).length / new Set([...a1,...a2]).size;
-
-  // Child tag structure overlap
-  const ct1 = new Set(f1.childTags), ct2 = new Set(f2.childTags);
-  const childTagScore = new Set([...ct1,...ct2]).size === 0 ? 0.8
-    : [...ct1].filter(x => ct2.has(x)).length / new Set([...ct1,...ct2]).size;
-
-  // Child count similarity (ratio, capped)
-  const maxC = Math.max(f1.childCount, f2.childCount, 1);
-  const minC = Math.min(f1.childCount, f2.childCount);
-  const childCountScore = minC / maxC;
-
-  // Text type match
-  const textScore = f1.textType === f2.textType ? 1 : 0.3;
-
-  // Weights: classes are the strongest signal; structure next; text weakest
-  const w = (c1.size === 0 && c2.size === 0)
-    ? { tag: 0.35, cls: 0, attr: 0.20, ctag: 0.25, ccnt: 0.15, txt: 0.05 }
-    : { tag: 0.30, cls: 0.30, attr: 0.15, ctag: 0.15, ccnt: 0.05, txt: 0.05 };
-
-  return (
-    w.tag  * tagScore        +
-    w.cls  * classScore      +
-    w.attr * attrScore       +
-    w.ctag * childTagScore   +
-    w.ccnt * childCountScore +
-    w.txt  * textScore
-  );
-}

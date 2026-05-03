@@ -174,7 +174,7 @@ function App() {
 
   // ── Navigate ──────────────────────────────────────────────────────────────
   const handleNavigate = () => {
-    if (!socketRef.current || !urlInput.startsWith("http")) return;
+    // if (!socketRef.current || !urlInput.startsWith("http")) return;
     setStatus("Navigating...");
     const rect = canvasContainerRef.current?.getBoundingClientRect();
     const vpW = Math.floor(rect?.width) || 1280;
