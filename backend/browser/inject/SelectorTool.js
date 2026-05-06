@@ -497,7 +497,7 @@
       matchCount:     allEls.length,
       selectorCount:  allEls.length,
       strategy:       softStrategy || '',
-      elements:       allEls.slice(0, 5).map(buildElementInfo),
+      elements:       allEls.map(buildElementInfo),
     });
   }
 

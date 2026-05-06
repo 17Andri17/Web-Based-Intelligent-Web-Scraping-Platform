@@ -14,6 +14,20 @@ import { useState } from "react";
    All public functions accept (containerPath, index, ...data).
    ===================================================================== */
 
+// Update a step anywhere in the tree by its ID (for cross-path label changes)
+function updateStepById(rootSteps, id, mapper) {
+  return rootSteps.map(step => {
+    if (step.id === id) return mapper(step);
+    const updated = { ...step };
+    for (const key of Object.keys(updated)) {
+      if (Array.isArray(updated[key])) {
+        updated[key] = updateStepById(updated[key], id, mapper);
+      }
+    }
+    return updated;
+  });
+}
+
 // Read: navigate to the nested array at containerPath inside rootSteps.
 export function getContainer(rootSteps, containerPath) {
   let cursor = rootSteps;
@@ -110,6 +124,11 @@ export function useWorkflow() {
     );
   };
 
+  // ── UPDATE LABEL BY ID (for DataPreviewPanel naming) ──────────────────
+  const updateLabelById = (id, label) => {
+    setSteps(prev => updateStepById(prev, id, step => ({ ...step, label })));
+  };
+
   // ── REPLACE ALL (DnD at root level via arrayMove) ────────────────────
   const setAllSteps = (newSteps) => setSteps(newSteps);
 
@@ -132,5 +151,6 @@ export function useWorkflow() {
     deleteStep,
     reorderSteps,
     updateParams,
+    updateLabelById,
   };
 }

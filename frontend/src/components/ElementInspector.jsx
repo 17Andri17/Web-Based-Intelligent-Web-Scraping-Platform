@@ -165,11 +165,24 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
   const cat = CATEGORIES.find(c => c.id === activeCategory);
   const visibleActions = cat ? cat.actions.filter(a => !a.showWhen || a.showWhen(element)) : [];
 
+  const EXTRACTION_PREVIEW_FN = {
+    EXTRACT_TEXT:      () => element.text || "",
+    EXTRACT_ATTRIBUTE: () => element.href || element.src || element.text || "",
+    EXTRACT_HTML:      () => element.text ? element.text.slice(0, 80) + "..." : "(inner HTML)",
+    EXTRACT_TABLE:     () => "(table data)",
+    EXTRACT_LIST:      () => "(list items)",
+    EXTRACT_JSON:      () => "(JSON-LD structured data)",
+  };
+
   const handleQuickAdd = (actionMeta) => {
     const def = actionDefinitions[actionMeta.type];
     if (!def) return;
     const smartParams = actionMeta.smartDefault ? actionMeta.smartDefault(element) : {};
     const step = createAction(actionMeta.type, { ...buildDefaultParams(def), ...smartParams }, buildDefaultAdvanced(def));
+    if (EXTRACTION_PREVIEW_FN[actionMeta.type]) {
+      step.previewValue    = EXTRACTION_PREVIEW_FN[actionMeta.type]();
+      step.previewSelector = element.selector || "";
+    }
     onAddStep(step);
     setAddedFlash(actionMeta.type);
     setTimeout(() => setAddedFlash(null), 800);
@@ -290,6 +303,10 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
             accentColor={cat?.color}
             onAdd={(params, advanced) => {
               const step = createAction(selectedAction.type, params, advanced);
+              if (EXTRACTION_PREVIEW_FN[selectedAction.type]) {
+                step.previewValue    = EXTRACTION_PREVIEW_FN[selectedAction.type]();
+                step.previewSelector = element.selector || "";
+              }
               onAddStep(step);
               setAddedFlash(selectedAction.type);
               setTimeout(() => setAddedFlash(null), 800);
@@ -315,6 +332,17 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
     if (!def) return;
     const smartParams = actionMeta.smartDefault ? actionMeta.smartDefault(selection) : {};
     const step = createAction(actionMeta.type, { ...buildDefaultParams(def), ...smartParams }, buildDefaultAdvanced(def));
+    // Capture multi-element preview
+    const MULTI_PREVIEW = {
+      EXTRACT_TEXT:      () => `${selection.matchCount} elements matched`,
+      EXTRACT_ATTRIBUTE: () => `${selection.matchCount} attribute values`,
+      EXTRACT_HTML:      () => `${selection.matchCount} HTML fragments`,
+      EXTRACT_LIST:      () => `${selection.matchCount} list items`,
+    };
+    if (MULTI_PREVIEW[actionMeta.type]) {
+      step.previewValue    = MULTI_PREVIEW[actionMeta.type]();
+      step.previewSelector = selection.commonSelector || "";
+    }
     onAddStep(step);
     setAddedFlash(actionMeta.type);
     setTimeout(() => setAddedFlash(null), 800);
@@ -326,6 +354,8 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
       itemVar: "el",
       indexVar: "i",
     });
+    // Attach all matched elements so DataPreviewPanel can show real preview rows
+    control.previewElements = selection.elements || [];
     onAddStep(control, { isForEach: true });
     setAddedFlash("FOREACH");
     setTimeout(() => setAddedFlash(null), 800);
@@ -455,6 +485,16 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
             accentColor={cat?.color}
             onAdd={(params, advanced) => {
               const step = createAction(selectedAction.type, params, advanced);
+              const MULTI_PREVIEW_FN = {
+                EXTRACT_TEXT:      () => `${selection.matchCount} elements matched`,
+                EXTRACT_ATTRIBUTE: () => `${selection.matchCount} attribute values`,
+                EXTRACT_HTML:      () => `${selection.matchCount} HTML fragments`,
+                EXTRACT_LIST:      () => `${selection.matchCount} list items`,
+              };
+              if (MULTI_PREVIEW_FN[selectedAction.type]) {
+                step.previewValue    = MULTI_PREVIEW_FN[selectedAction.type]();
+                step.previewSelector = selection.commonSelector || "";
+              }
               onAddStep(step);
               setAddedFlash(selectedAction.type);
               setTimeout(() => setAddedFlash(null), 800);

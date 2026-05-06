@@ -6,14 +6,16 @@ import { createAction } from "./workflow/stepFactory";
 import WorkflowPanel from "./components/WorkflowPanel";
 import ElementInspector from "./components/ElementInspector";
 import ExecutionPanel from "./components/ExecutionPanel";
+import DataPreviewPanel from "./components/DataPreviewPanel";
 import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
+import "./styles/DataPreviewPanel.css";
 
 const SERVER_URL = "http://localhost:3001";
 const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
 
 function App() {
-  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps } = useWorkflow();
+  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById } = useWorkflow();
   const [activeTab, setActiveTab] = useState("stream");
 
   const canvasRef            = useRef(null);
@@ -39,6 +41,9 @@ function App() {
   const [forEachCtx, setForEachCtx] = useState(null); // { stepId }
   const stepsRef = useRef(steps);
   useEffect(() => { stepsRef.current = steps; }, [steps]);
+
+  // Preview data: separate from steps so updates don't re-trigger emission
+  const [previewData, setPreviewData] = useState({});
 
   // ── Execution state ──────────────────────────────────────────────────────
   const [execPanelOpen, setExecPanelOpen] = useState(false);
@@ -115,6 +120,18 @@ function App() {
       if (results && Object.keys(results).length > 0) setExecResults(results);
     });
     socket.on("codeReady", ({ code }) => { downloadTextFile(code, "workflow.js", "text/javascript"); });
+    socket.on("previewResult", ({ stepId, previewValue, previewValues, previewElements, notFound }) => {
+      setPreviewData(prev => ({
+        ...prev,
+        [stepId]: {
+          ...(prev[stepId] || {}),
+          ...(previewValue    !== undefined ? { previewValue }    : {}),
+          ...(previewValues   !== undefined ? { previewValues }   : {}),
+          ...(previewElements !== undefined ? { previewElements } : {}),
+          ...(notFound        !== undefined ? { notFound }        : {}),
+        },
+      }));
+    });
 
     return () => socket.disconnect();
   }, []);
@@ -301,6 +318,59 @@ function App() {
   };
   const emit = (type, extra = {}) => socketRef.current?.emit("userAction", { type, ...extra });
 
+  // ── Emit previewStep on param changes only (debounced + fingerprinted) ──
+  const previewDebounceRef = useRef(null);
+  const lastFingerprintRef = useRef("");
+  const PREVIEW_TYPES = new Set(["EXTRACT_TEXT","EXTRACT_ATTRIBUTE","EXTRACT_HTML","EXTRACT_TABLE","EXTRACT_LIST","EXTRACT_JSON","FOR_EACH_ELEMENTS","FOR_EACH"]);
+  const BRANCH_KEYS = ["body","then","else","try","catch"];
+  function collectPreviewable(arr, parentContainerSelector) {
+    const out = [];
+    for (const s of arr || []) {
+      if (typeof s !== "object" || !s) continue;
+      if ((s.kind === "action" && PREVIEW_TYPES.has(s.type)) ||
+          (s.kind === "control" && PREVIEW_TYPES.has(s.type))) {
+        const sel = s.params?.selector || s.params?.containerSelector || "";
+        if (sel) {
+          const payload = { stepId: s.id, type: s.type, params: s.params };
+          if (parentContainerSelector && s.kind === "action") {
+            payload.containerSelector = parentContainerSelector;
+          }
+          out.push(payload);
+        }
+      }
+      const loopSel = (s.kind === "control" && PREVIEW_TYPES.has(s.type))
+        ? (s.params?.selector || s.params?.containerSelector || "") : parentContainerSelector;
+      for (const key of BRANCH_KEYS) {
+        if (Array.isArray(s[key])) out.push(...collectPreviewable(s[key], loopSel || ""));
+      }
+    }
+    return out;
+  }
+  // Fingerprint only type+params: preview responses don't re-trigger emission
+  useEffect(() => {
+    const items = collectPreviewable(steps, "");
+    const fp = JSON.stringify(items.map(p => ({ id: p.stepId, type: p.type, params: p.params })));
+    if (fp === lastFingerprintRef.current) return;
+    lastFingerprintRef.current = fp;
+    if (!socketRef.current) return;
+    clearTimeout(previewDebounceRef.current);
+    previewDebounceRef.current = setTimeout(() => {
+      items.forEach(p => socketRef.current?.emit("previewStep", p));
+    }, 400);
+    return () => clearTimeout(previewDebounceRef.current);
+  }, [steps]);
+
+  // Count extraction steps for the Data tab badge
+  const EXTRACTION_TYPES_SET = new Set(["EXTRACT_TEXT","EXTRACT_ATTRIBUTE","EXTRACT_HTML","EXTRACT_TABLE","EXTRACT_LIST","EXTRACT_JSON"]);
+  function countExtraction(arr) {
+    return (arr||[]).reduce((n,s) => {
+      let c = (s.kind==="action" && EXTRACTION_TYPES_SET.has(s.type)) ? 1 : 0;
+      Object.values(s).forEach(v => { if(Array.isArray(v)) c += countExtraction(v); });
+      return n + c;
+    }, 0);
+  }
+  const extractionCount = countExtraction(steps);
+
   const isRunDisabled = steps.length === 0 || execStatus === "running";
   const showInspector = inspectorOpen && !!selectedElement;
 
@@ -362,6 +432,13 @@ function App() {
           </svg>
           Workflow
           {totalCount > 0 && <span className="tab-badge">{totalCount}</span>}
+        </button>
+        <button className={`tab-btn ${activeTab === "data" ? "active" : ""}`} onClick={() => setActiveTab("data")}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+          </svg>
+          Data
+          {extractionCount > 0 && <span className="tab-badge" style={{background:"var(--accent-success)"}}>{extractionCount}</span>}
         </button>
       </div>
 
@@ -458,6 +535,14 @@ function App() {
           <WorkflowPanel
             steps={steps} totalCount={totalCount} setSteps={setSteps}
             onAdd={addStep} onUpdate={updateStep} onDelete={deleteStep} onReorder={reorderSteps}
+          />
+        )}
+        {activeTab === "data" && (
+          <DataPreviewPanel
+            steps={steps}
+            execResults={execResults}
+            previewData={previewData}
+            onUpdateLabel={updateLabelById}
           />
         )}
       </main>

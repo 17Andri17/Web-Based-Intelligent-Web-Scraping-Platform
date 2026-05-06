@@ -273,6 +273,121 @@ io.on('connection', (socket) => {
   });
 
   // ── Disconnect ────────────────────────────────────────────────────────────
+
+  // ── Preview step ─────────────────────────────────────────────────────────
+  socket.on('previewStep', async ({ stepId, type, params, containerSelector }) => {
+    const s = userSessions.get(userId);
+    if (!s?.page) return;
+    try {
+      const selector = params?.selector || params?.containerSelector || '';
+
+      // ── Shared helpers (serialisable — passed into page.evaluate) ──────────
+      // Detect XPath: starts with / or ( (e.g. (//div...)[1] pattern)
+      // queryAll: returns array of elements using CSS or XPath as appropriate
+      // extractValue: extracts the right value from an element given action type
+
+      // FOR_EACH — return all matched container elements
+      if (type === 'FOR_EACH_ELEMENTS' || type === 'FOR_EACH') {
+        if (!selector) return;
+        const elements = await s.page.evaluate((sel) => {
+          const isXPath = sel.startsWith('/') || sel.startsWith('(');
+          const getEls = (s, ctx) => {
+            if (isXPath) {
+              const result = document.evaluate(s, ctx || document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+              return Array.from({ length: result.snapshotLength }, (_, i) => result.snapshotItem(i));
+            }
+            return Array.from((ctx || document).querySelectorAll(s));
+          };
+          try {
+            return getEls(sel).map(el => ({
+              text:  el.innerText?.trim() || el.textContent?.trim() || '',
+              href:  el.href   || el.getAttribute('href')  || '',
+              src:   el.src    || el.getAttribute('src')   || '',
+              alt:   el.alt    || el.getAttribute('alt')   || '',
+              value: el.value  || el.getAttribute('value') || '',
+            }));
+          } catch(e) { return []; }
+        }, selector);
+        socket.emit('previewResult', { stepId, previewElements: elements });
+        return;
+      }
+
+      if (!selector) return;
+      const multiple  = !!(params && params.multiple);
+      const attribute = (params && params.attribute) || '';
+
+      // Scoped sub-query within each container row
+      if (containerSelector) {
+        const values = await s.page.evaluate((containerSel, subSel, type, attribute) => {
+          const isXPathContainer = containerSel.startsWith('/') || containerSel.startsWith('(');
+          const isXPathSub       = subSel.startsWith('/') || subSel.startsWith('(');
+          const getEls = (sel, ctx, isXP) => {
+            if (isXP) {
+              const r = document.evaluate(sel, ctx || document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+              return Array.from({ length: r.snapshotLength }, (_, i) => r.snapshotItem(i));
+            }
+            return Array.from((ctx || document).querySelectorAll(sel));
+          };
+          const extract = (el) => {
+            switch (type) {
+              case 'EXTRACT_ATTRIBUTE': return attribute ? el.getAttribute(attribute) : (el.href || el.src || el.getAttribute('href') || '');
+              case 'EXTRACT_HTML':      return el.innerHTML?.trim() || '';
+              case 'EXTRACT_LIST':      return Array.from(el.querySelectorAll('li,option')).map(i => i.innerText?.trim()).filter(Boolean).join(' | ');
+              default:                  return el.innerText?.trim() || el.textContent?.trim() || '';
+            }
+          };
+          try {
+            const containers = getEls(containerSel, null, isXPathContainer);
+            return containers.map(container => {
+              const candidates = getEls(subSel, isXPathSub ? document : container, isXPathSub);
+              // For XPath sub-selectors the query runs on document; filter to descendants
+              const el = isXPathSub
+                ? candidates.find(c => container.contains(c)) || null
+                : (container.matches(subSel) ? container : candidates[0] || null);
+              return el ? extract(el) : null;
+            });
+          } catch(e) { return []; }
+        }, containerSelector, selector, type, attribute);
+        if (values && values.length > 0) {
+          socket.emit('previewResult', { stepId, previewValues: values });
+          return;
+        }
+      }
+
+      // Full-page query — standalone extraction steps
+      const result = await s.page.evaluate((sel, type, multiple, attribute) => {
+        const isXPath = sel.startsWith('/') || sel.startsWith('(');
+        const getEls = (s) => {
+          if (isXPath) {
+            const r = document.evaluate(s, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            return Array.from({ length: r.snapshotLength }, (_, i) => r.snapshotItem(i));
+          }
+          return Array.from(document.querySelectorAll(s));
+        };
+        const extract = (el) => {
+          switch (type) {
+            case 'EXTRACT_ATTRIBUTE': return attribute ? el.getAttribute(attribute) : (el.href || el.src || el.getAttribute('href') || '');
+            case 'EXTRACT_HTML':      return el.innerHTML?.trim() || '';
+            case 'EXTRACT_LIST':      return Array.from(el.querySelectorAll('li,option')).map(i => i.innerText?.trim()).filter(Boolean).join(' | ');
+            default:                  return el.innerText?.trim() || el.textContent?.trim() || '';
+          }
+        };
+        try {
+          const els = getEls(sel);
+          if (!els.length) return null;
+          const targets = multiple ? els : [els[0]];
+          return multiple ? targets.map(extract).join(' | ') : extract(targets[0]);
+        } catch(e) { return null; }
+      }, selector, type, multiple, attribute);
+
+      if (result !== null) {
+        socket.emit('previewResult', { stepId, previewValue: String(result) });
+      } else {
+        socket.emit('previewResult', { stepId, notFound: true });
+      }
+    } catch(err) { /* silent — preview is best-effort */ }
+  });
+
   socket.on('disconnect', () => {
     console.log(`🔌 User disconnected: ${userId}`);
     userSessions.delete(userId);
