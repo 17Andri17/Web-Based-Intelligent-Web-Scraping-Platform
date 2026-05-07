@@ -751,7 +751,9 @@
     let el = currentEl;
     for (let i = 0; i < levelsUp; i++) el = el && el.parentElement;
     if (el && el.children[childIndex]) {
-      onClick({ target: el.children[childIndex], preventDefault: function(){}, stopPropagation: function(){} });
+      // Call doFirstClick directly — onClick would see the child inside hardEls
+      // and fire selectionCleared instead of selecting the child.
+      doFirstClick(el.children[childIndex]);
     }
   };
 
