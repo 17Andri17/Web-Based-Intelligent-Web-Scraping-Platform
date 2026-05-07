@@ -7,15 +7,17 @@ import WorkflowPanel from "./components/WorkflowPanel";
 import ElementInspector from "./components/ElementInspector";
 import ExecutionPanel from "./components/ExecutionPanel";
 import DataPreviewPanel from "./components/DataPreviewPanel";
+import CompactWorkflowSidebar from "./components/CompactWorkflowSidebar";
 import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
 import "./styles/DataPreviewPanel.css";
+import "./styles/CompactWorkflowSidebar.css";
 
 const SERVER_URL = "http://localhost:3001";
 const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
 
 function App() {
-  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById } = useWorkflow();
+  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById } = useWorkflow();
   const [activeTab, setActiveTab] = useState("stream");
 
   const canvasRef            = useRef(null);
@@ -32,18 +34,28 @@ function App() {
   const [cursorType,      setCursorType]      = useState("default");
   const [isConnected,     setIsConnected]     = useState(false);
   const [selectedElement, setSelectedElement] = useState(null);
-  const [inspectorOpen,   setInspectorOpen]   = useState(false);
   const [childrenList,    setChildrenList]     = useState(null);  // { levelsUp, children }
   const [toast,           setToast]           = useState(null);   // { msg, type }
   const toastTimerRef = useRef(null);
 
+
+    // Preview data: separate from steps so updates don't re-trigger emission
+  const [previewData,     setPreviewData]     = useState({});
+  // Sidebar: shared inspector + workflow panel
+  const [showSidebar,     setShowSidebar]     = useState(false);
+  const [sidebarTab,      setSidebarTab]      = useState("inspector"); // "inspector" | "workflow"
+  const [reselectStepId,  setReselectStepId]  = useState(null); // step id awaiting element re-pick
+  const [reselectIsLoop,  setReselectIsLoop]  = useState(false);
+  
   // ForEach context: when set, actions are added inside the loop body
   const [forEachCtx, setForEachCtx] = useState(null); // { stepId }
   const stepsRef = useRef(steps);
   useEffect(() => { stepsRef.current = steps; }, [steps]);
-
-  // Preview data: separate from steps so updates don't re-trigger emission
-  const [previewData, setPreviewData] = useState({});
+  // Stable refs for reselect (avoid stale closures in socket handler)
+  const reselectStepIdRef    = useRef(null);
+  const updateParamsByIdRef  = useRef(null);
+  useEffect(() => { reselectStepIdRef.current   = reselectStepId; },  [reselectStepId]);
+  useEffect(() => { updateParamsByIdRef.current  = updateParamsById; }, [updateParamsById]);
 
   // ── Execution state ──────────────────────────────────────────────────────
   const [execPanelOpen, setExecPanelOpen] = useState(false);
@@ -80,9 +92,22 @@ function App() {
         addStep(createAction(data.action, data.params || {}, data.advanced || {}), [], null);
       }
       if (data.type === "elementSelected") {
-        setSelectedElement(data.element);
-        setInspectorOpen(true);
-        setChildrenList(null);
+        if (reselectStepIdRef.current) {
+          const el = data.element;
+          updateParamsByIdRef.current(reselectStepIdRef.current, {
+            selector: el.selector || '',
+            selectorType: el.selectorType || 'css',
+            fallbackSelectors: el.fallbackSelectors || [],
+          });
+          reselectStepIdRef.current = null;
+          setReselectStepId(null);
+          socketRef.current?.emit('resetSelection');
+        } else {
+          setSelectedElement(data.element);
+          setChildrenList(null);
+          setShowSidebar(true);
+          setSidebarTab("inspector");
+        }
       }
       if (data.type === "multiElementSelected") {
         setSelectedElement({
@@ -98,7 +123,8 @@ function App() {
           classes:           "",
           text:              "",
         });
-        setInspectorOpen(true);
+        setShowSidebar(true);
+        setSidebarTab("inspector");
         setChildrenList(null);
       }
       if (data.type === "selectionCleared") {
@@ -237,7 +263,6 @@ function App() {
       // Deselect element
       socketRef.current?.emit("resetSelection");
       setSelectedElement(null);
-      setInspectorOpen(false);
     }
   }, [addStep, forEachCtx, showToast]);
 
@@ -274,7 +299,6 @@ function App() {
     socketRef.current?.emit("resetSelection");
     if (forEachCtx) socketRef.current?.emit("clearForEachScope");
     setSelectedElement(null);
-    setInspectorOpen(false);
     setChildrenList(null);
     setForEachCtx(null);
   }, [forEachCtx]);
@@ -372,7 +396,6 @@ function App() {
   const extractionCount = countExtraction(steps);
 
   const isRunDisabled = steps.length === 0 || execStatus === "running";
-  const showInspector = inspectorOpen && !!selectedElement;
 
   return (
     <div className="app-container">
@@ -473,21 +496,17 @@ function App() {
               </button>
             </div>
 
-            {/* Inspector toggle — visible whenever an element is selected */}
-            {selectedElement && (
-              <button
-                className={`inspector-toggle-btn ${showInspector ? "active" : ""}`}
-                onClick={() => setInspectorOpen(v => !v)}
-                title={showInspector ? "Hide inspector" : "Show inspector"}
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                </svg>
-                {selectedElement.isMultiSelection
-                  ? `${selectedElement.matchCount} elements`
-                  : `Inspector`}
-              </button>
-            )}
+            {/* Sidebar toggle */}
+            <button
+              className={`inspector-toggle-btn ${showSidebar ? "active" : ""}`}
+              onClick={() => setShowSidebar(v => !v)}
+              title={showSidebar ? "Hide sidebar" : "Show sidebar"}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>
+              </svg>
+              {selectedElement?.isMultiSelection ? `${selectedElement.matchCount} elements` : "Sidebar"}
+            </button>
           </div>
 
           {/* Stream body: canvas + inspector sidebar side by side */}
@@ -509,23 +528,84 @@ function App() {
               </div>
             </div>
 
-            {/* Inspector sidebar — rendered NEXT to the canvas, not over it */}
-            {showInspector && (
+            {/* Unified sidebar — always in flow next to canvas when on Live Browser */}
+            {showSidebar && (
               <div className="inspector-sidebar">
-                <ElementInspector
-                  element={selectedElement}
-                  childrenList={childrenList}
-                  forEachCtx={forEachCtx}
-                  onClose={handleCloseInspector}
-                  onAddStep={handleAddStep}
-                  onSelectAncestor={handleSelectAncestor}
-                  onGetChildren={handleGetChildren}
-                  onSelectChild={handleSelectChild}
-                  onHoverPickerChild={handleHoverPickerChild}
-                  onHoverAncestor={handleHoverAncestor}
-                  onUnhoverPickerChild={handleUnhoverPickerChild}
-                  onClearForEachCtx={handleClearForEachCtx}
-                />
+                {/* Tab bar */}
+                <div className="sidebar-tab-bar">
+                  <button
+                    className={`sidebar-tab-btn ${sidebarTab === "inspector" ? "active" : ""}`}
+                    onClick={() => setSidebarTab("inspector")}
+                    title="Element Inspector"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    Inspector
+                  </button>
+                  <button
+                    className={`sidebar-tab-btn ${sidebarTab === "workflow" ? "active" : ""}`}
+                    onClick={() => setSidebarTab("workflow")}
+                    title="Workflow"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
+                    </svg>
+                    Workflow
+                  </button>
+                  <button className="sidebar-tab-close" onClick={() => setShowSidebar(false)} title="Hide sidebar">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+
+                {/* Inspector tab */}
+                {sidebarTab === "inspector" && (
+                  selectedElement ? (
+                    <ElementInspector
+                      element={selectedElement}
+                      childrenList={childrenList}
+                      forEachCtx={forEachCtx}
+                      onClose={handleCloseInspector}
+                      onAddStep={handleAddStep}
+                      onSelectAncestor={handleSelectAncestor}
+                      onGetChildren={handleGetChildren}
+                      onSelectChild={handleSelectChild}
+                      onHoverPickerChild={handleHoverPickerChild}
+                      onHoverAncestor={handleHoverAncestor}
+                      onUnhoverPickerChild={handleUnhoverPickerChild}
+                      onClearForEachCtx={handleClearForEachCtx}
+                    />
+                  ) : (
+                    <div className="sidebar-no-element">
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3">
+                        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                      </svg>
+                      <p>Click an element in the browser to inspect it</p>
+                    </div>
+                  )
+                )}
+
+                {/* Workflow tab */}
+                {sidebarTab === "workflow" && (
+                  <CompactWorkflowSidebar
+                    steps={steps}
+                    forEachCtx={forEachCtx}
+                    reselectStepId={reselectStepId}
+                    onReselect={(id, isLoop) => {
+                      setReselectStepId(id);
+                      setReselectIsLoop(!!isLoop);
+                      if (isLoop) socketRef.current?.emit("startForEachSelection");
+                      else socketRef.current?.emit("startElementSelection");
+                    }}
+                    onCancelReselect={() => { setReselectStepId(null); socketRef.current?.emit("resetSelection"); }}
+                    onHighlight={(sel) => socketRef.current?.emit("highlightSelector", { selector: sel })}
+                    onClearHighlight={() => socketRef.current?.emit("clearHighlight")}
+                    onUpdateParams={updateParamsById}
+                    onUpdateLabel={updateLabelById}
+                  />
+                )}
               </div>
             )}
           </div>

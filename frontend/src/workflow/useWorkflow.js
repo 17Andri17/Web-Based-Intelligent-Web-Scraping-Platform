@@ -129,6 +129,14 @@ export function useWorkflow() {
     setSteps(prev => updateStepById(prev, id, step => ({ ...step, label })));
   };
 
+  // Update specific params fields on any step by ID (used by CompactWorkflowSidebar)
+  const updateParamsById = (id, paramsPatch) => {
+    setSteps(prev => updateStepById(prev, id, step => ({
+      ...step,
+      params: { ...(step.params || {}), ...paramsPatch },
+    })));
+  };
+
   // ── REPLACE ALL (DnD at root level via arrayMove) ────────────────────
   const setAllSteps = (newSteps) => setSteps(newSteps);
 
@@ -152,5 +160,6 @@ export function useWorkflow() {
     reorderSteps,
     updateParams,
     updateLabelById,
+    updateParamsById,
   };
 }

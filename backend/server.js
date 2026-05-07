@@ -257,6 +257,30 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ── Highlight elements for compact workflow hover ────────
+  socket.on('highlightSelector', async ({ selector }) => {
+    const s = userSessions.get(userId);
+    if (!s?.page || !selector) return;
+    try {
+      await s.page.evaluate((sel) => {
+        document.querySelectorAll('[data-scraper-hl]').forEach(el => {
+          el.style.removeProperty('outline'); el.style.removeProperty('outline-offset'); el.style.removeProperty('box-shadow'); delete el.dataset.scraperHl;
+        });
+        const isXPath = sel.startsWith('/') || sel.startsWith('(');
+        const getEls = (s) => isXPath
+          ? (() => { const r = document.evaluate(s, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null); return Array.from({length: r.snapshotLength}, (_, i) => r.snapshotItem(i)); })()
+          : Array.from(document.querySelectorAll(s));
+        try { getEls(sel).forEach(el => { el.style.outline='2px solid #4f9cf9'; el.style.outlineOffset='1px'; el.style.boxShadow='0 0 0 4px rgba(79,156,249,0.18)'; el.dataset.scraperHl='1'; }); } catch(e) {}
+      }, selector);
+    } catch(e) {}
+  });
+
+  socket.on('clearHighlight', async () => {
+    const s = userSessions.get(userId);
+    if (!s?.page) return;
+    try { await s.page.evaluate(() => { document.querySelectorAll('[data-scraper-hl]').forEach(el => { el.style.removeProperty('outline'); el.style.removeProperty('outline-offset'); el.style.removeProperty('box-shadow'); delete el.dataset.scraperHl; }); }); } catch(e) {}
+  });
+
   // ── Download code ─────────────────────────────────────────────────────────
   socket.on('downloadCode', (data) => {
     /*
