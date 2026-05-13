@@ -86,7 +86,14 @@ function genAction(step, ctx) {
   let store = '';
   if (isExtraction && !feCtx?.hasExtractions) {
     const key = (label && label.trim()) ? label : `extracted_${varName}`;
-    store = `  __results__[${JSON.stringify(key)}] = ${varName};\n`;
+    if (ctx.inLoop) {
+      // Inside WHILE/REPEAT: accumulate into array instead of overwriting
+      store = `  if (!__results__[${JSON.stringify(key)}]) __results__[${JSON.stringify(key)}] = [];\n`
+            + `  if (Array.isArray(${varName})) __results__[${JSON.stringify(key)}].push(...${varName});\n`
+            + `  else if (${varName} !== null && ${varName} !== undefined) __results__[${JSON.stringify(key)}].push(${varName});\n`;
+    } else {
+      store = `  __results__[${JSON.stringify(key)}] = ${varName};\n`;
+    }
   }
 
   switch (type) {
@@ -433,7 +440,7 @@ function genControl(step, ctx, depth) {
     case 'WHILE': {
       const expr = params.expression || 'false';
       const max  = num(params.maxIterations, 1000);
-      const body = genStepList(step.body || [], ctx, depth + 1);
+      const body = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
       return `{
   let _whileGuard = 0;
   while ((${expr}) && _whileGuard < ${max}) {
@@ -446,7 +453,7 @@ ${body}  }
     case 'REPEAT': {
       const count = num(params.count, 10);
       const idx   = params.indexVar || 'i';
-      const body  = genStepList(step.body || [], ctx, depth + 1);
+      const body  = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
       return `for (let ${idx} = 0; ${idx} < ${count}; ${idx}++) {\n${body}}\n`;
     }
 

@@ -3023,3 +3023,91 @@ body {
     flex-shrink: 0;
     background: var(--bg-secondary);
 }
+/* ── Insert target highlight ──────────────────────────────── */
+.step-card--insert-target,
+.control-block--insert-target {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+.step-action-btn.active {
+  color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+}
+
+/* ── DragOverlay ghost card ───────────────────────────────── */
+.drag-ghost {
+  box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+  transform: rotate(1.5deg) scale(1.02);
+}
+
+/* ── Droppable area highlight ─────────────────────────────── */
+.droppable-area { min-height: 4px; transition: background 150ms; }
+.droppable-area--over {
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+  border-radius: 6px;
+  outline: 1px dashed color-mix(in srgb, var(--accent-primary) 40%, transparent);
+}
+
+/* ── Cross-level DnD drop zones ───────────────────────────── */
+.step-dropzone {
+  height: 8px;
+  margin: 1px 0;
+  border-radius: 4px;
+  transition: background 120ms, height 120ms;
+}
+.step-dropzone--over {
+  height: 20px;
+  background: color-mix(in srgb, var(--accent-primary) 18%, transparent);
+  border: 1.5px dashed color-mix(in srgb, var(--accent-primary) 55%, transparent);
+}
+.step-drop-target > .step-card,
+.step-drop-target > .control-block {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* ── Drag drop zones (aligned with Add Step buttons) ────── */
+/* Matches add-step-btn size/shape so layout feels consistent during drag */
+.insert-drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 24px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 2px dashed color-mix(in srgb, var(--text-muted) 28%, transparent);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: copy;
+  transition: border-color 130ms, background 130ms, color 130ms;
+  user-select: none;
+  margin: 2px 0;
+}
+.insert-drop-zone svg { flex-shrink: 0; opacity: 0.5; }
+.insert-drop-zone--over {
+  border-color: var(--accent-primary);
+  border-style: solid;
+  background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  color: var(--accent-primary);
+}
+.insert-drop-zone--over svg { opacity: 1; }
+.insert-drop-zone--over {
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+  border-color: var(--accent-primary);
+  border-style: solid;
+}
+.insert-drop-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  pointer-events: none;
+}
+.step-drop-target > .step-card,
+.step-drop-target > .control-block {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}

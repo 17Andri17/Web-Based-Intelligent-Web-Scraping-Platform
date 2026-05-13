@@ -777,9 +777,24 @@
      INIT
      ========================================================================= */
 
-  createTooltip();
-  document.addEventListener('mousemove', onMouseMove, true);
-  document.addEventListener('click',     onClick,     true);
-  console.log('✅ SelectorTool injected (delegating to SelectorGenerator v3)');
+  function initSelectorTool() {
+
+    // Prevent double init
+    if (window.__SELECTOR_TOOL_INITIALIZED__) return;
+    window.__SELECTOR_TOOL_INITIALIZED__ = true;
+
+    createTooltip();
+
+    document.addEventListener('mousemove', onMouseMove, true);
+    document.addEventListener('click', onClick, true);
+
+    console.log('✅ SelectorTool injected (delegating to SelectorGenerator v3)');
+  }
+
+  if (document.body) {
+    initSelectorTool();
+  } else {
+    window.addEventListener('DOMContentLoaded', initSelectorTool, { once: true });
+  }
 
 })();

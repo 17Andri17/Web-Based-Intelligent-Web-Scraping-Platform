@@ -373,13 +373,13 @@
             add(ancSel + ' > ' + tailSimple,  'ancestor+path',         ancPriority - 3);
           }
 
-          // NEW: stable ancestor + leaf :nth-child / :nth-of-type
+          // stable ancestor + leaf :nth-child / :nth-of-type
           add(ancSel + ' > ' + elInfo.tag + ':nth-child(' + elInfo.nthChild + ')',
               'ancestor+leaf-nth-child', 91);
           add(ancSel + ' > ' + elInfo.tag + ':nth-of-type(' + elInfo.nthOfType + ')',
               'ancestor+leaf-nth-of-type', 89);
         }
-        break;   // only first ancestor with a stable anchor
+        break;
       }
     }
 
@@ -692,7 +692,7 @@
     var fallbackPool  = finalList.slice(1);
     var fallbacks     = applyBasisDedup(fallbackPool).slice(0, maxFallbacks);
 
-    // ── SAFETY NET: if no primary selector was found, build a structural path ──
+    // SAFETY NET: if no primary selector was found, build a structural path
     if (!primary) {
       var anc = el.parentElement;
       var ancSel = null;
@@ -1090,21 +1090,35 @@
     return null;
   }
 
+  /* =========================================================================
+     FIND SIMILAR ELEMENTS (REVISED PRIORITY)
+     Try global class first to capture all similar elements across the page,
+     even when they are split into multiple containers (e.g. infinite scroll).
+     ========================================================================= */
+
   function findSimilarElements(seedEl) {
     if (!seedEl || isBoundary(seedEl)) {
       return { els: seedEl ? [seedEl] : [], selector: null, strategy: 'none' };
     }
 
+    // 1) Global class – captures all similar elements using stable classes
+    var global = strategyGlobalClass(seedEl);
+    if (global && global.selector && !/:nth-(child|of-type)/.test(global.selector)) {
+      return { els: global.els, selector: global.selector, strategy: global.strategy };
+    }
+
+    // 2) Direct siblings
     var direct = strategyDirectSiblings(seedEl);
     if (direct && direct.els.length > 1) {
       return { els: direct.els, selector: direct.selector, strategy: direct.strategy };
     }
 
+    // 3) Ancestor‑based groups
     var candidates = [];
     var ancestorGroups = strategyAncestorGroups(seedEl);
     for (var i = 0; i < ancestorGroups.length; i++) candidates.push(ancestorGroups[i]);
 
-    var global = strategyGlobalClass(seedEl);
+    // if global didn't pass the nth‑test, still consider it as a fallback
     if (global) candidates.push(global);
 
     if (!candidates.length) {

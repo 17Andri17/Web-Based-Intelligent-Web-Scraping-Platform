@@ -1,11 +1,20 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useContext } from "react";
 import React from "react";
 import { actionDefinitions } from "../actions/actionDefinitions";
 import { controlDefinitions, isControlStep } from "../workflow/controlDefinitions";
 import { createAction, createControl } from "../workflow/stepFactory";
-import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
-import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { DndContext, DragOverlay, useDroppable, useDraggable, closestCenter } from "@dnd-kit/core";
+import { findStepLocation } from "../workflow/useWorkflow";
+
+// Context shared across all step components (avoids prop drilling)
+const WPCtx = React.createContext(null);
+
+// Custom collision: only fire on dz: drop zones; pick nearest by center distance
+function dzCollision(args) {
+  const dzOnly = args.droppableContainers.filter(c => String(c.id).startsWith('dz:'));
+  if (!dzOnly.length) return [];
+  return closestCenter({ ...args, droppableContainers: dzOnly });
+}
 
 const EXTRACTION_TYPES = new Set([
   "EXTRACT_TEXT", "EXTRACT_ATTRIBUTE", "EXTRACT_HTML",
@@ -60,12 +69,44 @@ function buildControlSummary(step, def) {
 }
 
 /* =====================================================================  MAIN PANEL */
-export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps }) {
+export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps, insertTarget, onSetInsertTarget, onMoveStep }) {
   const [pickerCtx, setPickerCtx]   = useState(null);
   const [editingCtx, setEditingCtx] = useState(null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const [activeId,   setActiveId]   = useState(null);
+
+  const handleDragEnd = useCallback(({ active, over }) => {
+    setActiveId(null);
+    if (!over) return;
+    const activeStr = String(active.id);
+    const overStr   = String(over.id);
+    if (!overStr.startsWith('dz:')) return; // only InsertRow zones are valid drop targets
+    const srcLoc = findStepLocation(steps, activeStr);
+    if (!srcLoc) return;
+    try {
+      const { cp, idx } = JSON.parse(overStr.slice(3));
+      // No-op: same container, adjacent position
+      const sameContainer = JSON.stringify(srcLoc.containerPath) === JSON.stringify(cp);
+      if (sameContainer && (idx === srcLoc.index || idx === srcLoc.index + 1)) return;
+      if (sameContainer) {
+        // Reorder within same list
+        const targetIdx = idx > srcLoc.index ? idx - 1 : idx;
+        onReorder(srcLoc.containerPath, srcLoc.index, targetIdx);
+      } else {
+        // Cross-level move
+        onMoveStep && onMoveStep(activeStr, cp, idx !== null && idx !== undefined ? idx : undefined);
+      }
+    } catch(e) { console.error('DnD error', e); }
+  }, [steps, onReorder, onMoveStep]);
+
+  const flatAll = React.useMemo(() => {
+    const out = [];
+    function walk(arr) { (arr||[]).forEach(s => { out.push(s); ['body','then','else','try','catch'].forEach(k => { if(Array.isArray(s[k])) walk(s[k]); }); }); }
+    walk(steps); return out;
+  }, [steps]);
+  const activeStep = activeId ? flatAll.find(s => s.id === activeId) : null;
 
   return (
+    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId }}>
     <div className="workflow-designer">
       <div className="workflow-header">
         <div className="workflow-title">
@@ -79,46 +120,64 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
           </button>
         </div>
       </div>
-
       <div className="workflow-canvas">
         <div className="flow-container">
           <div className="flow-start">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
             Start
           </div>
-
+          <div className="flow-connector" />
           {steps.length === 0 ? (
             <div className="empty-state">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                <path d="M2 17l10 5 10-5"/>
+                <path d="M2 12l10 5 10-5"/>
+              </svg>
               <h3>No steps yet</h3>
               <p>Build your workflow — add action steps and control blocks below.</p>
               <button className="add-step-btn" onClick={() => setPickerCtx({ containerPath: [], index: null })}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
                 Add First Step
               </button>
             </div>
           ) : (
-            <>
-              <DndContext sensors={sensors} collisionDetection={closestCenter}
-                onDragEnd={({ active, over }) => {
-                  if (!over || active.id === over.id) return;
-                  const f = steps.findIndex(s => s.id === active.id), t = steps.findIndex(s => s.id === over.id);
-                  if (f !== -1 && t !== -1) setSteps(arrayMove(steps, f, t));
-                }}>
-                <SortableContext items={steps.map(s => s.id)} strategy={verticalListSortingStrategy}>
-                  <StepList steps={steps} containerPath={[]} depth={0}
-                    onPickerOpen={setPickerCtx} onEditOpen={setEditingCtx}
-                    onDelete={onDelete} onReorder={onReorder} sortable />
-                </SortableContext>
-              </DndContext>
-              <div className="flow-connector" />
-              <button className="add-step-btn" onClick={() => setPickerCtx({ containerPath: [], index: null })}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                Add Step
-              </button>
-              <div className="flow-connector" />
-              <div className="flow-end">End</div>
-            </>
+            <DndContext collisionDetection={dzCollision}
+              onDragStart={({ active }) => setActiveId(String(active.id))}
+              onDragEnd={handleDragEnd}
+              onDragCancel={() => setActiveId(null)}
+            >
+              <StepList steps={steps} containerPath={[]} depth={0}
+                onPickerOpen={setPickerCtx} onEditOpen={setEditingCtx}
+                onDelete={onDelete} onReorder={onReorder} />
+              {/* Bottom "Add Step" — a plain button, not a drop target; StepList already
+                  renders an InsertRow after the last step for dropping */}
+              {!activeId && (
+                <>
+                  <div className="flow-connector" />
+                  <button className="add-step-btn" onClick={() => setPickerCtx({ containerPath: [], index: null })}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Add Step
+                  </button>
+                  <div className="flow-connector" />
+                  <div className="flow-end">End</div>
+                </>
+              )}
+              <DragOverlay dropAnimation={null}>
+                {activeStep ? (
+                  <div className="step-card drag-ghost" style={{opacity:0.85,pointerEvents:'none'}}>
+                    <div className="step-card-header">
+                      <div className="step-icon"><ActionIcon type={activeStep.type} /></div>
+                      <div className="step-info">
+                        <div className="step-label">{actionDefinitions[activeStep.type]?.label || activeStep.type?.replace(/_/g,' ')}</div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </DragOverlay>
+            </DndContext>
           )}
         </div>
       </div>
@@ -129,6 +188,11 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
             const step = kind === "control" ? createControl(type) : createAction(type, buildDefaultParams(actionDefinitions[type]), buildDefaultAdvanced(actionDefinitions[type]));
             onAdd(step, pickerCtx.containerPath, pickerCtx.index);
             setPickerCtx(null);
+            // Auto-point insert target inside any newly added loop
+            const LOOP_TYPES = new Set(['FOR_EACH','FOR_EACH_ELEMENTS','WHILE','REPEAT']);
+            if (kind === "control" && LOOP_TYPES.has(type)) {
+              onSetInsertTarget && onSetInsertTarget({ type: 'inside', stepId: step.id });
+            }
           }}
           onClose={() => setPickerCtx(null)}
         />
@@ -142,62 +206,124 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
         />
       )}
     </div>
+    </WPCtx.Provider>
+  );
+}
+
+/* ── InsertRow: + button normally; always-visible drop zone during drag ── */
+function InsertRow({ containerPath, index, onPickerOpen, isEnd = false }) {
+  const { activeId } = useContext(WPCtx) || {};
+  const isDragging = !!activeId;
+  const dzId = `dz:${JSON.stringify({ cp: containerPath, idx: index })}`;
+  const { setNodeRef, isOver } = useDroppable({ id: dzId });
+
+  if (isDragging) {
+    return (
+      <div ref={setNodeRef}
+        className={`insert-drop-zone${isOver ? ' insert-drop-zone--over' : ''}`}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        <span>{isOver ? 'Drop here' : 'Insert here'}</span>
+      </div>
+    );
+  }
+
+  if (isEnd) {
+    return (
+      <button className="add-step-btn" onClick={() => onPickerOpen({ containerPath, index: null })}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        Add Step
+      </button>
+    );
+  }
+
+  return (
+    <div className="step-insert-row">
+      <button className="insert-between-btn" title="Insert step here"
+        onClick={() => onPickerOpen({ containerPath, index })}>
+        <PlusIcon />
+      </button>
+    </div>
   );
 }
 
 /* ── StepList (recursive) ── */
-function StepList({ steps, containerPath, depth, onPickerOpen, onEditOpen, onDelete, onReorder, sortable }) {
+function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, onDelete, onReorder }) {
+  const { activeId } = useContext(WPCtx) || {};
+  const isDragging = !!activeId;
+
+  // Index of the dragged step within THIS container (-1 if from another container)
+  const draggedIdx = isDragging ? steps.findIndex(s => s.id === activeId) : -1;
+
+  // A drop zone at position `zoneIdx` is redundant ONLY if it's immediately
+  // before the dragged step (Zone[idx] and Zone[idx-1] are visually adjacent).
+  // Zone[draggedIdx+1] stays visible — dropping there returns the step to its original position.
+  const isNoOp = (zoneIdx) => draggedIdx >= 0 && zoneIdx === draggedIdx;
+
   return (
     <div className="step-list">
+      {/* Drop zone BEFORE first step */}
+      {!isNoOp(0) && (
+        <InsertRow containerPath={containerPath} index={0} onPickerOpen={onPickerOpen} />
+      )}
+
       {steps.map((step, index) => (
-        <div key={step.id} className="step-list-item">
-          <div className="step-insert-row">
-            <button className="insert-between-btn" title="Insert here" onClick={() => onPickerOpen({ containerPath, index })}>
-              <PlusIcon />
-            </button>
-          </div>
-          <div className="flow-connector" />
+        <React.Fragment key={step.id}>
+          {!isDragging && <div className="flow-connector" />}
           {isControlStep(step) ? (
-            sortable
-              ? <SortableControlBlock key={step.id} step={step} index={index} containerPath={containerPath} depth={depth} onPickerOpen={onPickerOpen} onEditOpen={onEditOpen} onDelete={onDelete} onReorder={onReorder} />
-              : <ControlBlock step={step} index={index} containerPath={containerPath} depth={depth} onPickerOpen={onPickerOpen} onEditOpen={onEditOpen} onDelete={onDelete} onReorder={onReorder} />
+            <DraggableControlBlock step={step} index={index} containerPath={containerPath} depth={depth}
+              onPickerOpen={onPickerOpen} onEditOpen={onEditOpen} onDelete={onDelete} onReorder={onReorder} />
           ) : (
-            sortable
-              ? <SortableActionCard step={step} index={index} containerPath={containerPath} onEdit={() => onEditOpen({ containerPath, index, step })} onDelete={() => onDelete(containerPath, index)} />
-              : <ActionCard step={step} dragHandleProps={{}} onEdit={() => onEditOpen({ containerPath, index, step })} onDelete={() => onDelete(containerPath, index)} />
+            <DraggableActionCard step={step} index={index} containerPath={containerPath} depth={depth}
+              onEdit={() => onEditOpen({ containerPath, index, step })}
+              onDelete={() => onDelete(containerPath, index)} />
           )}
-        </div>
+          {/* Drop zone AFTER each step — hidden for the two positions adjacent to the dragged item */}
+          {!isNoOp(index + 1) && (
+            <InsertRow containerPath={containerPath} index={index + 1} onPickerOpen={onPickerOpen} />
+          )}
+        </React.Fragment>
       ))}
     </div>
   );
 }
 
-/* ── Sortable wrappers ── */
-function SortableActionCard({ step, index, containerPath, onEdit, onDelete }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: step.id });
+/* ── Draggable wrappers — drag handle only, NO drop target on the card itself ── */
+function DraggableActionCard({ step, index, containerPath, depth, onEdit, onDelete }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: step.id });
   return (
-    <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1, width: "100%" }}>
-      <ActionCard step={step} dragHandleProps={{ ...attributes, ...listeners }} onEdit={onEdit} onDelete={onDelete} />
+    <div ref={setNodeRef} style={{ opacity: isDragging ? 0.25 : 1 }}>
+      <ActionCard step={step} containerPath={containerPath} index={index} depth={depth}
+        dragHandleProps={{ ...attributes, ...listeners }} onEdit={onEdit} onDelete={onDelete} />
     </div>
   );
 }
-function SortableControlBlock({ step, index, containerPath, depth, onPickerOpen, onEditOpen, onDelete, onReorder }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: step.id });
+function DraggableControlBlock({ step, index, containerPath, depth, onPickerOpen, onEditOpen, onDelete, onReorder }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: step.id });
   return (
-    <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1, width: "100%" }}>
-      <ControlBlock step={step} index={index} containerPath={containerPath} depth={depth} dragHandleProps={{ ...attributes, ...listeners }}
+    <div ref={setNodeRef} style={{ opacity: isDragging ? 0.25 : 1 }}>
+      <ControlBlock step={step} index={index} containerPath={containerPath} depth={depth}
+        dragHandleProps={{ ...attributes, ...listeners }}
         onPickerOpen={onPickerOpen} onEditOpen={onEditOpen} onDelete={onDelete} onReorder={onReorder} />
     </div>
   );
 }
 
 /* ── ActionCard ── */
-function ActionCard({ step, dragHandleProps, onEdit, onDelete }) {
+function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit, onDelete }) {
   const def = actionDefinitions[step.type];
+  const wp  = useContext(WPCtx) || {};
+  const { insertTarget, onSetInsertTarget, onMoveStep } = wp;
   if (!def) return null;
   const summary = summariseParams(step);
+  const isTarget = insertTarget?.stepId === step.id && insertTarget?.type === 'after';
+  const canMoveOut = depth > 0;
+
   return (
-    <div className="step-card">
+    <div className={`step-card ${isTarget ? "step-card--insert-target" : ""}`}>
       <div className="step-card-header">
         <div className="step-drag-handle" {...(dragHandleProps || {})}><DragDotsIcon /></div>
         <div className="step-icon"><ActionIcon type={step.type} /></div>
@@ -210,6 +336,17 @@ function ActionCard({ step, dragHandleProps, onEdit, onDelete }) {
             <div className="step-label-badge" title="Named result — will appear in exported data">
               <span>◈</span> {step.label}
             </div>
+          )}
+          {onSetInsertTarget && (
+            <button
+              className={`step-action-btn ${isTarget ? "active" : ""}`}
+              title={isTarget ? "Clear insert target" : "Insert next step after this"}
+              onClick={() => onSetInsertTarget(isTarget ? null : { type: 'after', stepId: step.id })}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="9,18 15,12 9,6"/>
+              </svg>
+            </button>
           )}
           <button className="step-action-btn" onClick={onEdit} title="Edit"><EditIcon /></button>
           <button className="step-action-btn delete" onClick={onDelete} title="Delete"><TrashIcon /></button>
@@ -240,19 +377,45 @@ function ActionCard({ step, dragHandleProps, onEdit, onDelete }) {
 function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPickerOpen, onEditOpen, onDelete, onReorder }) {
   const [collapsed, setCollapsed] = useState(false);
   const def = controlDefinitions[step.type];
+  const wp  = useContext(WPCtx) || {};
+  const { insertTarget, onSetInsertTarget, activeId } = wp;
   if (!def) return null;
   const summary = buildControlSummary(step, def);
+  const isInsideTarget = insertTarget?.stepId === step.id && insertTarget?.type === 'inside';
+  const isAfterTarget  = insertTarget?.stepId === step.id && insertTarget?.type === 'after';
 
   return (
-    <div className="control-block" style={{ "--ctrl-color": def.color, "--ctrl-bg": def.bgColor }}>
+    <div className={`control-block ${isAfterTarget ? "control-block--insert-target" : ""}`} style={{ "--ctrl-color": def.color, "--ctrl-bg": def.bgColor }}>
       <div className="control-block-header">
         <div className="step-drag-handle" {...(dragHandleProps || {})}><DragDotsIcon /></div>
         <div className="control-type-badge">{def.icon}</div>
         <div className="control-info">
-          <span className="control-label">{def.label}</span>
+          <span className="control-label">{def.label}{step.label ? ` — ${step.label}` : ""}</span>
           {summary && <code className="control-expr">{summary}</code>}
         </div>
         <div className="step-actions">
+          {onSetInsertTarget && (
+            <button
+              className={`step-action-btn ${isInsideTarget ? "active" : ""}`}
+              title={isInsideTarget ? "Clear — back to default insert" : "Add next steps INSIDE this loop"}
+              onClick={() => onSetInsertTarget(isInsideTarget ? null : { type: 'inside', stepId: step.id })}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="9,18 15,12 9,6"/><line x1="4" y1="12" x2="9" y2="12"/>
+              </svg>
+            </button>
+          )}
+          {onSetInsertTarget && (
+            <button
+              className={`step-action-btn ${isAfterTarget ? "active" : ""}`}
+              title={isAfterTarget ? "Clear insert target" : "Insert next step AFTER this block"}
+              onClick={() => onSetInsertTarget(isAfterTarget ? null : { type: 'after', stepId: step.id })}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="9,18 15,12 9,6"/>
+              </svg>
+            </button>
+          )}
           <button className="step-action-btn" onClick={() => onEditOpen({ containerPath, index, step })} title="Edit"><EditIcon /></button>
           <button className="step-action-btn delete" onClick={() => onDelete(containerPath, index)} title="Delete"><TrashIcon /></button>
           <button className="step-action-btn collapse-btn" onClick={() => setCollapsed(c => !c)} title={collapsed ? "Expand" : "Collapse"}>
@@ -276,31 +439,23 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
                   {branchSteps.length === 0 ? (
                     <div className="branch-empty">
                       <span>{branch.emptyLabel}</span>
-                      <button className="branch-add-btn" style={{ color: def.color, borderColor: def.color }}
-                        onClick={() => onPickerOpen({ containerPath: branchPath, index: null })}>
-                        + Add step
-                      </button>
+                      <InsertRow containerPath={branchPath} index={0} onPickerOpen={onPickerOpen} isEnd />
                     </div>
                   ) : (
                     <>
-                      <DndContext collisionDetection={closestCenter}
-                        onDragEnd={({ active, over }) => {
-                          if (!over || active.id === over.id) return;
-                          const f = branchSteps.findIndex(s => s.id === active.id), t = branchSteps.findIndex(s => s.id === over.id);
-                          if (f !== -1 && t !== -1) onReorder(branchPath, f, t);
-                        }}>
-                        <SortableContext items={branchSteps.map(s => s.id)} strategy={verticalListSortingStrategy}>
-                          <StepList steps={branchSteps} containerPath={branchPath} depth={depth + 1}
-                            onPickerOpen={onPickerOpen} onEditOpen={onEditOpen}
-                            onDelete={onDelete} onReorder={onReorder} sortable />
-                        </SortableContext>
-                      </DndContext>
-                      <div style={{ display: "flex", justifyContent: "center", marginTop: 8 }}>
-                        <button className="branch-add-btn" style={{ color: def.color, borderColor: def.color }}
-                          onClick={() => onPickerOpen({ containerPath: branchPath, index: null })}>
-                          + Add step
-                        </button>
-                      </div>
+                      <StepList steps={branchSteps} containerPath={branchPath} depth={depth + 1}
+                        onPickerOpen={onPickerOpen} onEditOpen={onEditOpen}
+                        onDelete={onDelete} onReorder={onReorder} />
+                      {/* "Add step" button shown only when NOT dragging —
+                          StepList's own last InsertRow is the drop target during drag */}
+                      {!activeId && (
+                        <div style={{ display:"flex", justifyContent:"center", marginTop:8 }}>
+                          <button className="branch-add-btn" style={{ color: def.color, borderColor: def.color }}
+                            onClick={() => onPickerOpen({ containerPath: branchPath, index: null })}>
+                            + Add step
+                          </button>
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

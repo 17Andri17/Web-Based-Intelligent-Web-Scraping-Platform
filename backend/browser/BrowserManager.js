@@ -284,7 +284,7 @@ class BrowserManager {
         this.browserLaunching = (async() => {
             this.browser = await puppeteer.launch({
                 executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-                headless: true,
+                headless: 'new',
                 defaultViewport: null,
                 args: [
                     '--no-sandbox',

@@ -240,6 +240,21 @@ function StepCard({ item, isSelected, reselectStepId, onToggle, onHover, onLeave
   );
 }
 
+// ─── Insert target indicator (thin accent line) ──────────────────────────────
+
+function InsertLine({ stepId, type, active, onSet }) {
+  return (
+    <div
+      className={`cws-insert-zone ${active ? "cws-insert-zone--active" : ""}`}
+      onClick={() => onSet(active ? null : { type, stepId })}
+      title={active ? "Clear — remove insert point" : type === 'inside' ? "Insert inside this loop" : "Insert after this step"}
+    >
+      <div className="cws-insert-line-inner" />
+      {active && <span className="cws-insert-dot"/>}
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function CompactWorkflowSidebar({
@@ -247,6 +262,7 @@ export default function CompactWorkflowSidebar({
   reselectStepId, onReselect, onCancelReselect,
   onHighlight, onClearHighlight,
   onUpdateParams, onUpdateLabel,
+  insertTarget, onSetInsertTarget, onMoveStep,
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const forEachCtxStepId = forEachCtx?.stepId || null;
@@ -254,6 +270,11 @@ export default function CompactWorkflowSidebar({
 
   const handleHover = useCallback((sel) => { if (sel) onHighlight(sel); }, [onHighlight]);
   const handleLeave = useCallback(() => { onClearHighlight(); }, [onClearHighlight]);
+
+  const isTargetActive = (stepId, type) =>
+    insertTarget && insertTarget.stepId === stepId && insertTarget.type === type;
+
+  const isRootEnd = insertTarget?.type === 'root_end' || (!insertTarget && true); // default
 
   return (
     <div className="cws-content">
@@ -279,6 +300,23 @@ export default function CompactWorkflowSidebar({
         </div>
       )}
 
+      {/* Insert target status */}
+      {insertTarget && (
+        <div className="cws-target-banner">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <polyline points="9,18 15,12 9,6"/>
+          </svg>
+          {insertTarget.type === 'root_end'
+            ? "Adding to end of workflow"
+            : insertTarget.type === 'inside'
+            ? "Adding inside selected loop"
+            : "Adding after selected step"}
+          <button className="cws-cancel-btn" onClick={() => onSetInsertTarget(null)}>
+            Clear
+          </button>
+        </div>
+      )}
+
       {flat.length === 0 ? (
         <div className="cws-empty">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3">
@@ -288,21 +326,105 @@ export default function CompactWorkflowSidebar({
         </div>
       ) : (
         <div className="cws-list">
-          {flat.map(item => (
-            <StepCard
-              key={item.step.id}
-              item={item}
-              isSelected={selectedId === item.step.id}
-              reselectStepId={reselectStepId}
-              onToggle={() => setSelectedId(p => p === item.step.id ? null : item.step.id)}
-              onHover={handleHover}
-              onLeave={handleLeave}
-              onReselect={onReselect}
-              onCancelReselect={onCancelReselect}
-              onUpdateParams={onUpdateParams}
-              onUpdateLabel={onUpdateLabel}
-            />
-          ))}
+          {flat.map((item, idx) => {
+            const { step, depth, inActiveLoop, isActiveLoop } = item;
+            const meta = getMeta(step.type);
+            const selector = step.params?.selector || step.params?.containerSelector || "";
+            const displayName = step.label || step.params?.url || step.type?.replace(/_/g," ").toLowerCase() || "step";
+            const isLoop = LOOP_TYPES.has(step.type);
+            const isSelected = selectedId === step.id;
+            const isReselectingMe = reselectStepId === step.id;
+
+            // Find the flat item's container path for move buttons
+            const prevItem = flat[idx - 1];
+            const canMoveInto = prevItem && LOOP_TYPES.has(prevItem.step.type); // prev sibling is a loop
+            const canMoveOut  = depth > 0;
+
+            return (
+              <div key={step.id}>
+                {/* Insert AFTER previous step line */}
+                <InsertLine
+                  stepId={step.id}
+                  type="after"
+                  active={isTargetActive(step.id, 'after')}
+                  label="Insert after this step"
+                  onSet={onSetInsertTarget}
+                />
+
+                <div
+                  className={[
+                    "cws-step",
+                    isSelected ? "cws-step--selected" : "",
+                    isActiveLoop ? "cws-step--active-loop" : "",
+                    inActiveLoop ? "cws-step--in-loop" : "",
+                  ].filter(Boolean).join(" ")}
+                  style={{ paddingLeft: 10 + depth * 14 }}
+                  onMouseEnter={() => selector && handleHover(selector)}
+                  onMouseLeave={handleLeave}
+                >
+                  <div className="cws-step-row" onClick={() => setSelectedId(p => p === step.id ? null : step.id)}>
+                    {depth > 0 && (
+                      <span className={`cws-indent-bar ${inActiveLoop ? "cws-indent-bar--active" : ""}`}/>
+                    )}
+                    <span className="cws-badge" style={{background:meta.color.bg, color:meta.color.text}}>
+                      {meta.short}
+                    </span>
+                    <div className="cws-step-info">
+                      <span className="cws-step-name">{displayName.length>26 ? displayName.slice(0,26)+"…":displayName}</span>
+                      {selector && !isSelected && (
+                        <span className="cws-step-sel">{selector.length>30 ? selector.slice(0,30)+"…":selector}</span>
+                      )}
+                    </div>
+                    {HAS_SELECTOR.has(step.type) && (
+                      <button
+                        className="cws-pick-btn"
+                        title="Pick new element"
+                        onClick={e=>{ e.stopPropagation(); onReselect(step.id, LOOP_TYPES.has(step.type)); }}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                        </svg>
+                      </button>
+                    )}
+                    <svg className={`cws-chevron ${isSelected?"open":""}`} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <polyline points="6,9 12,15 18,9"/>
+                    </svg>
+                  </div>
+
+                  {/* Insert INSIDE this loop */}
+                  {isLoop && (
+                    <InsertLine
+                      stepId={step.id}
+                      type="inside"
+                      active={isTargetActive(step.id, 'inside')}
+                      label="Insert inside this loop"
+                      onSet={onSetInsertTarget}
+                    />
+                  )}
+
+                  {isSelected && (
+                    <StepEditor
+                      step={step}
+                      reselectStepId={reselectStepId}
+                      onUpdateParams={onUpdateParams}
+                      onUpdateLabel={onUpdateLabel}
+                      onReselect={onReselect}
+                      onCancelReselect={onCancelReselect}
+                    />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Root end insert target */}
+          <InsertLine
+            stepId="__root_end__"
+            type="root_end"
+            active={insertTarget?.type === 'root_end'}
+            label="Insert at end of workflow"
+            onSet={onSetInsertTarget}
+          />
         </div>
       )}
     </div>

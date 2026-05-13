@@ -28,15 +28,57 @@ function updateStepById(rootSteps, id, mapper) {
   });
 }
 
+const BRANCH_KEYS = ['body','then','else','try','catch'];
+
+/** Find a step by ID → returns { containerPath, index } or null */
+export function findStepLocation(steps, stepId, containerPath = []) {
+  for (let i = 0; i < (steps || []).length; i++) {
+    if (steps[i].id === stepId) return { containerPath, index: i };
+    for (const key of BRANCH_KEYS) {
+      if (Array.isArray(steps[i][key])) {
+        const found = findStepLocation(steps[i][key], stepId, [...containerPath, i, key]);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
+/** Remove a step by ID from the tree, returning [newSteps, removedStep] */
+function removeStepById(steps, id) {
+  let removed = null;
+  const newSteps = (steps || []).filter((step, i) => {
+    if (step.id === id) { removed = step; return false; }
+    return true;
+  }).map(step => {
+    const s = { ...step };
+    for (const key of BRANCH_KEYS) {
+      if (Array.isArray(s[key])) {
+        const [newBranch, r] = removeStepById(s[key], id);
+        s[key] = newBranch;
+        if (r) removed = r;
+      }
+    }
+    return s;
+  });
+  return [newSteps, removed];
+}
+
 // Read: navigate to the nested array at containerPath inside rootSteps.
+// Returns null (never throws) when path is stale/invalid.
 export function getContainer(rootSteps, containerPath) {
   let cursor = rootSteps;
-  for (let i = 0; i < containerPath.length; i += 2) {
-    const stepIdx  = containerPath[i];
-    const branchKey = containerPath[i + 1];
-    cursor = cursor[stepIdx][branchKey];
+  try {
+    for (let i = 0; i < containerPath.length; i += 2) {
+      const stepIdx  = containerPath[i];
+      const branchKey = containerPath[i + 1];
+      if (!cursor || !Array.isArray(cursor) || cursor[stepIdx] == null) return null;
+      cursor = cursor[stepIdx][branchKey];
+    }
+    return cursor;
+  } catch(e) {
+    return null;
   }
-  return cursor;
 }
 
 // Write: return a new rootSteps where the array at containerPath has been
@@ -137,6 +179,63 @@ export function useWorkflow() {
     })));
   };
 
+  // Insert a step at a specific containerPath + index (null = end)
+  const addStepAt = (step, containerPath, index) => {
+    setSteps(prev => {
+      try {
+        const clone = JSON.parse(JSON.stringify(prev));
+        const container = getContainer(clone, containerPath);
+        if (!container || !Array.isArray(container)) return prev;
+        const idx = (index !== null && index !== undefined) ? index : container.length;
+        container.splice(Math.max(0, Math.min(idx, container.length)), 0, step);
+        return clone;
+      } catch(e) { console.warn('addStepAt failed:', e); return prev; }
+    });
+  };
+
+  // Move a step (by ID) to a new location — remove then insert
+  const moveStepById = (stepId, targetContainerPath, targetIndex) => {
+    setSteps(prev => {
+      try {
+        // Snapshot the source location BEFORE removal (indices are still valid)
+        const srcLoc = findStepLocation(prev, stepId);
+        if (!srcLoc) return prev;
+
+        const [withoutStep, removed] = removeStepById(JSON.parse(JSON.stringify(prev)), stepId);
+        if (!removed) return prev;
+
+        // After removing the source step, any path that traverses the same
+        // array at an index GREATER than srcLoc.index gets that index shifted down by 1.
+        // Example: removing root[0] shifts root[1] → root[0], root[2] → root[1], etc.
+        const adjustPath = (path) => {
+          const adj = [...path];
+          // The src array is identified by srcLoc.containerPath.
+          // Its elements are accessed at position srcLoc.containerPath.length in adj.
+          const levelIdx = srcLoc.containerPath.length; // index in adj where src array's step-index lives
+          // Verify adj shares the same prefix as srcLoc.containerPath
+          for (let i = 0; i < srcLoc.containerPath.length; i++) {
+            if (adj[i] !== srcLoc.containerPath[i]) return adj; // diverges before reaching the src array
+          }
+          // Adjust the step-index at the src array's level
+          if (levelIdx < adj.length && typeof adj[levelIdx] === 'number' && adj[levelIdx] > srcLoc.index) {
+            adj[levelIdx]--;
+          }
+          return adj;
+        };
+
+        const adjustedPath = adjustPath(targetContainerPath);
+        const container = getContainer(withoutStep, adjustedPath);
+        if (!container || !Array.isArray(container)) return prev;
+
+        const idx = (targetIndex !== null && targetIndex !== undefined)
+          ? Math.max(0, Math.min(targetIndex, container.length))
+          : container.length;
+        container.splice(idx, 0, removed);
+        return withoutStep;
+      } catch(e) { console.warn('moveStepById failed:', e); return prev; }
+    });
+  };
+
   // ── REPLACE ALL (DnD at root level via arrayMove) ────────────────────
   const setAllSteps = (newSteps) => setSteps(newSteps);
 
@@ -161,5 +260,7 @@ export function useWorkflow() {
     updateParams,
     updateLabelById,
     updateParamsById,
+    addStepAt,
+    moveStepById,
   };
 }

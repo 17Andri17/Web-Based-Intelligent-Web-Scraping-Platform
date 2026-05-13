@@ -1,13 +1,15 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import io from "socket.io-client";
-import { useWorkflow } from "./workflow/useWorkflow";
+import { useWorkflow, findStepLocation } from "./workflow/useWorkflow";
 import { createAction } from "./workflow/stepFactory";
 import WorkflowPanel from "./components/WorkflowPanel";
 import ElementInspector from "./components/ElementInspector";
 import ExecutionPanel from "./components/ExecutionPanel";
 import DataPreviewPanel from "./components/DataPreviewPanel";
 import CompactWorkflowSidebar from "./components/CompactWorkflowSidebar";
+import PaginationDetector from "./components/PaginationDetector";
+import "./styles/PaginationDetector.css";
 import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
 import "./styles/DataPreviewPanel.css";
@@ -17,7 +19,7 @@ const SERVER_URL = "http://localhost:3001";
 const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
 
 function App() {
-  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById } = useWorkflow();
+  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById, addStepAt, moveStepById } = useWorkflow();
   const [activeTab, setActiveTab] = useState("stream");
 
   const canvasRef            = useRef(null);
@@ -38,24 +40,36 @@ function App() {
   const [toast,           setToast]           = useState(null);   // { msg, type }
   const toastTimerRef = useRef(null);
 
-
-    // Preview data: separate from steps so updates don't re-trigger emission
+  // Preview data: separate from steps so updates don't re-trigger emission
   const [previewData,     setPreviewData]     = useState({});
   // Sidebar: shared inspector + workflow panel
   const [showSidebar,     setShowSidebar]     = useState(false);
-  const [sidebarTab,      setSidebarTab]      = useState("inspector"); // "inspector" | "workflow"
+  const [sidebarTab,      setSidebarTab]      = useState("inspector");
+  // Pagination detection
+  const [paginationOpen,  setPaginationOpen]  = useState(false);
+  const [paginationDetecting, setPaginationDetecting] = useState(false);
+  const [paginationSuggestions, setPaginationSuggestions] = useState(null);
+  const [paginationError,    setPaginationError]    = useState(null);
+  const [paginationManualWaiting, setPaginationManualWaiting] = useState(false); // true when waiting for element click // "inspector" | "workflow"
   const [reselectStepId,  setReselectStepId]  = useState(null); // step id awaiting element re-pick
   const [reselectIsLoop,  setReselectIsLoop]  = useState(false);
-  
+  // Insert target: where new steps from ElementInspector will land
+  // null = root end (default); { type:"inside"|"after"|"root_end", stepId? }
+  const [insertTarget, setInsertTarget] = useState(null);
+
   // ForEach context: when set, actions are added inside the loop body
   const [forEachCtx, setForEachCtx] = useState(null); // { stepId }
   const stepsRef = useRef(steps);
   useEffect(() => { stepsRef.current = steps; }, [steps]);
   // Stable refs for reselect (avoid stale closures in socket handler)
-  const reselectStepIdRef    = useRef(null);
-  const updateParamsByIdRef  = useRef(null);
-  useEffect(() => { reselectStepIdRef.current   = reselectStepId; },  [reselectStepId]);
-  useEffect(() => { updateParamsByIdRef.current  = updateParamsById; }, [updateParamsById]);
+  const reselectStepIdRef            = useRef(null);
+  const updateParamsByIdRef          = useRef(null);
+  const paginationManualWaitingRef   = useRef(false);
+  useEffect(() => { reselectStepIdRef.current          = reselectStepId; },          [reselectStepId]);
+  useEffect(() => { updateParamsByIdRef.current         = updateParamsById; },         [updateParamsById]);
+  useEffect(() => { paginationManualWaitingRef.current  = paginationManualWaiting; }, [paginationManualWaiting]);
+  const insertTargetRef = useRef(null);
+  useEffect(() => { insertTargetRef.current = insertTarget; }, [insertTarget]);
 
   // ── Execution state ──────────────────────────────────────────────────────
   const [execPanelOpen, setExecPanelOpen] = useState(false);
@@ -92,7 +106,21 @@ function App() {
         addStep(createAction(data.action, data.params || {}, data.advanced || {}), [], null);
       }
       if (data.type === "elementSelected") {
-        if (reselectStepIdRef.current) {
+        if (paginationManualWaitingRef.current) {
+          // Manual pagination button selection
+          const el = data.element;
+          const sel = el.selector || '';
+          const previewTxt = el.text || sel;
+          paginationManualWaitingRef.current = false;
+          setPaginationManualWaiting(false);
+          setPaginationSuggestions(prev => [
+            ...(prev || []),
+            { type: 'next_button', confidence: 1, selector: sel,
+              previewText: previewTxt, description: 'Manually selected pagination button.' }
+          ]);
+          setPaginationOpen(true);
+          socketRef.current?.emit('resetSelection');
+        } else if (reselectStepIdRef.current) {
           const el = data.element;
           updateParamsByIdRef.current(reselectStepIdRef.current, {
             selector: el.selector || '',
@@ -146,6 +174,11 @@ function App() {
       if (results && Object.keys(results).length > 0) setExecResults(results);
     });
     socket.on("codeReady", ({ code }) => { downloadTextFile(code, "workflow.js", "text/javascript"); });
+    socket.on("paginationDetected", ({ suggestions, error }) => {
+      setPaginationDetecting(false);
+      setPaginationSuggestions(suggestions || []);
+      setPaginationError(error || null);
+    });
     socket.on("previewResult", ({ stepId, previewValue, previewValues, previewElements, notFound }) => {
       setPreviewData(prev => ({
         ...prev,
@@ -233,17 +266,48 @@ function App() {
     const { isForEach = false } = opts;
 
     if (isForEach) {
-      // Add to root
-      addStep(step, [], null);
-      showToast("∀ ForEach loop added — select actions to add inside it", "loop");
+      // ForEach loops always go to insertTarget or root, then activate forEach context
+      const target = insertTargetRef.current;
+      if (target && target.type !== 'root_end') {
+        const loc = findStepLocation(stepsRef.current, target.stepId);
+        if (loc) {
+          if (target.type === 'inside') addStepAt(step, [...loc.containerPath, loc.index, 'body'], null);
+          else addStepAt(step, loc.containerPath, loc.index + 1);
+        } else addStep(step, [], null);
+      } else {
+        addStep(step, [], null);
+      }
+      showToast("∀ ForEach loop added — steps will go inside it", "loop");
       setChildrenList(null);
       const iteratorSelector = step.params?.selector || '';
       setForEachCtx({ stepId: step.id, iteratorSelector });
-      // Tell the browser to enter forEach scope — scopes selection + generates relative selectors
-      if (iteratorSelector) {
-        socketRef.current?.emit("setForEachScope", { iteratorSelector });
+      if (iteratorSelector) socketRef.current?.emit("setForEachScope", { iteratorSelector });
+      // Auto-point insert target inside the new loop
+      setInsertTarget({ type: 'inside', stepId: step.id });
+      return;
+    }
+
+    // ── Determine destination ──────────────────────────────────────────────
+    const target = insertTargetRef.current;
+
+    if (target && target.type !== 'root_end') {
+      // User has explicitly set an insert target
+      const loc = findStepLocation(stepsRef.current, target.stepId);
+      if (loc) {
+        if (target.type === 'inside') {
+          addStepAt(step, [...loc.containerPath, loc.index, 'body'], null);
+          showToast(`✓ Step added inside loop`, "success");
+        } else {
+          addStepAt(step, loc.containerPath, loc.index + 1);
+          showToast(`✓ Step added after target`, "success");
+        }
+        socketRef.current?.emit("resetSelection");
+        setSelectedElement(null);
+        return;
       }
-    } else if (forEachCtx) {
+    }
+
+    if (forEachCtx) {
       // Add step inside the current forEach loop body
       const currentSteps = stepsRef.current;
       const loopIdx = currentSteps.findIndex(s => s.id === forEachCtx.stepId);
@@ -255,16 +319,14 @@ function App() {
         showToast("✓ Step added", "success");
         setForEachCtx(null);
       }
-      // Stay selected so user can add more steps inside the loop
     } else {
       addStep(step, [], null);
       const label = step.type?.replace(/_/g, " ").toLowerCase() || "step";
       showToast(`✓ ${label} added to workflow`, "success");
-      // Deselect element
       socketRef.current?.emit("resetSelection");
       setSelectedElement(null);
     }
-  }, [addStep, forEachCtx, showToast]);
+  }, [addStep, addStepAt, forEachCtx, showToast, insertTarget]);
 
   // ── Breadcrumb navigation ─────────────────────────────────────────────────
   const handleSelectAncestor = useCallback((levelsUp) => {
@@ -507,6 +569,23 @@ function App() {
               </svg>
               {selectedElement?.isMultiSelection ? `${selectedElement.matchCount} elements` : "Sidebar"}
             </button>
+            {/* Pagination detector */}
+            <button
+              className="inspector-toggle-btn"
+              onClick={() => {
+                setPaginationOpen(true);
+                setPaginationDetecting(true);
+                setPaginationSuggestions(null);
+                setPaginationError(null);
+                socketRef.current?.emit("detectPagination");
+              }}
+              title="Detect pagination on current page"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="9,18 15,12 9,6"/>
+              </svg>
+              Pagination
+            </button>
           </div>
 
           {/* Stream body: canvas + inspector sidebar side by side */}
@@ -604,6 +683,9 @@ function App() {
                     onClearHighlight={() => socketRef.current?.emit("clearHighlight")}
                     onUpdateParams={updateParamsById}
                     onUpdateLabel={updateLabelById}
+                    insertTarget={insertTarget}
+                    onSetInsertTarget={setInsertTarget}
+                    onMoveStep={moveStepById}
                   />
                 )}
               </div>
@@ -615,6 +697,9 @@ function App() {
           <WorkflowPanel
             steps={steps} totalCount={totalCount} setSteps={setSteps}
             onAdd={addStep} onUpdate={updateStep} onDelete={deleteStep} onReorder={reorderSteps}
+            insertTarget={insertTarget}
+            onSetInsertTarget={setInsertTarget}
+            onMoveStep={moveStepById}
           />
         )}
         {activeTab === "data" && (
@@ -626,6 +711,84 @@ function App() {
           />
         )}
       </main>
+
+      {/* ── Manual pagination element selection banner ────────────────────── */}
+      {paginationManualWaiting && !paginationOpen && (
+        <div className="pd-selection-banner">
+          <span className="pd-pulse" style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:"var(--accent-primary)",animation:"pdPulse 1.2s ease-in-out infinite",flexShrink:0}}/>
+          Click the pagination button or link on the page…
+          <button
+            style={{marginLeft:"auto",background:"none",border:"1px solid rgba(255,255,255,0.2)",borderRadius:5,color:"inherit",fontSize:12,padding:"3px 10px",cursor:"pointer"}}
+            onClick={() => { setPaginationManualWaiting(false); setPaginationOpen(true); socketRef.current?.emit("resetSelection"); }}
+          >Cancel</button>
+        </div>
+      )}
+
+      {/* ── Pagination Detector ──────────────────────────────────────────── */}
+      {paginationOpen && (
+        <PaginationDetector
+          isDetecting={paginationDetecting}
+          suggestions={paginationSuggestions}
+          error={paginationError}
+          manualWaiting={paginationManualWaiting ? 'button' : null}
+          onDetect={() => {
+            setPaginationDetecting(true);
+            setPaginationSuggestions(null);
+            setPaginationError(null);
+            socketRef.current?.emit("detectPagination");
+          }}
+          onClose={() => { setPaginationOpen(false); setPaginationManualWaiting(false); socketRef.current?.emit("resetSelection"); }}
+          onAdd={(step) => {
+            addStep(step);
+            // Auto-set insert target based on pagination type:
+            // Button/load-more → inside loop (each page needs scraping)
+            // Infinite scroll → after loop (scrape after all content loads)
+            const pType = step.params?.expression?.includes('scrollTo') ||
+                          step.params?.expression?.includes('scrollHeight')
+              ? 'infinite_scroll' : 'button';
+            if (pType === 'infinite_scroll') {
+              setInsertTarget({ type: 'after', stepId: step.id });
+            } else {
+              setInsertTarget({ type: 'inside', stepId: step.id });
+            }
+            setPaginationOpen(false);
+          }}
+          onManualButton={() => {
+            setPaginationOpen(false);        // hide modal so browser is clickable
+            setPaginationManualWaiting(true);
+            socketRef.current?.emit("startElementSelection");
+          }}
+          onManualInfinite={() => {
+            const scrollStep = {
+              kind: "action", type: "SCROLL_PAGE", id: crypto.randomUUID(),
+              label: "Scroll to bottom",
+              params: { direction: "bottom" }, advanced: {},
+            };
+            const waitStep = {
+              kind: "action", type: "WAIT", id: crypto.randomUUID(),
+              label: "Wait for content to load",
+              params: { duration: 2000 }, advanced: {},
+            };
+            addStep({
+              kind: "control", type: "WHILE", id: crypto.randomUUID(),
+              label: "Infinite scroll loop",
+              params: {
+                expression: [
+                  "await page.evaluate(() => {",
+                  "  const items = document.querySelectorAll('li,article,[class*=\"item\"],[class*=\"card\"],[class*=\"result\"]');",
+                  "  if (items.length) items[items.length-1].scrollIntoView({block:'end',behavior:'instant'});",
+                  "  window.scrollTo(0, document.body.scrollHeight);",
+                  "  return (window.innerHeight + window.scrollY) < document.body.scrollHeight - 50;",
+                  "})",
+                ].join("\n"),
+                maxIterations: 200,
+              },
+              body: [scrollStep, waitStep],
+            });
+            setPaginationOpen(false);
+          }}
+        />
+      )}
 
       {/* ── Execution Panel ──────────────────────────────────────────────── */}
       <ExecutionPanel
