@@ -9,16 +9,32 @@ import ExecutionPanel from "./components/ExecutionPanel";
 import DataPreviewPanel from "./components/DataPreviewPanel";
 import CompactWorkflowSidebar from "./components/CompactWorkflowSidebar";
 import PaginationDetector from "./components/PaginationDetector";
+import { AuthProvider, useAuth } from "./auth/AuthContext";
+import AuthScreen from "./auth/AuthScreen";
+import WorkflowsMenu from "./workflows/WorkflowsMenu";
+import { API_BASE } from "./api/client";
 import "./styles/PaginationDetector.css";
 import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
 import "./styles/DataPreviewPanel.css";
 import "./styles/CompactWorkflowSidebar.css";
+import "./styles/auth.css";
 
-const SERVER_URL = "http://localhost:3001";
-const USER_ID = "user_" + Math.random().toString(36).slice(2, 12);
+const SERVER_URL = API_BASE;
 
 function App() {
+  const { user, token, loading: authLoading, logout } = useAuth();
+
+  if (authLoading) {
+    return <div className="auth-loading">Connecting…</div>;
+  }
+  if (!user || !token) {
+    return <AuthScreen />;
+  }
+  return <AppShell user={user} token={token} onLogout={logout} />;
+}
+
+function AppShell({ user, token, onLogout }) {
   const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById, addStepAt, moveStepById } = useWorkflow();
   const [activeTab, setActiveTab] = useState("stream");
 
@@ -85,10 +101,20 @@ function App() {
     toastTimerRef.current = setTimeout(() => setToast(null), 2400);
   }, []);
 
+  // ── Workflows menu / current workflow ────────────────────────────────────
+  const [workflowsOpen,     setWorkflowsOpen]     = useState(false);
+  const [currentWorkflowId, setCurrentWorkflowId] = useState(null);
+  const [currentWorkflowName, setCurrentWorkflowName] = useState("");
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+
   // ── Socket ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    const socket = io(SERVER_URL, { query: { userId: USER_ID }, transports: ["websocket"] });
+    if (!token) return;
+    const socket = io(SERVER_URL, { auth: { token }, transports: ["websocket"] });
     socketRef.current = socket;
+    socket.on("connect_error", (err) => {
+      setStatus(`Connection error: ${err.message}`);
+    });
 
     socket.on("connect",    () => { setStatus("Connected"); setIsConnected(true); });
     socket.on("disconnect", () => { setStatus("Disconnected"); setIsConnected(false); isStreamingRef.current = false; });
@@ -193,7 +219,7 @@ function App() {
     });
 
     return () => socket.disconnect();
-  }, []);
+  }, [token]);
 
   // ── Render loop ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -478,6 +504,14 @@ function App() {
           </div>
         </div>
         <div className="header-right">
+          <button className="header-btn secondary" onClick={() => setWorkflowsOpen(true)}
+            title="Save or open workflows">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+              <polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/>
+            </svg>
+            Workflows{currentWorkflowName ? `: ${currentWorkflowName}` : ""}
+          </button>
           <button className="header-btn secondary" onClick={handleDownloadCode}
             disabled={steps.length === 0} title="Download as Node.js script">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -499,6 +533,21 @@ function App() {
               {execStatus === "done" ? "✅ Results" : "❌ Error"}
             </button>
           )}
+          <div style={{ position: "relative" }}>
+            <button className="user-chip" onClick={() => setUserMenuOpen(v => !v)} title={user.username}>
+              <span className="avatar">{user.username.slice(0, 1).toUpperCase()}</span>
+              <span>{user.username}</span>
+            </button>
+            {userMenuOpen && (
+              <>
+                <div style={{position:"fixed",inset:0,zIndex:40}} onClick={() => setUserMenuOpen(false)} />
+                <div className="user-popover">
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setWorkflowsOpen(true); }}>Workflows…</button>
+                  <button className="item danger" onClick={() => { setUserMenuOpen(false); onLogout(); }}>Sign out</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
@@ -797,6 +846,30 @@ function App() {
         onCancel={handleCancelExecution}
       />
 
+      {/* ── Workflows menu (save / open / delete) ───────────────────────── */}
+      <WorkflowsMenu
+        open={workflowsOpen}
+        onClose={() => setWorkflowsOpen(false)}
+        currentSteps={steps}
+        currentMeta={sessionMetaRef.current}
+        currentWorkflowId={currentWorkflowId}
+        currentName={currentWorkflowName}
+        showToast={showToast}
+        onSaved={(wf) => {
+          setCurrentWorkflowId(wf.id);
+          setCurrentWorkflowName(wf.name);
+        }}
+        onLoaded={(wf) => {
+          setSteps(wf.steps || []);
+          setCurrentWorkflowId(wf.id);
+          setCurrentWorkflowName(wf.name);
+          if (wf.meta) sessionMetaRef.current = { ...sessionMetaRef.current, ...wf.meta };
+          setExecResults(null);
+          setExecLogs([]);
+          setExecStatus("idle");
+        }}
+      />
+
       {/* ── Toast notification ────────────────────────────────────────────── */}
       {toast && (
         <div className={`app-toast app-toast--${toast.type}`}>
@@ -820,4 +893,8 @@ function SpinnerIcon() {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(
+  <AuthProvider>
+    <App />
+  </AuthProvider>
+);

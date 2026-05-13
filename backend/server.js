@@ -10,12 +10,27 @@ const scraperServiceFactory = require('./services/scraper.service');
 const browserManager     = require('./browser/BrowserManager');
 const { executeWorkflow } = require('./workflow/WorkflowExecutor');
 const { generateCode }    = require('./workflow/workflowCodegen');
+const { verifyToken }    = require('./middleware/auth');
 
 const PORT = process.env.PORT || 3001;
 
 const server     = http.createServer(app);
 const io         = new Server(server, { cors: { origin: '*' }, transports: ['websocket'] });
 const scraperService = scraperServiceFactory(io);
+
+// Authenticate every socket connection. The client must send a JWT either
+// via auth.token (preferred) or the legacy query.token field.
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+  if (!token) return next(new Error('Missing auth token'));
+  try {
+    const payload = verifyToken(token);
+    socket.user = { id: payload.sub, username: payload.username };
+    next();
+  } catch (_) {
+    next(new Error('Invalid or expired token'));
+  }
+});
 
 const injectedScript   = fs.readFileSync(path.join(__dirname, './browser/inject/SelectorTool.js'), 'utf8');
 const injectedSelectors = fs.readFileSync(path.join(__dirname, './browser/selectors.js'), 'utf8');
@@ -27,8 +42,8 @@ const userSessions = new Map();
 const userSessionMeta = new Map();
 
 io.on('connection', (socket) => {
-  const userId = socket.handshake.query.userId || socket.id;
-  console.log(`🔌 User connected: ${userId}`);
+  const userId = `u${socket.user.id}`;
+  console.log(`🔌 User connected: ${socket.user.username} (${userId})`);
   socket.join(userId);
 
   // ── ForEach scope ────────────────────────────────────────────────────────
