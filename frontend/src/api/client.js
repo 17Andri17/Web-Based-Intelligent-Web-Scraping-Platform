@@ -50,3 +50,12 @@ export const customActionsApi = {
   update: (id, payload) => api.put(`/api/custom-actions/${id}`, payload).then(r => r.data.customAction),
   remove: (id) => api.delete(`/api/custom-actions/${id}`).then(r => r.data),
 };
+
+export const aiApi = {
+  // Returns '' on any error / when AI isn't configured — caller should
+  // treat the empty string as "no suggestion" and leave the label alone.
+  suggestStepName: (payload) =>
+    api.post("/api/ai/suggest-step-name", payload)
+       .then(r => (r.data && typeof r.data.name === "string" ? r.data.name : ""))
+       .catch(() => ""),
+};
