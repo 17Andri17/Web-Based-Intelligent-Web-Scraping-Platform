@@ -508,7 +508,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
 
 // ─── ForEach context banner ───────────────────────────────────────────────
 
-function ForEachContextBanner({ forEachCtx, onClear }) {
+export function ForEachContextBanner({ forEachCtx, onClear }) {
   return (
     <div className="ei-foreach-ctx-banner">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ flexShrink: 0, marginTop: 2 }}>
