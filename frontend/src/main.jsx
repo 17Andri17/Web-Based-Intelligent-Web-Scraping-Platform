@@ -445,6 +445,13 @@ function AppShell({ user, token, onLogout }) {
       text:       (el?.text || "").slice(0, 200),
       html:       (el?.html || el?.outerHtml || "").slice(0, 400),
       ancestors,
+      // Parent context — often contains a sibling label that names what
+      // the target value actually means (e.g. <h2>180</h2> sitting next
+      // to <h4>Cert Providers</h4>). The LLM uses this to pick a name
+      // grounded in the page's own labels.
+      parentTag:  el?.parentTag  || "",
+      parentText: (el?.parentText || "").slice(0, 400),
+      parentHtml: (el?.parentHtml || "").slice(0, 600),
       href:       el?.href || undefined,
       src:        el?.src || undefined,
       matchCount: el?.isMultiSelection ? el.matchCount : undefined,

@@ -380,6 +380,20 @@
     const href    = el.getAttribute('href') || null;
     const src     = el.getAttribute('src')  || null;
 
+    // Parent context: the parent's text usually contains a nearby label that
+    // describes what THIS element is (e.g. <h2>180</h2> next to
+    // <h4>Cert Providers</h4>). We capture both the flat text and a
+    // truncated outerHTML so the LLM can latch onto sibling labels.
+    const parentEl = el.parentElement;
+    const parentTag = parentEl && parentEl.tagName ? parentEl.tagName.toLowerCase() : '';
+    const parentText = parentEl ? (parentEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 400) : '';
+    let parentHtml = '';
+    if (parentEl && parentEl.outerHTML) {
+      // Compact whitespace and cap aggressively — we just want the structure
+      // and any label text, not full styling.
+      parentHtml = parentEl.outerHTML.replace(/\s+/g, ' ').trim().slice(0, 600);
+    }
+
     const stopAt    = (scopeEl && el !== scopeEl) ? scopeEl : document.documentElement;
     const breadcrumb = [];
     let c = el;
@@ -410,6 +424,9 @@
       attrs:  attrs,
       breadcrumb: breadcrumb,
       classes: Array.from(el.classList).join(' '),
+      parentTag:  parentTag,
+      parentText: parentText,
+      parentHtml: parentHtml,
     };
   }
 

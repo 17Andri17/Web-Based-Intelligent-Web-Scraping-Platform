@@ -70,30 +70,52 @@ function buildPrompt(payload) {
       .join(' > ');
     if (chain) lines.push(`Ancestor chain: ${chain}`);
   }
-  if (payload.text)      lines.push(`Visible text: "${clip(payload.text, 200)}"`);
-  if (payload.href)      lines.push(`Link href: ${clip(payload.href, 200)}`);
-  if (payload.src)       lines.push(`Image/media src: ${clip(payload.src, 200)}`);
-  if (payload.html)      lines.push(`HTML snippet: ${clip(payload.html, 400)}`);
+  if (payload.text)       lines.push(`Visible text: "${clip(payload.text, 200)}"`);
+  if (payload.href)       lines.push(`Link href: ${clip(payload.href, 200)}`);
+  if (payload.src)        lines.push(`Image/media src: ${clip(payload.src, 200)}`);
+  if (payload.html)       lines.push(`HTML snippet: ${clip(payload.html, 400)}`);
+  // Parent context: the parent's combined text and HTML often contain a
+  // nearby label that describes the value (e.g. "180" + "Cert Providers").
+  // This is usually the single strongest signal for naming.
+  if (payload.parentTag)  lines.push(`Parent tag: <${payload.parentTag}>`);
+  if (payload.parentText) lines.push(`Parent text (target + siblings): "${clip(payload.parentText, 400)}"`);
+  if (payload.parentHtml) lines.push(`Parent HTML: ${clip(payload.parentHtml, 600)}`);
   const sample = describeSample(payload.sample);
-  if (sample)            lines.push(`Sample value: ${sample}`);
+  if (sample)             lines.push(`Sample value: ${sample}`);
   if (typeof payload.matchCount === 'number') lines.push(`Number of matches: ${payload.matchCount}`);
   lines.push('');
+
+  // Naming guidance — keep it short and concrete. The biggest issue we hit
+  // was the model padding names with redundant modifiers ("popular_exam_link"
+  // when "exam_link" would do). Be explicit about that.
+  lines.push('Naming rules:');
+  lines.push('- Prefer SHORT, simple names: exam_link, exam_code, price, title.');
+  lines.push('- Drop generic / promotional modifiers (popular, featured, latest, top, best, new, hot, trending) unless they are the entire point of the value.');
+  lines.push('- If the PARENT TEXT contains a clear label next to the value (e.g. "180 Cert Providers"), name the field after the LABEL, not the visible numeric value (→ cert_providers, not "180" or counter_number).');
+  lines.push('- Ignore styling-only class names (counter-number, plus, btn, item-1) — they describe how the element looks, not what it means.');
+  lines.push('');
   lines.push(isLoop
-    ? 'Suggest a plural snake_case field name for the COLLECTION of items this loop iterates over. Use the ancestor chain to infer the parent context (e.g. product_cards inside an article listing, search_results inside a results page).'
-    : 'Suggest a singular snake_case field name describing the value being extracted. Use the ancestor chain to disambiguate (e.g. a <span> inside <div.product-card> is likely product_price, not nav_label).');
+    ? 'Suggest a plural snake_case field name for the COLLECTION of items this loop iterates over (e.g. products, exams, results).'
+    : 'Suggest a singular snake_case field name describing the value being extracted.');
   return lines.join('\n');
 }
 
 const SYSTEM_PROMPT = [
   'You name data fields extracted by a web-scraping workflow.',
   'Output ONLY the field name itself — no quotes, no punctuation, no explanation.',
-  'Rules:',
+  'Hard rules:',
   '- snake_case, lowercase ASCII letters / digits / underscores only',
   `- ${MIN_NAME_LEN}–${MAX_NAME_LEN} characters`,
   '- must start with a letter',
-  '- be specific to the value (e.g. product_price, article_title, review_count, search_results)',
   '- singular for single values, plural for lists / loops over multiple items',
   '- if you cannot determine a meaningful name, output exactly: unknown',
+  '',
+  'Style rules:',
+  '- Prefer the SHORTEST clear name. exam_link beats popular_exam_link; exams beats top_featured_exams.',
+  '- Drop adjectives that describe how something is presented on the page — popular, featured, latest, top, best, new, hot, trending, recommended — unless that adjective IS the data.',
+  '- Drop visual / layout class names — counter-number, plus, btn, item-1, card-body. They describe how the element LOOKS, not what it MEANS.',
+  '- If a label sits next to the value (sibling text in the parent), name the field after the LABEL: "180" next to "Cert Providers" → cert_providers.',
+  '- 1–3 words is the sweet spot. Avoid stacking more than 3 unless every word adds meaning.',
 ].join('\n');
 
 function isValidName(s) {
