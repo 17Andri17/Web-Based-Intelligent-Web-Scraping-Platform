@@ -87,6 +87,11 @@ const userSessionMeta = new Map();
 // Without this, every call to navigate would stack another listener.
 const modeReapplyListeners = new Map();
 
+// Same idea but for the puppeteer page's 'load' event — used to tell the
+// frontend that the DOM has finished loading so it can re-fire its preview
+// queries against a settled page (e.g. after opening a saved workflow).
+const pageLoadListeners = new Map();
+
 io.on('connection', async (socket) => {
   const userId = `u${socket.user.id}`;
   console.log(`🔌 User connected: ${socket.user.username} (${userId})`);
@@ -110,6 +115,9 @@ io.on('connection', async (socket) => {
         const page = await browserManager.getPage(userId);
         const url = page.url && page.url();
         if (url) socket.emit('pageUrlChanged', { url });
+        // The page is already past its load event, so it's a "ready" state
+        // for our purposes — let the frontend re-fire any previews.
+        socket.emit('pageReady');
       } catch (_) {}
       socket.emit('message', '✅ Reconnected to existing browser session');
     } catch (err) {
@@ -243,6 +251,18 @@ io.on('connection', async (socket) => {
       };
       modeReapplyListeners.set(userId, hook);
       page.on('framenavigated', hook);
+
+      // Page's `load` event = full DOM is parsed and ready. The frontend
+      // uses this to re-fire previewStep against a settled page after the
+      // user opens a saved workflow (otherwise the preview queries race
+      // the still-loading page and return nothing).
+      const prevLoadHook = pageLoadListeners.get(userId);
+      if (prevLoadHook) { try { page.off('load', prevLoadHook); } catch (_) {} }
+      const loadHook = () => {
+        try { socket.emit('pageReady'); } catch (_) {}
+      };
+      pageLoadListeners.set(userId, loadHook);
+      page.on('load', loadHook);
 
       // ─────────────────────────────────────────────────────────────
       // BYPASS CSP (must happen BEFORE goto)
