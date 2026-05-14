@@ -487,6 +487,10 @@ function AppShell({ user, token, onLogout }) {
         } else {
           addStepAt(step, loc.containerPath, loc.index + 1);
           showToast(`✓ Step added after target`, "success");
+          // Advance the target so a follow-up step lands after THIS new
+          // one rather than re-inserting at the same slot (which would
+          // make consecutive adds appear in reverse order).
+          setInsertTarget({ type: 'after', stepId: step.id });
         }
         socketRef.current?.emit("resetSelection");
         maybeAutoNameStep(step);
@@ -496,11 +500,12 @@ function AppShell({ user, token, onLogout }) {
     }
 
     if (forEachCtx) {
-      // Add step inside the current forEach loop body
-      const currentSteps = stepsRef.current;
-      const loopIdx = currentSteps.findIndex(s => s.id === forEachCtx.stepId);
-      if (loopIdx !== -1) {
-        addStep(step, [loopIdx, "body"], null);
+      // Add step inside the current ForEach loop body. The loop can be
+      // nested (e.g. inside a WHILE pagination loop), so we use the
+      // recursive findStepLocation rather than a root-level search.
+      const loc = findStepLocation(stepsRef.current, forEachCtx.stepId);
+      if (loc) {
+        addStepAt(step, [...loc.containerPath, loc.index, 'body'], null);
         showToast("✓ Step added inside ForEach loop", "success");
       } else {
         addStep(step, [], null);
@@ -556,6 +561,13 @@ function AppShell({ user, token, onLogout }) {
 
   const handleClearForEachCtx = useCallback(() => {
     socketRef.current?.emit("clearForEachScope");
+    // Park the insertion point right AFTER the ForEach we're exiting, so
+    // the next inspector-driven step lands at the ForEach's parent level
+    // (e.g. still inside an enclosing WHILE pagination loop) rather than
+    // bouncing back to the workflow root.
+    if (forEachCtx?.stepId) {
+      setInsertTarget({ type: 'after', stepId: forEachCtx.stepId });
+    }
     setForEachCtx(null);
   }, []);
 
