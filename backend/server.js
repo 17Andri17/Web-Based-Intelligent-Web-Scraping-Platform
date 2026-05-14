@@ -10,12 +10,64 @@ const scraperServiceFactory = require('./services/scraper.service');
 const browserManager     = require('./browser/BrowserManager');
 const { executeWorkflow } = require('./workflow/WorkflowExecutor');
 const { generateCode }    = require('./workflow/workflowCodegen');
+const { verifyToken }    = require('./middleware/auth');
+const db                 = require('./db');
+
+// Walk a workflow's step tree and collect referenced custom action ids,
+// then fetch the user-owned definitions from the DB and return them as a
+// { [id]: { name, inputs, outputs, code } } map for codegen.
+function resolveCustomActions(steps, userId) {
+  const ids = new Set();
+  (function walk(arr) {
+    for (const s of arr || []) {
+      if (s && s.kind === 'action' && s.type === 'CUSTOM_ACTION') {
+        const id = s.params && s.params.actionId;
+        if (id != null) ids.add(id);
+      }
+      ['body', 'then', 'else', 'try', 'catch'].forEach(k => {
+        if (Array.isArray(s?.[k])) walk(s[k]);
+      });
+    }
+  })(steps);
+
+  if (ids.size === 0) return {};
+  const placeholders = Array.from(ids).map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT id, name, inputs_json, outputs_json, code
+     FROM custom_actions
+     WHERE user_id = ? AND id IN (${placeholders})`
+  ).all(userId, ...ids);
+  const out = {};
+  for (const r of rows) {
+    out[r.id] = {
+      name: r.name,
+      inputs:  JSON.parse(r.inputs_json  || '[]'),
+      outputs: JSON.parse(r.outputs_json || '[]'),
+      code: r.code || '',
+    };
+  }
+  return out;
+}
 
 const PORT = process.env.PORT || 3001;
 
 const server     = http.createServer(app);
 const io         = new Server(server, { cors: { origin: '*' }, transports: ['websocket'] });
 const scraperService = scraperServiceFactory(io);
+
+// Authenticate every socket connection. The client must send a JWT either
+// via auth.token (preferred) or the legacy query.token field.
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+  if (!token) return next(new Error('Missing auth token'));
+  try {
+    const payload = verifyToken(token);
+    socket.user = { id: payload.sub, username: payload.username };
+    next();
+  } catch (_) {
+    next(new Error('Invalid or expired token'));
+  }
+});
 
 const injectedScript   = fs.readFileSync(path.join(__dirname, './browser/inject/SelectorTool.js'), 'utf8');
 const injectedSelectors = fs.readFileSync(path.join(__dirname, './browser/selectors.js'), 'utf8');
@@ -27,8 +79,8 @@ const userSessions = new Map();
 const userSessionMeta = new Map();
 
 io.on('connection', (socket) => {
-  const userId = socket.handshake.query.userId || socket.id;
-  console.log(`🔌 User connected: ${userId}`);
+  const userId = `u${socket.user.id}`;
+  console.log(`🔌 User connected: ${socket.user.username} (${userId})`);
   socket.join(userId);
 
   // ── ForEach scope ────────────────────────────────────────────────────────
@@ -323,7 +375,9 @@ io.on('connection', (socket) => {
       }
     */
     const meta = data.meta || userSessionMeta.get(userId) || {};
-    const workflow = { steps: data.steps || [], meta };
+    const steps = data.steps || [];
+    const customActions = resolveCustomActions(steps, socket.user.id);
+    const workflow = { steps, meta, customActions };
 
     socket.emit('executionStarted');
 
@@ -525,7 +579,9 @@ io.on('connection', (socket) => {
     */
     try {
       const meta = data.meta || userSessionMeta.get(userId) || {};
-      const code = generateCode({ steps: data.steps || [], meta });
+      const steps = data.steps || [];
+      const customActions = resolveCustomActions(steps, socket.user.id);
+      const code = generateCode({ steps, meta, customActions });
       socket.emit('codeReady', { code });
     } catch (err) {
       socket.emit('message', `❌ Code generation error: ${err.message}`);
