@@ -361,17 +361,22 @@ function AppShell({ user, token, onLogout }) {
   // existing workflow). Payload: { newUrl }.
   const [urlChangeDialog, setUrlChangeDialog] = useState(null);
 
-  // Treat two URLs as "the same page" if they only differ by hash (#anchor)
-  // and trailing slashes. Used to decide whether the puppeteer page has
-  // drifted off the workflow's pinned start URL.
+  // Treat two URLs as "the same page" if they only differ by hash (#anchor),
+  // trailing slashes, http↔https, or the leading "www." subdomain. The first
+  // three cases are common automatic redirects; stripping "www." matches how
+  // most sites treat the bare apex domain and the www alias as the same site.
+  // We deliberately do NOT strip other subdomains (app.x.com vs x.com are
+  // different things).
   const sameUrlIgnoringHash = useCallback((a, b) => {
     if (!a || !b) return !a && !b;
     const norm = (u) => {
       try {
         const x = new URL(u);
-        // Drop the hash, normalise trailing slash on pathname.
+        const host = x.hostname.replace(/^www\./i, "").toLowerCase();
         const path = x.pathname.replace(/\/+$/, "") || "/";
-        return `${x.origin}${path}${x.search}`;
+        // Treat http and https as the same — many sites force one and
+        // redirect the other, which we don't want to flag as drift.
+        return `${host}${path}${x.search}`;
       } catch { return u; }
     };
     return norm(a) === norm(b);
