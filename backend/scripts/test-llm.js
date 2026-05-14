@@ -24,11 +24,12 @@ const llm = require('../services/llm.service');
     process.exit(1);
   }
 
-  // 1) Ping the model.
+  // 1) Ping the model. Generous max_tokens so reasoning models have room
+  // to finish their chain-of-thought and emit the actual answer.
   const ping = await llm.safeChat({
     system: 'Reply with exactly one short word.',
     user:   'Say pong.',
-    maxTokens: 8,
+    maxTokens: 64,
   });
   if (!ping.ok) {
     console.log('❌ Ping failed');
@@ -50,7 +51,7 @@ const llm = require('../services/llm.service');
   const name = await llm.safeChat({
     system: 'You name data fields. Output ONLY a snake_case name, lowercase letters/digits/underscores, 2-30 chars. Nothing else.',
     user:   'Action: EXTRACT_TEXT\nHTML: <span class="price">$24.99</span>\nSample value: $24.99',
-    maxTokens: 16,
+    maxTokens: 256,
   });
   if (!name.ok) {
     console.log('⚠ Suggestion call failed:', name.code, name.error);

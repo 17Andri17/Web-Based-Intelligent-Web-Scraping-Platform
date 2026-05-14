@@ -31,7 +31,11 @@ const MAX_FIELD_LEN = 600;          // per text field of context
 const MAX_NAME_LEN  = 32;
 const MIN_NAME_LEN  = 2;
 
-const REFUSAL_RX = /\b(?:i (?:can(?:'|no)?t|cannot|won'?t|am sorry|'?m sorry)|as an? (?:ai|language model)|i (?:do(?:n'|n no)?t|cannot determine)|unknown|n\/a|none|null|undefined|step name|field name)\b/i;
+// Phrases that indicate the model refused or returned a placeholder rather
+// than an actual name. "step name" / "field name" were tempting to include
+// but reasoning models routinely echo them back when explaining their answer
+// ("The field name is: product_price"), so we keep the refusal list tight.
+const REFUSAL_RX = /\b(?:i (?:can(?:'|no)?t|cannot|won'?t|am sorry|'?m sorry)|as an? (?:ai|language model)|i (?:do(?:n'|n no)?t|cannot determine)|unknown|n\/a|none|null|undefined)\b/i;
 
 function clip(s, n = MAX_FIELD_LEN) {
   if (typeof s !== 'string') return '';
@@ -81,30 +85,51 @@ const SYSTEM_PROMPT = [
   '- if you cannot determine a meaningful name, output exactly: unknown',
 ].join('\n');
 
+function isValidName(s) {
+  return typeof s === 'string'
+      && s.length >= MIN_NAME_LEN
+      && s.length <= MAX_NAME_LEN
+      && /^[a-z][a-z0-9_]*$/.test(s);
+}
+
 function sanitiseName(raw) {
   if (typeof raw !== 'string') return '';
-  let s = raw.trim();
 
-  // Take only the first non-empty line — the model sometimes adds prose.
-  s = s.split(/\r?\n/).map(l => l.trim()).find(Boolean) || '';
+  // Take only the last non-empty line — when a reasoning model is forced to
+  // think out loud in `content`, the actual answer lives on the final line.
+  const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length === 0) return '';
+  let s = lines[lines.length - 1].replace(/^["'`*\s]+|["'`*\s.]+$/g, '').trim();
 
-  // Strip surrounding quotes / backticks / markdown.
-  s = s.replace(/^["'`*]+|["'`*]+$/g, '').trim();
-
-  // Reject obvious refusals or generic placeholders.
+  // Reject the few unambiguous refusal phrases.
   if (REFUSAL_RX.test(s)) return '';
 
-  // Snake-case it.
-  s = s.toLowerCase()
-       .replace(/[^a-z0-9_\s-]/g, '')   // drop punctuation
+  // 1) Look for snake_case-like identifiers in the FULL response.
+  //    Models often answer "The name is: product_price" — we extract
+  //    the underscored token regardless of surrounding prose. When several
+  //    underscored candidates appear we use the LAST one, because that's
+  //    typically where the model places its final answer.
+  const candidates = (raw.match(/[a-zA-Z][a-zA-Z0-9_]*/g) || [])
+    .map(t => t.toLowerCase())
+    .filter(isValidName);
+
+  const withUnderscore = candidates.filter(t => t.includes('_'));
+  if (withUnderscore.length) return withUnderscore[withUnderscore.length - 1];
+
+  // 2) No snake_case token. If the last line is itself a short multi-word
+  //    name (e.g. "Product Price"), normalise it.
+  const direct = s.toLowerCase()
+       .replace(/[^a-z0-9_\s-]/g, '')
        .trim()
-       .replace(/[\s-]+/g, '_')         // collapse separators
+       .replace(/[\s-]+/g, '_')
        .replace(/_+/g, '_')
        .replace(/^_+|_+$/g, '');
+  if (isValidName(direct) && direct.length <= 20) return direct;
 
-  if (s.length < MIN_NAME_LEN || s.length > MAX_NAME_LEN) return '';
-  if (!/^[a-z][a-z0-9_]*$/.test(s)) return '';
-  return s;
+  // 3) Last resort — pick the final simple token in the response (the
+  //    model often ends a chain-of-thought with the answer word).
+  if (candidates.length) return candidates[candidates.length - 1];
+  return '';
 }
 
 router.post('/suggest-step-name', async (req, res) => {
@@ -121,7 +146,11 @@ router.post('/suggest-step-name', async (req, res) => {
     system: SYSTEM_PROMPT,
     user:   prompt,
     temperature: 0.2,
-    maxTokens: 16,
+    // Reasoning models (openai/gpt-oss-*, DeepSeek-R1, …) burn most of
+    // their budget on chain-of-thought before emitting the final answer.
+    // 256 is well over the ~5–15 tokens a snake_case name needs but
+    // gives reasoning models room to finish thinking. Cheap either way.
+    maxTokens: 256,
   });
 
   if (!result.ok) {
