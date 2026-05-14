@@ -50,8 +50,13 @@ function getMeta(type) {
 }
 
 // ─── Flatten steps with forEach context awareness ────────────────────────────
+//
+// Each emitted item also carries `containerSelector` — the selector of the
+// closest enclosing loop (FOR_EACH_ELEMENTS, etc.). The hover handler needs
+// this so a child step with selector ':scope' or '.price' resolves to the
+// right elements on the page (loop iterator + relative selector).
 
-function flattenSteps(steps, depth=0, path=[], forEachCtxStepId=null, parentLoopId=null) {
+function flattenSteps(steps, depth=0, path=[], forEachCtxStepId=null, parentLoopId=null, parentLoopSelector="") {
   const out = [];
   (steps||[]).forEach((step, i) => {
     if (typeof step !== "object" || !step) return;
@@ -59,19 +64,47 @@ function flattenSteps(steps, depth=0, path=[], forEachCtxStepId=null, parentLoop
       step, depth, path: [...path, i],
       inActiveLoop: !!forEachCtxStepId && parentLoopId === forEachCtxStepId,
       isActiveLoop: step.id === forEachCtxStepId,
+      containerSelector: parentLoopSelector,
     });
     const isLoop = LOOP_TYPES.has(step.type);
+    const childLoopSelector = isLoop
+      ? (step.params?.selector || step.params?.containerSelector || parentLoopSelector)
+      : parentLoopSelector;
     for (const key of BRANCH_KEYS) {
       if (Array.isArray(step[key]) && step[key].length > 0) {
         out.push(...flattenSteps(
           step[key], depth + 1, [...path, i, key],
           forEachCtxStepId,
-          isLoop ? step.id : parentLoopId
+          isLoop ? step.id : parentLoopId,
+          childLoopSelector,
         ));
       }
     }
   });
   return out;
+}
+
+// Join a child step's selector with its enclosing loop's iterator selector.
+//
+//   loop = "a.popular-exam-link", child = ":scope"        → "a.popular-exam-link"
+//   loop = "a.popular-exam-link", child = ":scope img"    → "a.popular-exam-link img"
+//   loop = "div.card",           child = ".price"         → "div.card .price"
+//   loop = "div.card",           child = ""               → "div.card"
+//   loop = "",                   child = ".price"         → ".price"
+function composeScopedSelector(loopSel, childSel) {
+  const child = (childSel || "").trim();
+  const loop  = (loopSel  || "").trim();
+  if (!loop) {
+    // No enclosing loop. A bare `:scope` is useless outside a loop —
+    // skip the hover. Anything else passes through as-is.
+    return child === ":scope" ? "" : child;
+  }
+  if (!child || child === ":scope") return loop;
+  // Replace a leading :scope (with or without combinator) with the loop sel.
+  if (/^:scope\b/.test(child)) {
+    return child.replace(/^:scope\s*/, loop + " ").replace(/\s+/g, " ").trim();
+  }
+  return `${loop} ${child}`;
 }
 
 // ─── Inline input ────────────────────────────────────────────────────────────
@@ -173,9 +206,13 @@ function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onRes
 // ─── Step card ───────────────────────────────────────────────────────────────
 
 function StepCard({ item, isSelected, reselectStepId, onToggle, onHover, onLeave, onReselect, onCancelReselect, onUpdateParams, onUpdateLabel }) {
-  const { step, depth, inActiveLoop, isActiveLoop } = item;
+  const { step, depth, inActiveLoop, isActiveLoop, containerSelector } = item;
   const meta = getMeta(step.type);
-  const selector = step.params?.selector || step.params?.containerSelector || "";
+  const ownSelector = step.params?.selector || step.params?.containerSelector || "";
+  // Resolve to a selector that the page can actually query: a child of a
+  // ForEach loop usually has ":scope" or a relative selector that's only
+  // meaningful relative to the loop iterator.
+  const hoverSelector = composeScopedSelector(containerSelector, ownSelector);
   const displayName = step.label || step.params?.url || step.type?.replace(/_/g," ").toLowerCase() || "step";
 
   return (
@@ -187,7 +224,7 @@ function StepCard({ item, isSelected, reselectStepId, onToggle, onHover, onLeave
         inActiveLoop   ? "cws-step--in-loop"    : "",
       ].filter(Boolean).join(" ")}
       style={{ paddingLeft: 10 + depth * 14 }}
-      onMouseEnter={() => selector && onHover(selector)}
+      onMouseEnter={() => hoverSelector && onHover(hoverSelector)}
       onMouseLeave={onLeave}
     >
       <div className="cws-step-row" onClick={onToggle}>
@@ -203,8 +240,8 @@ function StepCard({ item, isSelected, reselectStepId, onToggle, onHover, onLeave
 
         <div className="cws-step-info">
           <span className="cws-step-name">{displayName.length>26 ? displayName.slice(0,26)+"…":displayName}</span>
-          {selector && !isSelected && (
-            <span className="cws-step-sel">{selector.length>30 ? selector.slice(0,30)+"…":selector}</span>
+          {ownSelector && !isSelected && (
+            <span className="cws-step-sel">{ownSelector.length>30 ? ownSelector.slice(0,30)+"…":ownSelector}</span>
           )}
         </div>
 
@@ -327,9 +364,10 @@ export default function CompactWorkflowSidebar({
       ) : (
         <div className="cws-list">
           {flat.map((item, idx) => {
-            const { step, depth, inActiveLoop, isActiveLoop } = item;
+            const { step, depth, inActiveLoop, isActiveLoop, containerSelector } = item;
             const meta = getMeta(step.type);
-            const selector = step.params?.selector || step.params?.containerSelector || "";
+            const ownSelector  = step.params?.selector || step.params?.containerSelector || "";
+            const hoverSelector = composeScopedSelector(containerSelector, ownSelector);
             const displayName = step.label || step.params?.url || step.type?.replace(/_/g," ").toLowerCase() || "step";
             const isLoop = LOOP_TYPES.has(step.type);
             const isSelected = selectedId === step.id;
@@ -359,7 +397,7 @@ export default function CompactWorkflowSidebar({
                     inActiveLoop ? "cws-step--in-loop" : "",
                   ].filter(Boolean).join(" ")}
                   style={{ paddingLeft: 10 + depth * 14 }}
-                  onMouseEnter={() => selector && handleHover(selector)}
+                  onMouseEnter={() => hoverSelector && handleHover(hoverSelector)}
                   onMouseLeave={handleLeave}
                 >
                   <div className="cws-step-row" onClick={() => setSelectedId(p => p === step.id ? null : step.id)}>
@@ -371,8 +409,8 @@ export default function CompactWorkflowSidebar({
                     </span>
                     <div className="cws-step-info">
                       <span className="cws-step-name">{displayName.length>26 ? displayName.slice(0,26)+"…":displayName}</span>
-                      {selector && !isSelected && (
-                        <span className="cws-step-sel">{selector.length>30 ? selector.slice(0,30)+"…":selector}</span>
+                      {ownSelector && !isSelected && (
+                        <span className="cws-step-sel">{ownSelector.length>30 ? ownSelector.slice(0,30)+"…":ownSelector}</span>
                       )}
                     </div>
                     {HAS_SELECTOR.has(step.type) && (

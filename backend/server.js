@@ -613,21 +613,55 @@ io.on('connection', async (socket) => {
   });
 
   // ── Highlight elements for compact workflow hover ─────────────────────────
+  // Stash the element's existing inline outline / box-shadow (value AND
+  // priority — `!important` is lost otherwise) before overwriting, and
+  // restore them on clear. This is what keeps a hovered-and-selected
+  // element's selection border from vanishing when the hover ends.
   socket.on('highlightSelector', async ({ selector }) => {
     if (!selector) return;
     const page = await getActivePage();
     if (!page) return;
     try {
       await page.evaluate((sel) => {
-        document.querySelectorAll('[data-scraper-hl]').forEach(el => {
-          el.style.removeProperty('outline'); el.style.removeProperty('outline-offset');
-          el.style.removeProperty('box-shadow'); delete el.dataset.scraperHl;
-        });
+        function restore(el) {
+          const props = ['outline', 'outline-offset', 'box-shadow'];
+          for (const p of props) {
+            const key = 'scraperHl_' + p.replace(/-/g, '_');
+            const prioKey = key + '_prio';
+            if (el.dataset[key] !== undefined) {
+              const v = el.dataset[key];
+              const prio = el.dataset[prioKey] || '';
+              if (v) el.style.setProperty(p, v, prio);
+              else   el.style.removeProperty(p);
+              delete el.dataset[key];
+              delete el.dataset[prioKey];
+            }
+          }
+          delete el.dataset.scraperHl;
+        }
+        document.querySelectorAll('[data-scraper-hl]').forEach(restore);
+
         const isXPath = sel.startsWith('/') || sel.startsWith('(');
         const getEls = (s) => isXPath
           ? (() => { const r = document.evaluate(s, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null); return Array.from({length: r.snapshotLength}, (_, i) => r.snapshotItem(i)); })()
           : Array.from(document.querySelectorAll(s));
-        try { getEls(sel).forEach(el => { el.style.outline='2px solid #4f9cf9'; el.style.outlineOffset='1px'; el.style.boxShadow='0 0 0 4px rgba(79,156,249,0.18)'; el.dataset.scraperHl='1'; }); } catch(e) {}
+        try {
+          getEls(sel).forEach(el => {
+            // Save originals
+            const save = (prop) => {
+              const key = 'scraperHl_' + prop.replace(/-/g, '_');
+              el.dataset[key]          = el.style.getPropertyValue(prop) || '';
+              el.dataset[key + '_prio'] = el.style.getPropertyPriority(prop) || '';
+            };
+            save('outline'); save('outline-offset'); save('box-shadow');
+            // Apply with !important so we visibly win even when the
+            // selection tool has set its own !important outline.
+            el.style.setProperty('outline', '2px solid #4f9cf9', 'important');
+            el.style.setProperty('outline-offset', '1px', 'important');
+            el.style.setProperty('box-shadow', '0 0 0 4px rgba(79,156,249,0.18)', 'important');
+            el.dataset.scraperHl = '1';
+          });
+        } catch(e) {}
       }, selector);
     } catch(e) {}
   });
@@ -635,7 +669,26 @@ io.on('connection', async (socket) => {
   socket.on('clearHighlight', async () => {
     const page = await getActivePage();
     if (!page) return;
-    try { await page.evaluate(() => { document.querySelectorAll('[data-scraper-hl]').forEach(el => { el.style.removeProperty('outline'); el.style.removeProperty('outline-offset'); el.style.removeProperty('box-shadow'); delete el.dataset.scraperHl; }); }); } catch(e) {}
+    try {
+      await page.evaluate(() => {
+        const props = ['outline', 'outline-offset', 'box-shadow'];
+        document.querySelectorAll('[data-scraper-hl]').forEach(el => {
+          for (const p of props) {
+            const key = 'scraperHl_' + p.replace(/-/g, '_');
+            const prioKey = key + '_prio';
+            if (el.dataset[key] !== undefined) {
+              const v = el.dataset[key];
+              const prio = el.dataset[prioKey] || '';
+              if (v) el.style.setProperty(p, v, prio);
+              else   el.style.removeProperty(p);
+              delete el.dataset[key];
+              delete el.dataset[prioKey];
+            }
+          }
+          delete el.dataset.scraperHl;
+        });
+      });
+    } catch(e) {}
   });
 
   socket.on('downloadCode', (data) => {
