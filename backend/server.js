@@ -1,5 +1,9 @@
 'use strict';
 
+// Load .env (e.g. GROQ_API_KEY) from backend/.env if present. Optional —
+// env vars set in the shell still take precedence.
+require('dotenv').config();
+
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');

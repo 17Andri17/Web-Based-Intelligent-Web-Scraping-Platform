@@ -13,7 +13,7 @@ import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
 import CustomActionsMenu from "./customActions/CustomActionsMenu";
-import { API_BASE, customActionsApi, workflowsApi } from "./api/client";
+import { API_BASE, customActionsApi, workflowsApi, aiApi } from "./api/client";
 import "./styles/PaginationDetector.css";
 import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
@@ -87,6 +87,11 @@ function AppShell({ user, token, onLogout }) {
   useEffect(() => { paginationManualWaitingRef.current  = paginationManualWaiting; }, [paginationManualWaiting]);
   const insertTargetRef = useRef(null);
   useEffect(() => { insertTargetRef.current = insertTarget; }, [insertTarget]);
+  // Keep the latest inspector selection accessible from callbacks that the
+  // auto-name helper runs from — handleAddStep clears the React state
+  // immediately, but we still need the data for the AI request.
+  const selectedElementRef = useRef(null);
+  useEffect(() => { selectedElementRef.current = selectedElement; }, [selectedElement]);
 
   // ── Execution state ──────────────────────────────────────────────────────
   const [execPanelOpen, setExecPanelOpen] = useState(false);
@@ -399,6 +404,44 @@ function AppShell({ user, token, onLogout }) {
     setUrlChangeDialog({ newUrl: url });
   };
 
+  // ── Auto-suggest a snake_case label for new extraction / loop steps ───
+  // Best-effort: silently does nothing if the AI is unconfigured or the
+  // suggestion is unusable. Only fires for steps with no existing label.
+  const AUTO_NAME_TYPES = new Set([
+    "EXTRACT_TEXT", "EXTRACT_ATTRIBUTE", "EXTRACT_HTML",
+    "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON",
+    "FOR_EACH_ELEMENTS",
+  ]);
+  const maybeAutoNameStep = useCallback((step) => {
+    if (!step || step.label) return;
+    if (!AUTO_NAME_TYPES.has(step.type)) return;
+
+    const el = selectedElementRef.current;
+    const payload = {
+      stepType:   step.type,
+      selector:   step.params?.selector || el?.selector || el?.commonSelector || "",
+      attribute:  step.params?.attribute || "",
+      tag:        el?.tag || el?.elements?.[0]?.tag || "",
+      classes:    el?.classes || "",
+      text:       (el?.text || "").slice(0, 200),
+      html:       (el?.html || el?.outerHtml || "").slice(0, 400),
+      matchCount: el?.isMultiSelection ? el.matchCount : undefined,
+    };
+
+    aiApi.suggestStepName(payload).then((name) => {
+      if (!name) return;
+      // Only apply if the step still exists and the user hasn't named it
+      // manually in the meantime.
+      const loc = findStepLocation(stepsRef.current, step.id);
+      if (!loc) return;
+      let cur = stepsRef.current;
+      for (let i = 0; i < loc.containerPath.length; i += 2) cur = cur[loc.containerPath[i]][loc.containerPath[i + 1]];
+      const current = cur?.[loc.index];
+      if (!current || current.label) return;
+      updateLabelById(step.id, name);
+    });
+  }, [updateLabelById]);
+
   // ── Add step from inspector ───────────────────────────────────────────────
   const handleAddStep = useCallback((step, opts = {}) => {
     const { isForEach = false } = opts;
@@ -422,6 +465,7 @@ function AppShell({ user, token, onLogout }) {
       if (iteratorSelector) socketRef.current?.emit("setForEachScope", { iteratorSelector });
       // Auto-point insert target inside the new loop
       setInsertTarget({ type: 'inside', stepId: step.id });
+      maybeAutoNameStep(step);
       return;
     }
 
@@ -440,6 +484,7 @@ function AppShell({ user, token, onLogout }) {
           showToast(`✓ Step added after target`, "success");
         }
         socketRef.current?.emit("resetSelection");
+        maybeAutoNameStep(step);
         setSelectedElement(null);
         return;
       }
@@ -464,7 +509,8 @@ function AppShell({ user, token, onLogout }) {
       socketRef.current?.emit("resetSelection");
       setSelectedElement(null);
     }
-  }, [addStep, addStepAt, forEachCtx, showToast, insertTarget]);
+    maybeAutoNameStep(step);
+  }, [addStep, addStepAt, forEachCtx, showToast, insertTarget, maybeAutoNameStep]);
 
   // ── Breadcrumb navigation ─────────────────────────────────────────────────
   const handleSelectAncestor = useCallback((levelsUp) => {
@@ -953,7 +999,7 @@ function AppShell({ user, token, onLogout }) {
         {activeTab === "workflow" && (
           <WorkflowPanel
             steps={steps} totalCount={totalCount} setSteps={setSteps}
-            onAdd={addStep} onUpdate={updateStep} onDelete={deleteStep} onReorder={reorderSteps}
+            onAdd={(step, ...rest) => { addStep(step, ...rest); maybeAutoNameStep(step); }} onUpdate={updateStep} onDelete={deleteStep} onReorder={reorderSteps}
             insertTarget={insertTarget}
             onSetInsertTarget={setInsertTarget}
             onMoveStep={moveStepById}
