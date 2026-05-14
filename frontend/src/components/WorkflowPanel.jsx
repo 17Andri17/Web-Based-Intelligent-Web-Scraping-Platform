@@ -92,7 +92,7 @@ function buildCustomActionStep(action) {
 }
 
 /* =====================================================================  MAIN PANEL */
-export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps, insertTarget, onSetInsertTarget, onMoveStep, customActions = [] }) {
+export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps, insertTarget, onSetInsertTarget, onMoveStep, customActions = [], offStartUrl = false, pinnedUrl = "", currentPageUrl = "", onReturnToStart }) {
   const [pickerCtx, setPickerCtx]   = useState(null);
   const [editingCtx, setEditingCtx] = useState(null);
   const [activeId,   setActiveId]   = useState(null);
@@ -143,6 +143,20 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
           </button>
         </div>
       </div>
+      {offStartUrl && (
+        <div className="wf-offstart-banner" title={`Steps added here will be recorded against the current page (${currentPageUrl}), but the workflow always starts from ${pinnedUrl}. Either return to the start URL or add a NAVIGATE step before these new actions.`}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <path d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          </svg>
+          <div className="wf-offstart-text">
+            <strong>You're not on the workflow's start URL.</strong>
+            <span>New steps will be recorded against <code>{currentPageUrl || "this page"}</code>, but the workflow starts from <code>{pinnedUrl}</code>.</span>
+          </div>
+          {onReturnToStart && (
+            <button className="wf-offstart-btn" onClick={onReturnToStart}>Return to start</button>
+          )}
+        </div>
+      )}
       <div className="workflow-canvas">
         <div className="flow-container">
           <div className="flow-start">
