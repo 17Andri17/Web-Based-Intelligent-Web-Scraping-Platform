@@ -70,6 +70,16 @@ module.exports = (io) => {
         } else if (action.type === "leave") {
           await page.mouse.move(-1, -1);
           socket.emit("cursorType", { cursor: "default" });
+        } else if (action.type === "wheel") {
+          // Position the virtual mouse first so the wheel applies to the
+          // right place (matters for nested scrollable containers).
+          if (typeof action.x === "number" && typeof action.y === "number") {
+            await page.mouse.move(action.x, action.y);
+          }
+          await page.mouse.wheel({
+            deltaX: action.deltaX || 0,
+            deltaY: action.deltaY || 0,
+          });
         } else if (action.type === "keydown") {
           await page.keyboard.down(action.key);
         } else if (action.type === "keyup") {

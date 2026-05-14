@@ -252,6 +252,33 @@ function AppShell({ user, token, onLogout }) {
     renderLoop();
   }, []);
 
+  // ── Wheel forwarding (non-passive so we can preventDefault) ─────────────
+  // React's synthetic onWheel is passive by default, so preventDefault() in
+  // an onWheel prop would be ignored and the host page would scroll. We
+  // attach a native listener with passive:false so wheeling over the
+  // streamed canvas scrolls the remote page and never the host UI.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e) => {
+      if (!isStreamingRef.current) return;
+      e.preventDefault();
+      const { x, y } = scaled(e);
+      const LINE_HEIGHT = 33;
+      const factor = e.deltaMode === 1 ? LINE_HEIGHT
+                   : e.deltaMode === 2 ? (canvasContainerRef.current?.clientHeight || 800)
+                   : 1;
+      socketRef.current?.emit("userAction", {
+        type: "wheel",
+        x, y,
+        deltaX: e.deltaX * factor,
+        deltaY: e.deltaY * factor,
+      });
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, []);
+
   // ── Resize ────────────────────────────────────────────────────────────────
   const handleResize = useCallback(() => {
     if (!canvasContainerRef.current || !socketRef.current || !isStreamingRef.current) return;
@@ -509,9 +536,23 @@ function AppShell({ user, token, onLogout }) {
   };
 
   // ── Canvas helpers ────────────────────────────────────────────────────────
+  // Tracks whether the user is currently dragging on the canvas. Set on
+  // pointerdown, cleared on pointerup/cancel. Pointer capture keeps move
+  // events flowing to the canvas even when the cursor leaves it, so this
+  // ref is what lets us suppress the `leave` reset during a drag.
+  const isDraggingRef = useRef(false);
+
+  // Convert a browser pointer/mouse event to puppeteer-page coordinates
+  // (the canvas backing-store size, not its CSS size). Clamps to the
+  // canvas extent so drag positions outside the canvas don't go negative
+  // or run past the viewport.
   const scaled = (e) => {
     const c = canvasRef.current, r = c.getBoundingClientRect();
-    return { x: Math.round((e.clientX - r.left) * (c.width / r.width)), y: Math.round((e.clientY - r.top) * (c.height / r.height)) };
+    const xRaw = (e.clientX - r.left) * (c.width  / r.width);
+    const yRaw = (e.clientY - r.top)  * (c.height / r.height);
+    const x = Math.max(0, Math.min(c.width  - 1, Math.round(xRaw)));
+    const y = Math.max(0, Math.min(c.height - 1, Math.round(yRaw)));
+    return { x, y };
   };
   const emit = (type, extra = {}) => {
     // Don't send mouse/keyboard events to the backend when there's no active
@@ -519,6 +560,16 @@ function AppShell({ user, token, onLogout }) {
     // hover events race against a torn-down execution context.
     if (!isStreamingRef.current) return;
     socketRef.current?.emit("userAction", { type, ...extra });
+  };
+
+  // Keys that we should never preventDefault for, so the host browser can
+  // still open devtools / refresh tabs / use OS shortcuts.
+  const isPassthroughKey = (e) => {
+    if (e.key === "F12") return true;
+    if (e.ctrlKey && e.shiftKey && (e.key === "I" || e.key === "i" || e.key === "J" || e.key === "j" || e.key === "C" || e.key === "c")) return true;
+    if (e.ctrlKey && (e.key === "t" || e.key === "T" || e.key === "w" || e.key === "W" || e.key === "n" || e.key === "N")) return true;
+    if (e.metaKey && (e.key === "t" || e.key === "T" || e.key === "w" || e.key === "W" || e.key === "n" || e.key === "N")) return true;
+    return false;
   };
 
   // ── Emit previewStep on param changes only (debounced + fingerprinted) ──
@@ -756,13 +807,54 @@ function AppShell({ user, token, onLogout }) {
           {/* Stream body: canvas + inspector sidebar side by side */}
           <div className="stream-body">
             <div className="canvas-container" ref={canvasContainerRef}>
-              <canvas ref={canvasRef} className="browser-canvas"
-                style={{ cursor: mode === "selection" ? "crosshair" : cursorType }}
-                onClick={e  => { e.preventDefault(); const {x,y} = scaled(e); emit("click",     {x,y}); setStatus(`Clicked: x=${x}, y=${y}`); }}
-                onMouseMove={e => { const {x,y} = scaled(e); emit("hover",     {x,y}); }}
-                onMouseDown={e => { e.preventDefault(); const {x,y} = scaled(e); emit("mousedown", {x,y}); }}
-                onMouseUp={e   => { e.preventDefault(); const {x,y} = scaled(e); emit("mouseup",   {x,y}); }}
-                onMouseLeave={() => emit("leave")}
+              <canvas ref={canvasRef} className="browser-canvas" tabIndex={0}
+                style={{ cursor: mode === "selection" ? "crosshair" : cursorType, outline: "none" }}
+                onContextMenu={e => e.preventDefault()}
+                onPointerDown={e => {
+                  e.preventDefault();
+                  // Pointer capture keeps pointermove/pointerup flowing to
+                  // the canvas even after the cursor leaves it, so a drag
+                  // (e.g. text selection or scroll-bar grab) no longer
+                  // snaps back when the user wanders off the canvas.
+                  try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+                  // Focus the canvas so subsequent key presses are routed
+                  // to the remote page (e.g. typing in a form field).
+                  e.currentTarget.focus();
+                  isDraggingRef.current = true;
+                  const {x, y} = scaled(e);
+                  emit("mousedown", { x, y });
+                  setStatus(`Clicked: x=${x}, y=${y}`);
+                }}
+                onPointerMove={e => {
+                  const {x, y} = scaled(e);
+                  emit("hover", { x, y });
+                }}
+                onPointerUp={e => {
+                  e.preventDefault();
+                  try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) {}
+                  isDraggingRef.current = false;
+                  const {x, y} = scaled(e);
+                  emit("mouseup", { x, y });
+                }}
+                onPointerCancel={() => { isDraggingRef.current = false; }}
+                onPointerLeave={() => {
+                  // While dragging, pointer capture keeps us tracking even
+                  // outside the canvas — don't fire the reset.
+                  if (isDraggingRef.current) return;
+                  emit("leave");
+                }}
+                onKeyDown={e => {
+                  if (!isStreamingRef.current) return;
+                  if (isPassthroughKey(e)) return;
+                  e.preventDefault();
+                  emit("keydown", { key: e.key, code: e.code });
+                }}
+                onKeyUp={e => {
+                  if (!isStreamingRef.current) return;
+                  if (isPassthroughKey(e)) return;
+                  e.preventDefault();
+                  emit("keyup", { key: e.key, code: e.code });
+                }}
               />
               <div className={`mode-indicator ${mode}`}>
                 {mode === "selection"
