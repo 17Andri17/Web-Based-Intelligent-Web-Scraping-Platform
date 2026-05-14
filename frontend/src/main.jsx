@@ -13,7 +13,7 @@ import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
 import CustomActionsMenu from "./customActions/CustomActionsMenu";
-import { API_BASE, customActionsApi } from "./api/client";
+import { API_BASE, customActionsApi, workflowsApi } from "./api/client";
 import "./styles/PaginationDetector.css";
 import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
@@ -48,7 +48,7 @@ function AppShell({ user, token, onLogout }) {
   const isRenderingRef       = useRef(false);
 
   const [status,          setStatus]          = useState("");
-  const [urlInput,        setUrlInput]        = useState("https://deviceandbrowserinfo.com/are_you_a_bot");
+  const [urlInput,        setUrlInput]        = useState("");
   const [mode,            setMode]            = useState("navigation");
   const [cursorType,      setCursorType]      = useState("default");
   const [isConnected,     setIsConnected]     = useState(false);
@@ -283,17 +283,93 @@ function AppShell({ user, token, onLogout }) {
     socketRef.current?.emit("setMode", { mode: newMode });
   };
 
-  // ── Navigate ──────────────────────────────────────────────────────────────
-  const handleNavigate = () => {
-    // if (!socketRef.current || !urlInput.startsWith("http")) return;
+  // ── Reset to a fresh workflow (like just logging in) ─────────────────────
+  // Clears steps, closes the backend page, resets URL bar, drops run results.
+  const resetWorkflow = useCallback(() => {
+    setSteps([]);
+    setCurrentWorkflowId(null);
+    setCurrentWorkflowName("");
+    setExecResults(null);
+    setExecLogs([]);
+    setExecStatus("idle");
+    setExecPanelOpen(false);
+    setSelectedElement(null);
+    setForEachCtx(null);
+    setChildrenList(null);
+    setInsertTarget(null);
+    setUrlInput("");
+    sessionMetaRef.current = {};
+    socketRef.current?.emit("stopStreaming");
+    isStreamingRef.current = false;
+    setStatus("");
+    // Wipe the last streamed frame so the canvas isn't showing a stale page.
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    latestFrameRef.current = null;
+  }, [setSteps]);
+
+  // Pending URL-change confirmation (shown when user changes URL on an
+  // existing workflow). Payload: { newUrl }.
+  const [urlChangeDialog, setUrlChangeDialog] = useState(null);
+
+  // Keep the URL bar in sync with the pinned step's URL whenever the user
+  // edits it via the step editor modal.
+  useEffect(() => {
+    const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
+    const pinnedUrl = pinned?.params?.url || "";
+    if (pinned && pinnedUrl !== urlInput) {
+      setUrlInput(pinnedUrl);
+    }
+    // We intentionally don't depend on urlInput — that would create a cycle
+    // (typing in the URL bar would reset itself on each keystroke).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steps]);
+
+  // Low-level: tell the backend to navigate and start streaming the new URL.
+  const performNavigate = useCallback((url) => {
+    if (!socketRef.current || !url) return;
     setStatus("Navigating...");
     const rect = canvasContainerRef.current?.getBoundingClientRect();
     const vpW = Math.floor(rect?.width) || 1280;
     const vpH = Math.floor(rect?.height) || 720;
-    sessionMetaRef.current = { startUrl: urlInput, viewportWidth: vpW, viewportHeight: vpH };
-    socketRef.current.emit("navigate", { url: urlInput, mode, viewportWidth: vpW, viewportHeight: vpH });
+    sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: url, viewportWidth: vpW, viewportHeight: vpH };
+    socketRef.current.emit("navigate", { url, mode, viewportWidth: vpW, viewportHeight: vpH });
     isStreamingRef.current = true;
-    addStep(createAction("NAVIGATE", { url: urlInput }), [], null);
+  }, [mode]);
+
+  // ── Navigate ──────────────────────────────────────────────────────────────
+  // Three paths:
+  //   1) Empty workflow → create a pinned NAVIGATE step and navigate.
+  //   2) Existing workflow, same URL as pinned step → just re-navigate.
+  //   3) Existing workflow, different URL → open the confirmation dialog.
+  const handleNavigate = () => {
+    const url = urlInput.trim();
+    if (!url) return;
+
+    const pinnedStep   = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
+    const pinnedUrl    = pinnedStep?.params?.url;
+    const hasWorkflow  = steps.length > 0;
+
+    if (!pinnedStep && !hasWorkflow) {
+      // Fresh start — create the pinned step and navigate.
+      const step = createAction("NAVIGATE", { url });
+      step.pinned = true;
+      addStep(step, [], null);
+      performNavigate(url);
+      return;
+    }
+
+    if (pinnedStep && url === pinnedUrl) {
+      // Same URL — refresh without prompting.
+      performNavigate(url);
+      return;
+    }
+
+    // Existing workflow + URL changed → ask the user what to do.
+    setUrlChangeDialog({ newUrl: url });
   };
 
   // ── Add step from inspector ───────────────────────────────────────────────
@@ -513,6 +589,17 @@ function AppShell({ user, token, onLogout }) {
           </div>
         </div>
         <div className="header-right">
+          <button className="header-btn secondary"
+            onClick={() => {
+              if (steps.length > 0 && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+              resetWorkflow();
+            }}
+            title="Start a fresh workflow (closes the current page)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            New
+          </button>
           <button className="header-btn secondary" onClick={() => setWorkflowsOpen(true)}
             title="Save or open workflows">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -559,7 +646,13 @@ function AppShell({ user, token, onLogout }) {
               <>
                 <div style={{position:"fixed",inset:0,zIndex:40}} onClick={() => setUserMenuOpen(false)} />
                 <div className="user-popover">
+                  <button className="item" onClick={() => {
+                    setUserMenuOpen(false);
+                    if (steps.length > 0 && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+                    resetWorkflow();
+                  }}>New workflow</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setWorkflowsOpen(true); }}>Workflows…</button>
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setCustomActionsOpen(true); }}>Custom actions…</button>
                   <button className="item danger" onClick={() => { setUserMenuOpen(false); onLogout(); }}>Sign out</button>
                 </div>
               </>
@@ -864,6 +957,74 @@ function AppShell({ user, token, onLogout }) {
         onCancel={handleCancelExecution}
       />
 
+      {/* ── URL-change confirmation ────────────────────────────────────── */}
+      {urlChangeDialog && (
+        <UrlChangeDialog
+          newUrl={urlChangeDialog.newUrl}
+          currentName={currentWorkflowName}
+          canSaveCurrent={!!currentWorkflowId}
+          onCancel={() => {
+            // Revert the URL bar back to the pinned step's URL.
+            const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
+            if (pinned) setUrlInput(pinned.params?.url || "");
+            setUrlChangeDialog(null);
+          }}
+          onSaveAndStartNew={async () => {
+            // Update the existing workflow in place, then reset and navigate.
+            try {
+              await workflowsApi.update(
+                currentWorkflowId,
+                currentWorkflowName,
+                steps,
+                sessionMetaRef.current || null,
+              );
+              showToast(`✓ Updated "${currentWorkflowName}"`, "success");
+            } catch (err) {
+              showToast(`✗ Save failed: ${err?.response?.data?.error || err.message}`, "error");
+              return; // keep the dialog so the user can pick another option
+            }
+            const url = urlChangeDialog.newUrl;
+            setUrlChangeDialog(null);
+            resetWorkflow();
+            setUrlInput(url);
+            // Start a fresh workflow on the new URL.
+            const step = createAction("NAVIGATE", { url });
+            step.pinned = true;
+            addStep(step, [], null);
+            performNavigate(url);
+          }}
+          onSaveAs={() => {
+            // No current id (or user wants a copy) → defer to the Workflows
+            // menu so the user can give it a name, then they can retry.
+            setUrlChangeDialog(null);
+            setWorkflowsOpen(true);
+          }}
+          onDiscardAndStartNew={() => {
+            const url = urlChangeDialog.newUrl;
+            setUrlChangeDialog(null);
+            resetWorkflow();
+            setUrlInput(url);
+            const step = createAction("NAVIGATE", { url });
+            step.pinned = true;
+            addStep(step, [], null);
+            performNavigate(url);
+          }}
+          onAddAsStep={() => {
+            // Keep the current workflow; just visit the new URL AND record a
+            // movable (non-pinned) NAVIGATE step at the end of the workflow.
+            const url = urlChangeDialog.newUrl;
+            setUrlChangeDialog(null);
+            addStep(createAction("NAVIGATE", { url }), [], null);
+            performNavigate(url);
+            // Revert the URL bar back to the pinned step's URL — it represents
+            // the workflow's start URL, not the current page.
+            const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
+            if (pinned) setUrlInput(pinned.params?.url || "");
+            showToast("✓ Added Navigate step to current workflow", "success");
+          }}
+        />
+      )}
+
       {/* ── Custom actions library ──────────────────────────────────────── */}
       <CustomActionsMenu
         open={customActionsOpen}
@@ -886,13 +1047,26 @@ function AppShell({ user, token, onLogout }) {
           setCurrentWorkflowName(wf.name);
         }}
         onLoaded={(wf) => {
-          setSteps(wf.steps || []);
+          // Normalise: mark the first NAVIGATE step as the pinned start URL.
+          // Older workflows saved before the pinning feature won't have this flag.
+          const loadedSteps = (wf.steps || []).map((s, i) =>
+            i === 0 && s.type === "NAVIGATE" && !s.pinned ? { ...s, pinned: true } : s
+          );
+          setSteps(loadedSteps);
           setCurrentWorkflowId(wf.id);
           setCurrentWorkflowName(wf.name);
           if (wf.meta) sessionMetaRef.current = { ...sessionMetaRef.current, ...wf.meta };
           setExecResults(null);
           setExecLogs([]);
           setExecStatus("idle");
+
+          // Populate the URL bar with the workflow's start URL and auto-navigate
+          // so the user can immediately see the page they built the workflow on.
+          const startUrl = loadedSteps[0]?.type === "NAVIGATE"
+            ? loadedSteps[0]?.params?.url || ""
+            : wf.meta?.startUrl || "";
+          setUrlInput(startUrl);
+          if (startUrl) performNavigate(startUrl);
         }}
       />
 
@@ -906,6 +1080,64 @@ function AppShell({ user, token, onLogout }) {
           {toast.msg}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   URL change confirmation dialog
+   Shown when the user types a new URL into the bar while a workflow already
+   exists. Lets them save & restart, discard & restart, or add the new URL as
+   another Navigate step on the same workflow.
+   ────────────────────────────────────────────────────────────────────────── */
+function UrlChangeDialog({ newUrl, currentName, canSaveCurrent, onCancel, onSaveAndStartNew, onSaveAs, onDiscardAndStartNew, onAddAsStep }) {
+  return (
+    <div className="wf-overlay" onClick={onCancel}>
+      <div className="wf-modal url-change-modal" onClick={e => e.stopPropagation()}>
+        <div className="wf-header">
+          <h2>Change URL?</h2>
+          <button className="wf-close" onClick={onCancel} aria-label="Close">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div className="wf-body">
+          <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: "0 0 14px" }}>
+            You're about to navigate to <code style={{ color: "var(--accent-primary)", wordBreak: "break-all" }}>{newUrl}</code>,
+            but your current workflow starts on a different page. What would you like to do?
+          </p>
+
+          <div className="url-change-options">
+            {canSaveCurrent ? (
+              <button className="url-change-opt" onClick={onSaveAndStartNew}>
+                <strong>Save &amp; start new</strong>
+                <span>Save changes to <em>{currentName}</em>, then begin a fresh workflow on the new URL.</span>
+              </button>
+            ) : (
+              <button className="url-change-opt" onClick={onSaveAs}>
+                <strong>Save current first…</strong>
+                <span>Open the workflows panel to name and save the current workflow before continuing.</span>
+              </button>
+            )}
+
+            <button className="url-change-opt" onClick={onAddAsStep}>
+              <strong>Visit &amp; add Navigate step</strong>
+              <span>Keep working on this workflow. The new URL becomes another (movable) Navigate step at the end.</span>
+            </button>
+
+            <button className="url-change-opt danger" onClick={onDiscardAndStartNew}>
+              <strong>Discard &amp; start new</strong>
+              <span>Throw away the current workflow and start fresh on the new URL.</span>
+            </button>
+
+            <button className="url-change-opt subtle" onClick={onCancel}>
+              <strong>Cancel</strong>
+              <span>Don't navigate — leave the workflow as it is.</span>
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
