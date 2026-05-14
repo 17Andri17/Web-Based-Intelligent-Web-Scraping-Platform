@@ -299,10 +299,15 @@ function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, o
   // Zone[draggedIdx+1] stays visible — dropping there returns the step to its original position.
   const isNoOp = (zoneIdx) => draggedIdx >= 0 && zoneIdx === draggedIdx;
 
+  // Don't allow ANY insertion above a pinned step (currently only the root-level
+  // pinned NAVIGATE qualifies). The pinned step must always be first.
+  const isRoot = containerPath.length === 0;
+  const blockedBefore = (zoneIdx) => isRoot && zoneIdx === 0 && steps[0]?.pinned;
+
   return (
     <div className="step-list">
       {/* Drop zone BEFORE first step */}
-      {!isNoOp(0) && (
+      {!isNoOp(0) && !blockedBefore(0) && (
         <InsertRow containerPath={containerPath} index={0} onPickerOpen={onPickerOpen} />
       )}
 
@@ -329,11 +334,15 @@ function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, o
 
 /* ── Draggable wrappers — drag handle only, NO drop target on the card itself ── */
 function DraggableActionCard({ step, index, containerPath, depth, onEdit, onDelete }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: step.id });
+  // Pinned steps (the workflow's start NAVIGATE) are not draggable — short-circuit
+  // useDraggable by disabling it. We still render the card so users can edit it.
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: step.id, disabled: !!step.pinned });
   return (
     <div ref={setNodeRef} style={{ opacity: isDragging ? 0.25 : 1 }}>
       <ActionCard step={step} containerPath={containerPath} index={index} depth={depth}
-        dragHandleProps={{ ...attributes, ...listeners }} onEdit={onEdit} onDelete={onDelete} />
+        dragHandleProps={step.pinned ? null : { ...attributes, ...listeners }}
+        onEdit={onEdit}
+        onDelete={step.pinned ? null : onDelete} />
     </div>
   );
 }
@@ -365,12 +374,18 @@ function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit
   const canMoveOut = depth > 0;
 
   return (
-    <div className={`step-card ${isTarget ? "step-card--insert-target" : ""}`}>
+    <div className={`step-card ${isTarget ? "step-card--insert-target" : ""} ${step.pinned ? "step-card--pinned" : ""}`}>
       <div className="step-card-header">
-        <div className="step-drag-handle" {...(dragHandleProps || {})}><DragDotsIcon /></div>
+        {step.pinned ? (
+          <div className="step-pin-marker" title="Start URL — edit via the URL bar at the top">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
+          </div>
+        ) : (
+          <div className="step-drag-handle" {...(dragHandleProps || {})}><DragDotsIcon /></div>
+        )}
         <div className="step-icon"><ActionIcon type={step.type} /></div>
         <div className="step-info">
-          <div className="step-label">{def.label}</div>
+          <div className="step-label">{def.label}{step.pinned ? <span className="step-pin-tag"> · start URL</span> : null}</div>
           <div className="step-type">{def.category || "Action"}</div>
         </div>
         <div className="step-actions">
@@ -391,7 +406,9 @@ function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit
             </button>
           )}
           <button className="step-action-btn" onClick={onEdit} title="Edit"><EditIcon /></button>
-          <button className="step-action-btn delete" onClick={onDelete} title="Delete"><TrashIcon /></button>
+          {onDelete && (
+            <button className="step-action-btn delete" onClick={onDelete} title="Delete"><TrashIcon /></button>
+          )}
         </div>
       </div>
       {(summary.length > 0 || step.label) && (
@@ -693,6 +710,13 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
           </button>
         </div>
         <div className="editor-form">
+          {step.pinned && (
+            <div className="label-extraction-banner" style={{ borderColor: "rgba(88,166,255,0.4)" }}>
+              <span>◈</span>
+              This is the workflow's <strong>start URL</strong>. Changing the URL here also updates the URL bar at the top.
+              The step is pinned to the top of the workflow and can't be moved or deleted.
+            </div>
+          )}
           {/* Step name / result key — always first */}
           <div className="form-group label-group">
             <label>

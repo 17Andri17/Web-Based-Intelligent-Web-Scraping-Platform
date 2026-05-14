@@ -493,6 +493,34 @@ body {
     box-shadow: var(--shadow-sm);
 }
 
+.step-card--pinned {
+    border-color: rgba(88, 166, 255, 0.45);
+    background: linear-gradient(to right, rgba(88, 166, 255, 0.06), var(--bg-secondary) 35%);
+}
+.step-card--pinned:hover { border-color: rgba(88, 166, 255, 0.75); }
+
+.step-pin-marker {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    color: var(--accent-primary);
+    cursor: help;
+    flex-shrink: 0;
+}
+
+.step-pin-tag {
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent-primary);
+    margin-left: 6px;
+    opacity: 0.85;
+}
+
 .step-card:hover {
     border-color: var(--accent-primary);
     box-shadow: var(--shadow-md);

@@ -350,6 +350,61 @@
     font-size: 13px;
 }
 
+/* ==================== URL CHANGE DIALOG ==================== */
+.url-change-modal { max-width: 520px; }
+
+.url-change-options {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.url-change-opt {
+    text-align: left;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    color: var(--text-primary);
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: border-color 120ms, background 120ms;
+    font: inherit;
+}
+
+.url-change-opt:hover {
+    border-color: var(--accent-primary);
+    background: rgba(88, 166, 255, 0.08);
+}
+
+.url-change-opt strong {
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.url-change-opt span {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.45;
+}
+
+.url-change-opt.danger strong { color: var(--accent-danger); }
+.url-change-opt.danger:hover {
+    border-color: var(--accent-danger);
+    background: rgba(248, 81, 73, 0.08);
+}
+
+.url-change-opt.subtle {
+    background: transparent;
+    border-color: transparent;
+}
+.url-change-opt.subtle:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--border-default);
+}
+
 /* ==================== CUSTOM ACTIONS EDITOR ==================== */
 .ca-modal { max-width: 720px; }
 
