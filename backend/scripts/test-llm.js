@@ -12,7 +12,7 @@ const llm = require('../services/llm.service');
 (async () => {
   console.log('── LLM connection check ───────────────────────────');
   console.log('Configured: ', llm.isConfigured());
-  console.log('Model:      ', process.env.LLM_MODEL    || '(default) openai/gpt-oss-20b');
+  console.log('Model:      ', process.env.LLM_MODEL    || '(default) llama-3.1-8b-instant');
   console.log('Base URL:   ', process.env.LLM_BASE_URL || '(default) https://api.groq.com/openai/v1');
   console.log('Timeout:    ', (process.env.LLM_TIMEOUT_MS || 15000) + ' ms');
   const key = process.env.LLM_API_KEY || process.env.GROQ_API_KEY || '';
@@ -36,7 +36,15 @@ const llm = require('../services/llm.service');
     console.log('   error:', ping.error);
     process.exit(1);
   }
-  console.log('✅ Ping reply:', JSON.stringify(ping.text.trim()));
+  const pingText = ping.text.trim();
+  if (!pingText) {
+    console.log('❌ Ping returned 200 but empty text.');
+    console.log('   The model likely uses a reasoning channel that leaves');
+    console.log('   message.content empty. Switch LLM_MODEL in backend/.env');
+    console.log('   to e.g. llama-3.1-8b-instant and rerun.');
+    process.exit(1);
+  }
+  console.log('✅ Ping reply:', JSON.stringify(pingText));
 
   // 2) Try a real name-suggestion to verify the prompt path.
   const name = await llm.safeChat({
@@ -44,10 +52,12 @@ const llm = require('../services/llm.service');
     user:   'Action: EXTRACT_TEXT\nHTML: <span class="price">$24.99</span>\nSample value: $24.99',
     maxTokens: 16,
   });
-  if (name.ok) {
-    console.log('✅ Suggestion reply:', JSON.stringify(name.text.trim()));
-  } else {
+  if (!name.ok) {
     console.log('⚠ Suggestion call failed:', name.code, name.error);
+  } else {
+    const sug = name.text.trim();
+    if (sug) console.log('✅ Suggestion reply:', JSON.stringify(sug));
+    else      console.log('⚠ Suggestion returned empty text (see ping diagnostic above)');
   }
 
   console.log('\nDone. If both lines are ✅, your endpoint is good to go.');

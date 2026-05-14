@@ -20,7 +20,10 @@
    =========================================================================== */
 
 const DEFAULT_BASE_URL = 'https://api.groq.com/openai/v1';
-const DEFAULT_MODEL    = 'openai/gpt-oss-20b';
+// Plain chat model — fast, free, and unlike `openai/gpt-oss-*` it doesn't
+// route its output through a separate reasoning channel that leaves
+// message.content empty.
+const DEFAULT_MODEL    = 'llama-3.1-8b-instant';
 const DEFAULT_TIMEOUT  = 15000;
 
 function getConfig() {
@@ -79,10 +82,22 @@ async function chat({ system, user, model, temperature = 0.2, maxTokens = 60, ti
   }
 
   const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content;
-  if (typeof text !== 'string') {
-    const err = new Error('LLM response missing content');
-    err.code = 'BAD_RESPONSE';
+  const msg = data?.choices?.[0]?.message;
+
+  // Reasoning-style models (Groq's `openai/gpt-oss-*`, DeepSeek-R1 derivatives,
+  // etc.) sometimes emit their final answer through a separate `reasoning`
+  // field and leave `content` as an empty string. Other implementations wrap
+  // the chain-of-thought in `<think>…</think>` blocks inside `content` and
+  // put the answer after. Try to pull the actual answer out of either shape.
+  let text = typeof msg?.content === 'string' ? msg.content : '';
+  if (!text.trim() && typeof msg?.reasoning === 'string') {
+    text = msg.reasoning;
+  }
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+  if (!text) {
+    const err = new Error('LLM response missing content (try a non-reasoning model like llama-3.1-8b-instant)');
+    err.code = 'EMPTY_RESPONSE';
     throw err;
   }
   return text;
