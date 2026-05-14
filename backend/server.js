@@ -104,6 +104,13 @@ io.on('connection', async (socket) => {
       await browserManager.ensureBinding(userId, 'sendCursorType', (cursorType) => {
         socket.emit('cursorType', { cursor: cursorType });
       });
+      // Replay the current page URL so the URL bar reflects where we are
+      // after an SPA refresh (otherwise it stays empty until the next nav).
+      try {
+        const page = await browserManager.getPage(userId);
+        const url = page.url && page.url();
+        if (url) socket.emit('pageUrlChanged', { url });
+      } catch (_) {}
       socket.emit('message', '✅ Reconnected to existing browser session');
     } catch (err) {
       console.warn('Failed to rebind existing page for', userId, err.message);
@@ -224,6 +231,11 @@ io.on('connection', async (socket) => {
       if (prevHook) { try { page.off('framenavigated', prevHook); } catch (_) {} }
       const hook = async (frame) => {
         if (frame !== page.mainFrame()) return;
+        // 1. Tell the frontend where we just landed so the URL bar can
+        //    track navigations the user made by clicking page links.
+        try { socket.emit('pageUrlChanged', { url: frame.url() }); } catch (_) {}
+        // 2. Re-apply the user's last-chosen mode — evaluateOnNewDocument
+        //    resets window.__SELECTION_MODE__ to false on every new document.
         const mode = scraperService.getMode(userId);
         try {
           await page.evaluate((m) => { window.__SELECTION_MODE__ = m === 'selection'; }, mode);

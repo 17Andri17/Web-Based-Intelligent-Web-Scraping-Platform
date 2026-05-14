@@ -49,6 +49,11 @@ function AppShell({ user, token, onLogout }) {
 
   const [status,          setStatus]          = useState("");
   const [urlInput,        setUrlInput]        = useState("");
+  // Live URL of the puppeteer page — updated whenever the backend reports a
+  // navigation (link click, history nav, redirect). Used to keep the URL bar
+  // in sync with where the page actually is, and to flag mismatches against
+  // the workflow's pinned start URL.
+  const [currentPageUrl,  setCurrentPageUrl]  = useState("");
   const [mode,            setMode]            = useState("navigation");
   const [cursorType,      setCursorType]      = useState("default");
   const [isConnected,     setIsConnected]     = useState(false);
@@ -135,6 +140,8 @@ function AppShell({ user, token, onLogout }) {
     socket.on("message",    msg  => setStatus(typeof msg === "string" ? msg : (msg.msg || "")));
     socket.on("frame",      data => { latestFrameRef.current = data; });
     socket.on("cursorType", data => setCursorType(data.cursor));
+    // Page navigated inside puppeteer (link click, redirect, history nav)
+    socket.on("pageUrlChanged", ({ url }) => { if (typeof url === "string") setCurrentPageUrl(url); });
     socket.on("actionResult", res => setStatus(res.success ? "Action executed." : "Action failed: " + (res.error || "")));
     socket.on("viewportUpdated", (data) => {
       sessionMetaRef.current.viewportWidth  = data.width;
@@ -336,6 +343,7 @@ function AppShell({ user, token, onLogout }) {
     setChildrenList(null);
     setInsertTarget(null);
     setUrlInput("");
+    setCurrentPageUrl("");
     sessionMetaRef.current = {};
     socketRef.current?.emit("stopStreaming");
     isStreamingRef.current = false;
@@ -353,13 +361,43 @@ function AppShell({ user, token, onLogout }) {
   // existing workflow). Payload: { newUrl }.
   const [urlChangeDialog, setUrlChangeDialog] = useState(null);
 
+  // Treat two URLs as "the same page" if they only differ by hash (#anchor)
+  // and trailing slashes. Used to decide whether the puppeteer page has
+  // drifted off the workflow's pinned start URL.
+  const sameUrlIgnoringHash = useCallback((a, b) => {
+    if (!a || !b) return !a && !b;
+    const norm = (u) => {
+      try {
+        const x = new URL(u);
+        // Drop the hash, normalise trailing slash on pathname.
+        const path = x.pathname.replace(/\/+$/, "") || "/";
+        return `${x.origin}${path}${x.search}`;
+      } catch { return u; }
+    };
+    return norm(a) === norm(b);
+  }, []);
+
+  const pinnedUrl = (steps[0]?.type === "NAVIGATE" && steps[0]?.pinned)
+    ? (steps[0].params?.url || "")
+    : "";
+  const onDifferentPage = !!(pinnedUrl && currentPageUrl) && !sameUrlIgnoringHash(currentPageUrl, pinnedUrl);
+
+  // Whenever the puppeteer page reports a new URL (link click, redirect,
+  // history nav), reflect it in the URL bar — that's what a real browser
+  // does. The user's in-flight typing can get clobbered if a page-driven
+  // navigation arrives mid-edit; this is the same compromise every browser
+  // makes.
+  useEffect(() => {
+    if (currentPageUrl) setUrlInput(currentPageUrl);
+  }, [currentPageUrl]);
+
   // Keep the URL bar in sync with the pinned step's URL whenever the user
   // edits it via the step editor modal.
   useEffect(() => {
     const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
-    const pinnedUrl = pinned?.params?.url || "";
-    if (pinned && pinnedUrl !== urlInput) {
-      setUrlInput(pinnedUrl);
+    const pUrl = pinned?.params?.url || "";
+    if (pinned && pUrl !== urlInput) {
+      setUrlInput(pUrl);
     }
     // We intentionally don't depend on urlInput — that would create a cycle
     // (typing in the URL bar would reset itself on each keystroke).
@@ -891,7 +929,22 @@ function AppShell({ user, token, onLogout }) {
                 Select
               </button>
             </div>
-            <div className="url-input-wrapper">
+            <div className={`url-input-wrapper${onDifferentPage ? " url-input-wrapper--warn" : ""}`}>
+              {onDifferentPage && pinnedUrl && (
+                // Back to the workflow's start URL — only shown while we've
+                // drifted away from it. Sends the user (and any future
+                // inspector actions) back to the page the workflow was built
+                // on without forcing them to retype the URL.
+                <button
+                  className="url-back-btn"
+                  title={`Back to start URL — ${pinnedUrl}`}
+                  onClick={() => { setUrlInput(pinnedUrl); performNavigate(pinnedUrl); }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <polyline points="15,18 9,12 15,6"/>
+                  </svg>
+                </button>
+              )}
               <svg className="url-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
                 <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
@@ -906,6 +959,14 @@ function AppShell({ user, token, onLogout }) {
                 </svg>
               </button>
             </div>
+            {onDifferentPage && (
+              <div className="url-warning" title="The page has navigated away from the workflow's start URL. New actions you record here may not match when the workflow runs from the start.">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                </svg>
+                <span>Off the workflow's start URL</span>
+              </div>
+            )}
 
             {/* Sidebar toggle */}
             <button
@@ -1101,6 +1162,10 @@ function AppShell({ user, token, onLogout }) {
             onSetInsertTarget={setInsertTarget}
             onMoveStep={moveStepById}
             customActions={customActions}
+            offStartUrl={onDifferentPage}
+            pinnedUrl={pinnedUrl}
+            currentPageUrl={currentPageUrl}
+            onReturnToStart={() => { if (pinnedUrl) { setUrlInput(pinnedUrl); performNavigate(pinnedUrl); } }}
           />
         )}
         {activeTab === "data" && (
