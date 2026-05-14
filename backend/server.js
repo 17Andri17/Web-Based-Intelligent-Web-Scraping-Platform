@@ -105,49 +105,59 @@ io.on('connection', async (socket) => {
     }
   }
 
+  // The inspector / selection handlers below need the puppeteer page but
+  // not the screencast session (which only exists between navigate and
+  // stopStreaming). Reading from browserManager directly keeps them
+  // working after a SPA refresh, where userSessions has already been
+  // torn down but the page is still alive.
+  const getActivePage = async () => {
+    if (!browserManager.hasPage(userId)) return null;
+    try { return await browserManager.getPage(userId); } catch (_) { return null; }
+  };
+
   // ── ForEach scope ────────────────────────────────────────────────────────
   socket.on('setForEachScope', async ({ iteratorSelector }) => {
     try {
-      const s = userSessions.get(userId);
-      if (s?.page) await s.page.evaluate((sel) => {
+      const page = await getActivePage();
+      if (page) await page.evaluate((sel) => {
         if (typeof window.__setForEachScope__ === 'function') window.__setForEachScope__(sel);
       }, iteratorSelector);
     } catch (_) {}
   });
- 
+
   socket.on('clearForEachScope', async () => {
     try {
-      const s = userSessions.get(userId);
-      if (s?.page) await s.page.evaluate(() => {
+      const page = await getActivePage();
+      if (page) await page.evaluate(() => {
         if (typeof window.__clearForEachScope__ === 'function') window.__clearForEachScope__();
       });
     } catch (_) {}
   });
- 
+
   // ── Reset selection ───────────────────────────────────────────────────────
   socket.on('resetSelection', async () => {
     try {
-      const s = userSessions.get(userId);
-      if (s?.page) await s.page.evaluate(() => { if (typeof window.__resetSelection__ === 'function') window.__resetSelection__(); });
+      const page = await getActivePage();
+      if (page) await page.evaluate(() => { if (typeof window.__resetSelection__ === 'function') window.__resetSelection__(); });
     } catch (_) {}
   });
- 
+
   // ── Breadcrumb: navigate to ancestor ─────────────────────────────────────
   socket.on('navigateAncestor', async ({ levelsUp }) => {
     try {
-      const s = userSessions.get(userId);
-      if (s?.page) await s.page.evaluate((levels) => {
+      const page = await getActivePage();
+      if (page) await page.evaluate((levels) => {
         if (typeof window.__selectAncestor__ === 'function') window.__selectAncestor__(levels);
       }, levelsUp);
     } catch (_) {}
   });
- 
+
   // ── Breadcrumb: get children of ancestor for picker ───────────────────────
   socket.on('getChildrenOf', async ({ levelsUp }) => {
     try {
-      const s = userSessions.get(userId);
-      if (!s?.page) { socket.emit('childrenList', { levelsUp, children: [] }); return; }
-      const children = await s.page.evaluate((levels) => {
+      const page = await getActivePage();
+      if (!page) { socket.emit('childrenList', { levelsUp, children: [] }); return; }
+      const children = await page.evaluate((levels) => {
         if (typeof window.__getChildrenOf__ === 'function') return window.__getChildrenOf__(levels);
         return [];
       }, levelsUp);
@@ -156,40 +166,40 @@ io.on('connection', async (socket) => {
       socket.emit('childrenList', { levelsUp, children: [] });
     }
   });
- 
+
   // ── Breadcrumb: select a specific child by index ──────────────────────────
   socket.on('selectChildByIndex', async ({ levelsUp, childIndex }) => {
     try {
-      const s = userSessions.get(userId);
-      if (s?.page) await s.page.evaluate((levels, idx) => {
+      const page = await getActivePage();
+      if (page) await page.evaluate((levels, idx) => {
         if (typeof window.__selectChildByIndex__ === 'function') window.__selectChildByIndex__(levels, idx);
       }, levelsUp, childIndex);
     } catch (_) {}
   });
- 
+
   // ── Picker hover highlight ───────────────────────────────────────────────
   socket.on('hoverAncestor', async ({ levelsUp }) => {
     try {
-      const s = userSessions.get(userId);
-      if (s?.page) await s.page.evaluate((lvl) => {
+      const page = await getActivePage();
+      if (page) await page.evaluate((lvl) => {
         if (typeof window.__highlightAncestor__ === 'function') window.__highlightAncestor__(lvl);
       }, levelsUp);
     } catch (_) {}
   });
- 
+
   socket.on('hoverPickerChild', async ({ levelsUp, childIndex }) => {
     try {
-      const s = userSessions.get(userId);
-      if (s?.page) await s.page.evaluate((lvl, idx) => {
+      const page = await getActivePage();
+      if (page) await page.evaluate((lvl, idx) => {
         if (typeof window.__highlightPickerChild__ === 'function') window.__highlightPickerChild__(lvl, idx);
       }, levelsUp, childIndex);
     } catch (_) {}
   });
- 
+
   socket.on('unhoverPickerChild', async () => {
     try {
-      const s = userSessions.get(userId);
-      if (s?.page) await s.page.evaluate(() => {
+      const page = await getActivePage();
+      if (page) await page.evaluate(() => {
         if (typeof window.__clearHoverHighlight__ === 'function') window.__clearHoverHighlight__();
       });
     } catch (_) {}
@@ -418,11 +428,11 @@ io.on('connection', async (socket) => {
 
   // ── Highlight elements for compact workflow hover ────────
   socket.on('detectPagination', async () => {
-    const s = userSessions.get(userId);
-    if (!s?.page) { socket.emit('paginationDetected', { suggestions: [] }); return; }
+    const page = await getActivePage();
+    if (!page) { socket.emit('paginationDetected', { suggestions: [] }); return; }
     try {
       // ── Phase 1: high-confidence static DOM scan ───────────────────
-      const staticResults = await s.page.evaluate(() => {
+      const staticResults = await page.evaluate(() => {
         const results = [];
         const vis = el => !!(el && el.offsetParent !== null && el.getBoundingClientRect().width > 0);
         const txt = el => (el.innerText || el.textContent || '').trim();
@@ -551,15 +561,15 @@ io.on('connection', async (socket) => {
       // ── Phase 2: empirical scroll test ─────────────────────────
       const alreadyHasInfScroll = staticResults.some(r => r.type === 'infinite_scroll');
       if (!alreadyHasInfScroll) {
-        const beforeH = await s.page.evaluate(() => document.body.scrollHeight);
-        await s.page.evaluate(() => {
+        const beforeH = await page.evaluate(() => document.body.scrollHeight);
+        await page.evaluate(() => {
           window.scrollTo(0, document.body.scrollHeight);
           const items = document.querySelectorAll('li,article,[class*="item"],[class*="card"],[class*="result"],[class*="product"]');
           if (items.length) items[items.length-1].scrollIntoView({ block:'end', behavior:'instant' });
         });
         await new Promise(r => setTimeout(r, 2500));
-        const afterH = await s.page.evaluate(() => document.body.scrollHeight);
-        await s.page.evaluate(() => window.scrollTo(0, 0));
+        const afterH = await page.evaluate(() => document.body.scrollHeight);
+        await page.evaluate(() => window.scrollTo(0, 0));
         if (afterH > beforeH + 100) {
           staticResults.push({ type: 'infinite_scroll', confidence: 0.92, selector: null,
             previewText: `Page grew ${afterH - beforeH}px after scrolling`,
@@ -576,10 +586,11 @@ io.on('connection', async (socket) => {
 
   // ── Highlight elements for compact workflow hover ─────────────────────────
   socket.on('highlightSelector', async ({ selector }) => {
-    const s = userSessions.get(userId);
-    if (!s?.page || !selector) return;
+    if (!selector) return;
+    const page = await getActivePage();
+    if (!page) return;
     try {
-      await s.page.evaluate((sel) => {
+      await page.evaluate((sel) => {
         document.querySelectorAll('[data-scraper-hl]').forEach(el => {
           el.style.removeProperty('outline'); el.style.removeProperty('outline-offset');
           el.style.removeProperty('box-shadow'); delete el.dataset.scraperHl;
@@ -594,9 +605,9 @@ io.on('connection', async (socket) => {
   });
 
   socket.on('clearHighlight', async () => {
-    const s = userSessions.get(userId);
-    if (!s?.page) return;
-    try { await s.page.evaluate(() => { document.querySelectorAll('[data-scraper-hl]').forEach(el => { el.style.removeProperty('outline'); el.style.removeProperty('outline-offset'); el.style.removeProperty('box-shadow'); delete el.dataset.scraperHl; }); }); } catch(e) {}
+    const page = await getActivePage();
+    if (!page) return;
+    try { await page.evaluate(() => { document.querySelectorAll('[data-scraper-hl]').forEach(el => { el.style.removeProperty('outline'); el.style.removeProperty('outline-offset'); el.style.removeProperty('box-shadow'); delete el.dataset.scraperHl; }); }); } catch(e) {}
   });
 
   socket.on('downloadCode', (data) => {
@@ -619,8 +630,8 @@ io.on('connection', async (socket) => {
 
   // ── Preview step ─────────────────────────────────────────────────────────
   socket.on('previewStep', async ({ stepId, type, params, containerSelector }) => {
-    const s = userSessions.get(userId);
-    if (!s?.page) return;
+    const page = await getActivePage();
+    if (!page) return;
     try {
       const selector = params?.selector || params?.containerSelector || '';
 
@@ -632,7 +643,7 @@ io.on('connection', async (socket) => {
       // FOR_EACH — return all matched container elements
       if (type === 'FOR_EACH_ELEMENTS' || type === 'FOR_EACH') {
         if (!selector) return;
-        const elements = await s.page.evaluate((sel) => {
+        const elements = await page.evaluate((sel) => {
           const isXPath = sel.startsWith('/') || sel.startsWith('(');
           const getEls = (s, ctx) => {
             if (isXPath) {
@@ -661,7 +672,7 @@ io.on('connection', async (socket) => {
 
       // Scoped sub-query within each container row
       if (containerSelector) {
-        const values = await s.page.evaluate((containerSel, subSel, type, attribute) => {
+        const values = await page.evaluate((containerSel, subSel, type, attribute) => {
           const isXPathContainer = containerSel.startsWith('/') || containerSel.startsWith('(');
           const isXPathSub       = subSel.startsWith('/') || subSel.startsWith('(');
           const getEls = (sel, ctx, isXP) => {
@@ -698,7 +709,7 @@ io.on('connection', async (socket) => {
       }
 
       // Full-page query — standalone extraction steps
-      const result = await s.page.evaluate((sel, type, multiple, attribute) => {
+      const result = await page.evaluate((sel, type, multiple, attribute) => {
         const isXPath = sel.startsWith('/') || sel.startsWith('(');
         const getEls = (s) => {
           if (isXPath) {

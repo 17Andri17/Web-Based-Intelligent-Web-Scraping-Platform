@@ -196,8 +196,11 @@ function AppShell({ user, token, onLogout }) {
         setChildrenList(null);
       }
       if (data.type === "selectionCleared") {
+        // Just drop the visible selection. Loop mode is its own piece of
+        // state — only the banner × should be able to exit it, otherwise
+        // a side-effect (mode switch, page reset, etc.) would silently
+        // turn off the scope and re-aim insertions at the workflow root.
         setSelectedElement(null);
-        setForEachCtx(null);
       }
     });
 
@@ -594,7 +597,7 @@ function AppShell({ user, token, onLogout }) {
       setInsertTarget({ type: 'after', stepId: forEachCtx.stepId });
     }
     setForEachCtx(null);
-  }, []);
+  }, [forEachCtx]);
 
   // ── Run / Download / Cancel ───────────────────────────────────────────────
   const handleRun = () => {
@@ -669,14 +672,27 @@ function AppShell({ user, token, onLogout }) {
     const out = [];
     for (const s of arr || []) {
       if (typeof s !== "object" || !s) continue;
-      if ((s.kind === "action" && PREVIEW_TYPES.has(s.type)) ||
-          (s.kind === "control" && PREVIEW_TYPES.has(s.type))) {
+      const isPreviewable =
+        (s.kind === "action"  && PREVIEW_TYPES.has(s.type)) ||
+        (s.kind === "control" && PREVIEW_TYPES.has(s.type));
+      if (isPreviewable) {
         const sel = s.params?.selector || s.params?.containerSelector || "";
         if (sel) {
+          // For loops: include the IDs of the steps in each branch so a child
+          // being added / removed / reordered changes the loop's fingerprint
+          // and re-triggers its preview (otherwise a step leaving the loop
+          // wouldn't refresh the loop's data view).
+          const childIds = s.kind === "control"
+            ? BRANCH_KEYS.flatMap(k => (Array.isArray(s[k]) ? s[k].map(c => c.id) : []))
+            : undefined;
           const payload = { stepId: s.id, type: s.type, params: s.params };
-          if (parentContainerSelector && s.kind === "action") {
-            payload.containerSelector = parentContainerSelector;
+          if (s.kind === "action") {
+            // Even when there's no enclosing loop we still store '' so that
+            // a step "leaving" a loop (containerSelector going from .x → '')
+            // shows up in the fingerprint and re-fires the preview.
+            payload.containerSelector = parentContainerSelector || "";
           }
+          if (childIds) payload._childIds = childIds;
           out.push(payload);
         }
       }
@@ -688,16 +704,30 @@ function AppShell({ user, token, onLogout }) {
     }
     return out;
   }
-  // Fingerprint only type+params: preview responses don't re-trigger emission
+  // Fingerprint: id + type + params + containerSelector + childIds (for loops).
+  // The new fields ensure that moving a step into/out of a loop, or adding /
+  // removing a child inside a loop, both re-fire the affected previews so the
+  // Data tab stays in sync with the workflow tree.
   useEffect(() => {
     const items = collectPreviewable(steps, "");
-    const fp = JSON.stringify(items.map(p => ({ id: p.stepId, type: p.type, params: p.params })));
+    const fp = JSON.stringify(items.map(p => ({
+      id: p.stepId,
+      type: p.type,
+      params: p.params,
+      parent: p.containerSelector || null,
+      kids:   p._childIds || null,
+    })));
     if (fp === lastFingerprintRef.current) return;
     lastFingerprintRef.current = fp;
     if (!socketRef.current) return;
     clearTimeout(previewDebounceRef.current);
     previewDebounceRef.current = setTimeout(() => {
-      items.forEach(p => socketRef.current?.emit("previewStep", p));
+      // Strip the internal _childIds before sending — it's just for the
+      // fingerprint, not something the backend handler needs.
+      items.forEach(p => {
+        const { _childIds, ...payload } = p;
+        socketRef.current?.emit("previewStep", payload);
+      });
     }, 400);
     return () => clearTimeout(previewDebounceRef.current);
   }, [steps]);
