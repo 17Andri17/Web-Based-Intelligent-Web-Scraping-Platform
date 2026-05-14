@@ -732,12 +732,15 @@ function AppShell({ user, token, onLogout }) {
     return () => clearTimeout(previewDebounceRef.current);
   }, [steps]);
 
-  // Count extraction steps for the Data tab badge
+  // Count extraction steps for the Data tab badge. Only walk known control
+  // branches — other array fields on a step (previewElements, fallbackSelectors)
+  // would otherwise be traversed and inflate the count.
   const EXTRACTION_TYPES_SET = new Set(["EXTRACT_TEXT","EXTRACT_ATTRIBUTE","EXTRACT_HTML","EXTRACT_TABLE","EXTRACT_LIST","EXTRACT_JSON"]);
+  const COUNT_BRANCH_KEYS = ["body","then","else","try","catch"];
   function countExtraction(arr) {
     return (arr||[]).reduce((n,s) => {
       let c = (s.kind==="action" && EXTRACTION_TYPES_SET.has(s.type)) ? 1 : 0;
-      Object.values(s).forEach(v => { if(Array.isArray(v)) c += countExtraction(v); });
+      for (const k of COUNT_BRANCH_KEYS) if (Array.isArray(s[k])) c += countExtraction(s[k]);
       return n + c;
     }, 0);
   }

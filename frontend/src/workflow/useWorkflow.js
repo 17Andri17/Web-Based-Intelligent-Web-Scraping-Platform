@@ -239,12 +239,18 @@ export function useWorkflow() {
   // ── REPLACE ALL (DnD at root level via arrayMove) ────────────────────
   const setAllSteps = (newSteps) => setSteps(newSteps);
 
-  // Count total steps recursively (for the badge in the tab bar)
+  // Count total steps recursively (for the badge in the tab bar).
+  // Only walk the known control branches — Object.values picks up
+  // unrelated arrays like `previewElements` on FOR_EACH, which would
+  // inflate the count by the number of matched DOM elements.
   const countAll = (arr) =>
     (arr || []).reduce((sum, step) => {
       if (step.kind === 'control') {
-        const branches = Object.values(step).filter(Array.isArray);
-        return sum + 1 + branches.reduce((s, b) => s + countAll(b), 0);
+        const childCount = BRANCH_KEYS.reduce(
+          (s, key) => s + (Array.isArray(step[key]) ? countAll(step[key]) : 0),
+          0
+        );
+        return sum + 1 + childCount;
       }
       return sum + 1;
     }, 0);

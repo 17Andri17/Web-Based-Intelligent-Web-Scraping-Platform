@@ -82,6 +82,11 @@ const userSessions = new Map();
 // Track last-known session config per user (startUrl, viewport) for code generation
 const userSessionMeta = new Map();
 
+// Per-user `framenavigated` listener so we can detach the previous one
+// before attaching a new one (e.g. across SPA reconnects on the same page).
+// Without this, every call to navigate would stack another listener.
+const modeReapplyListeners = new Map();
+
 io.on('connection', async (socket) => {
   const userId = `u${socket.user.id}`;
   console.log(`🔌 User connected: ${socket.user.username} (${userId})`);
@@ -209,6 +214,23 @@ io.on('connection', async (socket) => {
   socket.on('navigate', async (data) => {
     try {
       const page = await browserManager.getPage(userId);
+
+      // Re-apply the user's last-set mode whenever the page navigates
+      // (link click, redirect, history nav). evaluateOnNewDocument resets
+      // window.__SELECTION_MODE__ to false on every new document, so without
+      // this hook the user would have to toggle Select → Navigate → Select
+      // to recover their mode after each page change.
+      const prevHook = modeReapplyListeners.get(userId);
+      if (prevHook) { try { page.off('framenavigated', prevHook); } catch (_) {} }
+      const hook = async (frame) => {
+        if (frame !== page.mainFrame()) return;
+        const mode = scraperService.getMode(userId);
+        try {
+          await page.evaluate((m) => { window.__SELECTION_MODE__ = m === 'selection'; }, mode);
+        } catch (_) {}
+      };
+      modeReapplyListeners.set(userId, hook);
+      page.on('framenavigated', hook);
 
       // ─────────────────────────────────────────────────────────────
       // BYPASS CSP (must happen BEFORE goto)
@@ -388,6 +410,12 @@ io.on('connection', async (socket) => {
   // ── Set selection mode ───────────────────────────────────────────────────
   socket.on('setMode', async ({ mode }) => {
     try {
+      // Persist the user's preference. The page may navigate at any time
+      // (link click, JS-driven redirect) which causes evaluateOnNewDocument
+      // to reset window.__SELECTION_MODE__ back to false — the framenavigated
+      // hook in navigate() reads scraperService.getMode(userId) and re-applies
+      // this value on every page load so the in-page flag stays in sync.
+      scraperService.setMode(userId, mode);
       const page = await browserManager.getPage(userId);
       await page.evaluate((m) => { window.__SELECTION_MODE__ = m === 'selection'; }, mode);
       socket.emit('message', `Mode: ${mode}`);
@@ -746,6 +774,10 @@ io.on('connection', async (socket) => {
     console.log(`🔌 User disconnected: ${userId}`);
     userSessions.delete(userId);
     scraperService.clearUser(userId);
+    // Note: we deliberately don't touch modeReapplyListeners here — the
+    // puppeteer page can outlive the socket (SPA refresh) and the hook is
+    // still useful on the next navigate. The listener gets replaced cleanly
+    // when navigate runs again.
   });
 });
 
