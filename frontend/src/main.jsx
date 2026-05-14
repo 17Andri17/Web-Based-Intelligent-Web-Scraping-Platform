@@ -4,7 +4,7 @@ import io from "socket.io-client";
 import { useWorkflow, findStepLocation } from "./workflow/useWorkflow";
 import { createAction } from "./workflow/stepFactory";
 import WorkflowPanel from "./components/WorkflowPanel";
-import ElementInspector from "./components/ElementInspector";
+import ElementInspector, { ForEachContextBanner } from "./components/ElementInspector";
 import ExecutionPanel from "./components/ExecutionPanel";
 import DataPreviewPanel from "./components/DataPreviewPanel";
 import CompactWorkflowSidebar from "./components/CompactWorkflowSidebar";
@@ -306,11 +306,14 @@ function AppShell({ user, token, onLogout }) {
 
   // ── Mode ──────────────────────────────────────────────────────────────────
   const changeMode = (newMode) => {
+    // While in a ForEach loop context the user must stay in selection mode
+    // so they can pick items belonging to the iterator. Bail before changing
+    // anything so we don't drop their selection in passing.
+    if (newMode !== "selection" && forEachCtx) return;
     setMode(newMode);
     if (newMode !== "selection") {
       socketRef.current?.emit("resetSelection");
       setSelectedElement(null);
-      setForEachCtx(null);
     }
     socketRef.current?.emit("setMode", { mode: newMode });
   };
@@ -418,6 +421,18 @@ function AppShell({ user, token, onLogout }) {
     if (!AUTO_NAME_TYPES.has(step.type)) { console.debug('[ai-name] type not eligible:', step.type); return; }
 
     const el = selectedElementRef.current;
+    // Pull a few meaningful ancestors out of the breadcrumb (last entry is
+    // the target itself; skip <html>/<body> generics). This gives the LLM
+    // structural context — e.g. a <span> inside a <div.product-card> is
+    // probably a price/title, not a navigation label.
+    const breadcrumb = Array.isArray(el?.breadcrumb) ? el.breadcrumb : [];
+    const ancestors = breadcrumb
+      .slice(0, -1)                                  // drop the element itself
+      .map(b => (typeof b === 'string' ? b : b?.label))
+      .filter(Boolean)
+      .filter(l => l !== 'html' && l !== 'body')
+      .slice(-4);                                    // closest 4 ancestors
+
     const payload = {
       stepType:   step.type,
       selector:   step.params?.selector || el?.selector || el?.commonSelector || "",
@@ -426,6 +441,9 @@ function AppShell({ user, token, onLogout }) {
       classes:    el?.classes || "",
       text:       (el?.text || "").slice(0, 200),
       html:       (el?.html || el?.outerHtml || "").slice(0, 400),
+      ancestors,
+      href:       el?.href || undefined,
+      src:        el?.src || undefined,
       matchCount: el?.isMultiSelection ? el.matchCount : undefined,
     };
     console.debug('[ai-name] requesting suggestion for', step.id, payload);
@@ -470,6 +488,12 @@ function AppShell({ user, token, onLogout }) {
       if (iteratorSelector) socketRef.current?.emit("setForEachScope", { iteratorSelector });
       // Auto-point insert target inside the new loop
       setInsertTarget({ type: 'inside', stepId: step.id });
+      // Force selection mode while in loop context so the only thing the
+      // user can do is pick items belonging to the iterator. The backend's
+      // setForEachScope restricts WHICH elements are pickable; this just
+      // makes sure they're in selection mode to do so.
+      setMode('selection');
+      socketRef.current?.emit("setMode", { mode: 'selection' });
       maybeAutoNameStep(step);
       return;
     }
@@ -492,9 +516,10 @@ function AppShell({ user, token, onLogout }) {
           // make consecutive adds appear in reverse order).
           setInsertTarget({ type: 'after', stepId: step.id });
         }
-        socketRef.current?.emit("resetSelection");
+        // Keep the element selected after adding — the user may want to
+        // chain another action on the same element (e.g. extract text +
+        // then extract href on the same anchor).
         maybeAutoNameStep(step);
-        setSelectedElement(null);
         return;
       }
     }
@@ -516,8 +541,6 @@ function AppShell({ user, token, onLogout }) {
       addStep(step, [], null);
       const label = step.type?.replace(/_/g, " ").toLowerCase() || "step";
       showToast(`✓ ${label} added to workflow`, "success");
-      socketRef.current?.emit("resetSelection");
-      setSelectedElement(null);
     }
     maybeAutoNameStep(step);
   }, [addStep, addStepAt, forEachCtx, showToast, insertTarget, maybeAutoNameStep]);
@@ -551,13 +574,15 @@ function AppShell({ user, token, onLogout }) {
   }, []);
 
   // ── Close inspector ───────────────────────────────────────────────────────
+  // Note: closing the inspector does NOT exit ForEach loop mode. Loop mode
+  // is its own piece of state — the user explicitly exits it via the
+  // ForEach banner's × button. That keeps the loop context alive across
+  // accidental clicks / element changes.
   const handleCloseInspector = useCallback(() => {
     socketRef.current?.emit("resetSelection");
-    if (forEachCtx) socketRef.current?.emit("clearForEachScope");
     setSelectedElement(null);
     setChildrenList(null);
-    setForEachCtx(null);
-  }, [forEachCtx]);
+  }, []);
 
   const handleClearForEachCtx = useCallback(() => {
     socketRef.current?.emit("clearForEachScope");
@@ -812,7 +837,12 @@ function AppShell({ user, token, onLogout }) {
           {/* Control bar */}
           <div className="control-bar">
             <div className="mode-toggle">
-              <button className={`mode-btn ${mode === "navigation" ? "active" : ""}`} onClick={() => changeMode("navigation")}>
+              <button
+                className={`mode-btn ${mode === "navigation" ? "active" : ""}`}
+                onClick={() => { if (!forEachCtx) changeMode("navigation"); }}
+                disabled={!!forEachCtx}
+                title={forEachCtx ? "Exit ForEach loop mode to switch to Navigate" : "Navigate the page"}
+              >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>
                 Navigate
               </button>
@@ -978,10 +1008,20 @@ function AppShell({ user, token, onLogout }) {
                     />
                   ) : (
                     <div className="sidebar-no-element">
+                      {/* Still surface the loop-mode banner here so the user
+                          can exit without first having to select an element. */}
+                      {forEachCtx && (
+                        <ForEachContextBanner
+                          forEachCtx={forEachCtx}
+                          onClear={handleClearForEachCtx}
+                        />
+                      )}
                       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3">
                         <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                       </svg>
-                      <p>Click an element in the browser to inspect it</p>
+                      <p>{forEachCtx
+                        ? "Click an item inside the loop iterator to add steps for each iteration."
+                        : "Click an element in the browser to inspect it"}</p>
                     </div>
                   )
                 )}

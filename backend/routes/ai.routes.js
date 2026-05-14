@@ -61,15 +61,26 @@ function buildPrompt(payload) {
   if (payload.classes)   lines.push(`Element classes: ${clip(payload.classes, 200)}`);
   if (payload.attribute) lines.push(`Extracting attribute: ${clip(payload.attribute, 60)}`);
   if (payload.selector)  lines.push(`Selector: ${clip(payload.selector, 200)}`);
+  // Ancestors give structural context: a <span> inside <div.product-card>
+  // is probably a price/title, not a nav label.
+  if (Array.isArray(payload.ancestors) && payload.ancestors.length) {
+    const chain = payload.ancestors
+      .map(a => typeof a === 'string' ? clip(a, 60) : '')
+      .filter(Boolean)
+      .join(' > ');
+    if (chain) lines.push(`Ancestor chain: ${chain}`);
+  }
   if (payload.text)      lines.push(`Visible text: "${clip(payload.text, 200)}"`);
+  if (payload.href)      lines.push(`Link href: ${clip(payload.href, 200)}`);
+  if (payload.src)       lines.push(`Image/media src: ${clip(payload.src, 200)}`);
   if (payload.html)      lines.push(`HTML snippet: ${clip(payload.html, 400)}`);
   const sample = describeSample(payload.sample);
   if (sample)            lines.push(`Sample value: ${sample}`);
   if (typeof payload.matchCount === 'number') lines.push(`Number of matches: ${payload.matchCount}`);
   lines.push('');
   lines.push(isLoop
-    ? 'Suggest a plural snake_case field name for the COLLECTION of items this loop iterates over.'
-    : 'Suggest a singular snake_case field name describing the value being extracted.');
+    ? 'Suggest a plural snake_case field name for the COLLECTION of items this loop iterates over. Use the ancestor chain to infer the parent context (e.g. product_cards inside an article listing, search_results inside a results page).'
+    : 'Suggest a singular snake_case field name describing the value being extracted. Use the ancestor chain to disambiguate (e.g. a <span> inside <div.product-card> is likely product_price, not nav_label).');
   return lines.join('\n');
 }
 
