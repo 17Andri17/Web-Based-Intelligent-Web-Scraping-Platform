@@ -54,6 +54,10 @@ function AppShell({ user, token, onLogout }) {
   // in sync with where the page actually is, and to flag mismatches against
   // the workflow's pinned start URL.
   const [currentPageUrl,  setCurrentPageUrl]  = useState("");
+  // Bumped every time the backend says the page's `load` event has fired.
+  // Used as a dependency of the preview effect so previews re-fire against
+  // a fully-loaded page (rather than racing the navigation).
+  const [pageReadyTick,   setPageReadyTick]   = useState(0);
   const [mode,            setMode]            = useState("navigation");
   const [cursorType,      setCursorType]      = useState("default");
   const [isConnected,     setIsConnected]     = useState(false);
@@ -142,6 +146,11 @@ function AppShell({ user, token, onLogout }) {
     socket.on("cursorType", data => setCursorType(data.cursor));
     // Page navigated inside puppeteer (link click, redirect, history nav)
     socket.on("pageUrlChanged", ({ url }) => { if (typeof url === "string") setCurrentPageUrl(url); });
+    // DOM is parsed and ready — re-fire all step previews so the Data tab
+    // populates against the freshly loaded page (especially needed right
+    // after opening a saved workflow, where the navigate is still in
+    // flight when the steps-changed effect first ran).
+    socket.on("pageReady", () => { setPageReadyTick(t => t + 1); });
     socket.on("actionResult", res => setStatus(res.success ? "Action executed." : "Action failed: " + (res.error || "")));
     socket.on("viewportUpdated", (data) => {
       sessionMetaRef.current.viewportWidth  = data.width;
@@ -755,9 +764,14 @@ function AppShell({ user, token, onLogout }) {
     return out;
   }
   // Fingerprint: id + type + params + containerSelector + childIds (for loops).
-  // The new fields ensure that moving a step into/out of a loop, or adding /
-  // removing a child inside a loop, both re-fire the affected previews so the
-  // Data tab stays in sync with the workflow tree.
+  // The fields beyond id/type/params ensure that moving a step into/out of a
+  // loop, or adding/removing a child inside a loop, both re-fire the affected
+  // previews so the Data tab stays in sync with the workflow tree.
+  //
+  // pageReadyTick is also a dependency so previews re-fire after the page
+  // finishes loading — required when opening a saved workflow where the
+  // navigation finishes AFTER the steps-changed effect first ran.
+  const pageReadyTickRef = useRef(0);
   useEffect(() => {
     const items = collectPreviewable(steps, "");
     const fp = JSON.stringify(items.map(p => ({
@@ -767,7 +781,10 @@ function AppShell({ user, token, onLogout }) {
       parent: p.containerSelector || null,
       kids:   p._childIds || null,
     })));
-    if (fp === lastFingerprintRef.current) return;
+    const pageReady = pageReadyTick !== pageReadyTickRef.current;
+    pageReadyTickRef.current = pageReadyTick;
+    // Skip if nothing changed AND it isn't a page-ready re-fire request.
+    if (!pageReady && fp === lastFingerprintRef.current) return;
     lastFingerprintRef.current = fp;
     if (!socketRef.current) return;
     clearTimeout(previewDebounceRef.current);
@@ -780,7 +797,7 @@ function AppShell({ user, token, onLogout }) {
       });
     }, 400);
     return () => clearTimeout(previewDebounceRef.current);
-  }, [steps]);
+  }, [steps, pageReadyTick]);
 
   // Count extraction steps for the Data tab badge. Only walk known control
   // branches — other array fields on a step (previewElements, fallbackSelectors)
