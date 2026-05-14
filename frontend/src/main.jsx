@@ -513,7 +513,13 @@ function AppShell({ user, token, onLogout }) {
     const c = canvasRef.current, r = c.getBoundingClientRect();
     return { x: Math.round((e.clientX - r.left) * (c.width / r.width)), y: Math.round((e.clientY - r.top) * (c.height / r.height)) };
   };
-  const emit = (type, extra = {}) => socketRef.current?.emit("userAction", { type, ...extra });
+  const emit = (type, extra = {}) => {
+    // Don't send mouse/keyboard events to the backend when there's no active
+    // page — e.g. after "New workflow" before the next navigate. Otherwise
+    // hover events race against a torn-down execution context.
+    if (!isStreamingRef.current) return;
+    socketRef.current?.emit("userAction", { type, ...extra });
+  };
 
   // ── Emit previewStep on param changes only (debounced + fingerprinted) ──
   const previewDebounceRef = useRef(null);

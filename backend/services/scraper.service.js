@@ -77,8 +77,19 @@ module.exports = (io) => {
         }
         // Add support for other types such as keypress, input, etc as needed
       } catch (err) {
-        console.error(`Failed to perform action:`, err);
-        socket.emit("actionResult", { success: false, error: err.message });
+        // These are benign races that happen when the user moves the cursor
+        // while a page is navigating away — the JS execution context dies
+        // mid-evaluate. Don't spam stack traces or report failure to the UI.
+        const msg = err && err.message ? err.message : String(err);
+        const isNavRace =
+          /Execution context was destroyed/i.test(msg) ||
+          /Target closed/i.test(msg) ||
+          /Session closed/i.test(msg) ||
+          /Cannot find context/i.test(msg);
+        if (!isNavRace) {
+          console.error(`Failed to perform action:`, err);
+          socket.emit("actionResult", { success: false, error: msg });
+        }
         return false;
       }
     },
