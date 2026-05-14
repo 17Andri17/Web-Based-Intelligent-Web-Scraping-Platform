@@ -33,6 +33,21 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_workflows_user ON workflows(user_id);
+
+  CREATE TABLE IF NOT EXISTS custom_actions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    description  TEXT,
+    inputs_json  TEXT NOT NULL DEFAULT '[]',
+    outputs_json TEXT NOT NULL DEFAULT '[]',
+    code         TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_custom_actions_user ON custom_actions(user_id);
 `);
 
 module.exports = db;

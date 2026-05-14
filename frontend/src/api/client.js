@@ -42,3 +42,11 @@ export const workflowsApi = {
   update: (id, name, steps, meta) => api.put(`/api/workflows/${id}`, { name, steps, meta }).then(r => r.data.workflow),
   remove: (id) => api.delete(`/api/workflows/${id}`).then(r => r.data),
 };
+
+export const customActionsApi = {
+  list:   () => api.get("/api/custom-actions").then(r => r.data.customActions),
+  get:    (id) => api.get(`/api/custom-actions/${id}`).then(r => r.data.customAction),
+  create: (payload) => api.post("/api/custom-actions", payload).then(r => r.data.customAction),
+  update: (id, payload) => api.put(`/api/custom-actions/${id}`, payload).then(r => r.data.customAction),
+  remove: (id) => api.delete(`/api/custom-actions/${id}`).then(r => r.data),
+};

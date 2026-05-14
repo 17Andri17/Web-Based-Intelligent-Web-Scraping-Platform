@@ -11,6 +11,43 @@ const browserManager     = require('./browser/BrowserManager');
 const { executeWorkflow } = require('./workflow/WorkflowExecutor');
 const { generateCode }    = require('./workflow/workflowCodegen');
 const { verifyToken }    = require('./middleware/auth');
+const db                 = require('./db');
+
+// Walk a workflow's step tree and collect referenced custom action ids,
+// then fetch the user-owned definitions from the DB and return them as a
+// { [id]: { name, inputs, outputs, code } } map for codegen.
+function resolveCustomActions(steps, userId) {
+  const ids = new Set();
+  (function walk(arr) {
+    for (const s of arr || []) {
+      if (s && s.kind === 'action' && s.type === 'CUSTOM_ACTION') {
+        const id = s.params && s.params.actionId;
+        if (id != null) ids.add(id);
+      }
+      ['body', 'then', 'else', 'try', 'catch'].forEach(k => {
+        if (Array.isArray(s?.[k])) walk(s[k]);
+      });
+    }
+  })(steps);
+
+  if (ids.size === 0) return {};
+  const placeholders = Array.from(ids).map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT id, name, inputs_json, outputs_json, code
+     FROM custom_actions
+     WHERE user_id = ? AND id IN (${placeholders})`
+  ).all(userId, ...ids);
+  const out = {};
+  for (const r of rows) {
+    out[r.id] = {
+      name: r.name,
+      inputs:  JSON.parse(r.inputs_json  || '[]'),
+      outputs: JSON.parse(r.outputs_json || '[]'),
+      code: r.code || '',
+    };
+  }
+  return out;
+}
 
 const PORT = process.env.PORT || 3001;
 
@@ -338,7 +375,9 @@ io.on('connection', (socket) => {
       }
     */
     const meta = data.meta || userSessionMeta.get(userId) || {};
-    const workflow = { steps: data.steps || [], meta };
+    const steps = data.steps || [];
+    const customActions = resolveCustomActions(steps, socket.user.id);
+    const workflow = { steps, meta, customActions };
 
     socket.emit('executionStarted');
 
@@ -540,7 +579,9 @@ io.on('connection', (socket) => {
     */
     try {
       const meta = data.meta || userSessionMeta.get(userId) || {};
-      const code = generateCode({ steps: data.steps || [], meta });
+      const steps = data.steps || [];
+      const customActions = resolveCustomActions(steps, socket.user.id);
+      const code = generateCode({ steps, meta, customActions });
       socket.emit('codeReady', { code });
     } catch (err) {
       socket.emit('message', `❌ Code generation error: ${err.message}`);

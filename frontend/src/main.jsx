@@ -12,7 +12,8 @@ import PaginationDetector from "./components/PaginationDetector";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
-import { API_BASE } from "./api/client";
+import CustomActionsMenu from "./customActions/CustomActionsMenu";
+import { API_BASE, customActionsApi } from "./api/client";
 import "./styles/PaginationDetector.css";
 import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
@@ -106,6 +107,14 @@ function AppShell({ user, token, onLogout }) {
   const [currentWorkflowId, setCurrentWorkflowId] = useState(null);
   const [currentWorkflowName, setCurrentWorkflowName] = useState("");
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+
+  // ── Custom actions (user-defined reusable steps) ─────────────────────────
+  const [customActionsOpen, setCustomActionsOpen] = useState(false);
+  const [customActions,     setCustomActions]     = useState([]);
+  const refreshCustomActions = useCallback(async () => {
+    try { setCustomActions(await customActionsApi.list()); } catch (_) {}
+  }, []);
+  useEffect(() => { refreshCustomActions(); }, [refreshCustomActions]);
 
   // ── Socket ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -512,6 +521,14 @@ function AppShell({ user, token, onLogout }) {
             </svg>
             Workflows{currentWorkflowName ? `: ${currentWorkflowName}` : ""}
           </button>
+          <button className="header-btn secondary" onClick={() => setCustomActionsOpen(true)}
+            title="Create reusable custom actions">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/>
+            </svg>
+            Custom Actions
+            {customActions.length > 0 && <span className="tab-badge">{customActions.length}</span>}
+          </button>
           <button className="header-btn secondary" onClick={handleDownloadCode}
             disabled={steps.length === 0} title="Download as Node.js script">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -749,6 +766,7 @@ function AppShell({ user, token, onLogout }) {
             insertTarget={insertTarget}
             onSetInsertTarget={setInsertTarget}
             onMoveStep={moveStepById}
+            customActions={customActions}
           />
         )}
         {activeTab === "data" && (
@@ -844,6 +862,14 @@ function AppShell({ user, token, onLogout }) {
         isOpen={execPanelOpen} onClose={() => setExecPanelOpen(false)}
         logs={execLogs} status={execStatus} results={execResults}
         onCancel={handleCancelExecution}
+      />
+
+      {/* ── Custom actions library ──────────────────────────────────────── */}
+      <CustomActionsMenu
+        open={customActionsOpen}
+        onClose={() => setCustomActionsOpen(false)}
+        showToast={showToast}
+        onChanged={refreshCustomActions}
       />
 
       {/* ── Workflows menu (save / open / delete) ───────────────────────── */}

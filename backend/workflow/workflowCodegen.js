@@ -355,6 +355,56 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
       return `require('fs').writeFileSync(${q(params.destination)}, JSON.stringify(${params.source || 'null'}, null, 2), 'utf8');\n`;
     }
 
+    // ── Custom action (user-defined) ─────────────────────────────────────
+    case 'CUSTOM_ACTION': {
+      const actionId = params.actionId;
+      const def = ctx.customActions?.[actionId];
+      if (!def) {
+        return `throw new Error(${q(`Custom action ${actionId} is not available (was it deleted?)`)});\n`;
+      }
+      const userInputs = params.inputs || {};
+      // Build inputs object: each declared input renders as a literal.
+      // Allow inputs to be plain JS expressions via {{expr}} for power users;
+      // otherwise the value is JSON-stringified verbatim.
+      const inputEntries = (def.inputs || []).map((inp) => {
+        const raw = userInputs[inp.name];
+        let expr;
+        if (typeof raw === 'string' && raw.startsWith('{{') && raw.endsWith('}}')) {
+          expr = raw.slice(2, -2);
+        } else {
+          expr = JSON.stringify(raw === undefined ? null : raw);
+        }
+        return `  ${JSON.stringify(inp.name)}: ${expr}`;
+      }).join(',\n');
+
+      const resultKey = (label && label.trim()) ? label : def.name;
+      const fnVar  = `_ca_fn_${ctx.nextId()}`;
+      const outVar = `_ca_out_${ctx.nextId()}`;
+      // The action body is wrapped as an async arrow taking the documented context.
+      // `log` mirrors console.log so the executor's child process surfaces it.
+      const userCode = def.code || 'return undefined;';
+      return [
+        `// Custom action: ${def.name}`,
+        `{`,
+        `  const ${fnVar} = async ({ inputs, page, fetch, log }) => {`,
+        indent(userCode, 2),
+        `  };`,
+        `  const ${outVar} = await ${fnVar}({`,
+        `    inputs: {`,
+        inputEntries,
+        `    },`,
+        `    page,`,
+        `    fetch: (typeof fetch !== 'undefined' ? fetch : (...a) => import('node-fetch').then(m => m.default(...a))),`,
+        `    log: (...args) => console.log('[${def.name}]', ...args),`,
+        `  });`,
+        ctx.inLoop
+          ? `  if (!__results__[${JSON.stringify(resultKey)}]) __results__[${JSON.stringify(resultKey)}] = [];\n  __results__[${JSON.stringify(resultKey)}].push(${outVar});`
+          : `  __results__[${JSON.stringify(resultKey)}] = ${outVar};`,
+        `}`,
+        ``,
+      ].join('\n');
+    }
+
     default:
       return `// ⚠ Unhandled action: ${type}\n`;
   }
@@ -495,7 +545,10 @@ function generateCode(workflow) {
 
   // ID counter for unique variable names when outputVar is missing
   let idCounter = 0;
-  const ctx = { nextId: () => (idCounter++).toString(36) };
+  const ctx = {
+    nextId: () => (idCounter++).toString(36),
+    customActions: workflow.customActions || {},
+  };
 
   const stepCode = genStepList(steps, ctx, 2);
 

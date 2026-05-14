@@ -68,8 +68,31 @@ function buildControlSummary(step, def) {
   return s.slice(0, 56) + (s.length > 56 ? "…" : "");
 }
 
+/* Build a CUSTOM_ACTION workflow step from a user's custom action definition.
+   The step references the action by id and stores user-supplied input values;
+   the backend resolves the latest code at execution time. */
+function buildCustomActionStep(action) {
+  const inputs = {};
+  (action.inputs || []).forEach(inp => {
+    inputs[inp.name] =
+      inp.type === "number"  ? 0 :
+      inp.type === "boolean" ? false :
+      inp.type === "json"    ? "{}" :
+                                "";
+  });
+  return {
+    id:       crypto.randomUUID(),
+    kind:     'action',
+    type:     'CUSTOM_ACTION',
+    label:    action.name,
+    params:   { actionId: action.id, inputs },
+    advanced: {},
+    outputVar: null,
+  };
+}
+
 /* =====================================================================  MAIN PANEL */
-export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps, insertTarget, onSetInsertTarget, onMoveStep }) {
+export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps, insertTarget, onSetInsertTarget, onMoveStep, customActions = [] }) {
   const [pickerCtx, setPickerCtx]   = useState(null);
   const [editingCtx, setEditingCtx] = useState(null);
   const [activeId,   setActiveId]   = useState(null);
@@ -106,7 +129,7 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
   const activeStep = activeId ? flatAll.find(s => s.id === activeId) : null;
 
   return (
-    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId }}>
+    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions }}>
     <div className="workflow-designer">
       <div className="workflow-header">
         <div className="workflow-title">
@@ -171,7 +194,11 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
                     <div className="step-card-header">
                       <div className="step-icon"><ActionIcon type={activeStep.type} /></div>
                       <div className="step-info">
-                        <div className="step-label">{actionDefinitions[activeStep.type]?.label || activeStep.type?.replace(/_/g,' ')}</div>
+                        <div className="step-label">{
+                          activeStep.type === "CUSTOM_ACTION"
+                            ? (customActions.find(a => a.id === activeStep.params?.actionId)?.name || activeStep.label || "Custom action")
+                            : (actionDefinitions[activeStep.type]?.label || activeStep.type?.replace(/_/g,' '))
+                        }</div>
                       </div>
                     </div>
                   </div>
@@ -184,8 +211,16 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
 
       {pickerCtx && (
         <StepPicker
-          onSelect={(kind, type) => {
-            const step = kind === "control" ? createControl(type) : createAction(type, buildDefaultParams(actionDefinitions[type]), buildDefaultAdvanced(actionDefinitions[type]));
+          customActions={customActions}
+          onSelect={(kind, type, extra) => {
+            let step;
+            if (kind === "control") {
+              step = createControl(type);
+            } else if (kind === "custom") {
+              step = buildCustomActionStep(extra);
+            } else {
+              step = createAction(type, buildDefaultParams(actionDefinitions[type]), buildDefaultAdvanced(actionDefinitions[type]));
+            }
             onAdd(step, pickerCtx.containerPath, pickerCtx.index);
             setPickerCtx(null);
             // Auto-point insert target inside any newly added loop
@@ -201,6 +236,7 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
       {editingCtx && (
         <StepEditorModal
           step={editingCtx.step}
+          customActions={customActions}
           onClose={() => setEditingCtx(null)}
           onSave={(updated) => { onUpdate(editingCtx.containerPath, editingCtx.index, updated); setEditingCtx(null); }}
         />
@@ -314,9 +350,15 @@ function DraggableControlBlock({ step, index, containerPath, depth, onPickerOpen
 
 /* ── ActionCard ── */
 function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit, onDelete }) {
-  const def = actionDefinitions[step.type];
   const wp  = useContext(WPCtx) || {};
-  const { insertTarget, onSetInsertTarget, onMoveStep } = wp;
+  const { insertTarget, onSetInsertTarget, onMoveStep, customActions = [] } = wp;
+  const isCustom = step.type === "CUSTOM_ACTION";
+  const customDef = isCustom ? customActions.find(a => a.id === step.params?.actionId) : null;
+  const def = isCustom
+    ? (customDef
+        ? { label: customDef.name, category: "Custom" }
+        : { label: step.label || "Custom action (missing)", category: "Custom" })
+    : actionDefinitions[step.type];
   if (!def) return null;
   const summary = summariseParams(step);
   const isTarget = insertTarget?.stepId === step.id && insertTarget?.type === 'after';
@@ -482,7 +524,7 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
 }
 
 /* ── Step Picker Modal ── */
-function StepPicker({ onSelect, onClose }) {
+function StepPicker({ onSelect, onClose, customActions = [] }) {
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("all");
   const q = search.toLowerCase();
@@ -500,6 +542,10 @@ function StepPicker({ onSelect, onClose }) {
     !q || def.label.toLowerCase().includes(q) || (def.description || "").toLowerCase().includes(q)
   );
 
+  const customItems = customActions.filter(a =>
+    !q || a.name.toLowerCase().includes(q) || (a.description || "").toLowerCase().includes(q)
+  );
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content picker-modal" onClick={e => e.stopPropagation()}>
@@ -513,11 +559,29 @@ function StepPicker({ onSelect, onClose }) {
           <input placeholder="Search steps…" value={search} onChange={e => setSearch(e.target.value)} autoFocus />
         </div>
         <div className="picker-tabs">
-          {[["all","All"],["control","⚙ Control Flow"],["action","▶ Actions"]].map(([id, label]) => (
+          {[["all","All"],["control","⚙ Control Flow"],["action","▶ Actions"],["custom","✦ Custom"]].map(([id, label]) => (
             <button key={id} className={`picker-tab ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>{label}</button>
           ))}
         </div>
         <div className="modal-body">
+          {(tab === "all" || tab === "custom") && customItems.length > 0 && (
+            <div className="action-category">
+              <div className="category-title">✦ Your custom actions</div>
+              <div className="action-grid">
+                {customItems.map(a => (
+                  <div key={a.id} className="action-tile" onClick={() => onSelect("custom", "CUSTOM_ACTION", a)}>
+                    <div className="action-tile-label">{a.name}</div>
+                    <div className="action-tile-desc">{a.description || `${a.inputs.length} input${a.inputs.length !== 1 ? "s" : ""}`}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {tab === "custom" && customItems.length === 0 && (
+            <div style={{ color: "var(--text-muted)", padding: "24px", textAlign: "center" }}>
+              No custom actions yet — open <strong>Custom actions</strong> from the header to create one.
+            </div>
+          )}
           {(tab === "all" || tab === "control") && ctrlItems.length > 0 && (
             <div className="action-category">
               <div className="category-title">⚙ Control Flow</div>
@@ -545,7 +609,7 @@ function StepPicker({ onSelect, onClose }) {
               </div>
             </div>
           ))}
-          {ctrlItems.length === 0 && Object.keys(actionGroups).length === 0 && (
+          {ctrlItems.length === 0 && Object.keys(actionGroups).length === 0 && customItems.length === 0 && (
             <div style={{ color: "var(--text-muted)", padding: "24px", textAlign: "center" }}>No results for "{search}"</div>
           )}
         </div>
@@ -555,16 +619,66 @@ function StepPicker({ onSelect, onClose }) {
 }
 
 /* ── Step Editor Modal ── */
-function StepEditorModal({ step, onClose, onSave }) {
+function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
   const isCtrl = isControlStep(step);
-  const def = isCtrl ? controlDefinitions[step.type] : actionDefinitions[step.type];
-  if (!def) return null;
+  const isCustom = !isCtrl && step.type === "CUSTOM_ACTION";
+  const customDef = isCustom ? customActions.find(a => a.id === step.params?.actionId) : null;
+
+  // Build a virtual "definition" for custom actions so the rest of the form
+  // reuses the existing FieldRenderer-driven layout.
+  const def = isCtrl
+    ? controlDefinitions[step.type]
+    : isCustom
+      ? customDef && {
+          label: customDef.name,
+          description: customDef.description,
+          inputs: Object.fromEntries((customDef.inputs || []).map(i => [i.name, {
+            type: i.type === "selector" ? "string" : i.type === "json" ? "string" : i.type,
+            label: i.name,
+            placeholder: i.type === "json" ? "{ }" :
+                         i.type === "selector" ? "CSS selector" : "",
+          }])),
+        }
+      : actionDefinitions[step.type];
+
+  if (!def) {
+    // Custom action was deleted — let the user remove the orphan step.
+    return (
+      <div className="modal-overlay" onClick={onClose}>
+        <div className="modal-content editor-modal" onClick={e => e.stopPropagation()}>
+          <div className="modal-header"><h3>Custom action unavailable</h3>
+            <button className="modal-close-btn" onClick={onClose}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div className="editor-form">
+            <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>
+              The custom action this step refers to (id #{step.params?.actionId}) no longer exists. Delete this step or restore the action.
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button className="modal-btn primary" onClick={onClose}>Close</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const [local, setLocal] = useState(step);
   const [showAdv, setShowAdv] = useState(false);
-  const setParam = (k, v) => setLocal(s => ({ ...s, params: { ...s.params, [k]: v } }));
+  const setParam = (k, v) => {
+    if (isCustom) {
+      // For custom actions, params.inputs holds the user's values.
+      setLocal(s => ({ ...s, params: { ...s.params, inputs: { ...(s.params?.inputs || {}), [k]: v } } }));
+    } else {
+      setLocal(s => ({ ...s, params: { ...s.params, [k]: v } }));
+    }
+  };
   const setAdv   = (k, v) => setLocal(s => ({ ...s, advanced: { ...s.advanced, [k]: v } }));
   const inputs   = isCtrl ? def.params   : (def.inputs   || {});
   const advanced = isCtrl ? {}           : (def.advanced || {});
+  // Where to read values from
+  const getValue = (k) => isCustom ? local.params?.inputs?.[k] : local.params?.[k];
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -605,10 +719,20 @@ function StepEditorModal({ step, onClose, onSave }) {
             )}
           </div>
 
+          {isCustom && customDef?.outputs?.length > 0 && (
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: -6 }}>
+              Returns: {customDef.outputs.map(o => <code key={o.name} style={{ marginRight: 8 }}>{o.name}</code>)}
+            </div>
+          )}
           {Object.entries(inputs).map(([k, s]) => (
-            <FieldRenderer key={k} label={s.label || k} type={s.type} value={local.params?.[k]}
+            <FieldRenderer key={k} label={s.label || k} type={s.type} value={getValue(k)}
               options={s.options} placeholder={s.placeholder} onChange={v => setParam(k, v)} />
           ))}
+          {isCustom && Object.keys(inputs).length === 0 && (
+            <div style={{ color: "var(--text-muted)", fontSize: 13, padding: "8px 0" }}>
+              This custom action has no declared inputs.
+            </div>
+          )}
           {Object.keys(advanced).length > 0 && (
             <>
               <button className="adv-toggle-btn" onClick={() => setShowAdv(v => !v)}>
