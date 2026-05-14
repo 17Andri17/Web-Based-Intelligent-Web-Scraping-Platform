@@ -312,7 +312,12 @@ io.on('connection', (socket) => {
           await client.send('Page.stopScreencast');
         } catch (_) {}
 
-        client.removeListener('Page.screencastFrame', onFrame);
+        // Puppeteer's CDPSession exposes .off() — older Node EventEmitter
+        // semantics (removeListener) aren't guaranteed on this object.
+        try {
+          if (typeof client.off === 'function') client.off('Page.screencastFrame', onFrame);
+          else if (typeof client.removeListener === 'function') client.removeListener('Page.screencastFrame', onFrame);
+        } catch (_) {}
 
         userSessions.delete(userId);
       };
