@@ -396,6 +396,10 @@ class BrowserManager {
         return this.contexts.get(userId);
     }
 
+    hasPage(userId) {
+        return this.pages.has(userId);
+    }
+
     async getPage(userId) {
         if (this.pages.has(userId)) {
             return this.pages.get(userId);
@@ -529,13 +533,31 @@ class BrowserManager {
 
     async ensureBinding(userId, name, fn) {
         const page = await this.getPage(userId);
-        const bindings = this.exposedBindings.get(userId) || new Set();
-
-        if (!bindings.has(name)) {
-            await page.exposeFunction(name, fn);
-            bindings.add(name);
-            this.exposedBindings.set(userId, bindings);
+        let perUser = this.exposedBindings.get(userId);
+        if (!perUser || perUser instanceof Set) {
+            // Legacy Set → upgrade to Map. The legacy Set only tracked names
+            // so we can't recover the old fn — but we're about to overwrite
+            // anyway with the fresh one from the caller.
+            perUser = new Map();
+            this.exposedBindings.set(userId, perUser);
         }
+
+        const existing = perUser.get(name);
+        if (existing) {
+            // Binding already registered with puppeteer. Swap in the fresh
+            // callback so events route to the *current* socket instead of
+            // the stale closure from a previous SPA session. (page.exposeFunction
+            // throws on duplicates and there's no clean way to remove a
+            // function binding, so we route everything through a holder.)
+            existing.fn = fn;
+            return;
+        }
+
+        const holder = { fn };
+        await page.exposeFunction(name, (...args) => {
+            try { return holder.fn(...args); } catch (_) {}
+        });
+        perUser.set(name, holder);
     }
 
     async closeContext(userId) {

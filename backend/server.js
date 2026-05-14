@@ -82,10 +82,28 @@ const userSessions = new Map();
 // Track last-known session config per user (startUrl, viewport) for code generation
 const userSessionMeta = new Map();
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   const userId = `u${socket.user.id}`;
   console.log(`🔌 User connected: ${socket.user.username} (${userId})`);
   socket.join(userId);
+
+  // Re-route puppeteer → frontend event channels to THIS socket if the user
+  // already has a page open from a previous SPA session (e.g. they hit F5).
+  // Without this, inspector selections still reach the backend but bubble
+  // out through the old, disconnected socket and the sidebar stays empty.
+  if (browserManager.hasPage(userId)) {
+    try {
+      await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
+        socket.emit('browserEvent', event);
+      });
+      await browserManager.ensureBinding(userId, 'sendCursorType', (cursorType) => {
+        socket.emit('cursorType', { cursor: cursorType });
+      });
+      socket.emit('message', '✅ Reconnected to existing browser session');
+    } catch (err) {
+      console.warn('Failed to rebind existing page for', userId, err.message);
+    }
+  }
 
   // ── ForEach scope ────────────────────────────────────────────────────────
   socket.on('setForEachScope', async ({ iteratorSelector }) => {

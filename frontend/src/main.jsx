@@ -413,8 +413,9 @@ function AppShell({ user, token, onLogout }) {
     "FOR_EACH_ELEMENTS",
   ]);
   const maybeAutoNameStep = useCallback((step) => {
-    if (!step || step.label) return;
-    if (!AUTO_NAME_TYPES.has(step.type)) return;
+    if (!step) { console.debug('[ai-name] no step'); return; }
+    if (step.label) { console.debug('[ai-name] step already labelled:', step.label); return; }
+    if (!AUTO_NAME_TYPES.has(step.type)) { console.debug('[ai-name] type not eligible:', step.type); return; }
 
     const el = selectedElementRef.current;
     const payload = {
@@ -427,17 +428,21 @@ function AppShell({ user, token, onLogout }) {
       html:       (el?.html || el?.outerHtml || "").slice(0, 400),
       matchCount: el?.isMultiSelection ? el.matchCount : undefined,
     };
+    console.debug('[ai-name] requesting suggestion for', step.id, payload);
 
     aiApi.suggestStepName(payload).then((name) => {
+      console.debug('[ai-name] got reply for', step.id, '→', JSON.stringify(name));
       if (!name) return;
       // Only apply if the step still exists and the user hasn't named it
       // manually in the meantime.
       const loc = findStepLocation(stepsRef.current, step.id);
-      if (!loc) return;
+      if (!loc) { console.debug('[ai-name] step disappeared before suggestion arrived'); return; }
       let cur = stepsRef.current;
       for (let i = 0; i < loc.containerPath.length; i += 2) cur = cur[loc.containerPath[i]][loc.containerPath[i + 1]];
       const current = cur?.[loc.index];
-      if (!current || current.label) return;
+      if (!current) { console.debug('[ai-name] container lookup failed'); return; }
+      if (current.label) { console.debug('[ai-name] user already named the step'); return; }
+      console.debug('[ai-name] applying', name, 'to', step.id);
       updateLabelById(step.id, name);
     });
   }, [updateLabelById]);
