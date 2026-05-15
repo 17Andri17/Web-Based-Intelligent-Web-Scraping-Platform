@@ -23,6 +23,36 @@ import "./styles/auth.css";
 
 const SERVER_URL = API_BASE;
 
+// ── Workflow-variable substitution (client-side preview path) ───────────
+// The codegen handles `{{name}}` at run time by emitting JS template
+// literals; in the editor's live preview we don't have those generated
+// declarations, so we substitute the variable VALUES into selectors /
+// URLs / etc. before sending the payload to the backend's previewStep.
+// References to undeclared names are left untouched (verbatim text).
+const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*)\s*\}\}/g;
+function resolveVars(s, vars) {
+  if (typeof s !== "string" || !s.includes("{{")) return s;
+  const map = new Map();
+  for (const v of vars || []) {
+    if (v && typeof v.name === "string" && v.name) map.set(v.name, v.value);
+  }
+  if (map.size === 0) return s;
+  return s.replace(VAR_RX, (full, name) =>
+    map.has(name) ? String(map.get(name) ?? "") : full
+  );
+}
+function deepResolveVars(obj, vars) {
+  if (obj == null) return obj;
+  if (typeof obj === "string") return resolveVars(obj, vars);
+  if (Array.isArray(obj)) return obj.map(v => deepResolveVars(v, vars));
+  if (typeof obj === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) out[k] = deepResolveVars(v, vars);
+    return out;
+  }
+  return obj;
+}
+
 function App() {
   const { user, token, loading: authLoading, logout } = useAuth();
 
@@ -821,23 +851,37 @@ function AppShell({ user, token, onLogout }) {
       parent: p.containerSelector || null,
       kids:   p._childIds || null,
     })));
+    // Include variable values in the fingerprint so editing a variable
+    // re-fires the preview (because the resolved selector / url etc.
+    // might be different now).
+    const fpWithVars = fp + '|vars:' + JSON.stringify(
+      (workflowVariables || []).map(v => [v?.name, v?.value])
+    );
     const pageReady = pageReadyTick !== pageReadyTickRef.current;
     pageReadyTickRef.current = pageReadyTick;
     // Skip if nothing changed AND it isn't a page-ready re-fire request.
-    if (!pageReady && fp === lastFingerprintRef.current) return;
-    lastFingerprintRef.current = fp;
+    if (!pageReady && fpWithVars === lastFingerprintRef.current) return;
+    lastFingerprintRef.current = fpWithVars;
     if (!socketRef.current) return;
     clearTimeout(previewDebounceRef.current);
     previewDebounceRef.current = setTimeout(() => {
-      // Strip the internal _childIds before sending — it's just for the
-      // fingerprint, not something the backend handler needs.
       items.forEach(p => {
+        // Strip the internal _childIds before sending — it's just for
+        // the fingerprint, not something the backend handler needs.
         const { _childIds, ...payload } = p;
+        // Resolve `{{var}}` references against the current workflow
+        // variables before sending. The backend's previewStep handler
+        // works against the live page, so it needs the actual selector
+        // (or URL, or text), not the placeholder syntax.
+        payload.params = deepResolveVars(payload.params, workflowVariables);
+        if (payload.containerSelector) {
+          payload.containerSelector = resolveVars(payload.containerSelector, workflowVariables);
+        }
         socketRef.current?.emit("previewStep", payload);
       });
     }, 400);
     return () => clearTimeout(previewDebounceRef.current);
-  }, [steps, pageReadyTick]);
+  }, [steps, pageReadyTick, workflowVariables]);
 
   // Count extraction steps for the Data tab badge. Only walk known control
   // branches — other array fields on a step (previewElements, fallbackSelectors)

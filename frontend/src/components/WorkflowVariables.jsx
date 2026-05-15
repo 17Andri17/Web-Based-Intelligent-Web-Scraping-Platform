@@ -67,6 +67,11 @@ export default function WorkflowVariables({
 
       {!collapsed && (
         <div className="wvars-body">
+          {/* Quick how-to: where {{var}} actually works */}
+          <div className="wvars-help">
+            <span className="wvars-help-tag">tip</span>
+            Reference a variable in any selector, URL or text field as <code>{"{{name}}"}</code>. Example: container selector <code>{"{{selector}}"}</code> uses the variable's current value at run time and in the live preview below.
+          </div>
           {/* ── Captured outputs ─────────────────────────────────── */}
           <div className="wvars-section">
             <div className="wvars-section-title">
