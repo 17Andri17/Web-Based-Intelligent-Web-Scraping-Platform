@@ -52,7 +52,9 @@ function buildUserPrompt({ sampleHtml, userHint, existingFields }) {
   lines.push('```');
   lines.push('');
   lines.push('Rules:');
-  lines.push('- "selector" is CSS, relative to the container above. Never start with html / body / the container element itself.');
+  lines.push('- "selector" is CSS, relative to the container above. Never start with html / body.');
+  lines.push('- If the value lives ON THE CONTAINER ITSELF (e.g. the container is an <a> and you want its href, or it carries data-* attributes), set "selector" to "" (empty string) and read from the container directly.');
+  lines.push('- Otherwise the selector targets a DESCENDANT of the container.');
   lines.push('- Use stable anchors when possible: data-* attributes, aria-label, role, semantic tags.');
   lines.push('- "kind":"text" → extract textContent (default for visible text).');
   lines.push('- "kind":"attr" → extract an attribute, and you MUST include "attribute" (e.g. "href" for links, "src" for images).');
