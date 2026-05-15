@@ -228,9 +228,22 @@ function AppShell({ user, token, onLogout }) {
     // Execution events
     socket.on("executionStarted", () => { setExecStatus("running"); setExecLogs([]); setExecResults(null); });
     socket.on("executionLog",     (entry) => { setExecLogs(prev => [...prev, entry]); });
-    socket.on("executionDone",    ({ success, results }) => {
-      setExecStatus(success ? "done" : "error");
+    socket.on("executionDone",    ({ success, results, status }) => {
+      // `status` is the persisted run status ('success' | 'error' | 'needs_review' | 'cancelled').
+      // We map it to the local 4-state for the panel: idle/running/done/error.
+      if (status === "success" || success) setExecStatus("done");
+      else setExecStatus("error");
       if (results && Object.keys(results).length > 0) setExecResults(results);
+    });
+    // Server auto-creates a workflow row when none was passed; learn its id
+    // so subsequent runs / history / schedule actions know which workflow
+    // this draft belongs to.
+    socket.on("workflowAutoCreated", ({ id, name }) => {
+      setCurrentWorkflowId(id);
+      // Use the functional setter so we don't capture a stale value from
+      // the outer scope — this handler is registered once at mount.
+      if (name) setCurrentWorkflowName(prev => prev || name);
+      showToast(`✓ Saved draft as "${name}"`, "success");
     });
     socket.on("codeReady", ({ code }) => { downloadTextFile(code, "workflow.js", "text/javascript"); });
     socket.on("paginationDetected", ({ suggestions, error }) => {
@@ -665,7 +678,15 @@ function AppShell({ user, token, onLogout }) {
     setExecStatus("idle");
     setExecLogs([]);
     setExecResults(null);
-    socketRef.current.emit("executeWorkflow", { steps, meta: sessionMetaRef.current });
+    // Pass workflowId when the user has a saved workflow loaded so the run
+    // is recorded against it. If the workflow hasn't been saved yet, the
+    // backend will auto-create a draft and emit `workflowAutoCreated`.
+    socketRef.current.emit("executeWorkflow", {
+      steps,
+      meta: sessionMetaRef.current,
+      workflowId: currentWorkflowId || null,
+      workflowName: currentWorkflowName || null,
+    });
   };
 
   const handleDownloadCode = () => {
