@@ -42,6 +42,12 @@ function AppShell({ user, token, onLogout }) {
   const canvasRef            = useRef(null);
   const canvasContainerRef   = useRef(null);
   const socketRef            = useRef(null);
+  // Mirror the socket in state so child components that need to subscribe
+  // to events (e.g. ExtractListFieldsEditor) can react when the connection
+  // becomes ready. socketRef is still the primary handle for emits in the
+  // imperative code paths below — keeping both avoids touching dozens of
+  // call sites.
+  const [socket, setSocket] = useState(null);
   const resizeTimeoutRef     = useRef(null);
   const isStreamingRef       = useRef(false);
   const latestFrameRef       = useRef(null);
@@ -135,6 +141,7 @@ function AppShell({ user, token, onLogout }) {
     if (!token) return;
     const socket = io(SERVER_URL, { auth: { token }, transports: ["websocket"] });
     socketRef.current = socket;
+    setSocket(socket);
     socket.on("connect_error", (err) => {
       setStatus(`Connection error: ${err.message}`);
     });
@@ -251,7 +258,7 @@ function AppShell({ user, token, onLogout }) {
       setPaginationSuggestions(suggestions || []);
       setPaginationError(error || null);
     });
-    socket.on("previewResult", ({ stepId, previewValue, previewValues, previewElements, notFound }) => {
+    socket.on("previewResult", ({ stepId, previewValue, previewValues, previewElements, previewRows, totalMatched, previewError, notFound }) => {
       setPreviewData(prev => ({
         ...prev,
         [stepId]: {
@@ -259,12 +266,15 @@ function AppShell({ user, token, onLogout }) {
           ...(previewValue    !== undefined ? { previewValue }    : {}),
           ...(previewValues   !== undefined ? { previewValues }   : {}),
           ...(previewElements !== undefined ? { previewElements } : {}),
+          ...(previewRows     !== undefined ? { previewRows }     : {}),
+          ...(totalMatched    !== undefined ? { totalMatched }    : {}),
+          ...(previewError    !== undefined ? { previewError }    : {}),
           ...(notFound        !== undefined ? { notFound }        : {}),
         },
       }));
     });
 
-    return () => socket.disconnect();
+    return () => { socket.disconnect(); setSocket(null); };
   }, [token]);
 
   // ── Render loop ───────────────────────────────────────────────────────────
@@ -1209,6 +1219,8 @@ function AppShell({ user, token, onLogout }) {
             pinnedUrl={pinnedUrl}
             currentPageUrl={currentPageUrl}
             onReturnToStart={() => { if (pinnedUrl) { setUrlInput(pinnedUrl); performNavigate(pinnedUrl); } }}
+            socket={socket}
+            previewData={previewData}
           />
         )}
         {activeTab === "data" && (

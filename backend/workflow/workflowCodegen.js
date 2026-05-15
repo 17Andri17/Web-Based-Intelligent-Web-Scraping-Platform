@@ -275,20 +275,55 @@ const ${varName} = await (async () => {
 ${store}`.trim() + '\n';
 
     case 'EXTRACT_LIST': {
-      const fields = JSON.stringify(params.fields || {});
-      const sels = selectorList({ selector: params.containerSelector, selectorType: params.selectorType || 'css', fallbackSelectors: params.fallbackSelectors || [] });
+      // Normalise the user's `fields` object into a uniform rich shape so
+      // both the legacy string form `{ title: '.title' }` and the new
+      // AI-friendly object form `{ title: { selector, kind, attribute } }`
+      // produce identical runtime code.
+      const rawFields = params.fields || {};
+      const normalised = {};
+      for (const [name, v] of Object.entries(rawFields)) {
+        if (v == null) continue;
+        if (typeof v === 'string') {
+          normalised[name] = { selector: v, kind: 'text', attribute: null };
+        } else if (typeof v === 'object') {
+          const kind = v.kind === 'attr' || v.kind === 'attribute' ? 'attr'
+                     : v.kind === 'html' ? 'html'
+                     : 'text';
+          normalised[name] = {
+            selector: typeof v.selector === 'string' ? v.selector : '',
+            kind,
+            attribute: kind === 'attr' && typeof v.attribute === 'string' ? v.attribute : null,
+          };
+        }
+      }
+      const fieldsJson = JSON.stringify(normalised);
+      const sels = selectorList({
+        selector: params.containerSelector,
+        selectorType: params.selectorType || 'css',
+        fallbackSelectors: params.fallbackSelectors || [],
+      });
       return `
 const ${varName} = await (async () => {
   const _containers = await resolveElements(page, ${sels});
   return Promise.all(_containers.map(container =>
     page.evaluate((el, fields) => {
       const item = {};
-      for (const [name, sel] of Object.entries(fields)) {
-        const child = el.querySelector(sel);
-        item[name] = child ? child.textContent.trim() : null;
+      for (const [name, spec] of Object.entries(fields)) {
+        const sel = spec.selector || '';
+        // Empty selector means "use the container itself" (useful for
+        // attribute extraction off the row element).
+        const child = sel ? el.querySelector(sel) : el;
+        if (!child) { item[name] = null; continue; }
+        if (spec.kind === 'attr' && spec.attribute) {
+          item[name] = child.getAttribute(spec.attribute);
+        } else if (spec.kind === 'html') {
+          item[name] = (child.innerHTML || '').trim();
+        } else {
+          item[name] = (child.textContent || '').trim();
+        }
       }
       return item;
-    }, container, ${fields})
+    }, container, ${fieldsJson})
   ));
 })();
 ${store}`.trim() + '\n';

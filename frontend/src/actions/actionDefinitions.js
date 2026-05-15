@@ -1033,7 +1033,7 @@ const ${outputVar} = await page.$eval(${sel}, (table, opts) => {
   [ACTION_TYPES.EXTRACT_LIST]: {
     label: "Extract List",
     category: "Extraction",
-    description: "Extract repeated structured items — each item maps field names to child selectors",
+    description: "Extract repeated structured items. Each field has its own selector (relative to the container) and an extraction kind — text, attribute, or innerHTML. ✨ AI can auto-detect fields from a sample item.",
     inputs: {
       containerSelector: {
         type: "string",
@@ -1042,39 +1042,59 @@ const ${outputVar} = await page.$eval(${sel}, (table, opts) => {
         placeholder: "e.g. .product-card"
       },
       fields: {
+        // The custom 'keyvalue' renderer wires up ExtractListFieldsEditor,
+        // which is where the AI auto-detect button + per-field UI lives.
         type: "keyvalue",
         required: true,
-        label: "Fields (name → child selector)",
-        placeholder: { key: "title", value: "h2.title" }
-      }
-    },
-    advanced: {
-      attribute: {
-        type: "string",
-        label: "Extract attribute instead of text (optional)",
-        placeholder: "href, src…"
-      }
+        label: "Fields",
+      },
     },
     outputs: {
       result: { type: "array", description: "Array of extracted objects" }
     },
-    generateCode: ({ params, advancedOptions, outputVar }) => {
-      const fields = JSON.stringify(params.fields || {});
-      const attr = advancedOptions?.attribute ? JSON.stringify(advancedOptions.attribute) : "null";
+    generateCode: ({ params, outputVar }) => {
+      // Normalise the field map into the rich shape, matching the
+      // backend's workflowCodegen.js behaviour. Both forms are supported
+      // for backward compatibility — see ExtractListFieldsEditor for the
+      // canonical shape.
+      const rawFields = params.fields || {};
+      const normalised = {};
+      for (const [name, v] of Object.entries(rawFields)) {
+        if (v == null) continue;
+        if (typeof v === "string") {
+          normalised[name] = { selector: v, kind: "text", attribute: null };
+        } else if (typeof v === "object") {
+          const kind = v.kind === "attr" || v.kind === "attribute" ? "attr"
+                     : v.kind === "html" ? "html"
+                     : "text";
+          normalised[name] = {
+            selector: typeof v.selector === "string" ? v.selector : "",
+            kind,
+            attribute: kind === "attr" && typeof v.attribute === "string" ? v.attribute : null,
+          };
+        }
+      }
+      const fieldsJson = JSON.stringify(normalised);
       return `
 const ${outputVar} = await page.$$eval(
   ${JSON.stringify(params.containerSelector)},
-  (containers, fields, attr) => containers.map(container => {
+  (containers, fields) => containers.map(container => {
     const item = {};
-    for (const [name, childSel] of Object.entries(fields)) {
-      const el = container.querySelector(childSel);
-      if (!el) { item[name] = null; continue; }
-      item[name] = attr ? el.getAttribute(attr) : el.textContent.trim();
+    for (const [name, spec] of Object.entries(fields)) {
+      const sel = spec.selector || "";
+      const child = sel ? container.querySelector(sel) : container;
+      if (!child) { item[name] = null; continue; }
+      if (spec.kind === "attr" && spec.attribute) {
+        item[name] = child.getAttribute(spec.attribute);
+      } else if (spec.kind === "html") {
+        item[name] = (child.innerHTML || "").trim();
+      } else {
+        item[name] = (child.textContent || "").trim();
+      }
     }
     return item;
   }),
-  ${fields},
-  ${attr}
+  ${fieldsJson}
 );
 `;
     }
