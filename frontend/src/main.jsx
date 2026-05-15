@@ -1159,6 +1159,8 @@ function AppShell({ user, token, onLogout }) {
                       onHoverAncestor={handleHoverAncestor}
                       onUnhoverPickerChild={handleUnhoverPickerChild}
                       onClearForEachCtx={handleClearForEachCtx}
+                      socket={socket}
+                      onUpdateParams={updateParamsById}
                     />
                   ) : (
                     <div className="sidebar-no-element">
