@@ -339,13 +339,21 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
 
       // Convert the verified array [{name, selector, kind, attribute}] into
       // the params.fields object shape expected by the editor + codegen.
+      // An empty selector is VALID — it means "use the container element
+      // itself" (e.g. for an anchor container, exam_url has selector="" and
+      // attribute="href"). Only drop entries that lack a name or a usable
+      // selector string (we keep "" but reject undefined/null).
       const fieldsObj = {};
       for (const f of payload.fields || []) {
-        if (!f || !f.name || !f.selector) continue;
+        if (!f || !f.name) continue;
+        if (typeof f.selector !== "string") continue;
+        const kind = f.kind === "attr" || f.kind === "html" ? f.kind : "text";
+        // For attribute-kind, we still need an attribute name
+        if (kind === "attr" && !f.attribute) continue;
         fieldsObj[f.name] = {
           selector: f.selector,
-          kind: f.kind === "attr" || f.kind === "html" ? f.kind : "text",
-          attribute: f.kind === "attr" && f.attribute ? f.attribute : null,
+          kind,
+          attribute: kind === "attr" ? f.attribute : null,
         };
       }
 
