@@ -596,6 +596,14 @@ function generateCode(workflow) {
   const startUrl = workflow.meta?.startUrl || null;
   const vpW      = workflow.meta?.viewportWidth  || 1280;
   const vpH      = workflow.meta?.viewportHeight || 720;
+  const variables = Array.isArray(workflow.meta?.variables) ? workflow.meta.variables : [];
+
+  // Render user-defined workflow variables as `let` declarations at the
+  // top of run(). Names are sanitised JS identifiers; values are JSON-
+  // encoded according to the variable's declared type. Booleans accept
+  // the strings "true"/"false"; numbers fall back to 0 on parse failure;
+  // json accepts any parseable JSON, otherwise the string literal.
+  const variablesCode = renderVariableDeclarations(variables);
 
   // ID counter for unique variable names when outputVar is missing
   let idCounter = 0;
@@ -745,7 +753,7 @@ async function __snapshotPageHtml(page) {
 async function run() {
   const __results__ = {};
   let __currentStep__ = null;
-
+${variablesCode}
   const browser = await puppeteer.launch({
     // to delete:
     executablePath: 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
@@ -764,7 +772,10 @@ async function run() {
   await page.setViewport({ width: ${vpW}, height: ${vpH}, deviceScaleFactor: 1 });
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
-  ${startUrl ? `// Starting URL from recording session\n  await page.goto(${q(startUrl)}, { waitUntil: 'networkidle2' });` : ''}
+  // NOTE: The workflow's first step is the explicit NAVIGATE that pins
+  // the start URL — we don't inject an extra page.goto here so the run
+  // doesn't double-navigate when the user already has that step in the
+  // workflow tree.
 
   try {
 ${stepCode}
@@ -817,6 +828,62 @@ run().catch(err => {
   process.exit(1);
 });
 `;
+}
+
+/* ── Render user-defined workflow variables ─────────────────────────────── */
+// Each variable from workflow.meta.variables becomes a `let` declaration
+// at the top of run() so subsequent steps can reference it directly in
+// generated code. Names are forced to valid JS identifiers; values are
+// converted based on the declared type (string / number / boolean / json).
+// Anything malformed becomes `undefined` with a comment so the user can
+// fix it in the Variables panel.
+function renderVariableDeclarations(variables) {
+  if (!Array.isArray(variables) || variables.length === 0) return '';
+  const seen = new Set();
+  const lines = ['', '  // ─── Workflow Variables ──────────────────────────────────────────'];
+  for (const v of variables) {
+    if (!v || typeof v !== 'object') continue;
+    const ident = toJsIdent(v.name);
+    if (!ident || seen.has(ident)) continue;
+    seen.add(ident);
+    const literal = renderVariableLiteral(v);
+    const comment = v.description ? `  // ${String(v.description).replace(/\r?\n/g, ' ').slice(0, 200)}` : '';
+    lines.push(`  let ${ident} = ${literal};${comment ? ` ${comment.trim()}` : ''}`);
+  }
+  lines.push('  // ─────────────────────────────────────────────────────────────────');
+  return lines.join('\n');
+}
+
+function toJsIdent(raw) {
+  if (typeof raw !== 'string') return '';
+  let s = raw.trim().replace(/[^a-zA-Z0-9_$]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  if (!s) return '';
+  if (/^[0-9]/.test(s)) s = '_' + s;
+  // Avoid reserved words / common built-ins by prefixing if needed.
+  if (/^(let|const|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|this|super|null|undefined|true|false|page|browser)$/.test(s)) {
+    s = s + '_';
+  }
+  return s.slice(0, 60);
+}
+
+function renderVariableLiteral(v) {
+  const raw = v.value == null ? '' : String(v.value);
+  const type = (v.type || 'string').toLowerCase();
+  switch (type) {
+    case 'number': {
+      const n = Number(raw);
+      return Number.isFinite(n) ? String(n) : '0';
+    }
+    case 'boolean': {
+      return /^(true|1|yes|on)$/i.test(raw.trim()) ? 'true' : 'false';
+    }
+    case 'json': {
+      try { JSON.parse(raw); return raw; } catch (_) { return 'undefined /* invalid JSON */'; }
+    }
+    case 'string':
+    default:
+      return JSON.stringify(raw);
+  }
 }
 
 module.exports = { generateCode };
