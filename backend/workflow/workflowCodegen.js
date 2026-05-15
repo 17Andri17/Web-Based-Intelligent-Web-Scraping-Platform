@@ -9,7 +9,7 @@ const EXTRACTION_TYPES = new Set([
 // ─── Build the JS literal for the selectors array passed to runtime helpers ──
 // params must have: selector (string), selectorType ('css'|'xpath'),
 //                   fallbackSelectors ([{value,type}] or [string] for back-compat)
-function selectorList(params) {
+function selectorList(params, declaredVars) {
   const primary = {
     value: params.selector || '',
     type:  params.selectorType || 'css',
@@ -22,14 +22,61 @@ function selectorList(params) {
   });
 
   const all = [primary, ...fallbacks].filter(s => s.value);
-  return JSON.stringify(all);
+  // Build the array literal manually so any selector that references a
+  // workflow variable via {{name}} becomes a template literal at codegen
+  // time (instead of being JSON-escaped as plain text). Non-interpolated
+  // strings still come out as standard JSON.
+  const items = all.map(s =>
+    `{ value: ${qStr(s.value, declaredVars)}, type: ${JSON.stringify(s.type)} }`
+  );
+  return '[' + items.join(', ') + ']';
 }
 
 // ─── Indent helper ────────────────────────────────────────────────────────
 const indent = (code, levels = 1) =>
   code.split('\n').map(line => '  '.repeat(levels) + line).join('\n');
 
-// ─── Selector quoting helper ──────────────────────────────────────────────
+// ─── String / interpolation helpers ──────────────────────────────────────
+// q(s) keeps the existing call-site semantics (`JSON.stringify` of a
+// string-or-falsy). qStr handles workflow-variable interpolation: if `s`
+// contains `{{name}}` references to a DECLARED variable, the output is a
+// template literal so the actual JS variable is read at runtime. Refs to
+// undeclared names are left as literal text — that way users can write
+// "{{not a var}}" and have it appear verbatim.
+//
+// Both helpers escape backticks / existing ${...} sequences so the
+// generated code stays well-formed even when the user types tricky text.
+const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*)\s*\}\}/g;
+
+function qStr(s, declaredVars) {
+  if (typeof s !== 'string') return JSON.stringify(s == null ? '' : String(s));
+  // No variables declared on this workflow → cheap path.
+  if (!declaredVars || declaredVars.size === 0) return JSON.stringify(s);
+  // Quickly bail if there's no interpolation marker at all.
+  if (!s.includes('{{')) return JSON.stringify(s);
+
+  // Scan for at least ONE reference to a declared variable. Otherwise
+  // we don't need a template literal.
+  let hasInterp = false;
+  let m; VAR_RX.lastIndex = 0;
+  while ((m = VAR_RX.exec(s)) !== null) {
+    if (declaredVars.has(m[1])) { hasInterp = true; break; }
+  }
+  if (!hasInterp) return JSON.stringify(s);
+
+  // Escape characters that would otherwise change the meaning of the
+  // template literal.
+  const escaped = s
+    .replace(/\\/g, '\\\\')
+    .replace(/`/g, '\\`')
+    .replace(/\$\{/g, '\\${');
+  // Now substitute declared {{var}} → ${var}; leave others untouched.
+  const interpolated = escaped.replace(VAR_RX, (full, name) =>
+    declaredVars.has(name) ? '${' + name + '}' : full
+  );
+  return '`' + interpolated + '`';
+}
+
 const q = (s) => JSON.stringify(s || '');
 const num = (n, fallback = 0) => (typeof n === 'number' ? n : fallback);
 
@@ -44,6 +91,12 @@ function genAction(step, ctx) {
   const { type, params = {}, advanced = {}, outputVar, label } = step;
   const varName = outputVar || `_step_${ctx.nextId()}`;
   const isExtraction = EXTRACTION_TYPES.has(type);
+
+  // Shadow the module-level `q` so every string param emitted in this
+  // step's generated code automatically supports `{{var}}` interpolation
+  // against the workflow's declared variables.
+  const q = (s) => qStr(s, ctx.declaredVars);
+  const selList = (p) => selectorList(p, ctx.declaredVars);
 
   // ── ForEach element context ─────────────────────────────────────────────
   // When inside a FOR_EACH_ELEMENTS loop that has extractions, generate
@@ -132,7 +185,7 @@ await page.goto(${q(params.url)}, {
 
     // ── Interaction ──────────────────────────────────────────────────────
     case 'CLICK_ELEMENT': {
-      const sels = selectorList(params);
+      const sels = selList(params);
       const timeout = num(advanced.timeout, 10000);
       if (advanced.waitForNavigation) {
         return `
@@ -154,14 +207,14 @@ await Promise.all([
 
     case 'HOVER_ELEMENT': return `
 {
-  const _el = await waitForAny(page, ${selectorList(params)}, ${num(advanced.timeout, 10000)});
+  const _el = await waitForAny(page, ${selList(params)}, ${num(advanced.timeout, 10000)});
   await _el.hover();
 }
 `.trim() + '\n';
 
     case 'TYPE_TEXT': return `
 {
-  const _el = await waitForAny(page, ${selectorList(params)}, 10000);
+  const _el = await waitForAny(page, ${selList(params)}, 10000);
   ${params.clearFirst !== false ? `await page.evaluate(el => { el.value = ''; }, _el);` : ''}
   await _el.type(${q(params.text)}, { delay: ${num(advanced.delay, 0)} });
   ${params.pressEnter ? `await page.keyboard.press('Enter');` : ''}
@@ -170,7 +223,7 @@ await Promise.all([
 
     case 'CLEAR_INPUT': return `
 {
-  const _el = await resolveElement(page, ${selectorList(params)});
+  const _el = await resolveElement(page, ${selList(params)});
   if (_el) await page.evaluate(el => { el.value = ''; }, _el);
 }
 `.trim() + '\n';
@@ -180,7 +233,7 @@ await Promise.all([
       if (params.selector) {
         return `
 {
-  const _el = await resolveElement(page, ${selectorList(params)});
+  const _el = await resolveElement(page, ${selList(params)});
   if (_el) for (let _i = 0; _i < ${count}; _i++) await _el.press(${q(params.key)});
 }
 `.trim() + '\n';
@@ -190,7 +243,7 @@ await Promise.all([
 
     case 'SCROLL_TO_ELEMENT': return `
 {
-  const _el = await waitForAny(page, ${selectorList(params)}, 10000);
+  const _el = await waitForAny(page, ${selList(params)}, 10000);
   await page.evaluate((el, b) => el.scrollIntoView({ behavior: b, block: 'center' }), _el, ${q(advanced.behavior || 'auto')});
 }
 `.trim() + '\n';
@@ -209,7 +262,7 @@ await Promise.all([
 
     case 'UPLOAD_FILE': return `
 {
-  const _fileInput = await resolveElement(page, ${selectorList(params)});
+  const _fileInput = await resolveElement(page, ${selList(params)});
   if (_fileInput) await _fileInput.uploadFile(${q(params.filePath)});
 }
 `.trim() + '\n';
@@ -218,7 +271,7 @@ await Promise.all([
     case 'WAIT': return `await new Promise(r => setTimeout(r, ${num(params.duration, 1000)}));\n`;
 
     case 'WAIT_FOR_SELECTOR': return `
-await waitForAny(page, ${selectorList(params)}, ${num(advanced.timeout, 30000)});
+await waitForAny(page, ${selList(params)}, ${num(advanced.timeout, 30000)});
 `.trim() + '\n';
 
     case 'WAIT_FOR_NAVIGATION': return `
@@ -229,7 +282,7 @@ await page.waitForNavigation({ waitUntil: ${q(advanced.waitUntil || 'load')}, ti
 
     // ── Extraction ───────────────────────────────────────────────────────
     case 'EXTRACT_TEXT': {
-      const sels = selectorList(params);
+      const sels = selList(params);
       const code = params.multiple
         ? `const ${varName} = await evalOnElements(page, ${sels}, el => el.textContent.trim());\n`
         : `const ${varName} = await evalOnElement(page, ${sels}, el => el.textContent.trim()).catch(() => null);\n`;
@@ -237,7 +290,7 @@ await page.waitForNavigation({ waitUntil: ${q(advanced.waitUntil || 'load')}, ti
     }
 
     case 'EXTRACT_ATTRIBUTE': {
-      const sels = selectorList(params);
+      const sels = selList(params);
       const attr = q(params.attribute);
       const code = params.multiple
         ? `const ${varName} = await evalOnElements(page, ${sels}, (el, a) => el.getAttribute(a), ${attr});\n`
@@ -252,13 +305,13 @@ await page.waitForNavigation({ waitUntil: ${q(advanced.waitUntil || 'load')}, ti
     case 'EXTRACT_HTML': {
       const prop = params.mode === 'outer' ? 'outerHTML' : 'innerHTML';
       return `
-const ${varName} = await evalOnElement(page, ${selectorList(params)}, el => el.${prop}).catch(() => null);
+const ${varName} = await evalOnElement(page, ${selList(params)}, el => el.${prop}).catch(() => null);
 ${store}`.trim() + '\n';
     }
 
     case 'EXTRACT_TABLE': return `
 const ${varName} = await (async () => {
-  const _tbl = await resolveElement(page, ${selectorList({ selector: params.selector || 'table', selectorType: params.selectorType || 'css', fallbackSelectors: params.fallbackSelectors || [] })});
+  const _tbl = await resolveElement(page, ${selList({ selector: params.selector || 'table', selectorType: params.selectorType || 'css', fallbackSelectors: params.fallbackSelectors || [] })});
   if (!_tbl) return null;
   return page.evaluate((table, hasHeader) => {
     const rows = Array.from(table.querySelectorAll('tr'));
@@ -297,7 +350,7 @@ ${store}`.trim() + '\n';
         }
       }
       const fieldsJson = JSON.stringify(normalised);
-      const sels = selectorList({
+      const sels = selList({
         selector: params.containerSelector,
         selectorType: params.selectorType || 'css',
         fallbackSelectors: params.fallbackSelectors || [],
@@ -471,7 +524,10 @@ function genControl(step, ctx, depth) {
     }
 
     case 'FOR_EACH_ELEMENTS': {
-      const sel    = JSON.stringify(params.selector || '');
+      // Use qStr so `{{var}}` inside the selector resolves to the
+      // workflow variable at runtime instead of being passed through as
+      // literal text.
+      const sel    = qStr(params.selector || '', ctx.declaredVars);
       const idxVar = params.indexVar || 'i';
       const elsVar = `_els_${ctx.nextId()}`;
       const elVar  = `_el_${ctx.nextId()}`;
@@ -604,11 +660,19 @@ function generateCode(workflow) {
   // the strings "true"/"false"; numbers fall back to 0 on parse failure;
   // json accepts any parseable JSON, otherwise the string literal.
   const variablesCode = renderVariableDeclarations(variables);
+  // Set of declared JS identifiers — used by qStr / selectorList during
+  // step codegen to interpolate `{{name}}` references in string params.
+  const declaredVars = new Set();
+  for (const v of variables) {
+    const id = toJsIdent(v && v.name);
+    if (id) declaredVars.add(id);
+  }
 
   // ID counter for unique variable names when outputVar is missing
   let idCounter = 0;
   const ctx = {
     nextId: () => (idCounter++).toString(36),
+    declaredVars,
     customActions: workflow.customActions || {},
   };
 
