@@ -19,6 +19,7 @@ function serialize(s) {
     workflowName:    s.workflow_name || null,
     intervalMinutes: s.interval_minutes,
     isActive:        s.is_active === 1,
+    anchorAt:        s.anchor_at || null,
     nextRunAt:       s.next_run_at,
     lastRunAt:       s.last_run_at,
     createdAt:       s.created_at,
@@ -45,10 +46,19 @@ router.put('/workflow/:workflowId', (req, res) => {
               .get(workflowId, req.user.id);
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
 
-  const { intervalMinutes, isActive } = req.body || {};
+  const { intervalMinutes, isActive, startAtIso } = req.body || {};
   const im = Number(intervalMinutes);
   if (!Number.isFinite(im) || im < MIN_INTERVAL || im > MAX_INTERVAL) {
     return res.status(400).json({ error: `intervalMinutes must be between ${MIN_INTERVAL} and ${MAX_INTERVAL}` });
+  }
+
+  let anchorAtIso = null;
+  if (startAtIso != null && startAtIso !== '') {
+    const t = Date.parse(startAtIso);
+    if (Number.isNaN(t)) {
+      return res.status(400).json({ error: 'startAtIso must be a valid ISO date string' });
+    }
+    anchorAtIso = new Date(t).toISOString();
   }
 
   const saved = runStore.upsertSchedule({
@@ -56,6 +66,7 @@ router.put('/workflow/:workflowId', (req, res) => {
     workflowId,
     intervalMinutes: im,
     isActive: isActive !== false,
+    anchorAtIso,
   });
   res.json({ schedule: serialize({ ...saved, workflow_name: wf.name }) });
 });

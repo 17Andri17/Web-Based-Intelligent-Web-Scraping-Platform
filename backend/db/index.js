@@ -55,6 +55,7 @@ db.exec(`
     workflow_id      INTEGER NOT NULL,
     interval_minutes INTEGER NOT NULL,
     is_active        INTEGER NOT NULL DEFAULT 1,
+    anchor_at        TEXT,
     next_run_at      TEXT,
     last_run_at      TEXT,
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
@@ -143,5 +144,6 @@ function addColumnIfMissing(table, column, decl) {
 addColumnIfMissing('runs', 'patched_steps_json', 'TEXT');
 addColumnIfMissing('runs', 'failed_step_type',   'TEXT');
 addColumnIfMissing('runs', 'failed_step_label',  'TEXT');
+addColumnIfMissing('schedules', 'anchor_at', 'TEXT');
 
 module.exports = db;
