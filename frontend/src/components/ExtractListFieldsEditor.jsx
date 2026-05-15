@@ -83,16 +83,19 @@ export default function ExtractListFieldsEditor({
       }
       onChange(next);
       setAiSamples(samples);
-      // Count where each field came from (ai vs heuristic) so the user
-      // can tell when the LLM failed and the fallback kicked in.
-      const heurCount = fields.filter(f => f.source === 'heuristic').length;
-      const aiCount   = fields.length - heurCount;
+      // Count where each field came from (ai vs heuristic vs rescued AI)
+      // so the user can tell when the LLM failed, when a fallback kicked
+      // in, and when the AI's intent was salvaged with the heuristic's
+      // working selector.
+      const heurCount   = fields.filter(f => f.source === 'heuristic').length;
+      const rescueCount = fields.filter(f => f.source === 'ai+heuristic').length;
+      const aiCount     = fields.filter(f => f.source === 'ai').length + rescueCount;
       setAiNote({
         explanation: payload.explanation || "",
         count: fields.length,
         sampleCount: payload.sampleCount || 0,
         verifyError: payload.verificationError || null,
-        aiCount, heurCount,
+        aiCount, heurCount, rescueCount,
         source: payload.source || (heurCount > 0 && aiCount === 0 ? 'heuristic' : 'ai'),
         aiError: payload.aiOk === false ? (payload.aiError || `(${payload.aiCode || 'AI failed'})`) : null,
       });

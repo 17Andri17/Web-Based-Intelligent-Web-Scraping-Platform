@@ -830,6 +830,12 @@ io.on('connection', async (socket) => {
     // ── Helper: verify a list of proposed fields against the live DOM,
     //    returning surviving ones with sample values + a hitCount across
     //    up to 5 sibling containers.
+    //
+    //    Self-fallback: when a selector doesn't match any descendant but
+    //    the container itself matches it (common for the LLM proposing
+    //    "a" as a selector when the container IS the anchor), we accept
+    //    the field and rewrite its selector to "" so the saved workflow
+    //    uses the correct "container itself" form going forward.
     const verifyOnLivePage = async (fields) => {
       if (!fields || fields.length === 0) return { verified: [], rejected: [], totalMatched: sample.count };
       return page.evaluate((containerSel, type, fieldsIn) => {
@@ -843,15 +849,35 @@ io.on('connection', async (socket) => {
         }
         const c0 = containers[0];
         const verified = [], rejected = [];
-        for (const f of fieldsIn) {
+        for (const fOrig of fieldsIn) {
+          let f = fOrig;
           let target0 = null;
-          try { target0 = f.selector ? c0.querySelector(f.selector) : c0; } catch (e) {
+          let rescuedToSelf = false;
+          try {
+            if (!f.selector) {
+              target0 = c0;
+            } else {
+              target0 = c0.querySelector(f.selector);
+              if (!target0 && c0.matches && c0.matches(f.selector)) {
+                // Selector targets a descendant of the same shape as the
+                // container itself — rescue by treating the container as
+                // the target. Common with anchor-container scrape lists.
+                target0 = c0;
+                rescuedToSelf = true;
+              }
+            }
+          } catch (e) {
             rejected.push({ ...f, reason: 'invalid CSS selector: ' + e.message });
             continue;
           }
           if (!target0) {
             rejected.push({ ...f, reason: 'selector did not match in the first container' });
             continue;
+          }
+          if (rescuedToSelf) {
+            // Rewrite the selector to the canonical "" so the saved step
+            // matches what the codegen / preview do.
+            f = { ...f, selector: '', rescuedToSelf: true };
           }
           let sampleValue = null;
           try {
@@ -861,7 +887,12 @@ io.on('connection', async (socket) => {
           } catch (_) {}
           let hitCount = 0;
           for (const c of containers.slice(0, 5)) {
-            try { if (f.selector ? c.querySelector(f.selector) : c) hitCount++; } catch (_) {}
+            try {
+              const candidate = f.selector
+                ? (c.querySelector(f.selector) || (c.matches && c.matches(f.selector) ? c : null))
+                : c;
+              if (candidate) hitCount++;
+            } catch (_) {}
           }
           verified.push({ ...f, sampleValue, hitCount, surveyed: Math.min(containers.length, 5) });
         }
@@ -902,21 +933,88 @@ io.on('connection', async (socket) => {
     }
 
     // 4. ALWAYS run the heuristic detector. Even when the AI succeeds, it
-    //    may have missed the obvious link / image / price. We merge the
-    //    heuristics in for any field NAMES the AI didn't already cover.
+    //    may have missed the obvious link / image / price. We then merge
+    //    AI + heuristic with two pieces of cleverness:
+    //
+    //    a) Intent rescue. If an AI field was REJECTED (its selector
+    //       didn't match) and a heuristic field exists with the same
+    //       kind+attribute (e.g. AI wanted `exam_url` with selector "a"
+    //       and attr=href, heuristic found `link` with selector="" attr=
+    //       href), we move the heuristic's selector under the AI's name.
+    //       Net effect: the user keeps the better name they implied, but
+    //       it actually works.
+    //
+    //    b) Sample-value dedup. After verification we know what value
+    //       each field would return. If a heuristic field's
+    //       (kind, attribute, sampleValue) is identical to an AI field's,
+    //       it's the same data — drop the heuristic version so we don't
+    //       end up with both `exam_code` and `code` returning the same
+    //       text.
     const heuristic = await extractListHeuristics.proposeFromContainer(
       page, containerSelector, selectorType || 'css',
       { requestId, maxFields: 10 }
     );
 
+    // ── (a) Intent rescue ─────────────────────────────────────────────
+    const heuristicByIntent = new Map();   // 'kind|attribute' → field
+    for (const h of heuristic.fields || []) {
+      heuristicByIntent.set(`${h.kind}|${h.attribute || ''}`, h);
+    }
+    const rescuedFromHeuristics = new Set();   // field names taken over
+    const stillRejected = [];
+    for (const r of aiRejected) {
+      const key = `${r.kind}|${r.attribute || ''}`;
+      const h = heuristicByIntent.get(key);
+      if (h && !aiVerified.some(v => v.name === r.name)) {
+        const rescued = {
+          ...r,
+          selector: h.selector,
+          sampleValue: h.sampleValue,
+          hitCount:   h.hitCount,
+          surveyed:   h.surveyed,
+          source:     'ai+heuristic',
+          rescueNote: `Used the heuristic's working selector under the AI's name (original AI selector "${r.selector}" matched no descendant).`,
+        };
+        aiVerified.push(rescued);
+        rescuedFromHeuristics.add(h.name);
+        console.log(`${tag} rescued AI field "${r.name}" (kind=${r.kind}${r.attribute ? ',attr=' + r.attribute : ''}) by adopting heuristic's selector "${h.selector}"`);
+      } else {
+        stillRejected.push(r);
+      }
+    }
+    aiRejected = stillRejected;
+
+    // ── (b) Sample-value + selector dedup ────────────────────────────
     const usedNames = new Set(aiVerified.map(f => f.name));
-    // Also block heuristic from re-adding things the user already has.
     if (existingFields && typeof existingFields === 'object') {
       for (const n of Object.keys(existingFields)) usedNames.add(n);
     }
-    const heuristicAdditions = (heuristic.fields || [])
-      .filter(f => !usedNames.has(f.name))
-      .map(f => ({ ...f, source: 'heuristic' }));
+    // Sample-value fingerprint: kind + attribute + first-200-chars of sample
+    const sigOf = (f) => `${f.kind}|${f.attribute || ''}|${(f.sampleValue || '').slice(0, 200)}`;
+    const usedSignatures = new Set(aiVerified.map(sigOf));
+    // Also dedupe heuristic results vs themselves (already done inside the
+    // service, but cheap to repeat here when intent rescue pulled one out).
+
+    const heuristicAdditions = [];
+    const droppedHeuristics = [];
+    for (const f of heuristic.fields || []) {
+      if (rescuedFromHeuristics.has(f.name)) continue;       // already adopted under an AI name
+      if (usedNames.has(f.name)) {
+        droppedHeuristics.push({ name: f.name, reason: 'name already used by an AI field or existing one' });
+        continue;
+      }
+      const sig = sigOf(f);
+      if (usedSignatures.has(sig)) {
+        droppedHeuristics.push({ name: f.name, reason: 'same value already extracted by another field' });
+        continue;
+      }
+      usedNames.add(f.name);
+      usedSignatures.add(sig);
+      heuristicAdditions.push({ ...f, source: 'heuristic' });
+    }
+    if (droppedHeuristics.length) {
+      console.log(`${tag} dropped ${droppedHeuristics.length} heuristic field(s): ${droppedHeuristics.map(d => `${d.name} (${d.reason})`).join('; ')}`);
+    }
 
     const combined = [...aiVerified, ...heuristicAdditions];
 
@@ -934,17 +1032,28 @@ io.on('connection', async (socket) => {
       });
     }
 
-    // Build a one-liner of where each field came from, so the editor can
-    // surface "(heuristic)" tags / explain that AI failed but we still
-    // matched some basics.
-    const aiCount = combined.filter(f => f.source === 'ai').length;
-    const heuCount = combined.filter(f => f.source === 'heuristic').length;
+    // Build a one-liner of where each field came from. ai+heuristic =
+    // an AI-named field whose selector was broken and got rescued by
+    // adopting the heuristic detector's selector.
+    const pureAiCount  = combined.filter(f => f.source === 'ai').length;
+    const rescueCount  = combined.filter(f => f.source === 'ai+heuristic').length;
+    const heuCount     = combined.filter(f => f.source === 'heuristic').length;
+    const aiCount      = pureAiCount + rescueCount;
+
     let explanation = aiExplanation;
+    const parts = [];
     if (!aiResult.ok && heuCount > 0) {
-      explanation = `AI returned no usable fields (${aiCode}: ${aiError}). Using ${heuCount} field${heuCount === 1 ? '' : 's'} from the built-in heuristic detector instead — review them and run AI again with a more specific hint if you want more.`;
-    } else if (aiResult.ok && heuCount > 0) {
-      explanation = `${explanation || 'AI proposed fields.'} Added ${heuCount} extra field${heuCount === 1 ? '' : 's'} from the heuristic detector (link / image / price / heading / date) that the AI didn't cover.`;
+      parts.push(`AI returned no usable fields (${aiCode}: ${aiError}). Using ${heuCount} field${heuCount === 1 ? '' : 's'} from the built-in heuristic detector instead — review and re-run AI with a more specific hint if you want more.`);
+    } else {
+      if (explanation) parts.push(explanation);
+      if (rescueCount > 0) {
+        parts.push(`${rescueCount} AI field${rescueCount === 1 ? "'s" : "s'"} selector didn't match the live DOM and was rescued by adopting the heuristic detector's working selector under the AI-suggested name.`);
+      }
+      if (heuCount > 0 && aiResult.ok) {
+        parts.push(`Added ${heuCount} extra field${heuCount === 1 ? '' : 's'} from the heuristic detector that the AI didn't cover.`);
+      }
     }
+    explanation = parts.join(' ');
 
     return reply({
       ok: true,
