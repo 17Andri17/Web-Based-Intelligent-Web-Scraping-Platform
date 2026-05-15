@@ -114,6 +114,11 @@ function AppShell({ user, token, onLogout }) {
   const [execLogs,      setExecLogs]      = useState([]);
   const [execResults,   setExecResults]   = useState(null);
   const sessionMetaRef = useRef({});
+  // Workflow-level variables (ServiceNow-style). Kept in state so the
+  // Variables panel re-renders on every edit, and mirrored into the
+  // meta payload sent to the backend on run / save.
+  const [workflowVariables, setWorkflowVariables] = useState([]);
+  const [variablesCollapsed, setVariablesCollapsed] = useState(false);
 
   // ── Toast helper ─────────────────────────────────────────────────────────
   const showToast = useCallback((msg, type = "success") => {
@@ -377,6 +382,7 @@ function AppShell({ user, token, onLogout }) {
     setUrlInput("");
     setCurrentPageUrl("");
     sessionMetaRef.current = {};
+    setWorkflowVariables([]);
     socketRef.current?.emit("stopStreaming");
     isStreamingRef.current = false;
     setStatus("");
@@ -693,7 +699,7 @@ function AppShell({ user, token, onLogout }) {
     // backend will auto-create a draft and emit `workflowAutoCreated`.
     socketRef.current.emit("executeWorkflow", {
       steps,
-      meta: sessionMetaRef.current,
+      meta: { ...sessionMetaRef.current, variables: workflowVariables },
       workflowId: currentWorkflowId || null,
       workflowName: currentWorkflowName || null,
     });
@@ -701,7 +707,10 @@ function AppShell({ user, token, onLogout }) {
 
   const handleDownloadCode = () => {
     if (!socketRef.current) return;
-    socketRef.current.emit("downloadCode", { steps, meta: sessionMetaRef.current });
+    socketRef.current.emit("downloadCode", {
+      steps,
+      meta: { ...sessionMetaRef.current, variables: workflowVariables },
+    });
   };
 
   const handleCancelExecution = () => {
@@ -1223,6 +1232,10 @@ function AppShell({ user, token, onLogout }) {
             onReturnToStart={() => { if (pinnedUrl) { setUrlInput(pinnedUrl); performNavigate(pinnedUrl); } }}
             socket={socket}
             previewData={previewData}
+            variables={workflowVariables}
+            onVariablesChange={setWorkflowVariables}
+            variablesCollapsed={variablesCollapsed}
+            onToggleVariablesCollapsed={() => setVariablesCollapsed(c => !c)}
           />
         )}
         {activeTab === "data" && (
@@ -1401,7 +1414,7 @@ function AppShell({ user, token, onLogout }) {
         open={workflowsOpen}
         onClose={() => setWorkflowsOpen(false)}
         currentSteps={steps}
-        currentMeta={sessionMetaRef.current}
+        currentMeta={{ ...sessionMetaRef.current, variables: workflowVariables }}
         currentWorkflowId={currentWorkflowId}
         currentName={currentWorkflowName}
         showToast={showToast}
@@ -1419,6 +1432,7 @@ function AppShell({ user, token, onLogout }) {
           setCurrentWorkflowId(wf.id);
           setCurrentWorkflowName(wf.name);
           if (wf.meta) sessionMetaRef.current = { ...sessionMetaRef.current, ...wf.meta };
+          setWorkflowVariables(Array.isArray(wf.meta?.variables) ? wf.meta.variables : []);
           setExecResults(null);
           setExecLogs([]);
           setExecStatus("idle");

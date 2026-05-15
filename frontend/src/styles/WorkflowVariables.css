@@ -1,0 +1,223 @@
+/* WorkflowVariables — sits at the top of the workflow tab. Designed to
+   read like a ServiceNow Flow Designer variables panel: a collapsible
+   header, a list of captured outputs, and an editable custom-variables
+   list. */
+
+.wvars {
+  background: rgba(247, 129, 102, 0.04);
+  border: 1px solid rgba(247, 129, 102, 0.22);
+  border-radius: 8px;
+  margin: 12px;
+  overflow: hidden;
+}
+
+.wvars-header {
+  background: transparent;
+  border: none;
+  color: var(--text-primary, #e6e6e6);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.wvars-header:hover { background: rgba(247, 129, 102, 0.06); }
+.wvars-title { color: #f78166; }
+.wvars-count {
+  background: rgba(247, 129, 102, 0.16);
+  color: #f78166;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  margin-left: 4px;
+}
+.wvars-tip {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted, #888);
+}
+
+.wvars-body {
+  padding: 4px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-top: 1px solid rgba(247, 129, 102, 0.16);
+}
+
+.wvars-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary, #aaa);
+  margin: 8px 0 6px;
+}
+.wvars-section-help {
+  font-size: 10.5px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted, #888);
+}
+.wvars-section-help code {
+  font-size: 10px;
+  background: var(--bg, #0e0e0e);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.wvars-empty {
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  padding: 6px 4px;
+  font-style: italic;
+}
+
+.wvars-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.wvars-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg, #0e0e0e);
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.wvars-row--captured {
+  background: rgba(88, 166, 255, 0.04);
+  border-color: rgba(88, 166, 255, 0.18);
+}
+
+.wvars-pill {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(247, 129, 102, 0.14);
+  color: #f78166;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.wvars-pill--captured {
+  background: rgba(88, 166, 255, 0.14);
+  color: #58a6ff;
+}
+
+.wvars-name {
+  font-family: 'SF Mono', Menlo, monospace;
+  color: var(--text-primary, #e6e6e6);
+  flex: 0 0 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wvars-type {
+  color: var(--text-muted, #888);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.wvars-name-input,
+.wvars-value-input,
+.wvars-add-name,
+.wvars-add-value {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-primary, #e6e6e6);
+  font-size: 12px;
+  font-family: 'SF Mono', Menlo, monospace;
+  padding: 3px 6px;
+  border-radius: 3px;
+}
+.wvars-name-input { flex: 0 0 28%; }
+.wvars-name-input:hover, .wvars-name-input:focus,
+.wvars-value-input:hover, .wvars-value-input:focus {
+  border-color: var(--border-soft, #2a2a2a);
+  background: var(--bg-elev, #1a1a1a);
+}
+.wvars-value-input { flex: 1; min-width: 0; }
+
+.wvars-type-input,
+.wvars-add-type {
+  background: transparent;
+  border: 1px solid var(--border-soft, #2a2a2a);
+  color: var(--text-secondary, #ccc);
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  flex: 0 0 80px;
+}
+
+.wvars-remove,
+.wvars-add-cancel {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  font-size: 16px;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  line-height: 1;
+}
+.wvars-remove:hover, .wvars-add-cancel:hover {
+  background: rgba(230, 119, 106, 0.15);
+  color: #e6776a;
+}
+
+.wvars-add-btn {
+  margin-top: 4px;
+  background: transparent;
+  border: 1px dashed rgba(247, 129, 102, 0.35);
+  color: #f78166;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+.wvars-add-btn:hover {
+  background: rgba(247, 129, 102, 0.08);
+  border-style: solid;
+}
+
+.wvars-add-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  background: var(--bg, #0e0e0e);
+  border: 1px solid var(--accent-primary, #4f9cf9);
+  border-radius: 5px;
+  padding: 5px 8px;
+}
+.wvars-add-name { flex: 0 0 28%; }
+.wvars-add-value { flex: 1; min-width: 0; }
+.wvars-add-confirm {
+  background: var(--accent-primary, #4f9cf9);
+  color: #fff;
+  border: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.wvars-add-confirm:disabled { opacity: 0.4; cursor: not-allowed; }

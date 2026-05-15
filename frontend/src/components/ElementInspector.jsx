@@ -14,6 +14,33 @@ function strategyLabel(strategy) {
 }
 
 // ─── Action catalogue ──────────────────────────────────────────────────────
+//
+// What's shown here is a deliberately slimmed-down set focused on web
+// scraping. Older / niche actions are still defined in actionDefinitions.js
+// and execute correctly in saved workflows — they're just hidden from the
+// inspector to keep the choice surface friendly for non-technical users.
+//
+// Removed from the inspector (still supported in workflows):
+//   HOVER_ELEMENT       → uncommon, can be replaced by a CLICK
+//   CLEAR_INPUT         → TYPE_TEXT already has a "Clear first" option
+//   PRESS_KEY           → TYPE_TEXT already has "Press Enter"; for other
+//                          keys, advanced workflows can still hand-add it
+//   SCROLL_TO_ELEMENT   → actions auto-wait for the selector (codegen
+//                          handles scroll-into-view inside waitForAny)
+//   UPLOAD_FILE         → niche
+//   RELOAD_PAGE         → niche
+//   OPEN_NEW_TAB / SWITCH_TAB → multi-tab flows are confusing and rarely
+//                          needed for scraping; we keep them runnable but
+//                          out of the menu
+//   WAIT_FOR_SELECTOR   → every selector-based action already waits for
+//                          the selector (advanced.timeout). WAIT covers
+//                          the "no-element delay" case.
+//   WAIT_FOR_NAVIGATION → folded into CLICK_ELEMENT's "Wait for navigation"
+//   CONDITION           → use the IF control block instead
+//   LOOP                → use the For-Each control block instead
+//   EXTRACT_JSON        → advanced (still selectable from existing workflows)
+//   SET_VARIABLE etc.   → replaced by the Workflow Variables panel
+//   SAVE_DATA           → runs auto-persist to the run history now
 
 const CATEGORIES = [
   {
@@ -21,21 +48,10 @@ const CATEGORIES = [
     actions: [
       { type: "CLICK_ELEMENT",    icon: "▶", needsEl: true,  quickAdd: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
-      { type: "HOVER_ELEMENT",    icon: "✋", needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
       { type: "TYPE_TEXT",        icon: "✏️", needsEl: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], clearFirst: true, pressEnter: false }),
         showWhen: (el) => el.isInput },
-      { type: "CLEAR_INPUT",      icon: "🗑️", needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }),
-        showWhen: (el) => el.isInput },
-      { type: "SCROLL_TO_ELEMENT",icon: "⬇", needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
-      { type: "PRESS_KEY",        icon: "⌨️", needsEl: false, smartDefault: () => ({ key: "Enter", count: 1 }) },
       { type: "SCROLL_PAGE",      icon: "📜", needsEl: false, smartDefault: () => ({ direction: "down", amount: 500 }) },
-      { type: "UPLOAD_FILE",      icon: "📎", needsEl: true,
-        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }),
-        showWhen: (el) => el.tag === "input" },
     ],
   },
   {
@@ -53,7 +69,6 @@ const CATEGORIES = [
         showWhen: (el) => el.isTable },
       { type: "EXTRACT_LIST",      icon: "📑", needsEl: true,
         smartDefault: (el) => ({ containerSelector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
-      { type: "EXTRACT_JSON",      icon: "{ }", needsEl: false, smartDefault: () => ({ source: "jsonld" }) },
     ],
   },
   {
@@ -61,29 +76,13 @@ const CATEGORIES = [
     actions: [
       { type: "NAVIGATE",          icon: "🌐", needsEl: false, smartDefault: () => ({ url: "" }) },
       { type: "GO_BACK",           icon: "◀",  needsEl: false, smartDefault: () => ({}), quickAdd: true },
-      { type: "RELOAD_PAGE",       icon: "🔄", needsEl: false, smartDefault: () => ({}), quickAdd: true },
-      { type: "OPEN_NEW_TAB",      icon: "➕", needsEl: false, smartDefault: () => ({ url: "" }) },
-      { type: "SWITCH_TAB",        icon: "⇄",  needsEl: false, smartDefault: () => ({ tabIndex: 0 }) },
     ],
   },
   {
-    id: "flow", label: "Flow Control", color: "#a371f7",
+    id: "flow", label: "Flow", color: "#a371f7",
     actions: [
       { type: "WAIT",              icon: "⏱️", needsEl: false, smartDefault: () => ({ duration: 1000 }), quickAdd: true },
-      { type: "WAIT_FOR_SELECTOR", icon: "👁️", needsEl: false, smartDefault: (el) => ({ selector: el?.selector || "", state: "visible", timeout: 30000 }) },
-      { type: "WAIT_FOR_NAVIGATION", icon: "⏳", needsEl: false, smartDefault: () => ({}) },
-      { type: "CONDITION",         icon: "🔀", needsEl: false, smartDefault: () => ({ expression: "" }) },
-      { type: "LOOP",              icon: "🔁", needsEl: false, smartDefault: () => ({ mode: "forEach", source: "", count: 10 }) },
       { type: "BREAK_LOOP",        icon: "⛔", needsEl: false, smartDefault: () => ({}), quickAdd: true },
-    ],
-  },
-  {
-    id: "data", label: "Data", color: "#f78166",
-    actions: [
-      { type: "SET_VARIABLE",   icon: "📦", needsEl: false, smartDefault: () => ({ name: "", value: "" }) },
-      { type: "TRANSFORM_DATA", icon: "🔧", needsEl: false, smartDefault: () => ({ source: "", operation: "trim" }) },
-      { type: "APPEND_TO_LIST", icon: "➕", needsEl: false, smartDefault: () => ({ listName: "results", item: "" }) },
-      { type: "SAVE_DATA",      icon: "💾", needsEl: false, smartDefault: () => ({ source: "results", format: "json", destination: "./output/results.json" }) },
     ],
   },
 ];

@@ -6,7 +6,9 @@ import { createAction, createControl } from "../workflow/stepFactory";
 import { DndContext, DragOverlay, useDroppable, useDraggable, closestCenter } from "@dnd-kit/core";
 import { findStepLocation } from "../workflow/useWorkflow";
 import ExtractListFieldsEditor from "./ExtractListFieldsEditor";
+import WorkflowVariables from "./WorkflowVariables";
 import "../styles/ExtractListFieldsEditor.css";
+import "../styles/WorkflowVariables.css";
 
 // Context shared across all step components (avoids prop drilling)
 const WPCtx = React.createContext(null);
@@ -22,6 +24,51 @@ const EXTRACTION_TYPES = new Set([
   "EXTRACT_TEXT", "EXTRACT_ATTRIBUTE", "EXTRACT_HTML",
   "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON",
 ]);
+
+// Walk the workflow tree and return every named extraction step as a
+// captured-output variable. The variables panel uses this list to show
+// users "what's being captured" without them having to scroll the steps.
+function collectCapturedOutputs(steps) {
+  const out = [];
+  const seen = new Set();
+  const walk = (arr) => {
+    for (const s of arr || []) {
+      if (!s || typeof s !== "object") continue;
+      if (s.kind === "control" && EXTRACTION_TYPES.size /* control with extraction-shaped output (FOR_EACH_ELEMENTS) */
+          && s.type === "FOR_EACH_ELEMENTS"
+          && Array.isArray(s.body)
+          && s.body.some(c => c?.kind === "action" && EXTRACTION_TYPES.has(c.type))) {
+        const name = (s.label || "").trim();
+        if (name && !seen.has(name)) {
+          out.push({ name, type: "table", stepId: s.id });
+          seen.add(name);
+        }
+      } else if (s.kind === "action" && EXTRACTION_TYPES.has(s.type)) {
+        const name = (s.label || "").trim();
+        if (name && !seen.has(name)) {
+          const isList = s.type === "EXTRACT_LIST" || s.type === "EXTRACT_TABLE" || s.params?.multiple;
+          out.push({ name, type: isList ? "list" : typeForExtractType(s.type), stepId: s.id });
+          seen.add(name);
+        }
+      }
+      ["body", "then", "else", "try", "catch"].forEach(k => {
+        if (Array.isArray(s[k])) walk(s[k]);
+      });
+    }
+  };
+  walk(steps);
+  return out;
+}
+function typeForExtractType(t) {
+  switch (t) {
+    case "EXTRACT_ATTRIBUTE": return "string";
+    case "EXTRACT_HTML":      return "string";
+    case "EXTRACT_TABLE":     return "table";
+    case "EXTRACT_LIST":      return "list";
+    case "EXTRACT_JSON":      return "json";
+    default:                  return "string";
+  }
+}
 
 /* ── Icons ── */
 function DragDotsIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>; }
@@ -113,7 +160,14 @@ function buildCustomActionStep(action) {
 }
 
 /* =====================================================================  MAIN PANEL */
-export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps, insertTarget, onSetInsertTarget, onMoveStep, customActions = [], offStartUrl = false, pinnedUrl = "", currentPageUrl = "", onReturnToStart, socket = null, previewData = {} }) {
+export default function WorkflowPanel({
+  steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps,
+  insertTarget, onSetInsertTarget, onMoveStep, customActions = [],
+  offStartUrl = false, pinnedUrl = "", currentPageUrl = "", onReturnToStart,
+  socket = null, previewData = {},
+  variables = [], onVariablesChange,
+  variablesCollapsed = false, onToggleVariablesCollapsed,
+}) {
   const [pickerCtx, setPickerCtx]   = useState(null);
   const [editingCtx, setEditingCtx] = useState(null);
   const [activeId,   setActiveId]   = useState(null);
@@ -148,6 +202,7 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
     walk(steps); return out;
   }, [steps]);
   const activeStep = activeId ? flatAll.find(s => s.id === activeId) : null;
+  const capturedOutputs = React.useMemo(() => collectCapturedOutputs(steps), [steps]);
 
   return (
     <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions, socket, previewData }}>
@@ -178,6 +233,15 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
           )}
         </div>
       )}
+      <WorkflowVariables
+        variables={variables}
+        capturedOutputs={capturedOutputs}
+        collapsed={variablesCollapsed}
+        onToggleCollapsed={onToggleVariablesCollapsed}
+        onAdd={(v) => onVariablesChange?.([...variables, v])}
+        onUpdate={(i, patch) => onVariablesChange?.(variables.map((v, idx) => idx === i ? { ...v, ...patch } : v))}
+        onRemove={(i) => onVariablesChange?.(variables.filter((_, idx) => idx !== i))}
+      />
       <div className="workflow-canvas">
         <div className="flow-container">
           <div className="flow-start">
@@ -581,9 +645,25 @@ function StepPicker({ onSelect, onClose, customActions = [] }) {
   const [tab, setTab] = useState("all");
   const q = search.toLowerCase();
 
+  // Hidden action types: kept in actionDefinitions so existing workflows
+  // still execute, but pruned from the "Add Step" picker so non-technical
+  // users see a smaller, scrape-focused catalog. The slim list mirrors
+  // ElementInspector's CATEGORIES; if you re-enable an action there, drop
+  // it from this set too.
+  const HIDDEN_ACTION_TYPES = new Set([
+    'HOVER_ELEMENT', 'CLEAR_INPUT', 'PRESS_KEY', 'SCROLL_TO_ELEMENT',
+    'UPLOAD_FILE',
+    'RELOAD_PAGE', 'OPEN_NEW_TAB', 'SWITCH_TAB',
+    'WAIT_FOR_SELECTOR', 'WAIT_FOR_NAVIGATION',
+    'CONDITION', 'LOOP',
+    'EXTRACT_JSON',
+    'SET_VARIABLE', 'TRANSFORM_DATA', 'APPEND_TO_LIST', 'SAVE_DATA',
+  ]);
+
   const actionGroups = {};
   Object.entries(actionDefinitions).forEach(([type, def]) => {
     if (!def) return;
+    if (HIDDEN_ACTION_TYPES.has(type)) return;
     if (q && !def.label.toLowerCase().includes(q) && !(def.description || "").toLowerCase().includes(q)) return;
     const cat = def.category || "Other";
     if (!actionGroups[cat]) actionGroups[cat] = [];
