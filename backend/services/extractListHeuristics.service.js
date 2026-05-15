@@ -107,84 +107,151 @@ async function proposeFromContainer(page, containerSelector, selectorType = 'css
         return tag;
       }
 
+      // findInOrSelf — return the first match for `selector` either as the
+      // container itself (selector "" for the user's params) or among its
+      // descendants. Critical for cases where the container IS the meaningful
+      // element (e.g. user multi-selected anchor tags directly).
+      function findInOrSelf(root, sel) {
+        try {
+          if (root.matches && root.matches(sel)) return { el: root, isSelf: true };
+          const el = root.querySelector(sel);
+          return el ? { el, isSelf: false } : null;
+        } catch (_) { return null; }
+      }
+      function selForMatch(root, m) {
+        return m.isSelf ? '' : relativeSelector(root, m.el);
+      }
+
       // ── Detectors ─────────────────────────────────────────────────────
       // Each detector returns 0..N { name, selector, kind, attribute, hint } proposals
-      // against c0. We score & dedup later.
+      // against c0. We score & dedup later. An empty `selector` means
+      // "the container itself" — both our codegen and the verifier handle
+      // that case explicitly.
 
       const proposals = [];
 
-      // 1. Primary heading / title — first h1-h6 inside container
-      const heading = c0.querySelector('h1,h2,h3,h4,h5,h6');
-      if (heading) {
-        proposals.push({ name: 'title', selector: relativeSelector(c0, heading), kind: 'text', why: 'first heading' });
+      // 1. Primary heading / title — first h1-h6 inside container OR
+      //    container itself if IT is a heading.
+      const headingMatch = findInOrSelf(c0, 'h1,h2,h3,h4,h5,h6');
+      if (headingMatch) {
+        proposals.push({ name: 'title', selector: selForMatch(c0, headingMatch), kind: 'text', why: 'heading element' });
       }
 
-      // 2. Anchor → link URL  (and link text if no heading)
-      const a0 = c0.querySelector('a[href]');
-      if (a0) {
-        const sel = relativeSelector(c0, a0);
-        proposals.push({ name: 'link', selector: sel, kind: 'attr', attribute: 'href', why: 'first anchor' });
-        if (!heading) {
-          // Use the anchor's visible text as a tentative title
-          if (txt(a0)) proposals.push({ name: 'title', selector: sel, kind: 'text', why: 'first anchor text' });
+      // 2. Anchor → link URL  (and link text as fallback title)
+      const aMatch = findInOrSelf(c0, 'a[href]');
+      if (aMatch) {
+        const sel = selForMatch(c0, aMatch);
+        proposals.push({ name: 'link', selector: sel, kind: 'attr', attribute: 'href', why: 'anchor href' });
+        if (!headingMatch && txt(aMatch.el)) {
+          // Use the anchor's visible text as a tentative title only when no
+          // heading exists — otherwise heading wins.
+          proposals.push({ name: 'title', selector: sel, kind: 'text', why: 'anchor visible text' });
         }
       }
 
       // 3. Image → image URL  +  alt text
-      const img0 = c0.querySelector('img');
-      if (img0) {
-        const sel = relativeSelector(c0, img0);
-        // Prefer src; fall back to data-src for lazy-loaded images.
-        const srcAttr = (img0.getAttribute('src')) ? 'src'
-                       : (img0.getAttribute('data-src')) ? 'data-src'
-                       : 'src';
-        proposals.push({ name: 'image_url', selector: sel, kind: 'attr', attribute: srcAttr, why: 'first image' });
-        if (img0.getAttribute('alt')) {
+      const imgMatch = findInOrSelf(c0, 'img');
+      if (imgMatch) {
+        const sel = selForMatch(c0, imgMatch);
+        const img = imgMatch.el;
+        const srcAttr = img.getAttribute('src') ? 'src'
+                      : img.getAttribute('data-src') ? 'data-src'
+                      : 'src';
+        proposals.push({ name: 'image_url', selector: sel, kind: 'attr', attribute: srcAttr, why: 'image src' });
+        if (img.getAttribute('alt')) {
           proposals.push({ name: 'image_alt', selector: sel, kind: 'attr', attribute: 'alt', why: 'image alt text' });
         }
       }
 
       // 4. <time> element → date
-      const tm0 = c0.querySelector('time');
-      if (tm0) {
-        const sel = relativeSelector(c0, tm0);
-        if (tm0.getAttribute('datetime')) {
+      const timeMatch = findInOrSelf(c0, 'time');
+      if (timeMatch) {
+        const sel = selForMatch(c0, timeMatch);
+        if (timeMatch.el.getAttribute('datetime')) {
           proposals.push({ name: 'date', selector: sel, kind: 'attr', attribute: 'datetime', why: 'time[datetime]' });
         } else {
           proposals.push({ name: 'date', selector: sel, kind: 'text', why: '<time> element' });
         }
       }
 
-      // 5. Price — currency-shaped text. Walk descendants and find the
-      //    leaf-est element whose visible text matches a price regex.
+      // 5. Price — currency-shaped text. Search descendants AND the
+      //    container's own (non-empty) text.
       const PRICE_RX = /(?:^|\s)(?:[$€£¥₹₩₽₫₪]|USD|EUR|GBP|JPY|PLN|zł|CZK|CHF|CAD|AUD)\s?\d[\d ,.]{0,12}|^\d[\d ,.]{0,12}\s?(?:[$€£¥₹₩₽₫₪]|USD|EUR|GBP|JPY|PLN|zł|CZK|CHF|CAD|AUD)\b/i;
-      let priceEl = null;
+      let priceMatch = null;
+      // Try leaf descendants first
       for (const el of c0.querySelectorAll('*')) {
-        if (el.children && el.children.length > 0) continue; // leaf-only
+        if (el.children && el.children.length > 0) continue;
         const t = txt(el);
-        if (t && t.length < 40 && PRICE_RX.test(t)) { priceEl = el; break; }
+        if (t && t.length < 40 && PRICE_RX.test(t)) { priceMatch = { el, isSelf: false }; break; }
       }
-      if (priceEl) {
-        proposals.push({ name: 'price', selector: relativeSelector(c0, priceEl), kind: 'text', why: 'currency-shaped text' });
+      // Fall back to checking the container's own immediate text
+      if (!priceMatch) {
+        const ownText = (c0.childNodes ? Array.from(c0.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent || '').join(' ') : '').trim();
+        if (ownText && PRICE_RX.test(ownText)) priceMatch = { el: c0, isSelf: true };
+      }
+      if (priceMatch) {
+        proposals.push({ name: 'price', selector: selForMatch(c0, priceMatch), kind: 'text', why: 'currency-shaped text' });
       }
 
       // 6. Rating — text like "4.5", "4.5/5", "★ 4.5" near "rating" / "stars" / "review" class
-      let ratingEl = null;
+      let ratingMatch = null;
       for (const el of c0.querySelectorAll('[class*="rating"],[class*="stars"],[class*="review"],[aria-label*="rating" i],[aria-label*="stars" i]')) {
         if (el.children && el.children.length > 0) {
-          // Try to find a leaf with a number
           const leaf = Array.from(el.querySelectorAll('*')).find(x => x.children.length === 0 && /\d/.test(txt(x)));
-          if (leaf) { ratingEl = leaf; break; }
+          if (leaf) { ratingMatch = { el: leaf, isSelf: false }; break; }
         }
-        if (txt(el) && /\d/.test(txt(el))) { ratingEl = el; break; }
+        if (txt(el) && /\d/.test(txt(el))) { ratingMatch = { el, isSelf: false }; break; }
       }
-      if (ratingEl) {
-        proposals.push({ name: 'rating', selector: relativeSelector(c0, ratingEl), kind: 'text', why: 'looks-like-rating element' });
+      if (ratingMatch) {
+        proposals.push({ name: 'rating', selector: selForMatch(c0, ratingMatch), kind: 'text', why: 'looks-like-rating element' });
       }
 
-      // 7. Generic id from data-* on the container itself (often product id)
+      // 7. Class-hinted text labels (covers the common "<span class='product-code'>...</span>"
+      //    or "<div class='card-title'>...</div>" patterns the heading
+      //    detector misses). Picks the FIRST leaf descendant whose class
+      //    matches a label-shaped keyword, and only if no heading was found.
+      const LABEL_RX = /(title|name|label|heading|caption|product|exam|item|article)(?!_url|_link|_id)/i;
+      // Each entry: [classRegex, fieldName] in priority order
+      const LABEL_HINTS = [
+        [/(?:^|[-_ ])(?:title|name|heading|caption)(?:$|[-_ ])/i,   'title'],
+        [/(?:^|[-_ ])(?:code|sku)(?:$|[-_ ])/i,                       'code'],
+        [/(?:^|[-_ ])(?:price|cost|amount|fee)(?:$|[-_ ])/i,          'price'],
+        [/(?:^|[-_ ])(?:date|time|published|posted)(?:$|[-_ ])/i,     'date'],
+        [/(?:^|[-_ ])(?:author|by|writer)(?:$|[-_ ])/i,               'author'],
+        [/(?:^|[-_ ])(?:desc|description|summary|excerpt)(?:$|[-_ ])/i,'description'],
+      ];
+      // Walk every classed element looking at the most specific (leaf-first) candidates
+      const classedLeaves = Array.from(c0.querySelectorAll('[class]'))
+        .filter(el => el.children.length === 0 && (txt(el).length > 0));
+      for (const [rx, fieldName] of LABEL_HINTS) {
+        // Skip a field we've already proposed
+        if (proposals.find(p => p.name === fieldName)) continue;
+        const hit = classedLeaves.find(el => {
+          const cls = typeof el.className === 'string' ? el.className : (el.className && el.className.baseVal) || '';
+          return rx.test(cls);
+        });
+        if (hit) {
+          proposals.push({ name: fieldName, selector: relativeSelector(c0, hit), kind: 'text', why: `class hints "${fieldName}"` });
+        }
+      }
+
+      // 8. Container text — when nothing else has produced a title yet
+      //    AND the container has visible inline text (e.g. user picked
+      //    a list of <a> elements and there's no heading or label inside),
+      //    expose the container's own textContent as "text".
+      if (!proposals.find(p => p.name === 'title' || p.name === 'name')) {
+        const ownText = txt(c0);
+        if (ownText && ownText.length > 0 && ownText.length < 400) {
+          // Avoid duplicating the anchor-text proposal we already added at (2)
+          if (!proposals.find(p => p.name === 'title')) {
+            proposals.push({ name: 'text', selector: '', kind: 'text', why: 'container text content' });
+          }
+        }
+      }
+
+      // 9. Generic id from data-* on the container itself (often product id)
       for (const a of Array.from(c0.attributes || [])) {
-        if (/^data-/i.test(a.name) && /^(id|sku|product|item|key)/i.test(a.name.replace(/^data-/i, '')) && a.value && a.value.length < 80) {
+        if (/^data-/i.test(a.name) && /^(id|sku|product|item|key|exam)/i.test(a.name.replace(/^data-/i, '')) && a.value && a.value.length < 80) {
           proposals.push({
             name: a.name.replace(/^data-/i, '').replace(/[^a-z0-9]+/gi, '_').toLowerCase() || 'item_id',
             selector: '',                  // empty selector means "the container itself"
