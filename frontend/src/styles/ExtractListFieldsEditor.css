@@ -1,0 +1,207 @@
+/* ExtractListFieldsEditor — visual styling that follows the existing
+   form-group / modal aesthetic. Kept self-contained so the rest of the
+   app's CSS stays untouched. */
+
+.elfe-root {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ── AI panel ────────────────────────────────────────────────────────── */
+.elfe-ai {
+  background: rgba(79, 156, 249, 0.06);
+  border: 1px solid rgba(79, 156, 249, 0.25);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.elfe-ai-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.elfe-ai-header strong { color: var(--text-primary, #e6e6e6); }
+.elfe-ai-badge {
+  background: linear-gradient(135deg, #4f9cf9, #7e5cff);
+  color: #fff;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  letter-spacing: 0.5px;
+}
+.elfe-ai-sub {
+  color: var(--text-secondary, #aaa);
+  font-size: 11px;
+}
+.elfe-ai-hint {
+  width: 100%;
+  background: var(--bg, #0e0e0e);
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 6px;
+  color: var(--text-primary, #e6e6e6);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+.elfe-ai-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.elfe-ai-note {
+  font-size: 11px;
+  color: var(--text-secondary, #aaa);
+}
+.elfe-ai-error {
+  font-size: 12px;
+  color: #e6776a;
+  background: rgba(230, 119, 106, 0.08);
+  border-left: 3px solid #e6776a;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+.elfe-ai-warn {
+  font-size: 12px;
+  color: #e89a4f;
+  background: rgba(232, 154, 79, 0.08);
+  border-left: 3px solid #e89a4f;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+.elfe-ai-expl {
+  font-size: 12px;
+  color: var(--text-secondary, #aaa);
+  font-style: italic;
+}
+.elfe-ai-rejected summary {
+  font-size: 11px;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+}
+.elfe-ai-rejected ul { font-size: 11px; margin: 6px 0 0; padding-left: 16px; }
+.elfe-ai-rejected li { color: var(--text-secondary, #aaa); margin-bottom: 2px; }
+.elfe-ai-rejected code { color: var(--text-primary, #e6e6e6); }
+
+/* ── Fields list ─────────────────────────────────────────────────────── */
+.elfe-fields-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-secondary, #aaa);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+.elfe-empty {
+  font-size: 12px;
+  color: var(--text-secondary, #aaa);
+  padding: 16px;
+  text-align: center;
+  border: 1px dashed var(--border-soft, #2a2a2a);
+  border-radius: 6px;
+}
+.elfe-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.elfe-row {
+  background: var(--bg-elev, #161616);
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.elfe-row-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.elfe-name {
+  flex: 0 0 30%;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+}
+.elfe-kind {
+  flex: 0 0 90px;
+  font-size: 12px;
+}
+.elfe-attr {
+  flex: 1;
+  font-size: 12px;
+  font-family: 'SF Mono', Menlo, monospace;
+}
+.elfe-row-remove {
+  background: transparent;
+  color: var(--text-secondary, #888);
+  border: none;
+  font-size: 18px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  line-height: 1;
+  border-radius: 4px;
+}
+.elfe-row-remove:hover { background: rgba(230, 119, 106, 0.15); color: #e6776a; }
+.elfe-selector {
+  width: 100%;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+}
+.elfe-sample {
+  font-size: 11px;
+  color: var(--text-secondary, #888);
+  font-family: 'SF Mono', Menlo, monospace;
+  padding: 4px 6px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.elfe-sample-label {
+  color: #4f9cf9;
+  margin-right: 6px;
+  font-weight: 600;
+}
+.elfe-sample-empty { color: #e89a4f; }
+.elfe-sample-val { color: var(--text-primary, #ccc); }
+
+/* ── Buttons ─────────────────────────────────────────────────────────── */
+.elfe-btn {
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border-soft, #2a2a2a);
+  background: var(--bg-elev, #1c1c1c);
+  color: var(--text-primary, #e6e6e6);
+}
+.elfe-btn:hover:not(:disabled) { background: #262626; }
+.elfe-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.elfe-btn--primary {
+  background: linear-gradient(135deg, #4f9cf9, #7e5cff);
+  border: none;
+  color: #fff;
+  font-weight: 600;
+}
+.elfe-btn--primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #6aaaff, #8c70ff);
+}
+.elfe-btn--ghost {
+  background: transparent;
+  color: #4f9cf9;
+  border: 1px solid rgba(79, 156, 249, 0.35);
+}
+.elfe-btn--ghost:hover:not(:disabled) {
+  background: rgba(79, 156, 249, 0.08);
+}

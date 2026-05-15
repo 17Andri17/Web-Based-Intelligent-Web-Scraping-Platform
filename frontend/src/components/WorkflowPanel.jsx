@@ -5,6 +5,8 @@ import { controlDefinitions, isControlStep } from "../workflow/controlDefinition
 import { createAction, createControl } from "../workflow/stepFactory";
 import { DndContext, DragOverlay, useDroppable, useDraggable, closestCenter } from "@dnd-kit/core";
 import { findStepLocation } from "../workflow/useWorkflow";
+import ExtractListFieldsEditor from "./ExtractListFieldsEditor";
+import "../styles/ExtractListFieldsEditor.css";
 
 // Context shared across all step components (avoids prop drilling)
 const WPCtx = React.createContext(null);
@@ -56,8 +58,27 @@ function buildDefaultAdvanced(def) {
   return a;
 }
 function summariseParams(step) {
-  const entries = Object.entries(step.params || {}).filter(([, v]) => v !== null && v !== "" && v !== undefined && !(Array.isArray(v) && !v.length));
-  return entries.slice(0, 2).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]);
+  // EXTRACT_LIST cards summarise specially: show the container selector
+  // plus the comma-separated field names, so the user can see "what
+  // they're extracting" at a glance without expanding the editor.
+  if (step.type === "EXTRACT_LIST") {
+    const out = [];
+    if (step.params?.containerSelector) {
+      out.push(["container", String(step.params.containerSelector)]);
+    }
+    const f = step.params?.fields || {};
+    const names = Object.keys(f);
+    if (names.length) {
+      out.push(["fields", `${names.length} (${names.slice(0, 4).join(", ")}${names.length > 4 ? "…" : ""})`]);
+    }
+    return out;
+  }
+  const entries = Object.entries(step.params || {}).filter(([, v]) => v !== null && v !== "" && v !== undefined && !(Array.isArray(v) && !v.length) && !(typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0));
+  return entries.slice(0, 2).map(([k, v]) => {
+    if (Array.isArray(v)) return [k, v.join(", ")];
+    if (typeof v === "object") return [k, `${Object.keys(v).length} entries`];
+    return [k, String(v)];
+  });
 }
 function buildControlSummary(step, def) {
   const key = Object.keys(def.params || {})[0];
@@ -92,7 +113,7 @@ function buildCustomActionStep(action) {
 }
 
 /* =====================================================================  MAIN PANEL */
-export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps, insertTarget, onSetInsertTarget, onMoveStep, customActions = [], offStartUrl = false, pinnedUrl = "", currentPageUrl = "", onReturnToStart }) {
+export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps, insertTarget, onSetInsertTarget, onMoveStep, customActions = [], offStartUrl = false, pinnedUrl = "", currentPageUrl = "", onReturnToStart, socket = null, previewData = {} }) {
   const [pickerCtx, setPickerCtx]   = useState(null);
   const [editingCtx, setEditingCtx] = useState(null);
   const [activeId,   setActiveId]   = useState(null);
@@ -129,7 +150,7 @@ export default function WorkflowPanel({ steps, totalCount, onAdd, onUpdate, onDe
   const activeStep = activeId ? flatAll.find(s => s.id === activeId) : null;
 
   return (
-    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions }}>
+    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions, socket, previewData }}>
     <div className="workflow-designer">
       <div className="workflow-header">
         <div className="workflow-title">
@@ -763,8 +784,20 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
             </div>
           )}
           {Object.entries(inputs).map(([k, s]) => (
-            <FieldRenderer key={k} label={s.label || k} type={s.type} value={getValue(k)}
-              options={s.options} placeholder={s.placeholder} onChange={v => setParam(k, v)} />
+            <FieldRenderer
+              key={k}
+              label={s.label || k}
+              type={s.type}
+              value={getValue(k)}
+              options={s.options}
+              placeholder={s.placeholder}
+              onChange={v => setParam(k, v)}
+              // Extra context: some renderers (the EXTRACT_LIST fields
+              // editor in particular) need to know about sibling params
+              // on this step and the parent step id to fetch live preview.
+              step={local}
+              fieldKey={k}
+            />
           ))}
           {isCustom && Object.keys(inputs).length === 0 && (
             <div style={{ color: "var(--text-muted)", fontSize: 13, padding: "8px 0" }}>
@@ -797,9 +830,32 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
 }
 
 /* ── Field Renderer ── */
-function FieldRenderer({ label, type, value, options, placeholder, onChange }) {
+function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey }) {
   // hidden fields are stored in params but not shown in UI
   if (type === "hidden") return null;
+
+  // keyvalue: rich fields editor used by EXTRACT_LIST. We pull socket
+  // and the latest preview rows out of WPCtx so the AI auto-detect
+  // button and per-field sample values work without prop-drilling.
+  if (type === "keyvalue") {
+    const { socket, previewData } = useContext(WPCtx) || {};
+    const previewRows = step && previewData && previewData[step.id]?.previewRows;
+    const containerSelector = step?.params?.containerSelector || "";
+    const selectorType      = step?.params?.selectorType || "css";
+    return (
+      <div className="form-group">
+        <label>{label}</label>
+        <ExtractListFieldsEditor
+          value={value}
+          onChange={onChange}
+          containerSelector={containerSelector}
+          selectorType={selectorType}
+          socket={socket}
+          previewRows={previewRows}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="form-group">

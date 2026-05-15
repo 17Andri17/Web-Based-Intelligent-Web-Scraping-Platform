@@ -44,6 +44,10 @@ function buildSections(steps) {
           sections.push(...buildSections(step[key].filter(s => s.kind === "control")));
         }
       }
+    } else if (step.kind === "action" && step.type === "EXTRACT_LIST") {
+      // EXTRACT_LIST renders as its own tabular section — columns come
+      // from `params.fields` and rows from previewRows / execResults.
+      sections.push({ kind: "list", step });
     } else if (step.kind === "action" && EXTRACTION_TYPES.has(step.type)) {
       sections.push({ kind: "field", step });
     }
@@ -276,6 +280,130 @@ function TableSection({ loopStep, columns, execResults, previewData, onUpdateLab
   );
 }
 
+// ─── List section (EXTRACT_LIST) ─────────────────────────────────────────────
+// One row per matched container, one column per declared field. Rows come
+// from execResults[step.label] (after a run) or previewData[step.id].previewRows
+// (live preview from the backend).
+
+function ListSection({ step, execResults, previewData, onUpdateLabel }) {
+  const fields = step.params?.fields && typeof step.params.fields === "object" ? step.params.fields : {};
+  const columns = Object.keys(fields);
+
+  // Determine row source: execResults first (post-run), then live preview.
+  let rows = [];
+  let isLiveData = null;
+  if (execResults && step.label?.trim()) {
+    const r = execResults[step.label.trim()];
+    if (Array.isArray(r) && r.length > 0 && typeof r[0] === "object") {
+      rows = r;
+      isLiveData = "results";
+    }
+  }
+  if (rows.length === 0) {
+    const pr = previewData[step.id]?.previewRows;
+    if (Array.isArray(pr) && pr.length > 0) {
+      rows = pr;
+      isLiveData = "preview";
+    }
+  }
+
+  const totalMatched = previewData[step.id]?.totalMatched;
+
+  return (
+    <div className="dp-section dp-section--table">
+      <div className="dp-section-header">
+        <div className="dp-section-header-left">
+          <span className="dp-loop-badge">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+              <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+            </svg>
+            Extract List
+          </span>
+          <EditableLabel
+            value={step.label || ""}
+            placeholder="Name this list…"
+            className="dp-loop-label"
+            onCommit={v => onUpdateLabel(step.id, v)}
+          />
+          {isLiveData && (
+            <span className={`dp-src-pill ${isLiveData === "results" ? "dp-src--results" : "dp-src--preview"}`}>
+              {isLiveData === "results" ? "live results" : "dom preview"}
+            </span>
+          )}
+        </div>
+        <div className="dp-section-header-right">
+          {rows.length > 0 && (
+            <span className="dp-row-count">
+              {rows.length} row{rows.length !== 1 ? "s" : ""}
+              {totalMatched && totalMatched > rows.length ? ` of ${totalMatched}` : ""}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="dp-table-scroll">
+        {columns.length === 0 ? (
+          <div className="dp-table-tip">
+            No fields defined yet — open this step and click <strong>✨ Auto-detect fields</strong> or add some manually.
+          </div>
+        ) : (
+          <table className="dp-table">
+            <thead className="dp-thead">
+              <tr>
+                <th className="dp-th dp-th--num">#</th>
+                {columns.map(c => {
+                  const spec = fields[c];
+                  const kind = typeof spec === "object" && spec ? (spec.kind || "text") : "text";
+                  return (
+                    <th key={c} className="dp-th">
+                      <div className="dp-th-inner">
+                        <span className="dp-type-chip" title={kind}>{kindIcon(kind)}</span>
+                        <span className="dp-col-label has-value">{c}</span>
+                      </div>
+                    </th>
+                  );
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length > 0 ? rows.slice(0, 200).map((row, i) => (
+                <tr key={i} className={`dp-tr ${i % 2 === 1 ? "dp-tr--alt" : ""}`}>
+                  <td className="dp-td dp-td--num">{i + 1}</td>
+                  {columns.map(c => {
+                    const v = row && row[c];
+                    if (v === null || v === undefined) {
+                      return <td key={c} className="dp-td"><span className="dp-cell-empty">—</span></td>;
+                    }
+                    const s = typeof v === "object" ? JSON.stringify(v) : String(v);
+                    return (
+                      <td key={c} className="dp-td">
+                        <span className="dp-cell-val" title={s}>{s.length > 90 ? s.slice(0, 90) + "…" : s}</span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan={columns.length + 1} className="dp-td--hint">
+                    No rows yet. Run the workflow, or make sure the container selector matches items on the live page.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function kindIcon(kind) {
+  if (kind === "attr") return "@";
+  if (kind === "html") return "</>";
+  return "Aa";
+}
+
 // ─── Field section (standalone extraction) ───────────────────────────────────
 
 function FieldSection({ step, execResults, previewData, onUpdateLabel }) {
@@ -395,17 +523,31 @@ export default function DataPreviewPanel({ steps, execResults, previewData = {},
       </div>
 
       <div className="dp-sections">
-        {sections.map(section =>
-          section.kind === "table" ? (
-            <TableSection
-              key={section.loopStep.id}
-              loopStep={section.loopStep}
-              columns={section.columns}
-              execResults={execResults}
-              previewData={previewData}
-              onUpdateLabel={onUpdateLabel}
-            />
-          ) : (
+        {sections.map(section => {
+          if (section.kind === "table") {
+            return (
+              <TableSection
+                key={section.loopStep.id}
+                loopStep={section.loopStep}
+                columns={section.columns}
+                execResults={execResults}
+                previewData={previewData}
+                onUpdateLabel={onUpdateLabel}
+              />
+            );
+          }
+          if (section.kind === "list") {
+            return (
+              <ListSection
+                key={section.step.id}
+                step={section.step}
+                execResults={execResults}
+                previewData={previewData}
+                onUpdateLabel={onUpdateLabel}
+              />
+            );
+          }
+          return (
             <FieldSection
               key={section.step.id}
               step={section.step}
@@ -413,8 +555,8 @@ export default function DataPreviewPanel({ steps, execResults, previewData = {},
               previewData={previewData}
               onUpdateLabel={onUpdateLabel}
             />
-          )
-        )}
+          );
+        })}
       </div>
     </div>
   );

@@ -88,30 +88,12 @@ const CATEGORIES = [
   },
 ];
 
-// Multi-selection: only extraction-safe actions (no single-element interaction)
-const MULTI_CATEGORIES = [
-  {
-    id: "extraction", label: "Extraction", color: "#58a6ff",
-    actions: [
-      { type: "EXTRACT_TEXT",  icon: "📝", quickAdd: true,
-        smartDefault: (sel) => ({ selector: sel.commonSelector, selectorType: "css", fallbackSelectors: [], multiple: true }) },
-      { type: "EXTRACT_ATTRIBUTE", icon: "🔗",
-        smartDefault: (sel) => ({ selector: sel.commonSelector, selectorType: "css", fallbackSelectors: [], attribute: "", multiple: true }) },
-      { type: "EXTRACT_HTML",  icon: "🧩",
-        smartDefault: (sel) => ({ selector: sel.commonSelector, selectorType: "css", fallbackSelectors: [], mode: "inner" }) },
-      { type: "EXTRACT_LIST",  icon: "📑", quickAdd: true,
-        smartDefault: (sel) => ({ containerSelector: sel.commonSelector, selectorType: "css", fallbackSelectors: {}, fields: {} }) },
-    ],
-  },
-  {
-    id: "flow", label: "Flow", color: "#a371f7",
-    actions: [
-      { type: "WAIT",              icon: "⏱️", quickAdd: true, smartDefault: () => ({ duration: 1000 }) },
-      { type: "WAIT_FOR_SELECTOR", icon: "👁️",
-        smartDefault: (sel) => ({ selector: sel.commonSelector, state: "visible", timeout: 30000 }) },
-    ],
-  },
-];
+// Multi-selection: only the two actions that genuinely apply to a SET of
+// elements — iterate over them (For-Each loop), or extract structured
+// fields from each one (Extract List). Single-element interactions like
+// Click / Hover / Type are deliberately hidden because they don't make
+// sense for N elements at once.
+// (Other extraction types are reachable by clicking a single element.)
 
 // ─── Main component ────────────────────────────────────────────────────────
 
@@ -121,6 +103,7 @@ export default function ElementInspector({
   onSelectAncestor, onGetChildren, onSelectChild,
   onHoverPickerChild, onHoverAncestor, onUnhoverPickerChild,
   onClearForEachCtx,
+  socket, onUpdateParams,
 }) {
   if (!element) return null;
 
@@ -133,6 +116,8 @@ export default function ElementInspector({
         onClose={onClose}
         onAddStep={onAddStep}
         onClearForEachCtx={onClearForEachCtx}
+        socket={socket}
+        onUpdateParams={onUpdateParams}
       />
     );
   }
@@ -320,33 +305,65 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
 
 // ─── Multi-element inspector ───────────────────────────────────────────────
 
-function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForEachCtx }) {
-  const [activeCategory, setActiveCategory] = useState("extraction");
-  const [selectedAction, setSelectedAction] = useState(null);
-  const [addedFlash, setAddedFlash] = useState(null);
+function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForEachCtx, socket, onUpdateParams }) {
+  // For multi-selection only two actions make sense:
+  //   1. Add a ForEach loop that iterates over the matched elements
+  //   2. Add an Extract List step that pulls structured fields out of each
+  //      element — optionally with an AI prompt that auto-populates the
+  //      field mappings on add.
+  const [addedFlash, setAddedFlash]       = useState(null);     // 'FOREACH' | 'EXTRACT_LIST' | 'EXTRACT_LIST_AI'
+  const [aiMode, setAiMode]               = useState(false);    // is the AI prompt panel open?
+  const [aiHint, setAiHint]               = useState("");
+  const [aiBusy, setAiBusy]               = useState(false);
+  const [aiError, setAiError]             = useState(null);
+  // Track the ID we asked the AI to fill so we ignore stale responses
+  // (e.g. user adds two AI-Extract steps back to back).
+  const pendingRef = useRef(null);
 
-  const cat = MULTI_CATEGORIES.find(c => c.id === activeCategory);
+  // Subscribe to the AI response once. Each request carries a unique
+  // requestId so we know which step's params to patch when the answer
+  // returns. The inspector may have been closed in the meantime — that's
+  // fine, we still hold a reference to onUpdateParams.
+  useEffect(() => {
+    if (!socket) return;
+    const onResult = (payload) => {
+      const pending = pendingRef.current;
+      if (!pending || payload.requestId !== pending.requestId) return;
+      pendingRef.current = null;
+      setAiBusy(false);
 
-  const handleQuickAdd = (actionMeta) => {
-    const def = actionDefinitions[actionMeta.type];
-    if (!def) return;
-    const smartParams = actionMeta.smartDefault ? actionMeta.smartDefault(selection) : {};
-    const step = createAction(actionMeta.type, { ...buildDefaultParams(def), ...smartParams }, buildDefaultAdvanced(def));
-    // Capture multi-element preview
-    const MULTI_PREVIEW = {
-      EXTRACT_TEXT:      () => `${selection.matchCount} elements matched`,
-      EXTRACT_ATTRIBUTE: () => `${selection.matchCount} attribute values`,
-      EXTRACT_HTML:      () => `${selection.matchCount} HTML fragments`,
-      EXTRACT_LIST:      () => `${selection.matchCount} list items`,
+      if (!payload.ok) {
+        setAiError(formatAiError(payload));
+        return;
+      }
+
+      // Convert the verified array [{name, selector, kind, attribute}] into
+      // the params.fields object shape expected by the editor + codegen.
+      const fieldsObj = {};
+      for (const f of payload.fields || []) {
+        if (!f || !f.name || !f.selector) continue;
+        fieldsObj[f.name] = {
+          selector: f.selector,
+          kind: f.kind === "attr" || f.kind === "html" ? f.kind : "text",
+          attribute: f.kind === "attr" && f.attribute ? f.attribute : null,
+        };
+      }
+
+      if (Object.keys(fieldsObj).length === 0) {
+        setAiError("The AI didn't return any usable fields. Add some manually from the step's editor.");
+        return;
+      }
+
+      onUpdateParams?.(pending.stepId, { fields: fieldsObj });
+      setAiError(null);
+      setAiHint("");
+      setAiMode(false);
+      setAddedFlash("EXTRACT_LIST_AI_DONE");
+      setTimeout(() => setAddedFlash(null), 1200);
     };
-    if (MULTI_PREVIEW[actionMeta.type]) {
-      step.previewValue    = MULTI_PREVIEW[actionMeta.type]();
-      step.previewSelector = selection.commonSelector || "";
-    }
-    onAddStep(step);
-    setAddedFlash(actionMeta.type);
-    setTimeout(() => setAddedFlash(null), 800);
-  };
+    socket.on("aiExtractListFieldsResult", onResult);
+    return () => socket.off("aiExtractListFieldsResult", onResult);
+  }, [socket, onUpdateParams]);
 
   const handleAddForEach = () => {
     const control = createControl(CONTROL_TYPES.FOR_EACH_ELEMENTS, {
@@ -354,11 +371,59 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
       itemVar: "el",
       indexVar: "i",
     });
-    // Attach all matched elements so DataPreviewPanel can show real preview rows
     control.previewElements = selection.elements || [];
     onAddStep(control, { isForEach: true });
     setAddedFlash("FOREACH");
     setTimeout(() => setAddedFlash(null), 800);
+  };
+
+  const buildExtractListStep = () => {
+    const def = actionDefinitions.EXTRACT_LIST;
+    const params = {
+      ...buildDefaultParams(def),
+      containerSelector: selection.commonSelector,
+      selectorType: "css",
+      fallbackSelectors: [],
+      fields: {},
+    };
+    const step = createAction("EXTRACT_LIST", params, buildDefaultAdvanced(def));
+    step.previewValue    = `${selection.matchCount} list items`;
+    step.previewSelector = selection.commonSelector || "";
+    return step;
+  };
+
+  const handleAddExtractList = () => {
+    const step = buildExtractListStep();
+    onAddStep(step);
+    setAddedFlash("EXTRACT_LIST");
+    setTimeout(() => setAddedFlash(null), 800);
+  };
+
+  const handleAddExtractListWithAI = () => {
+    setAiError(null);
+    if (!socket) {
+      setAiError("Not connected to the backend.");
+      return;
+    }
+    if (!selection.commonSelector) {
+      setAiError("No selector available for this selection.");
+      return;
+    }
+    // Create the step first so the user sees it in the workflow and the
+    // editor can land on it. The fields will fill in when the AI answers.
+    const step = buildExtractListStep();
+    onAddStep(step);
+
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    pendingRef.current = { requestId, stepId: step.id };
+    setAiBusy(true);
+    socket.emit("aiExtractListFields", {
+      containerSelector: selection.commonSelector,
+      selectorType: "css",
+      hint: aiHint,
+      existingFields: {},
+      requestId,
+    });
   };
 
   return (
@@ -415,95 +480,121 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
         </div>
       </div>
 
-      {/* ── ForEach banner ───────────────────────────────────────────────── */}
-      {!forEachCtx && (
-        <div className="ei-foreach-banner">
-          <div className="ei-foreach-banner-text">
-            <span className="ei-foreach-icon">∀</span>
-            <div>
-              <div className="ei-foreach-title">Add as ForEach Loop</div>
-              <div className="ei-foreach-desc">Iterate over all {selection.matchCount} matched elements</div>
-            </div>
-          </div>
-          <button
-            className={`ei-foreach-btn ${addedFlash === "FOREACH" ? "flash" : ""}`}
-            onClick={handleAddForEach}>
-            {addedFlash === "FOREACH" ? <><CheckIcon /> Added!</> : <><PlusIcon /> Add Loop</>}
-          </button>
-        </div>
-      )}
-
       <div className="ei-body">
-        {/* ── Notice ───────────────────────────────────────────────────── */}
         <div className="ei-multi-notice">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
-          Single-element actions (Click, Hover…) are hidden for multi-selections.
+          For a set of elements there are two useful actions — pick one below.
         </div>
 
-        {/* ── Category tabs ─────────────────────────────────────────────── */}
-        <div className="ei-tabs">
-          {MULTI_CATEGORIES.map(c => (
-            <button key={c.id}
-              className={`ei-tab ${activeCategory === c.id ? "active" : ""}`}
-              style={activeCategory === c.id ? { borderColor: c.color, color: c.color } : {}}
-              onClick={() => { setActiveCategory(c.id); setSelectedAction(null); }}>
-              {c.label}
-            </button>
-          ))}
-        </div>
-
-        {/* ── Action cards ──────────────────────────────────────────────── */}
-        <div className="ei-action-grid">
-          {(cat?.actions || []).map(actionMeta => {
-            const def = actionDefinitions[actionMeta.type];
-            if (!def) return null;
-            const isSelected = selectedAction?.type === actionMeta.type;
-            const isFlashing = addedFlash === actionMeta.type;
-            return (
-              <div key={actionMeta.type}
-                className={`ei-action-card ${isSelected ? "selected" : ""} ${isFlashing ? "flash" : ""}`}
-                style={isSelected ? { borderColor: cat.color } : {}}
-                onClick={() => setSelectedAction(actionMeta)}>
-                <div className="ei-action-icon">{actionMeta.icon}</div>
-                <div className="ei-action-label">{def.label}</div>
-                {actionMeta.quickAdd && (
-                  <button className="ei-quick-add" title="Add with defaults"
-                    onClick={e => { e.stopPropagation(); handleQuickAdd(actionMeta); }}>+</button>
-                )}
+        {/* ── 1. For-Each loop ───────────────────────────────────────────── */}
+        {!forEachCtx && (
+          <div className="ei-foreach-banner">
+            <div className="ei-foreach-banner-text">
+              <span className="ei-foreach-icon">∀</span>
+              <div>
+                <div className="ei-foreach-title">Add as For-Each Loop</div>
+                <div className="ei-foreach-desc">Run a series of steps inside every one of {selection.matchCount} matched elements.</div>
               </div>
-            );
-          })}
-        </div>
-
-        {selectedAction && (
-          <ActionConfigurator
-            key={selectedAction.type}
-            actionMeta={selectedAction}
-            element={{ ...selection, selector: selection.commonSelector }}
-            accentColor={cat?.color}
-            onAdd={(params, advanced) => {
-              const step = createAction(selectedAction.type, params, advanced);
-              const MULTI_PREVIEW_FN = {
-                EXTRACT_TEXT:      () => `${selection.matchCount} elements matched`,
-                EXTRACT_ATTRIBUTE: () => `${selection.matchCount} attribute values`,
-                EXTRACT_HTML:      () => `${selection.matchCount} HTML fragments`,
-                EXTRACT_LIST:      () => `${selection.matchCount} list items`,
-              };
-              if (MULTI_PREVIEW_FN[selectedAction.type]) {
-                step.previewValue    = MULTI_PREVIEW_FN[selectedAction.type]();
-                step.previewSelector = selection.commonSelector || "";
-              }
-              onAddStep(step);
-              setAddedFlash(selectedAction.type);
-              setTimeout(() => setAddedFlash(null), 800);
-            }}
-          />
+            </div>
+            <button
+              className={`ei-foreach-btn ${addedFlash === "FOREACH" ? "flash" : ""}`}
+              onClick={handleAddForEach}>
+              {addedFlash === "FOREACH" ? <><CheckIcon /> Added!</> : <><PlusIcon /> Add Loop</>}
+            </button>
+          </div>
         )}
+
+        {/* ── 2. Extract List (with / without AI) ────────────────────────── */}
+        <div className={`ei-extract-list-card ${addedFlash === "EXTRACT_LIST" || addedFlash === "EXTRACT_LIST_AI_DONE" ? "flash" : ""}`}>
+          <div className="ei-extract-list-header">
+            <span className="ei-extract-list-icon">📑</span>
+            <div className="ei-extract-list-text">
+              <div className="ei-extract-list-title">Add as Extract List</div>
+              <div className="ei-extract-list-desc">
+                Pull structured fields (text or attributes) out of each item. Add it now and configure fields later, or let the AI propose them from a sample.
+              </div>
+            </div>
+          </div>
+
+          {/* Action buttons */}
+          {!aiMode && (
+            <div className="ei-extract-list-actions">
+              <button
+                className="ei-foreach-btn"
+                onClick={handleAddExtractList}
+                disabled={aiBusy}>
+                {addedFlash === "EXTRACT_LIST" ? <><CheckIcon /> Added!</> : <><PlusIcon /> Add (configure later)</>}
+              </button>
+              <button
+                className="ei-extract-list-ai-btn"
+                onClick={() => setAiMode(true)}
+                disabled={aiBusy}
+                title="Open AI prompt and add with auto-detected fields">
+                ✨ Add with AI prompt…
+              </button>
+            </div>
+          )}
+
+          {/* AI prompt panel */}
+          {aiMode && (
+            <div className="ei-extract-list-ai">
+              <textarea
+                rows={3}
+                value={aiHint}
+                placeholder={'Describe what to extract — e.g. "product title, price, image URL and link. Ignore the rating stars."'}
+                onChange={e => setAiHint(e.target.value)}
+                disabled={aiBusy}
+              />
+              <div className="ei-extract-list-ai-actions">
+                <button
+                  className="ei-foreach-btn"
+                  onClick={handleAddExtractListWithAI}
+                  disabled={aiBusy}>
+                  {aiBusy
+                    ? "Analysing…"
+                    : (addedFlash === "EXTRACT_LIST_AI_DONE" ? <><CheckIcon /> Fields added!</> : <>✨ Add with AI</>)}
+                </button>
+                <button
+                  className="ei-extract-list-cancel"
+                  onClick={() => { setAiMode(false); setAiError(null); }}
+                  disabled={aiBusy}>
+                  Cancel
+                </button>
+              </div>
+              {aiError && <div className="ei-extract-list-ai-error">{aiError}</div>}
+              {!aiError && aiBusy && (
+                <div className="ei-extract-list-ai-busy">
+                  Analysing a sample item and verifying selectors on the live page…
+                </div>
+              )}
+              {!aiError && !aiBusy && (
+                <div className="ei-extract-list-ai-hint">
+                  AI proposes field mappings (text or attribute). Every selector is verified live before being added — you can edit them in the step's editor afterwards.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
+}
+
+// ── AI error → friendly message ──────────────────────────────────────────
+function formatAiError(payload) {
+  if (!payload) return "Unknown AI error";
+  const code = payload.code || "";
+  switch (code) {
+    case "NO_API_KEY":   return "AI is not configured on the server (set LLM_API_KEY). Add fields manually from the step's editor.";
+    case "NO_PAGE":      return "No active browser page — navigate to the target URL first.";
+    case "NO_SAMPLE":    return payload.error || "No matching element on the live page.";
+    case "BAD_JSON":
+    case "BAD_FIELDS":   return "The AI didn't return a usable suggestion. Add fields manually or try a more specific hint.";
+    case "LLM_FAIL":
+    default:             return payload.error || `AI request failed (${code || "unknown"}).`;
+  }
 }
 
 // ─── ForEach context banner ───────────────────────────────────────────────

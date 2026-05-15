@@ -16,6 +16,7 @@ const { executeWorkflow } = require('./workflow/WorkflowExecutor');
 const { generateCode }    = require('./workflow/workflowCodegen');
 const { verifyToken }    = require('./middleware/auth');
 const db                 = require('./db');
+const extractListAI      = require('./services/extractListAI.service');
 
 // Walk a workflow's step tree and collect referenced custom action ids,
 // then fetch the user-owned definitions from the DB and return them as a
@@ -753,6 +754,152 @@ io.on('connection', async (socket) => {
     } catch(e) {}
   });
 
+  // ── AI: propose EXTRACT_LIST fields from a sample container ──────────────
+  // Captures the first matching container's cleaned outerHTML, asks the LLM
+  // for a structured set of field mappings, then validates EVERY proposed
+  // selector by actually running it against the same container (and a
+  // second container if available) — surviving fields come back to the
+  // client paired with their live sample value.
+  socket.on('aiExtractListFields', async ({ containerSelector, selectorType, hint, existingFields, requestId }) => {
+    const reply = (payload) => socket.emit('aiExtractListFieldsResult', { requestId, ...payload });
+
+    if (!containerSelector || typeof containerSelector !== 'string') {
+      return reply({ ok: false, error: 'containerSelector is required', code: 'NO_SELECTOR' });
+    }
+
+    const page = await getActivePage();
+    if (!page) return reply({ ok: false, error: 'No active page — navigate to a URL first.', code: 'NO_PAGE' });
+
+    // 1. Capture cleaned sample HTML for the FIRST container.
+    let sample;
+    try {
+      sample = await page.evaluate((sel, type) => {
+        const isXPath = type === 'xpath' || sel.startsWith('/') || sel.startsWith('(');
+        let first = null;
+        if (isXPath) {
+          const r = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+          first = r.singleNodeValue;
+        } else {
+          first = document.querySelector(sel);
+        }
+        if (!first) return { error: 'No element matched the container selector', count: 0 };
+        // Count all matches so the user knows the selector is workable.
+        let count = 0;
+        try {
+          if (isXPath) {
+            const all = document.evaluate(sel, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            count = all.snapshotLength;
+          } else {
+            count = document.querySelectorAll(sel).length;
+          }
+        } catch (_) {}
+        // Clean clone — drop scripts/styles/head/etc and inline event handlers.
+        const clone = first.cloneNode(true);
+        clone.querySelectorAll('script, style, noscript, link, meta, template, svg').forEach(n => n.remove());
+        clone.querySelectorAll('*').forEach(el => {
+          for (const a of Array.from(el.attributes || [])) {
+            if (a.name.startsWith('on')) el.removeAttribute(a.name);
+            if (a.name === 'src' && /^data:/i.test(a.value)) el.setAttribute('src', '[data-uri-removed]');
+          }
+        });
+        let html = clone.outerHTML || '';
+        if (html.length > 30000) html = html.slice(0, 30000) + '...[truncated]';
+        return { html, count };
+      }, containerSelector, selectorType || 'css');
+    } catch (err) {
+      return reply({ ok: false, error: `Failed to read sample: ${err.message}`, code: 'EVAL_FAIL' });
+    }
+
+    if (!sample || sample.error) {
+      return reply({ ok: false, error: sample?.error || 'No sample captured', code: 'NO_SAMPLE' });
+    }
+
+    // 2. Call the LLM.
+    const result = await extractListAI.proposeFields({
+      sampleHtml: sample.html,
+      userHint: typeof hint === 'string' ? hint : '',
+      existingFields: existingFields && typeof existingFields === 'object' ? existingFields : null,
+    });
+
+    if (!result.ok) {
+      return reply({ ok: false, error: result.error, code: result.code, sampleCount: sample.count });
+    }
+
+    // 3. Verify every proposed selector against the live DOM. Drop the ones
+    //    that don't match the first container (likely hallucinated) and
+    //    record the live sample value for the ones that survive.
+    const verifyResult = await page.evaluate((containerSel, type, fields) => {
+      const isXPath = type === 'xpath' || containerSel.startsWith('/') || containerSel.startsWith('(');
+      let containers = [];
+      if (isXPath) {
+        const r = document.evaluate(containerSel, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        for (let i = 0; i < r.snapshotLength; i++) containers.push(r.snapshotItem(i));
+      } else {
+        containers = Array.from(document.querySelectorAll(containerSel));
+      }
+      const c0 = containers[0];
+      const c1 = containers[1] || null;
+      const verified = [];
+      const rejected = [];
+      for (const f of fields) {
+        let target0 = null, target1 = null;
+        try { target0 = f.selector ? c0.querySelector(f.selector) : c0; } catch (e) {
+          rejected.push({ ...f, reason: 'invalid CSS selector' });
+          continue;
+        }
+        if (c1) {
+          try { target1 = f.selector ? c1.querySelector(f.selector) : c1; } catch (_) { target1 = null; }
+        }
+        if (!target0) {
+          rejected.push({ ...f, reason: 'selector did not match in the first container' });
+          continue;
+        }
+        // Compute sample value
+        let sampleValue = null;
+        try {
+          if (f.kind === 'attr' && f.attribute) sampleValue = target0.getAttribute(f.attribute);
+          else if (f.kind === 'html') sampleValue = (target0.innerHTML || '').slice(0, 400);
+          else sampleValue = (target0.textContent || '').trim().slice(0, 400);
+        } catch (_) {}
+        // Also count how many of the surveyed containers (up to 5) the
+        // selector matches — anything that only hits the first container
+        // and nothing else is likely too specific.
+        let hitCount = 0;
+        for (const c of containers.slice(0, 5)) {
+          try { if (f.selector ? c.querySelector(f.selector) : c) hitCount++; } catch (_) {}
+        }
+        verified.push({
+          ...f,
+          sampleValue,
+          hitCount,
+          surveyed: Math.min(containers.length, 5),
+        });
+      }
+      return { verified, rejected, totalMatched: containers.length };
+    }, containerSelector, selectorType || 'css', result.fields).catch(err => ({ error: err.message }));
+
+    if (!verifyResult || verifyResult.error) {
+      // The AI succeeded but live verification failed — return the proposal
+      // anyway with empty samples so the user can still see / tweak it.
+      return reply({
+        ok: true,
+        fields: result.fields.map(f => ({ ...f, sampleValue: null, hitCount: 0, surveyed: 0 })),
+        rejected: [],
+        explanation: result.explanation,
+        sampleCount: sample.count,
+        verificationError: verifyResult?.error || 'verification failed',
+      });
+    }
+
+    reply({
+      ok: true,
+      fields: verifyResult.verified,
+      rejected: verifyResult.rejected,
+      explanation: result.explanation,
+      sampleCount: verifyResult.totalMatched,
+    });
+  });
+
   socket.on('downloadCode', (data) => {
     /*
       data = { steps, meta? }
@@ -777,6 +924,58 @@ io.on('connection', async (socket) => {
     if (!page) return;
     try {
       const selector = params?.selector || params?.containerSelector || '';
+
+      // ── EXTRACT_LIST: run the configured fields against the first N
+      //    matched containers and return tabular rows. This is what the
+      //    Data Preview tab shows live as the user edits fields.
+      if (type === 'EXTRACT_LIST') {
+        const sel = params?.containerSelector || '';
+        if (!sel) return;
+        const fields = params?.fields && typeof params.fields === 'object' ? params.fields : {};
+        const rows = await page.evaluate((containerSel, fieldsObj) => {
+          const isXPath = containerSel.startsWith('/') || containerSel.startsWith('(');
+          const getEls = (s) => {
+            if (isXPath) {
+              const r = document.evaluate(s, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+              return Array.from({ length: r.snapshotLength }, (_, i) => r.snapshotItem(i));
+            }
+            return Array.from(document.querySelectorAll(s));
+          };
+          let containers = [];
+          try { containers = getEls(containerSel); } catch (_) { return { error: 'invalid container selector' }; }
+          const rows = containers.slice(0, 25).map(c => {
+            const row = {};
+            for (const [name, spec] of Object.entries(fieldsObj)) {
+              try {
+                const normalized = typeof spec === 'string'
+                  ? { selector: spec, kind: 'text', attribute: null }
+                  : { selector: spec.selector || '', kind: spec.kind || 'text', attribute: spec.attribute || null };
+                const childSel = normalized.selector;
+                const target = childSel ? c.querySelector(childSel) : c;
+                if (!target) { row[name] = null; continue; }
+                if (normalized.kind === 'attr' && normalized.attribute) {
+                  row[name] = target.getAttribute(normalized.attribute);
+                } else if (normalized.kind === 'html') {
+                  row[name] = (target.innerHTML || '').trim();
+                } else {
+                  row[name] = (target.textContent || '').trim();
+                }
+              } catch (_) {
+                row[name] = null;
+              }
+            }
+            return row;
+          });
+          return { rows, totalMatched: containers.length };
+        }, sel, fields).catch(() => ({ error: 'preview failed' }));
+        socket.emit('previewResult', {
+          stepId,
+          previewRows: rows?.rows || [],
+          totalMatched: rows?.totalMatched || 0,
+          previewError: rows?.error || null,
+        });
+        return;
+      }
 
       // ── Shared helpers (serialisable — passed into page.evaluate) ──────────
       // Detect XPath: starts with / or ( (e.g. (//div...)[1] pattern)

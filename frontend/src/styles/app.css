@@ -1740,6 +1740,119 @@ body {
     color: var(--accent-success);
 }
 
+/* ── Extract List card on the multi-selection inspector ─────────────── */
+.ei-extract-list-card {
+    margin: 8px 12px;
+    padding: 11px;
+    background: rgba(79, 156, 249, 0.06);
+    border: 1px solid rgba(79, 156, 249, 0.24);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex-shrink: 0;
+    transition: background 0.2s, border-color 0.2s;
+}
+.ei-extract-list-card.flash {
+    background: rgba(63, 185, 80, 0.12);
+    border-color: rgba(63, 185, 80, 0.45);
+}
+.ei-extract-list-header {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+}
+.ei-extract-list-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+}
+.ei-extract-list-text { min-width: 0; }
+.ei-extract-list-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-primary, #4f9cf9);
+    margin-bottom: 2px;
+}
+.ei-extract-list-desc {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+.ei-extract-list-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.ei-extract-list-ai-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 11px;
+    background: linear-gradient(135deg, rgba(79, 156, 249, 0.18), rgba(126, 92, 255, 0.18));
+    border: 1px solid rgba(126, 92, 255, 0.4);
+    border-radius: 6px;
+    color: #c5b8ff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+}
+.ei-extract-list-ai-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, rgba(79, 156, 249, 0.28), rgba(126, 92, 255, 0.28));
+}
+.ei-extract-list-ai-btn:disabled,
+.ei-extract-list-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.ei-extract-list-ai {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.ei-extract-list-ai textarea {
+    width: 100%;
+    background: var(--bg, #0e0e0e);
+    border: 1px solid var(--border-soft, #2a2a2a);
+    border-radius: 6px;
+    color: var(--text-primary, #e6e6e6);
+    padding: 8px 10px;
+    font-size: 12px;
+    font-family: inherit;
+    resize: vertical;
+    box-sizing: border-box;
+}
+.ei-extract-list-ai-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.ei-extract-list-cancel {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 6px 8px;
+}
+.ei-extract-list-cancel:hover:not(:disabled) { color: var(--text-primary, #e6e6e6); }
+.ei-extract-list-ai-error {
+    font-size: 11px;
+    color: #e6776a;
+    background: rgba(230, 119, 106, 0.08);
+    border-left: 3px solid #e6776a;
+    padding: 6px 8px;
+    border-radius: 4px;
+}
+.ei-extract-list-ai-busy {
+    font-size: 11px;
+    color: #4f9cf9;
+    font-style: italic;
+}
+.ei-extract-list-ai-hint {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    line-height: 1.4;
+}
+
 
 /* ── Multi seeds preview ─────────────────────────────────────────────── */
 
