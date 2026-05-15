@@ -35,6 +35,10 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
   const [enabled,  setEnabled]  = useState(false);
   const [minutes,  setMinutes]  = useState(60);
   const [customMode, setCustomMode] = useState(false);
+  // Optional time-of-day anchor in HH:MM (24-hour, user-local). When set,
+  // the first run is the next occurrence of this time in the user's local
+  // tz, and subsequent runs land on anchor + k * interval.
+  const [startTime, setStartTime] = useState('');
 
   const refresh = async () => {
     if (!workflowId) return;
@@ -47,10 +51,19 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
         setEnabled(s.isActive);
         setMinutes(s.intervalMinutes);
         setCustomMode(!PRESETS.some(p => p.minutes === s.intervalMinutes));
+        // Render the anchor (stored as UTC ISO) back in the user's local tz
+        // so the time picker shows what they originally chose.
+        if (s.anchorAt) {
+          const d = new Date(s.anchorAt);
+          setStartTime(`${pad(d.getHours())}:${pad(d.getMinutes())}`);
+        } else {
+          setStartTime('');
+        }
       } else {
         setEnabled(false);
         setMinutes(60);
         setCustomMode(false);
+        setStartTime('');
       }
     } catch (err) {
       setError(err?.response?.data?.error || err.message);
@@ -71,15 +84,31 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
       if (!Number.isFinite(m) || m < 5) {
         throw new Error("Interval must be at least 5 minutes");
       }
-      const saved = await schedulesApi.upsertForWorkflow(workflowId, m, enabled);
+      // Convert HH:MM (user-local) into the next UTC ISO occurrence so the
+      // backend can treat it as the anchor for the recurring schedule.
+      let startAtIso = null;
+      if (startTime) {
+        const match = /^(\d{1,2}):(\d{2})$/.exec(startTime.trim());
+        if (!match) throw new Error("Start time must be in HH:MM format");
+        const h = Number(match[1]); const mm = Number(match[2]);
+        if (h < 0 || h > 23 || mm < 0 || mm > 59) throw new Error("Start time is out of range");
+        const now = new Date();
+        const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, mm, 0, 0);
+        if (target <= now) target.setDate(target.getDate() + 1); // already passed today → tomorrow
+        startAtIso = target.toISOString();
+      }
+      const saved = await schedulesApi.upsertForWorkflow(workflowId, m, enabled, startAtIso);
       setSchedule(saved);
-      showToast?.(enabled ? `✓ Schedule active — every ${m} min` : "✓ Schedule paused", "success");
+      const when = startTime ? `starting ${startTime} every ${prettyMin(m)}` : `every ${prettyMin(m)}`;
+      showToast?.(enabled ? `✓ Schedule active — ${when}` : "✓ Schedule paused", "success");
     } catch (err) {
       setError(err?.response?.data?.error || err.message);
     } finally {
       setBusy(false);
     }
   };
+
+  const clearAnchor = () => setStartTime('');
 
   const remove = async () => {
     if (!schedule) return;
@@ -160,6 +189,31 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
                 />
               </div>
 
+              <div className="wf-section-title">Start at (optional)</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <input
+                  type="time"
+                  value={startTime}
+                  onChange={e => setStartTime(e.target.value)}
+                  disabled={!enabled || busy}
+                  step={60}
+                />
+                {startTime && (
+                  <button type="button"
+                          onClick={clearAnchor}
+                          disabled={!enabled || busy}
+                          className="wf-save-btn"
+                          style={{ background: "transparent", color: "var(--text-secondary)", padding: "4px 8px" }}>
+                    Clear
+                  </button>
+                )}
+                <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                  {startTime
+                    ? `Runs at ${startTime} ${tzLabel()} and every ${prettyMin(Number(minutes))} after`
+                    : `Runs every ${prettyMin(Number(minutes))} starting when you save`}
+                </span>
+              </div>
+
               {schedule && (
                 <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 14 }}>
                   {schedule.lastRunAt && <div>Last run: {formatDate(schedule.lastRunAt)}</div>}
@@ -195,4 +249,25 @@ function formatDate(s) {
   const d = new Date(/T/.test(s) ? s : (s.replace(" ", "T") + "Z"));
   if (Number.isNaN(d.getTime())) return s;
   return d.toLocaleString();
+}
+
+function pad(n) { return String(n).padStart(2, "0"); }
+
+function prettyMin(m) {
+  if (!Number.isFinite(m)) return `${m} min`;
+  if (m % 1440 === 0) { const d = m / 1440; return d === 1 ? "day" : `${d} days`; }
+  if (m % 60   === 0) { const h = m / 60;   return h === 1 ? "hour" : `${h} hr`; }
+  return `${m} min`;
+}
+
+function tzLabel() {
+  // Best-effort short timezone label, falls back to a numeric offset
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) return `(${tz})`;
+  } catch (_) {}
+  const off = -new Date().getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  const abs = Math.abs(off);
+  return `(UTC${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)})`;
 }

@@ -63,8 +63,8 @@ export const aiApi = {
 export const schedulesApi = {
   list:           ()             => api.get("/api/schedules").then(r => r.data.schedules),
   getForWorkflow: (workflowId)   => api.get(`/api/schedules/workflow/${workflowId}`).then(r => r.data.schedule),
-  upsertForWorkflow: (workflowId, intervalMinutes, isActive) =>
-    api.put(`/api/schedules/workflow/${workflowId}`, { intervalMinutes, isActive }).then(r => r.data.schedule),
+  upsertForWorkflow: (workflowId, intervalMinutes, isActive, startAtIso = null) =>
+    api.put(`/api/schedules/workflow/${workflowId}`, { intervalMinutes, isActive, startAtIso }).then(r => r.data.schedule),
   removeForWorkflow: (workflowId) =>
     api.delete(`/api/schedules/workflow/${workflowId}`).then(r => r.data),
 };

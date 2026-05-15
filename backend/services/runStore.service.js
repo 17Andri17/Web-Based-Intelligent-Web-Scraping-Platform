@@ -142,25 +142,55 @@ function getScheduleByWorkflow(userId, workflowId) {
   `).get(userId, workflowId);
 }
 
-function upsertSchedule({ userId, workflowId, intervalMinutes, isActive }) {
+function upsertSchedule({ userId, workflowId, intervalMinutes, isActive, anchorAtIso = null }) {
   // SQLite upsert via unique index on workflow_id.
   const existing = db.prepare(
     'SELECT id FROM schedules WHERE workflow_id = ?'
   ).get(workflowId);
-  const nextRun = new Date(Date.now() + intervalMinutes * 60 * 1000).toISOString();
+  const validAnchor = normaliseAnchor(anchorAtIso);
+  const nextRun = computeNextRun(validAnchor, intervalMinutes).toISOString();
   if (existing) {
     db.prepare(`
       UPDATE schedules
-      SET interval_minutes = ?, is_active = ?, next_run_at = ?, updated_at = datetime('now')
+      SET interval_minutes = ?, is_active = ?, anchor_at = ?, next_run_at = ?, updated_at = datetime('now')
       WHERE id = ?
-    `).run(intervalMinutes, isActive ? 1 : 0, nextRun, existing.id);
+    `).run(intervalMinutes, isActive ? 1 : 0, validAnchor, nextRun, existing.id);
     return getScheduleById(existing.id);
   }
   const info = db.prepare(`
-    INSERT INTO schedules (user_id, workflow_id, interval_minutes, is_active, next_run_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(userId, workflowId, intervalMinutes, isActive ? 1 : 0, nextRun);
+    INSERT INTO schedules (user_id, workflow_id, interval_minutes, is_active, anchor_at, next_run_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(userId, workflowId, intervalMinutes, isActive ? 1 : 0, validAnchor, nextRun);
   return getScheduleById(info.lastInsertRowid);
+}
+
+function normaliseAnchor(anchorAtIso) {
+  if (!anchorAtIso) return null;
+  const t = Date.parse(anchorAtIso);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
+
+/**
+ * Compute the next time a scheduled workflow should fire.
+ *
+ * With an anchor: we treat the schedule as recurring at anchor + k * interval
+ * (k >= 0). The next fire time is the smallest such slot that is strictly in
+ * the future. This keeps "daily at 09:00" anchored at 09:00 even if a run
+ * gets delayed, and lets "every 3 hr from 09:00" produce 09:00, 12:00, 15:00…
+ *
+ * Without an anchor: fall back to plain "fire in `intervalMinutes` from now".
+ */
+function computeNextRun(anchorIso, intervalMinutes) {
+  const now = Date.now();
+  const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000;
+  if (!anchorIso) return new Date(now + intervalMs);
+  const anchor = Date.parse(anchorIso);
+  if (Number.isNaN(anchor)) return new Date(now + intervalMs);
+  if (anchor > now) return new Date(anchor);
+  const slots = Math.ceil((now - anchor) / intervalMs);
+  let next = anchor + slots * intervalMs;
+  if (next <= now) next += intervalMs;
+  return new Date(next);
 }
 
 function getScheduleById(id) {
@@ -186,7 +216,10 @@ function dueSchedules(now = new Date()) {
 }
 
 function bumpScheduleAfterRun(scheduleId, intervalMinutes) {
-  const next = new Date(Date.now() + intervalMinutes * 60 * 1000).toISOString();
+  // Recompute against the anchor (if any) so the schedule stays aligned to
+  // the user-chosen time-of-day even when the dispatcher tick lags slightly.
+  const row = db.prepare('SELECT anchor_at FROM schedules WHERE id = ?').get(scheduleId);
+  const next = computeNextRun(row && row.anchor_at, intervalMinutes).toISOString();
   db.prepare(`
     UPDATE schedules
     SET last_run_at = datetime('now'), next_run_at = ?
