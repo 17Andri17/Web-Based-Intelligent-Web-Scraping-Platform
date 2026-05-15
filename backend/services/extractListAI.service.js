@@ -32,8 +32,14 @@ const llm = require('./llm.service');
 // from the long-form version is moved into the user prompt so each request
 // surfaces exactly the constraints the model needs for THIS sample.
 const SYSTEM_PROMPT = [
-  'You are a web-scraping helper. Given a sample HTML snippet of ONE item from a repeating list, you propose a list of fields to extract from every sibling item.',
-  'Reply with a single JSON object and nothing else. No markdown, no commentary.',
+  'You are a web-scraping helper. Given a sample HTML snippet of ONE item from a repeating list, you propose extraction fields for every sibling item.',
+  '',
+  'YOUR ENTIRE REPLY MUST BE A SINGLE JSON OBJECT.',
+  '- Start your reply with the character "{".',
+  '- End your reply with the character "}".',
+  '- Do NOT think out loud. Do NOT explain. Do NOT use markdown code fences.',
+  '- The text BEFORE { and AFTER } must be empty.',
+  '',
   'Shape:',
   '{"fields":[{"name":"<snake_case>","selector":"<CSS relative to container>","kind":"text"|"attr"|"html","attribute":"<only when kind=attr>"}],"explanation":"<one short sentence>"}',
 ].join('\n');
@@ -71,6 +77,7 @@ function buildUserPrompt({ sampleHtml, userHint, existingFields }) {
   }
 
   lines.push('');
+  lines.push('Remember: your reply starts with { and ends with }. Nothing before, nothing after.');
   lines.push('Output the JSON object now:');
   return lines.join('\n');
 }
@@ -129,18 +136,72 @@ async function proposeFields({ sampleHtml, userHint, existingFields, maxFields =
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
 
+// Robust JSON extractor for "chatty" LLM responses. Some smaller models
+// (notably Groq's llama-3.1-8b-instant) reason out loud BEFORE emitting
+// their JSON, so the response often looks like:
+//
+//   "We need to output JSON with fields title and link. The container is
+//    an <a> tag... Each field has {name, selector, ...}. Final answer:
+//    {"fields": [...]}"
+//
+// Naive {first ... last} extraction picks up "{name, selector, ...}" from
+// the prose and fails to parse. Instead we walk the string, find every
+// brace-balanced `{...}` substring (respecting JSON strings + escapes),
+// try parsing each one, and prefer the LATEST candidate that actually
+// contains a `fields` array.
 function parseLlmJson(raw) {
   if (typeof raw !== 'string') return null;
+
+  // Strip <think> blocks and ```json fences first — easy wins.
   let s = raw.replace(/<think>[\s\S]*?<\/think>/gi, '');
-  s = s.replace(/```(?:json)?/gi, '').trim();
-  const first = s.indexOf('{');
-  const last  = s.lastIndexOf('}');
-  if (first === -1 || last <= first) return null;
-  try { return JSON.parse(s.slice(first, last + 1)); } catch (_) {
-    // One more attempt: some models emit trailing commas. Strip them.
-    const repaired = s.slice(first, last + 1).replace(/,(\s*[}\]])/g, '$1');
-    try { return JSON.parse(repaired); } catch (_) { return null; }
+  s = s.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+
+  // Walk character-by-character finding all balanced top-level {...} spans.
+  const candidates = [];
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== '{') continue;
+    let depth = 0;
+    let inStr = false;
+    let escape = false;
+    for (let j = i; j < s.length; j++) {
+      const ch = s[j];
+      if (escape) { escape = false; continue; }
+      if (inStr) {
+        if (ch === '\\') escape = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          candidates.push(s.slice(i, j + 1));
+          // Skip ahead past the close — we don't need to start a new
+          // candidate inside the one we just collected.
+          i = j;
+          break;
+        }
+      }
+    }
   }
+
+  const tryParse = (txt) => {
+    try { return JSON.parse(txt); } catch (_) {}
+    // Repair common LLM-ism: trailing commas.
+    const repaired = txt.replace(/,(\s*[}\]])/g, '$1');
+    try { return JSON.parse(repaired); } catch (_) { return null; }
+  };
+
+  // Iterate latest → earliest, preferring objects with a fields array.
+  let firstParsable = null;
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const obj = tryParse(candidates[i]);
+    if (!obj || typeof obj !== 'object') continue;
+    if (Array.isArray(obj.fields)) return obj;
+    if (!firstParsable) firstParsable = obj;
+  }
+  return firstParsable;
 }
 
 const NAME_RX = /^[a-z][a-z0-9_]{0,40}$/;
@@ -197,12 +258,16 @@ function validateFields(obj, maxFields, tag = '') {
     if (!name) { dropped++; dropReasons.push(`bad name "${origName}"`); continue; }
     if (seenNames.has(name)) { dropped++; dropReasons.push(`duplicate name "${name}"`); continue; }
 
-    if (typeof f.selector !== 'string' || !f.selector.trim()) {
-      dropped++; dropReasons.push(`empty selector for "${name}"`); continue;
+    // Empty selector is valid — it means "use the container element itself"
+    // (the LLM uses this for cases where the value lives on the container,
+    // typically an attribute like the href of an <a> container).
+    if (typeof f.selector !== 'string') {
+      dropped++; dropReasons.push(`selector not a string for "${name}"`); continue;
     }
     let selector = cleanSelector(f.selector);
-    if (!selector) { dropped++; dropReasons.push(`selector became empty after cleanup for "${name}"`); continue; }
     if (selector.length > 1000) { dropped++; dropReasons.push(`selector too long for "${name}"`); continue; }
+    // We still require attribute-kind fields with an empty selector to
+    // have an attribute name (otherwise there's nothing to extract).
 
     const rawKind = String(f.kind || '').toLowerCase();
     const kind = rawKind === 'attr' || rawKind === 'attribute' ? 'attr'
