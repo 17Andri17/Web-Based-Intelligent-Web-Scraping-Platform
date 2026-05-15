@@ -59,3 +59,30 @@ export const aiApi = {
        .then(r => (r.data && typeof r.data.name === "string" ? r.data.name : ""))
        .catch(() => ""),
 };
+
+export const schedulesApi = {
+  list:           ()             => api.get("/api/schedules").then(r => r.data.schedules),
+  getForWorkflow: (workflowId)   => api.get(`/api/schedules/workflow/${workflowId}`).then(r => r.data.schedule),
+  upsertForWorkflow: (workflowId, intervalMinutes, isActive) =>
+    api.put(`/api/schedules/workflow/${workflowId}`, { intervalMinutes, isActive }).then(r => r.data.schedule),
+  removeForWorkflow: (workflowId) =>
+    api.delete(`/api/schedules/workflow/${workflowId}`).then(r => r.data),
+};
+
+export const runsApi = {
+  list:     (workflowId)         => api.get("/api/runs", { params: workflowId ? { workflowId } : {} }).then(r => r.data.runs),
+  get:      (id)                 => api.get(`/api/runs/${id}`).then(r => r.data.run),
+  logs:     (id)                 => api.get(`/api/runs/${id}/logs`).then(r => r.data.logs),
+  // Build download URLs that the auth interceptor doesn't touch — anchor
+  // tags can't pass headers, so we include the token as a query parameter
+  // and accept that the runs route will read it from there. (See note in
+  // routes/runs.routes.js — the bearer token is the supported path; this
+  // is a fallback used only for direct downloads.) Simpler: open in a new
+  // tab using fetch + blob, which we do via downloadAsBlob below.
+  downloadDataUrl: (id, fmt = "json") => `${API_BASE}/api/runs/${id}/data.${fmt}`,
+  downloadDataBlob: async (id, fmt = "json") => {
+    const r = await api.get(`/api/runs/${id}/data.${fmt}`, { responseType: "blob" });
+    return r.data;
+  },
+  applyPatch: (id) => api.post(`/api/runs/${id}/apply-patch`).then(r => r.data.workflow),
+};

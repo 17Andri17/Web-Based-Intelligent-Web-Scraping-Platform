@@ -521,15 +521,34 @@ ${body}  }
 
 /* =========================================================================
    STEP LIST (recursive)
+   Each emitted step is preceded by a STEP_BEGIN marker so the runner can
+   tell which step was active when an exception is thrown. The marker is a
+   single line `STEP_BEGIN:{json}` on stdout (parsed by the runner). The
+   __currentStep__ assignment also lets the main catch handler include the
+   failing step in its STEP_ERROR dump.
    ========================================================================= */
+function stepMarker(step) {
+  const info = {
+    id:    step.id    || null,
+    type:  step.type  || null,
+    kind:  step.kind  || 'action',
+    label: step.label || '',
+  };
+  const json = JSON.stringify(info);
+  // Embed the json as a JS string literal — JSON is valid JS for objects
+  // but we use JSON.stringify of the literal to be safe against odd chars.
+  return `__currentStep__ = ${JSON.stringify(info)};\nconsole.log('STEP_BEGIN:' + ${JSON.stringify(json)});\n`;
+}
+
 function genStepList(steps, ctx, depth = 0) {
   const pad = '  '.repeat(depth);
   return steps.map(step => {
+    const marker = stepMarker(step);
     const raw = step.kind === 'control'
       ? genControl(step, ctx, depth)
       : genAction(step, ctx);
-    // Indent each line by current depth
-    return raw.split('\n').map(l => (l.trim() ? pad + l : l)).join('\n');
+    const combined = marker + raw;
+    return combined.split('\n').map(l => (l.trim() ? pad + l : l)).join('\n');
   }).join('');
 }
 
@@ -659,8 +678,38 @@ async function evalOnElements(page, selectors, fn) {
   return Promise.all(els.map(el => page.evaluate(fn, el)));
 }
 
+/**
+ * Snapshot a cleaned version of the page's HTML, useful as context to an
+ * LLM-based workflow repair step. We strip head, scripts and styles to
+ * keep the snippet focused on visible structure (which is what selectors
+ * usually target). Truncated to keep the payload small for the LLM.
+ */
+async function __snapshotPageHtml(page) {
+  if (!page) return null;
+  try {
+    return await page.evaluate(() => {
+      try {
+        const root = document.documentElement.cloneNode(true);
+        root.querySelectorAll('head, script, style, noscript, link, meta, template, svg').forEach(n => n.remove());
+        // Drop inline event handlers + base64 data: srcs which aren't useful here
+        root.querySelectorAll('*').forEach(el => {
+          for (const a of Array.from(el.attributes || [])) {
+            if (a.name.startsWith('on')) el.removeAttribute(a.name);
+            if (a.name === 'src' && /^data:/i.test(a.value)) el.setAttribute('src', '[data-uri-removed]');
+          }
+        });
+        let html = root.outerHTML || '';
+        const LIMIT = 60000;
+        if (html.length > LIMIT) html = html.slice(0, LIMIT) + '...[truncated]';
+        return html;
+      } catch (_) { return null; }
+    });
+  } catch (_) { return null; }
+}
+
 async function run() {
   const __results__ = {};
+  let __currentStep__ = null;
 
   const browser = await puppeteer.launch({
     // to delete:
@@ -686,9 +735,20 @@ async function run() {
 ${stepCode}
   } catch (err) {
     console.error('❌ Workflow error:', err.message);
+    try {
+      const __html__ = await __snapshotPageHtml(page);
+      const __payload__ = {
+        step: __currentStep__,
+        message: err && err.message ? String(err.message) : String(err),
+        stack: err && err.stack ? String(err.stack).split('\\n').slice(0, 8).join('\\n') : '',
+        url: (() => { try { return page.url(); } catch (_) { return null; } })(),
+        html: __html__,
+      };
+      console.log('STEP_ERROR:' + JSON.stringify(__payload__));
+    } catch (_) {}
     process.exitCode = 1;
   } finally {
-    await browser.close();
+    try { await browser.close(); } catch (_) {}
   }
 
   // Output collected extraction results

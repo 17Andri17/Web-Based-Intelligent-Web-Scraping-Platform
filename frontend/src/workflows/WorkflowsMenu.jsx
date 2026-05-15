@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { workflowsApi } from "../api/client";
+import { workflowsApi, schedulesApi } from "../api/client";
+import ScheduleEditor from "../runs/ScheduleEditor";
+import RunsHistory from "../runs/RunsHistory";
 
 /**
  * Modal for saving the current workflow and opening / deleting saved ones.
@@ -26,6 +28,13 @@ export default function WorkflowsMenu({
   const [name, setName] = useState(currentName || "");
   const [busy, setBusy] = useState(false);
 
+  // Schedule + history modals, opened per workflow row
+  const [scheduleFor, setScheduleFor] = useState(null);   // { id, name } | null
+  const [historyFor,  setHistoryFor]  = useState(null);   // { id, name } | null
+  // Map workflowId → { isActive, intervalMinutes } so we can show a small
+  // badge next to scheduled workflows in the list.
+  const [scheduleByWf, setScheduleByWf] = useState({});
+
   useEffect(() => { if (open) setName(currentName || ""); }, [open, currentName]);
 
   const refresh = async () => {
@@ -34,6 +43,15 @@ export default function WorkflowsMenu({
     try {
       const items = await workflowsApi.list();
       setList(items);
+      // Best-effort enrich with schedule status — we don't fail the whole
+      // refresh if this errors. The schedules endpoint scopes to user_id
+      // server-side, so listing is safe.
+      try {
+        const schedules = await schedulesApi.list();
+        const map = {};
+        for (const s of schedules) map[s.workflowId] = s;
+        setScheduleByWf(map);
+      } catch (_) { /* ignore */ }
     } catch (err) {
       setError(err?.response?.data?.error || err.message);
     } finally {
@@ -156,24 +174,72 @@ export default function WorkflowsMenu({
             <div className="wf-empty">No saved workflows yet.</div>
           ) : (
             <div className="wf-list">
-              {list.map(wf => (
-                <div className="wf-item" key={wf.id}>
-                  <div className="info">
-                    <span className="name">{wf.name}{wf.id === currentWorkflowId ? " (current)" : ""}</span>
-                    <span className="meta">Updated {formatDate(wf.updatedAt)}</span>
+              {list.map(wf => {
+                const sch = scheduleByWf[wf.id];
+                return (
+                  <div className="wf-item" key={wf.id}>
+                    <div className="info">
+                      <span className="name">
+                        {wf.name}{wf.id === currentWorkflowId ? " (current)" : ""}
+                        {sch && sch.isActive && (
+                          <span title={`Scheduled — every ${sch.intervalMinutes} min`}
+                                style={{ marginLeft: 8, fontSize: 10, padding: "1px 6px",
+                                         border: "1px solid #4f9cf966", color: "#4f9cf9",
+                                         borderRadius: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                            ⏱ {prettyInterval(sch.intervalMinutes)}
+                          </span>
+                        )}
+                      </span>
+                      <span className="meta">Updated {formatDate(wf.updatedAt)}</span>
+                    </div>
+                    <div className="actions">
+                      <button onClick={() => handleOpen(wf.id)} disabled={busy}>Open</button>
+                      <button onClick={() => setHistoryFor({ id: wf.id, name: wf.name })} disabled={busy}>History</button>
+                      <button onClick={() => setScheduleFor({ id: wf.id, name: wf.name })} disabled={busy}>Schedule</button>
+                      <button className="danger" onClick={() => handleDelete(wf.id, wf.name)} disabled={busy}>Delete</button>
+                    </div>
                   </div>
-                  <div className="actions">
-                    <button onClick={() => handleOpen(wf.id)} disabled={busy}>Open</button>
-                    <button className="danger" onClick={() => handleDelete(wf.id, wf.name)} disabled={busy}>Delete</button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
       </div>
+
+      {/* Per-workflow Schedule modal */}
+      <ScheduleEditor
+        open={!!scheduleFor}
+        onClose={() => { setScheduleFor(null); refresh(); }}
+        workflowId={scheduleFor?.id}
+        workflowName={scheduleFor?.name}
+        showToast={showToast}
+      />
+
+      {/* Per-workflow Runs history modal */}
+      <RunsHistory
+        open={!!historyFor}
+        onClose={() => setHistoryFor(null)}
+        workflowId={historyFor?.id}
+        workflowName={historyFor?.name}
+        showToast={showToast}
+        onAppliedPatch={(updatedWorkflow) => {
+          // If this is the workflow the user has open in the editor, refresh
+          // it through the same onLoaded handler so steps in the canvas
+          // update to the patched version.
+          if (currentWorkflowId === updatedWorkflow.id) {
+            onLoaded?.(updatedWorkflow);
+          }
+          refresh();
+        }}
+      />
     </div>
   );
+}
+
+function prettyInterval(m) {
+  if (m % 1440 === 0) return `${m / 1440}d`;
+  if (m % 60 === 0)   return `${m / 60}h`;
+  return `${m}m`;
 }
 
 function formatDate(s) {

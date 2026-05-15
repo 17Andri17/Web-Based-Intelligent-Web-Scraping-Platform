@@ -467,19 +467,49 @@ io.on('connection', async (socket) => {
   socket.on('executeWorkflow', async (data) => {
     /*
       data = {
-        steps:   [...],   // the full workflow step tree
-        meta?:   { startUrl, viewportWidth, viewportHeight }
+        steps:    [...],          // the full workflow step tree
+        meta?:    { startUrl, viewportWidth, viewportHeight }
+        workflowId?: number        // required for run history; if missing
+                                   // we create an "Untitled" workflow to
+                                   // give the run a home
+        workflowName?: string      // used when auto-creating
       }
     */
     const meta = data.meta || userSessionMeta.get(userId) || {};
     const steps = data.steps || [];
     const customActions = resolveCustomActions(steps, socket.user.id);
+
+    // Resolve or create the persisted workflow this run belongs to. We
+    // intentionally never run ephemerally — every execution gets a run row
+    // so the history feature works for ad-hoc tests too.
+    let workflowId = data.workflowId || null;
+    if (workflowId) {
+      const owned = db.prepare(
+        'SELECT id FROM workflows WHERE id = ? AND user_id = ?'
+      ).get(workflowId, socket.user.id);
+      if (!owned) workflowId = null;
+    }
+    if (!workflowId) {
+      const name = (data.workflowName && String(data.workflowName).trim()) || 'Untitled draft';
+      const info = db.prepare(`
+        INSERT INTO workflows (user_id, name, steps_json, meta_json)
+        VALUES (?, ?, ?, ?)
+      `).run(socket.user.id, name, JSON.stringify(steps), meta ? JSON.stringify(meta) : null);
+      workflowId = info.lastInsertRowid;
+      socket.emit('workflowAutoCreated', { id: workflowId, name });
+    } else {
+      // Persist the latest steps so re-runs of the same workflow id use
+      // the user's most-recent edits even if they didn't hit Save.
+      db.prepare(`
+        UPDATE workflows
+        SET steps_json = ?, meta_json = ?, updated_at = datetime('now')
+        WHERE id = ? AND user_id = ?
+      `).run(JSON.stringify(steps), meta ? JSON.stringify(meta) : null, workflowId, socket.user.id);
+    }
+
     const workflow = { steps, meta, customActions };
-
-    socket.emit('executionStarted');
-
     try {
-      await executeWorkflow(workflow, socket);
+      await executeWorkflow(workflow, socket, { userId: socket.user.id, workflowId });
     } catch (err) {
       socket.emit('executionLog', { line: `❌ Executor error: ${err.message}`, level: 'error' });
       socket.emit('executionDone', { success: false, results: null, error: err.message });
@@ -865,5 +895,10 @@ io.on('connection', async (socket) => {
     // when navigate runs again.
   });
 });
+
+// Start the schedule dispatcher so any active schedules in the DB fire
+// even without an open socket. Polls every 30s; see scheduler.service.js.
+const scheduler = require('./services/scheduler.service');
+scheduler.start();
 
 server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));

@@ -1,0 +1,124 @@
+'use strict';
+
+const { spawn } = require('child_process');
+const EventEmitter = require('events');
+const fs   = require('fs');
+const os   = require('os');
+const path = require('path');
+
+const { generateCode } = require('../workflow/workflowCodegen');
+
+const RESULTS_MARKER = 'WORKFLOW_RESULTS:';
+const STEP_BEGIN     = 'STEP_BEGIN:';
+const STEP_ERROR     = 'STEP_ERROR:';
+
+/* ===========================================================================
+   runner.service
+   ---------------------------------------------------------------------------
+   Spawns the generated Puppeteer script as a child process, parses its
+   stdout / stderr line-by-line, and surfaces structured events:
+
+     events.on('log',       ({ line, level }))
+     events.on('stepBegin', ({ id, type, label, kind }))
+     events.on('stepError', ({ step, message, stack, url, html }))
+     events.on('results',   (resultObject))
+
+   `runChild(workflow)` returns { events, promise }. The promise resolves
+   with { success, exitCode, results, errorInfo }, where errorInfo is
+   populated whenever a STEP_ERROR line was emitted (whether the process
+   then exited cleanly or not — the codegen always sets exitCode = 1 after
+   STEP_ERROR, so success === false in that case).
+   ========================================================================= */
+
+function runChild(workflow, { signal } = {}) {
+  const events = new EventEmitter();
+
+  const code    = generateCode(workflow);
+  const tmpDir  = os.tmpdir();
+  const tmpFile = path.join(tmpDir, `ws_workflow_${Date.now()}_${Math.random().toString(36).slice(2,8)}.js`);
+  fs.writeFileSync(tmpFile, code, 'utf8');
+
+  const promise = new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn('node', [tmpFile], {
+        env: { ...process.env, NODE_PATH: path.join(__dirname, '..', 'node_modules') },
+        cwd: path.dirname(tmpFile),
+      });
+    } catch (err) {
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      resolve({ success: false, exitCode: -1, results: null, errorInfo: { message: err.message, step: null } });
+      return;
+    }
+
+    let resultsObj = null;
+    let errorInfo  = null;
+    let buffer     = '';
+
+    const handleLine = (line, isErr) => {
+      if (!line) return;
+      // Structured markers — never emitted as logs
+      if (line.startsWith(STEP_BEGIN)) {
+        try { events.emit('stepBegin', JSON.parse(line.slice(STEP_BEGIN.length))); } catch (_) {}
+        return;
+      }
+      if (line.startsWith(STEP_ERROR)) {
+        try { errorInfo = JSON.parse(line.slice(STEP_ERROR.length)); } catch (_) {
+          errorInfo = { message: line.slice(STEP_ERROR.length) };
+        }
+        events.emit('stepError', errorInfo);
+        return;
+      }
+      if (line.startsWith(RESULTS_MARKER)) {
+        try {
+          resultsObj = JSON.parse(line.slice(RESULTS_MARKER.length));
+          events.emit('results', resultsObj);
+        } catch (_) {}
+        return;
+      }
+      const level = isErr ? 'error' : 'info';
+      if (line.trim()) events.emit('log', { line, level });
+    };
+
+    const handleData = (data, isErr) => {
+      buffer += data.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const l of lines) handleLine(l, isErr);
+    };
+
+    child.stdout.on('data', (d) => handleData(d, false));
+    child.stderr.on('data', (d) => handleData(d, true));
+
+    let cancelled = false;
+    if (signal) {
+      const onAbort = () => {
+        cancelled = true;
+        try { child.kill('SIGTERM'); } catch (_) {}
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    child.on('error', (err) => {
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      events.emit('log', { line: `❌ Failed to start runner: ${err.message}`, level: 'error' });
+      resolve({ success: false, exitCode: -1, results: null,
+                errorInfo: errorInfo || { message: err.message, step: null } });
+    });
+
+    child.on('close', (exitCode) => {
+      if (buffer.trim()) handleLine(buffer, false);
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      const success = exitCode === 0 && !errorInfo;
+      if (cancelled && !errorInfo) {
+        errorInfo = { message: 'Run cancelled by user', step: null, cancelled: true };
+      }
+      resolve({ success, exitCode, results: resultsObj, errorInfo });
+    });
+  });
+
+  return { events, promise };
+}
+
+module.exports = { runChild };
