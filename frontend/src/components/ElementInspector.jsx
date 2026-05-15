@@ -358,8 +358,16 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
       setAiError(null);
       setAiHint("");
       setAiMode(false);
-      setAddedFlash("EXTRACT_LIST_AI_DONE");
-      setTimeout(() => setAddedFlash(null), 1200);
+      // Surface useful provenance: heuristic-only / mixed / pure AI. This
+      // helps the user understand that "✨ Added!" might mean the AI
+      // failed and we fell back to the built-in detector.
+      const source = payload.source || 'ai';
+      const flash =
+        source === 'heuristic' ? 'EXTRACT_LIST_HEUR_DONE' :
+        source === 'mixed'     ? 'EXTRACT_LIST_MIX_DONE'  :
+                                 'EXTRACT_LIST_AI_DONE';
+      setAddedFlash(flash);
+      setTimeout(() => setAddedFlash(null), 1600);
     };
     socket.on("aiExtractListFieldsResult", onResult);
     return () => socket.off("aiExtractListFieldsResult", onResult);
@@ -507,7 +515,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
         )}
 
         {/* ── 2. Extract List (with / without AI) ────────────────────────── */}
-        <div className={`ei-extract-list-card ${addedFlash === "EXTRACT_LIST" || addedFlash === "EXTRACT_LIST_AI_DONE" ? "flash" : ""}`}>
+        <div className={`ei-extract-list-card ${["EXTRACT_LIST", "EXTRACT_LIST_AI_DONE", "EXTRACT_LIST_HEUR_DONE", "EXTRACT_LIST_MIX_DONE"].includes(addedFlash) ? "flash" : ""}`}>
           <div className="ei-extract-list-header">
             <span className="ei-extract-list-icon">📑</span>
             <div className="ei-extract-list-text">
@@ -554,7 +562,10 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
                   disabled={aiBusy}>
                   {aiBusy
                     ? "Analysing…"
-                    : (addedFlash === "EXTRACT_LIST_AI_DONE" ? <><CheckIcon /> Fields added!</> : <>✨ Add with AI</>)}
+                    : addedFlash === "EXTRACT_LIST_AI_DONE"   ? <><CheckIcon /> Fields added!</>
+                    : addedFlash === "EXTRACT_LIST_MIX_DONE"  ? <><CheckIcon /> AI + heuristics added!</>
+                    : addedFlash === "EXTRACT_LIST_HEUR_DONE" ? <><CheckIcon /> Fallback fields added!</>
+                    : <>✨ Add with AI</>}
                 </button>
                 <button
                   className="ei-extract-list-cancel"

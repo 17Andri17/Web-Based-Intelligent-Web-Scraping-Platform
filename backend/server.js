@@ -17,6 +17,7 @@ const { generateCode }    = require('./workflow/workflowCodegen');
 const { verifyToken }    = require('./middleware/auth');
 const db                 = require('./db');
 const extractListAI      = require('./services/extractListAI.service');
+const extractListHeuristics = require('./services/extractListHeuristics.service');
 
 // Walk a workflow's step tree and collect referenced custom action ids,
 // then fetch the user-owned definitions from the DB and return them as a
@@ -756,12 +757,22 @@ io.on('connection', async (socket) => {
 
   // ── AI: propose EXTRACT_LIST fields from a sample container ──────────────
   // Captures the first matching container's cleaned outerHTML, asks the LLM
-  // for a structured set of field mappings, then validates EVERY proposed
-  // selector by actually running it against the same container (and a
-  // second container if available) — surviving fields come back to the
-  // client paired with their live sample value.
+  // for structured field mappings, validates EVERY proposed selector
+  // against the live DOM, and — for any gap (LLM unreachable, returned
+  // junk, or didn't cover the obvious link/image/price fields) — runs an
+  // in-browser heuristic detector so the user always gets at least
+  // something usable.
   socket.on('aiExtractListFields', async ({ containerSelector, selectorType, hint, existingFields, requestId }) => {
-    const reply = (payload) => socket.emit('aiExtractListFieldsResult', { requestId, ...payload });
+    const tag = `[aiExtractListFields ${requestId || '?'}]`;
+    const reply = (payload) => {
+      // Log a one-line summary of every response so the dev can trace what
+      // the user sees back to what we sent.
+      const summary = payload.ok
+        ? `ok fields=${(payload.fields || []).length} source=${payload.source || 'ai'} rejected=${(payload.rejected || []).length}`
+        : `error code=${payload.code} msg=${(payload.error || '').slice(0, 200)}`;
+      console.log(`${tag} replying → ${summary}`);
+      socket.emit('aiExtractListFieldsResult', { requestId, ...payload });
+    };
 
     if (!containerSelector || typeof containerSelector !== 'string') {
       return reply({ ok: false, error: 'containerSelector is required', code: 'NO_SELECTOR' });
@@ -769,6 +780,8 @@ io.on('connection', async (socket) => {
 
     const page = await getActivePage();
     if (!page) return reply({ ok: false, error: 'No active page — navigate to a URL first.', code: 'NO_PAGE' });
+
+    console.log(`${tag} container="${containerSelector}" type=${selectorType || 'css'} hint=${(hint || '').length}b existing=${Object.keys(existingFields || {}).length}`);
 
     // 1. Capture cleaned sample HTML for the FIRST container.
     let sample;
@@ -783,7 +796,6 @@ io.on('connection', async (socket) => {
           first = document.querySelector(sel);
         }
         if (!first) return { error: 'No element matched the container selector', count: 0 };
-        // Count all matches so the user knows the selector is workable.
         let count = 0;
         try {
           if (isXPath) {
@@ -793,7 +805,6 @@ io.on('connection', async (socket) => {
             count = document.querySelectorAll(sel).length;
           }
         } catch (_) {}
-        // Clean clone — drop scripts/styles/head/etc and inline event handlers.
         const clone = first.cloneNode(true);
         clone.querySelectorAll('script, style, noscript, link, meta, template, svg').forEach(n => n.remove());
         clone.querySelectorAll('*').forEach(el => {
@@ -807,96 +818,144 @@ io.on('connection', async (socket) => {
         return { html, count };
       }, containerSelector, selectorType || 'css');
     } catch (err) {
+      console.warn(`${tag} failed to capture sample HTML: ${err.message}`);
       return reply({ ok: false, error: `Failed to read sample: ${err.message}`, code: 'EVAL_FAIL' });
     }
 
     if (!sample || sample.error) {
       return reply({ ok: false, error: sample?.error || 'No sample captured', code: 'NO_SAMPLE' });
     }
+    console.log(`${tag} captured sample (${sample.html.length}b, ${sample.count} sibling container(s))`);
+
+    // ── Helper: verify a list of proposed fields against the live DOM,
+    //    returning surviving ones with sample values + a hitCount across
+    //    up to 5 sibling containers.
+    const verifyOnLivePage = async (fields) => {
+      if (!fields || fields.length === 0) return { verified: [], rejected: [], totalMatched: sample.count };
+      return page.evaluate((containerSel, type, fieldsIn) => {
+        const isXPath = type === 'xpath' || containerSel.startsWith('/') || containerSel.startsWith('(');
+        let containers = [];
+        if (isXPath) {
+          const r = document.evaluate(containerSel, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          for (let i = 0; i < r.snapshotLength; i++) containers.push(r.snapshotItem(i));
+        } else {
+          containers = Array.from(document.querySelectorAll(containerSel));
+        }
+        const c0 = containers[0];
+        const verified = [], rejected = [];
+        for (const f of fieldsIn) {
+          let target0 = null;
+          try { target0 = f.selector ? c0.querySelector(f.selector) : c0; } catch (e) {
+            rejected.push({ ...f, reason: 'invalid CSS selector: ' + e.message });
+            continue;
+          }
+          if (!target0) {
+            rejected.push({ ...f, reason: 'selector did not match in the first container' });
+            continue;
+          }
+          let sampleValue = null;
+          try {
+            if (f.kind === 'attr' && f.attribute) sampleValue = target0.getAttribute(f.attribute);
+            else if (f.kind === 'html') sampleValue = (target0.innerHTML || '').slice(0, 400);
+            else sampleValue = (target0.textContent || '').trim().slice(0, 400);
+          } catch (_) {}
+          let hitCount = 0;
+          for (const c of containers.slice(0, 5)) {
+            try { if (f.selector ? c.querySelector(f.selector) : c) hitCount++; } catch (_) {}
+          }
+          verified.push({ ...f, sampleValue, hitCount, surveyed: Math.min(containers.length, 5) });
+        }
+        return { verified, rejected, totalMatched: containers.length };
+      }, containerSelector, selectorType || 'css', fields).catch(err => ({ error: err.message }));
+    };
 
     // 2. Call the LLM.
-    const result = await extractListAI.proposeFields({
+    const aiResult = await extractListAI.proposeFields({
       sampleHtml: sample.html,
       userHint: typeof hint === 'string' ? hint : '',
       existingFields: existingFields && typeof existingFields === 'object' ? existingFields : null,
+      requestId: requestId || '?',
     });
 
-    if (!result.ok) {
-      return reply({ ok: false, error: result.error, code: result.code, sampleCount: sample.count });
+    // 3. Verify LLM proposals (if any) against the live page.
+    let aiVerified = [];
+    let aiRejected = [];
+    let aiExplanation = aiResult.explanation || '';
+    let aiCode = null;
+    let aiError = null;
+    if (aiResult.ok) {
+      const v = await verifyOnLivePage(aiResult.fields);
+      if (v && !v.error) {
+        aiVerified = v.verified || [];
+        aiRejected = v.rejected || [];
+        console.log(`${tag} AI: ${aiVerified.length} verified, ${aiRejected.length} rejected after live check`);
+      } else {
+        console.warn(`${tag} live verification of AI fields failed: ${v?.error}`);
+        aiVerified = aiResult.fields.map(f => ({ ...f, sampleValue: null, hitCount: 0, surveyed: 0, source: 'ai' }));
+      }
+      // Tag survivors as coming from the AI
+      aiVerified = aiVerified.map(f => ({ ...f, source: f.source || 'ai' }));
+    } else {
+      aiCode  = aiResult.code;
+      aiError = aiResult.error;
+      console.warn(`${tag} AI call did not produce fields: ${aiCode} — ${aiError}`);
     }
 
-    // 3. Verify every proposed selector against the live DOM. Drop the ones
-    //    that don't match the first container (likely hallucinated) and
-    //    record the live sample value for the ones that survive.
-    const verifyResult = await page.evaluate((containerSel, type, fields) => {
-      const isXPath = type === 'xpath' || containerSel.startsWith('/') || containerSel.startsWith('(');
-      let containers = [];
-      if (isXPath) {
-        const r = document.evaluate(containerSel, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-        for (let i = 0; i < r.snapshotLength; i++) containers.push(r.snapshotItem(i));
-      } else {
-        containers = Array.from(document.querySelectorAll(containerSel));
-      }
-      const c0 = containers[0];
-      const c1 = containers[1] || null;
-      const verified = [];
-      const rejected = [];
-      for (const f of fields) {
-        let target0 = null, target1 = null;
-        try { target0 = f.selector ? c0.querySelector(f.selector) : c0; } catch (e) {
-          rejected.push({ ...f, reason: 'invalid CSS selector' });
-          continue;
-        }
-        if (c1) {
-          try { target1 = f.selector ? c1.querySelector(f.selector) : c1; } catch (_) { target1 = null; }
-        }
-        if (!target0) {
-          rejected.push({ ...f, reason: 'selector did not match in the first container' });
-          continue;
-        }
-        // Compute sample value
-        let sampleValue = null;
-        try {
-          if (f.kind === 'attr' && f.attribute) sampleValue = target0.getAttribute(f.attribute);
-          else if (f.kind === 'html') sampleValue = (target0.innerHTML || '').slice(0, 400);
-          else sampleValue = (target0.textContent || '').trim().slice(0, 400);
-        } catch (_) {}
-        // Also count how many of the surveyed containers (up to 5) the
-        // selector matches — anything that only hits the first container
-        // and nothing else is likely too specific.
-        let hitCount = 0;
-        for (const c of containers.slice(0, 5)) {
-          try { if (f.selector ? c.querySelector(f.selector) : c) hitCount++; } catch (_) {}
-        }
-        verified.push({
-          ...f,
-          sampleValue,
-          hitCount,
-          surveyed: Math.min(containers.length, 5),
-        });
-      }
-      return { verified, rejected, totalMatched: containers.length };
-    }, containerSelector, selectorType || 'css', result.fields).catch(err => ({ error: err.message }));
+    // 4. ALWAYS run the heuristic detector. Even when the AI succeeds, it
+    //    may have missed the obvious link / image / price. We merge the
+    //    heuristics in for any field NAMES the AI didn't already cover.
+    const heuristic = await extractListHeuristics.proposeFromContainer(
+      page, containerSelector, selectorType || 'css',
+      { requestId, maxFields: 10 }
+    );
 
-    if (!verifyResult || verifyResult.error) {
-      // The AI succeeded but live verification failed — return the proposal
-      // anyway with empty samples so the user can still see / tweak it.
+    const usedNames = new Set(aiVerified.map(f => f.name));
+    // Also block heuristic from re-adding things the user already has.
+    if (existingFields && typeof existingFields === 'object') {
+      for (const n of Object.keys(existingFields)) usedNames.add(n);
+    }
+    const heuristicAdditions = (heuristic.fields || [])
+      .filter(f => !usedNames.has(f.name))
+      .map(f => ({ ...f, source: 'heuristic' }));
+
+    const combined = [...aiVerified, ...heuristicAdditions];
+
+    if (combined.length === 0) {
+      // Nothing from AI, nothing from heuristics. Surface AI's error to
+      // the user — that's the most useful signal.
+      if (aiCode) {
+        return reply({ ok: false, error: aiError, code: aiCode, sampleCount: sample.count });
+      }
       return reply({
-        ok: true,
-        fields: result.fields.map(f => ({ ...f, sampleValue: null, hitCount: 0, surveyed: 0 })),
-        rejected: [],
-        explanation: result.explanation,
+        ok: false,
+        error: 'No fields could be identified on this page. Open the step editor and add fields manually.',
+        code: 'NO_FIELDS',
         sampleCount: sample.count,
-        verificationError: verifyResult?.error || 'verification failed',
       });
     }
 
-    reply({
+    // Build a one-liner of where each field came from, so the editor can
+    // surface "(heuristic)" tags / explain that AI failed but we still
+    // matched some basics.
+    const aiCount = combined.filter(f => f.source === 'ai').length;
+    const heuCount = combined.filter(f => f.source === 'heuristic').length;
+    let explanation = aiExplanation;
+    if (!aiResult.ok && heuCount > 0) {
+      explanation = `AI returned no usable fields (${aiCode}: ${aiError}). Using ${heuCount} field${heuCount === 1 ? '' : 's'} from the built-in heuristic detector instead — review them and run AI again with a more specific hint if you want more.`;
+    } else if (aiResult.ok && heuCount > 0) {
+      explanation = `${explanation || 'AI proposed fields.'} Added ${heuCount} extra field${heuCount === 1 ? '' : 's'} from the heuristic detector (link / image / price / heading / date) that the AI didn't cover.`;
+    }
+
+    return reply({
       ok: true,
-      fields: verifyResult.verified,
-      rejected: verifyResult.rejected,
-      explanation: result.explanation,
-      sampleCount: verifyResult.totalMatched,
+      fields: combined,
+      rejected: aiRejected,
+      explanation,
+      sampleCount: sample.count,
+      source: aiCount > 0 && heuCount > 0 ? 'mixed' : (heuCount > 0 ? 'heuristic' : 'ai'),
+      aiOk: aiResult.ok,
+      aiError: aiResult.ok ? null : aiError,
+      aiCode: aiResult.ok ? null : aiCode,
     });
   });
 

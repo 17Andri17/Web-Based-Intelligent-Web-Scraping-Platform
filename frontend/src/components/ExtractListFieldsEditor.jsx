@@ -83,11 +83,18 @@ export default function ExtractListFieldsEditor({
       }
       onChange(next);
       setAiSamples(samples);
+      // Count where each field came from (ai vs heuristic) so the user
+      // can tell when the LLM failed and the fallback kicked in.
+      const heurCount = fields.filter(f => f.source === 'heuristic').length;
+      const aiCount   = fields.length - heurCount;
       setAiNote({
         explanation: payload.explanation || "",
         count: fields.length,
         sampleCount: payload.sampleCount || 0,
         verifyError: payload.verificationError || null,
+        aiCount, heurCount,
+        source: payload.source || (heurCount > 0 && aiCount === 0 ? 'heuristic' : 'ai'),
+        aiError: payload.aiOk === false ? (payload.aiError || `(${payload.aiCode || 'AI failed'})`) : null,
       });
       setAiRejected(dropped);
       setAiError(null);
@@ -208,10 +215,17 @@ export default function ExtractListFieldsEditor({
           {aiNote && (
             <span className="elfe-ai-note">
               Added {aiNote.count} field{aiNote.count === 1 ? "" : "s"} from sample of {aiNote.sampleCount} item{aiNote.sampleCount === 1 ? "" : "s"}.
+              {aiNote.heurCount > 0 && aiNote.aiCount > 0 && ` (${aiNote.aiCount} from AI + ${aiNote.heurCount} from heuristics)`}
+              {aiNote.heurCount > 0 && aiNote.aiCount === 0 && ` (all from the built-in heuristic detector)`}
             </span>
           )}
         </div>
         {aiError && <div className="elfe-ai-error">{aiError}</div>}
+        {aiNote?.aiError && (
+          <div className="elfe-ai-warn">
+            AI didn't return usable suggestions: {aiNote.aiError}. The heuristic detector picked up basic fields instead — review and adjust.
+          </div>
+        )}
         {aiNote?.explanation && <div className="elfe-ai-expl">{aiNote.explanation}</div>}
         {aiNote?.verifyError && <div className="elfe-ai-warn">Live verification failed: {aiNote.verifyError}. Fields shown without sample values.</div>}
         {aiRejected.length > 0 && (
