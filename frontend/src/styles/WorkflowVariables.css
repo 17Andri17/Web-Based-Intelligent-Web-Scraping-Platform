@@ -11,6 +11,77 @@
   overflow: hidden;
 }
 
+/* ── Side layout: variables sit beside the canvas as a fixed column ─── */
+.wvars--side {
+  width: 320px;
+  margin: 0;
+  border-left: 1px solid rgba(247, 129, 102, 0.22);
+  border-radius: 0;
+  border-right: none;
+  border-top: none;
+  border-bottom: none;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.wvars--side .wvars-body { flex: 1; }
+
+/* ── Collapsed rail: just the title + count + chevron ──────────────── */
+.wvars-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 6px;
+  width: 32px;
+  background: rgba(247, 129, 102, 0.04);
+  border: none;
+  border-left: 1px solid rgba(247, 129, 102, 0.22);
+  cursor: pointer;
+  color: #f78166;
+  font-weight: 600;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+.wvars-rail:hover { background: rgba(247, 129, 102, 0.10); }
+.wvars-rail-count {
+  background: rgba(247, 129, 102, 0.16);
+  color: #f78166;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+.wvars-rail-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.wvars-rail svg {
+  transform: rotate(-90deg) !important;
+  transition: none !important;
+}
+
+/* ── Layout container in WorkflowPanel ────────────────────────────── */
+.workflow-layout {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.workflow-canvas-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .wvars-header {
   background: transparent;
   border: none;

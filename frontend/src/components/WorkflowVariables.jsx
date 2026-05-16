@@ -35,6 +35,7 @@ export default function WorkflowVariables({
   capturedOutputs = [],
   collapsed = false,
   onToggleCollapsed,
+  layout = "top",   // "top" (legacy) | "side"
 }) {
   const [adding, setAdding] = useState(false);
   const [draft,  setDraft]  = useState({ name: "", value: "", type: "string", description: "" });
@@ -52,17 +53,40 @@ export default function WorkflowVariables({
     setAdding(false);
   };
 
+  // Side layout when collapsed: render a thin rail with a vertical
+  // "Variables" label and a count badge — clicking re-opens the panel.
+  // This keeps the panel visible (and the count discoverable) without
+  // stealing canvas space.
+  if (layout === "side" && collapsed) {
+    return (
+      <button
+        type="button"
+        className="wvars-rail"
+        onClick={() => onToggleCollapsed?.()}
+        title="Expand Workflow Variables"
+      >
+        <span className="wvars-rail-count">
+          {capturedOutputs.length + variables.length}
+        </span>
+        <span className="wvars-rail-label">Variables</span>
+        <ChevronIcon collapsed={true} />
+      </button>
+    );
+  }
+
   return (
-    <div className="wvars">
+    <div className={"wvars" + (layout === "side" ? " wvars--side" : "")}>
       <button type="button" className="wvars-header" onClick={() => onToggleCollapsed?.()}>
         <ChevronIcon collapsed={collapsed} />
         <span className="wvars-title">Workflow Variables</span>
         <span className="wvars-count">
           {capturedOutputs.length + variables.length}
         </span>
-        <span className="wvars-tip">
-          {capturedOutputs.length} captured · {variables.length} custom
-        </span>
+        {layout !== "side" && (
+          <span className="wvars-tip">
+            {capturedOutputs.length} captured · {variables.length} custom
+          </span>
+        )}
       </button>
 
       {!collapsed && (

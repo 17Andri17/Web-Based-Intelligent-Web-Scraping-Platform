@@ -1,0 +1,185 @@
+/* VariablePicker — popover anchored to a "$" button next to text inputs.
+   Designed to feel like a ServiceNow Flow Designer data pill picker:
+   small chevron-expandable tree, search at top, click-to-insert. */
+
+.vpick-root {
+  position: relative;
+  display: inline-flex;
+}
+
+.vpick-btn {
+  background: rgba(247, 129, 102, 0.10);
+  color: #f78166;
+  border: 1px solid rgba(247, 129, 102, 0.32);
+  border-radius: 4px;
+  font-weight: 700;
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.vpick-btn:hover { background: rgba(247, 129, 102, 0.18); }
+.vpick-btn--open {
+  background: rgba(247, 129, 102, 0.22);
+  border-color: #f78166;
+}
+
+/* ── Popover ─────────────────────────────────────────────────────── */
+.vpick-popover {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  z-index: 1000;
+  width: 320px;
+  max-height: 420px;
+  background: var(--bg-elev, #1a1a1a);
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.vpick-search-row {
+  padding: 8px;
+  border-bottom: 1px solid var(--border-soft, #2a2a2a);
+}
+.vpick-search {
+  width: 100%;
+  background: var(--bg, #0e0e0e);
+  border: 1px solid var(--border-soft, #2a2a2a);
+  color: var(--text-primary, #e6e6e6);
+  padding: 5px 9px;
+  border-radius: 4px;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+.vpick-search:focus {
+  outline: none;
+  border-color: rgba(247, 129, 102, 0.5);
+}
+
+.vpick-empty {
+  padding: 14px 12px;
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  line-height: 1.45;
+}
+
+.vpick-tree, .vpick-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.vpick-group { padding: 4px 0; }
+.vpick-group + .vpick-group { border-top: 1px solid var(--border-soft, #2a2a2a); }
+.vpick-group-header {
+  padding: 6px 10px 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-muted, #888);
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.vpick-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.vpick-chevron {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #888);
+  width: 18px;
+  height: 22px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.vpick-chevron:hover { color: var(--text-primary, #e6e6e6); }
+.vpick-chevron-placeholder { display: inline-block; width: 18px; flex-shrink: 0; }
+
+.vpick-leaf {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary, #e6e6e6);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  border-radius: 3px;
+  min-width: 0;
+}
+.vpick-leaf:hover { background: rgba(255, 255, 255, 0.05); }
+.vpick-leaf--disabled { opacity: 0.5; cursor: not-allowed; }
+
+.vpick-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.vpick-icon--string  { background: rgba(247, 129, 102, 0.14); color: #f78166; }
+.vpick-icon--number  { background: rgba(247, 129, 102, 0.14); color: #f78166; }
+.vpick-icon--boolean { background: rgba(247, 129, 102, 0.14); color: #f78166; }
+.vpick-icon--json    { background: rgba(247, 129, 102, 0.14); color: #f78166; }
+.vpick-icon--list    { background: rgba(88, 166, 255, 0.14);  color: #58a6ff; }
+.vpick-icon--table   { background: rgba(88, 166, 255, 0.14);  color: #58a6ff; }
+.vpick-icon--iter    { background: rgba(163, 113, 247, 0.16); color: #a371f7; }
+.vpick-icon--column  { background: rgba(120, 200, 130, 0.14); color: #7dc88a; }
+
+.vpick-name {
+  font-family: 'SF Mono', Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.vpick-type {
+  font-size: 10px;
+  color: var(--text-muted, #888);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.vpick-tip {
+  border-top: 1px solid var(--border-soft, #2a2a2a);
+  padding: 6px 10px;
+  font-size: 10.5px;
+  color: var(--text-muted, #888);
+  background: var(--bg, #0e0e0e);
+}
+
+/* ── Wrapper for inputs that should expose a picker ─────────────── */
+.vpick-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.vpick-input-row > input,
+.vpick-input-row > textarea {
+  flex: 1;
+  min-width: 0;
+}
