@@ -38,31 +38,27 @@ const indent = (code, levels = 1) =>
 
 // ─── String / interpolation helpers ──────────────────────────────────────
 // q(s) keeps the existing call-site semantics (`JSON.stringify` of a
-// string-or-falsy). qStr handles workflow-variable interpolation: if `s`
-// contains `{{name}}` references to a DECLARED variable, the output is a
-// template literal so the actual JS variable is read at runtime. Refs to
-// undeclared names are left as literal text — that way users can write
-// "{{not a var}}" and have it appear verbatim.
+// string-or-falsy). qStr replaces `{{name}}` (or `{{path.like.this}}`)
+// patterns inside a string param with a JS expression — the generator
+// emits a template literal so the references resolve at runtime.
+//
+// We accept ANY valid identifier (or dotted path) — declared workflow
+// variables (always available), loop iteration variables (`product` /
+// `i`), and captured-output aliases (`products`, `name`, …) are all
+// valid roots. Anything that doesn't look like an identifier (e.g.
+// "{{not a var}}") doesn't match and stays as literal text.
 //
 // Both helpers escape backticks / existing ${...} sequences so the
 // generated code stays well-formed even when the user types tricky text.
-const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*)\s*\}\}/g;
+const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}/g;
 
-function qStr(s, declaredVars) {
+function qStr(s /* declaredVars kept for back-compat — no longer used */) {
   if (typeof s !== 'string') return JSON.stringify(s == null ? '' : String(s));
-  // No variables declared on this workflow → cheap path.
-  if (!declaredVars || declaredVars.size === 0) return JSON.stringify(s);
-  // Quickly bail if there's no interpolation marker at all.
   if (!s.includes('{{')) return JSON.stringify(s);
 
-  // Scan for at least ONE reference to a declared variable. Otherwise
-  // we don't need a template literal.
-  let hasInterp = false;
-  let m; VAR_RX.lastIndex = 0;
-  while ((m = VAR_RX.exec(s)) !== null) {
-    if (declaredVars.has(m[1])) { hasInterp = true; break; }
-  }
-  if (!hasInterp) return JSON.stringify(s);
+  // Quick test: is there at least ONE identifier-shaped reference?
+  VAR_RX.lastIndex = 0;
+  if (!VAR_RX.test(s)) return JSON.stringify(s);
 
   // Escape characters that would otherwise change the meaning of the
   // template literal.
@@ -70,10 +66,8 @@ function qStr(s, declaredVars) {
     .replace(/\\/g, '\\\\')
     .replace(/`/g, '\\`')
     .replace(/\$\{/g, '\\${');
-  // Now substitute declared {{var}} → ${var}; leave others untouched.
-  const interpolated = escaped.replace(VAR_RX, (full, name) =>
-    declaredVars.has(name) ? '${' + name + '}' : full
-  );
+  // Substitute every {{name(.path)?}} → ${name(.path)?}.
+  const interpolated = escaped.replace(VAR_RX, (_full, path) => '${' + path + '}');
   return '`' + interpolated + '`';
 }
 
@@ -146,6 +140,19 @@ function genAction(step, ctx) {
             + `  else if (${varName} !== null && ${varName} !== undefined) __results__[${JSON.stringify(key)}].push(${varName});\n`;
     } else {
       store = `  __results__[${JSON.stringify(key)}] = ${varName};\n`;
+    }
+    // Mirror the named result into a JS variable with the same name, so
+    // subsequent steps (FOR_EACH source, RUN_SUBFLOW url, …) can refer to
+    // it directly as `products` instead of `__results__["products"]`.
+    // We collect aliases in ctx.capturedAliases — the top-level generator
+    // emits a single `let <name>;` declaration per alias so the var is
+    // visible across try/catch/loop scopes.
+    if (label && label.trim()) {
+      const alias = toJsIdent(label.trim());
+      if (alias && !ctx.declaredVars?.has(alias)) {
+        if (ctx.capturedAliases) ctx.capturedAliases.add(alias);
+        store += `  ${alias} = ${varName};\n`;
+      }
     }
   }
 
@@ -493,6 +500,85 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
       ].join('\n');
     }
 
+    // ── Run another saved workflow as a subflow ─────────────────────────
+    // The subflow is inlined: we open a fresh puppeteer page, navigate
+    // to the (interpolated) URL, then run the subflow's steps with
+    // `page` shadowed to the new page. Its collected __results__ get
+    // merged back into the parent's __results__ under the configured
+    // outputVar key. Inside a loop this naturally produces an array of
+    // per-iteration result objects (one per visited URL).
+    case 'RUN_SUBFLOW': {
+      const subflowId = params.workflowId;
+      const subflows  = ctx.subflows || {};
+      const sub       = subflows[subflowId];
+      if (!sub) {
+        return `// ⚠ Subflow #${subflowId} is unavailable (was it deleted, or did a recursion cycle prevent it from being inlined?)\nconsole.warn(${JSON.stringify(`Subflow ${subflowId} unavailable — skipping`)});\n`;
+      }
+      const outKey   = (params.outputVar && String(params.outputVar).trim())
+                    || (label && label.trim())
+                    || sub.name
+                    || `subflow_${subflowId}`;
+      const subUrl   = q(params.url || '');
+
+      // Generate the subflow's step code with its OWN context. We pass
+      // through declaredVars + customActions + subflows so the subflow
+      // can reuse the same workflow variables and itself reference other
+      // subflows. visitedSubflows blocks cycles.
+      const subCtx = {
+        nextId: ctx.nextId,
+        declaredVars: ctx.declaredVars,
+        customActions: ctx.customActions,
+        subflows: ctx.subflows,
+        visitedSubflows: new Set(ctx.visitedSubflows || []),
+        capturedAliases: new Set(),   // subflow gets its own alias scope
+      };
+      subCtx.visitedSubflows.add(String(subflowId));
+      const subSteps = sub.steps || [];
+      const subCode  = genStepList(subSteps, subCtx, 4);
+      // Declare aliases collected during subflow codegen INSIDE the IIFE
+      // so the subflow's named extractions stay scoped to it (rather than
+      // leaking into the parent's `let` slots — which would also error
+      // out under "use strict" if the parent didn't declare them).
+      const subAliasDecls = subCtx.capturedAliases.size === 0 ? '' :
+        Array.from(subCtx.capturedAliases).map(a => `      let ${a};`).join('\n');
+
+      // Append-or-set logic mirrors the rest of the codegen: inside any
+      // outer loop, accumulate into an array; otherwise overwrite.
+      const mergeBlock = ctx.inLoop
+        ? `      if (!__results__[${JSON.stringify(outKey)}]) __results__[${JSON.stringify(outKey)}] = [];\n` +
+          `      __results__[${JSON.stringify(outKey)}].push(_subResults);`
+        : `      __results__[${JSON.stringify(outKey)}] = _subResults;`;
+
+      return [
+        `// Subflow: ${(sub.name || 'unnamed').replace(/\*\//g, '*\\/')} (id ${subflowId})`,
+        `{`,
+        `  const _subUrl = ${subUrl};`,
+        `  const _subPage = await browser.newPage();`,
+        `  try {`,
+        `    await applyStealthToPage(_subPage);`,
+        `    await _subPage.goto(_subUrl, { waitUntil: 'load', timeout: ${num(advanced.timeout, 30000)} });`,
+        `    const _subResults = await (async (page) => {`,
+        `      const __results__ = {};`,
+        `      let __currentStep__ = null;`,
+        subAliasDecls,
+        `      try {`,
+        subCode,
+        `      } catch (err) {`,
+        `        console.error(${JSON.stringify(`Subflow ${outKey} step error:`)}, err && err.message);`,
+        `      }`,
+        `      return __results__;`,
+        `    })(_subPage);`,
+        mergeBlock,
+        `  } catch (err) {`,
+        `    console.error(${JSON.stringify(`Subflow ${outKey} failed:`)}, err && err.message);`,
+        `  } finally {`,
+        `    try { await _subPage.close(); } catch (_) {}`,
+        `  }`,
+        `}`,
+        ``,
+      ].join('\n');
+    }
+
     default:
       return `// ⚠ Unhandled action: ${type}\n`;
   }
@@ -519,7 +605,9 @@ function genControl(step, ctx, depth) {
       const src    = params.source   || '[]';
       const item   = params.itemVar  || 'item';
       const idx    = params.indexVar || 'index';
-      const body   = genStepList(step.body || [], ctx, depth + 1);
+      // Set inLoop so RUN_SUBFLOW / extraction inside the body accumulate
+      // results into an array per iteration instead of overwriting.
+      const body   = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
       return `for (let ${idx} = 0; ${idx} < (${src} || []).length; ${idx}++) {\n  const ${item} = ${src}[${idx}];\n${body}}\n`;
     }
 
@@ -545,8 +633,18 @@ function genControl(step, ctx, depth) {
       // Push forEach element context so genAction generates element-relative code
       const prevCtx = ctx.forEachEl;
       ctx.forEachEl = { elVar, rowVar, hasExtractions };
-      const body = genStepList(bodySteps, ctx, depth + 1);
+      // Mark inLoop so subflows / non-extraction-row steps in the body
+      // accumulate per-iteration results instead of overwriting.
+      const body = genStepList(bodySteps, { ...ctx, inLoop: true, forEachEl: ctx.forEachEl }, depth + 1);
       ctx.forEachEl = prevCtx;
+
+      // Mirror the rows into a JS-visible alias so downstream steps can
+      // reference it as `<label>` (e.g. a FOR_EACH source field). Same
+      // trick we use for standalone extraction steps.
+      const aliasName = step.label && step.label.trim() ? toJsIdent(step.label.trim()) : '';
+      const aliasLine = (aliasName && !ctx.declaredVars?.has(aliasName))
+        ? (ctx.capturedAliases && ctx.capturedAliases.add(aliasName), `${aliasName} = ${resultsVar};`)
+        : '';
 
       if (hasExtractions) {
         return [
@@ -561,6 +659,7 @@ function genControl(step, ctx, depth) {
           `  }`,
           `}`,
           `__results__[${JSON.stringify(resultsKey)}] = ${resultsVar};`,
+          aliasLine,
           ``,
         ].join('\n');
       }
@@ -674,9 +773,29 @@ function generateCode(workflow) {
     nextId: () => (idCounter++).toString(36),
     declaredVars,
     customActions: workflow.customActions || {},
+    // Map of {workflowId → { name, steps, meta }} for any subflow
+    // referenced from this workflow (or transitively from a subflow). The
+    // backend's server.js resolves this map before invoking generateCode.
+    subflows: workflow.subflows || {},
+    // Tracks subflow ids currently being inlined so a self-reference or
+    // a → b → a cycle stops at the first repeat with a clear comment.
+    visitedSubflows: new Set([String(workflow.id || workflow.meta?.workflowId || '__root__')]),
+    // Collected during step codegen — every named extraction step's
+    // label becomes a top-level `let <name>;` declaration so the data
+    // it captures is visible to subsequent steps as a JS variable.
+    capturedAliases: new Set(),
   };
 
   const stepCode = genStepList(steps, ctx, 2);
+
+  // Now that step codegen is done, ctx.capturedAliases holds every alias
+  // we need to declare. Render them as `let <name>;` lines at the top of
+  // run() so assignments inside try / loop / catch blocks land on
+  // function-scoped slots that subsequent steps can read.
+  const capturedAliasesCode = ctx.capturedAliases.size === 0 ? '' :
+    '\n  // ─── Captured outputs (from named extraction steps) ──────────\n' +
+    Array.from(ctx.capturedAliases).map(a => `  let ${a};`).join('\n') +
+    '\n  // ─────────────────────────────────────────────────────────────';
 
   return `#!/usr/bin/env node
 'use strict';
@@ -817,7 +936,7 @@ async function __snapshotPageHtml(page) {
 async function run() {
   const __results__ = {};
   let __currentStep__ = null;
-${variablesCode}
+${variablesCode}${capturedAliasesCode}
   const browser = await puppeteer.launch({
     // to delete:
     executablePath: 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',

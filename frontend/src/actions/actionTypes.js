@@ -37,4 +37,11 @@ export const ACTION_TYPES = {
   TRANSFORM_DATA:      "TRANSFORM_DATA",
   APPEND_TO_LIST:      "APPEND_TO_LIST",
   SAVE_DATA:           "SAVE_DATA",
+
+  // ── Composition ──────────────────────────────────────────────
+  // Invoke another saved workflow as a "subflow" — typically used to
+  // visit a list of detail-page URLs and run the same extraction logic
+  // on each one. The subflow's steps are inlined into the generated
+  // script with a fresh puppeteer page bound to the supplied URL.
+  RUN_SUBFLOW:         "RUN_SUBFLOW",
 };

@@ -77,10 +77,11 @@ async function runOne(sch) {
   const steps = safeJson(sch.steps_json) || [];
   const meta  = safeJson(sch.meta_json)  || {};
   const customActions = resolveCustomActionsForUser(steps, sch.user_id);
+  const subflows      = resolveSubflowsForUser(steps, sch.user_id, sch.workflow_id);
 
   try {
     await executionPipeline.executeAndPersist({
-      workflow: { steps, meta, customActions },
+      workflow: { id: sch.workflow_id, steps, meta, customActions, subflows },
       userId: sch.user_id,
       workflowId: sch.workflow_id,
       scheduleId: sch.id,
@@ -89,6 +90,41 @@ async function runOne(sch) {
   } catch (err) {
     console.error(`[scheduler] execution of schedule #${sch.id} threw:`, err.message);
   }
+}
+
+// Walk RUN_SUBFLOW references (recursively) and load the target
+// workflows from the DB for codegen-time inlining. Mirrors server.js's
+// resolveSubflows so the scheduler doesn't depend on a socket session.
+function resolveSubflowsForUser(steps, userId, rootWorkflowId) {
+  const CHILD_KEYS = ['body', 'then', 'else', 'try', 'catch'];
+  function collect(arr, out) {
+    for (const s of arr || []) {
+      if (s && s.kind === 'action' && s.type === 'RUN_SUBFLOW') {
+        const id = s.params && Number(s.params.workflowId);
+        if (Number.isFinite(id) && id > 0) out.add(id);
+      }
+      CHILD_KEYS.forEach(k => { if (Array.isArray(s?.[k])) collect(s[k], out); });
+    }
+    return out;
+  }
+
+  const visited = new Set(rootWorkflowId ? [Number(rootWorkflowId)] : []);
+  const out = {};
+  const queue = Array.from(collect(steps, new Set())).filter(id => !visited.has(id));
+  while (queue.length) {
+    const id = queue.shift();
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const row = db.prepare(
+      'SELECT id, name, steps_json, meta_json FROM workflows WHERE id = ? AND user_id = ?'
+    ).get(id, userId);
+    if (!row) continue;
+    const subSteps = safeJson(row.steps_json) || [];
+    const subMeta  = row.meta_json ? safeJson(row.meta_json) : {};
+    out[id] = { id: row.id, name: row.name, steps: subSteps, meta: subMeta };
+    collect(subSteps, new Set()).forEach(child => { if (!visited.has(child)) queue.push(child); });
+  }
+  return out;
 }
 
 function safeJson(s) { try { return JSON.parse(s); } catch (_) { return null; } }

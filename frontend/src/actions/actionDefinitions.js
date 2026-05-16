@@ -1370,4 +1370,39 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
     }
   },
 
+  [ACTION_TYPES.RUN_SUBFLOW]: {
+    label: "Run Subflow",
+    category: "Composition",
+    description: "Open a URL in a fresh browser page and run another saved workflow on it. Drop this inside a For-Each loop to visit every URL in a list (e.g. product detail pages collected from a listing page).",
+    inputs: {
+      workflowId: {
+        // Custom renderer in WorkflowPanel that pulls the user's saved
+        // workflows from context and lets them pick one. Stored as a
+        // number — the backend resolves it at run time.
+        type: "workflowSelect",
+        required: true,
+        label: "Subflow (saved workflow)",
+      },
+      url: {
+        type: "string",
+        required: true,
+        label: "URL to open in the subflow",
+        placeholder: "https://example.com/{{product.link}}  — supports {{variables}}",
+      },
+      outputVar: {
+        type: "string",
+        label: "Save results under (optional)",
+        placeholder: "product_detail",
+      },
+    },
+    outputs: {
+      result: { type: "object", description: "The subflow's collected results" },
+    },
+    // The real code generation lives on the backend (so it can reach the
+    // DB and inline the subflow's full step tree). For the "Download
+    // code" path we emit a small placeholder comment — the backend's
+    // workflowCodegen.js handles RUN_SUBFLOW with the inlined version.
+    generateCode: ({ params }) => `// Subflow #${params.workflowId} on ${JSON.stringify(params.url || "")}\n`,
+  },
+
 };

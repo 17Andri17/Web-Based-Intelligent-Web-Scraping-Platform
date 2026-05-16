@@ -104,7 +104,21 @@ function buildDefaultAdvanced(def) {
   for (const [k, v] of Object.entries(def.advanced || {})) if (v.default !== undefined) a[k] = v.default;
   return a;
 }
-function summariseParams(step) {
+function summariseParams(step, ctx = {}) {
+  // RUN_SUBFLOW: resolve the workflowId to a name from the available
+  // workflows list (when we have it) so the card reads as
+  // "subflow: Product Detail · url: {{product.link}}" instead of the
+  // useless numeric id.
+  if (step.type === "RUN_SUBFLOW") {
+    const out = [];
+    const id = step.params?.workflowId;
+    if (id != null) {
+      const wf = (ctx.availableWorkflows || []).find(w => w.id === id);
+      out.push(["subflow", wf ? wf.name : `#${id}`]);
+    }
+    if (step.params?.url) out.push(["url", String(step.params.url)]);
+    return out;
+  }
   // EXTRACT_LIST cards summarise specially: show the container selector
   // plus the comma-separated field names, so the user can see "what
   // they're extracting" at a glance without expanding the editor.
@@ -167,6 +181,7 @@ export default function WorkflowPanel({
   socket = null, previewData = {},
   variables = [], onVariablesChange,
   variablesCollapsed = false, onToggleVariablesCollapsed,
+  availableWorkflows = [], currentWorkflowId = null,
 }) {
   const [pickerCtx, setPickerCtx]   = useState(null);
   const [editingCtx, setEditingCtx] = useState(null);
@@ -205,7 +220,7 @@ export default function WorkflowPanel({
   const capturedOutputs = React.useMemo(() => collectCapturedOutputs(steps), [steps]);
 
   return (
-    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions, socket, previewData }}>
+    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId }}>
     <div className="workflow-designer">
       <div className="workflow-header">
         <div className="workflow-title">
@@ -468,7 +483,7 @@ function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit
         : { label: step.label || "Custom action (missing)", category: "Custom" })
     : actionDefinitions[step.type];
   if (!def) return null;
-  const summary = summariseParams(step);
+  const summary = summariseParams(step, wp);
   const isTarget = insertTarget?.stepId === step.id && insertTarget?.type === 'after';
   const canMoveOut = depth > 0;
 
@@ -933,6 +948,36 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
           socket={socket}
           previewRows={previewRows}
         />
+      </div>
+    );
+  }
+
+  // workflowSelect: dropdown listing the user's saved workflows for the
+  // RUN_SUBFLOW step. Excludes the workflow currently being edited so
+  // the user can't accidentally call into themselves (the runtime cycle
+  // guard is the real safety net, but hiding the option is friendlier).
+  if (type === "workflowSelect") {
+    const { availableWorkflows, currentWorkflowId } = useContext(WPCtx) || {};
+    const list = (availableWorkflows || []).filter(w => w.id !== currentWorkflowId);
+    return (
+      <div className="form-group">
+        <label>{label}</label>
+        {list.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--text-muted, #888)", padding: 8,
+                        border: "1px dashed var(--border-soft, #2a2a2a)", borderRadius: 4 }}>
+            No other saved workflows yet — save another workflow first, then it'll appear here as a subflow option.
+          </div>
+        ) : (
+          <select
+            value={value || ""}
+            onChange={e => onChange(e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">— pick a workflow —</option>
+            {list.map(w => (
+              <option key={w.id} value={w.id}>{w.name}</option>
+            ))}
+          </select>
+        )}
       </div>
     );
   }
