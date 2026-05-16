@@ -125,6 +125,7 @@ async function executeAndPersist(arg) {
       url:  result.errorInfo ? result.errorInfo.url  : null,
       stack: result.errorInfo ? result.errorInfo.stack : null,
       cancelled: !!(result.errorInfo && result.errorInfo.cancelled),
+      preExecution: !!(result.errorInfo && result.errorInfo.preExecution),
     };
 
     log(`✗ attempt ${attempt} failed (${category}): ${truncate(errMsg, 300)}`, 'error');
@@ -164,7 +165,15 @@ async function executeAndPersist(arg) {
     }
 
     if (!failedStep || !failedStep.id) {
-      log('• can\'t identify the failing step from the runtime output — flagging for manual review.', 'error');
+      // preExecution = the generated script crashed before any STEP_BEGIN
+      // fired (typically a SyntaxError from a malformed expression in a
+      // user-typed param). Tell the user exactly that so they don't go
+      // looking for a step to fix.
+      if (lastError && lastError.preExecution) {
+        log('• the generated script failed to start (likely a malformed expression in a step parameter, e.g. an unescaped {{variable}} inside a JS expression field). The script output is above.', 'error');
+      } else {
+        log('• can\'t identify the failing step from the runtime output — flagging for manual review.', 'error');
+      }
       break;
     }
 
