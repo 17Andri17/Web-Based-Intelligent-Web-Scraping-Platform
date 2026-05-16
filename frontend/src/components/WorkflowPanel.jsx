@@ -7,8 +7,10 @@ import { DndContext, DragOverlay, useDroppable, useDraggable, closestCenter } fr
 import { findStepLocation } from "../workflow/useWorkflow";
 import ExtractListFieldsEditor from "./ExtractListFieldsEditor";
 import WorkflowVariables from "./WorkflowVariables";
+import VariablePicker from "./VariablePicker";
 import "../styles/ExtractListFieldsEditor.css";
 import "../styles/WorkflowVariables.css";
+import "../styles/VariablePicker.css";
 
 // Context shared across all step components (avoids prop drilling)
 const WPCtx = React.createContext(null);
@@ -102,6 +104,56 @@ function typeForExtractType(t) {
     case "EXTRACT_JSON":      return "json";
     default:                  return "string";
   }
+}
+
+// For a given step id, return all iteration variables visible to it
+// (i.e. the itemVar of every enclosing FOR_EACH / FOR_EACH_ELEMENTS).
+// Each entry is { name, source, columns } where columns come from the
+// captured-output the loop iterates over (so the picker can expose
+// `product.title` / `product.link` etc.).
+function iterationVarsForStep(steps, stepId, capturedOutputs) {
+  const out = [];
+  const colsByName = {};
+  for (const c of capturedOutputs || []) colsByName[c.name] = c.columns;
+
+  function walk(arr, ancestors) {
+    for (const s of arr || []) {
+      if (!s || typeof s !== "object") continue;
+      if (s.id === stepId) { out.push(...ancestors); return true; }
+
+      let here = ancestors;
+      if (s.kind === "control" && (s.type === "FOR_EACH" || s.type === "FOR_EACH_ELEMENTS")) {
+        const itemVar = s.params?.itemVar
+          || (s.type === "FOR_EACH_ELEMENTS" ? "el" : "item");
+        // Source name: pull root variable from {{root[*].col}} / {{root}} / raw "root"
+        const sourceRaw = s.params?.source || "";
+        const sourceName = parseSourceRoot(sourceRaw)
+          || (s.type === "FOR_EACH_ELEMENTS" ? s.label?.trim() || "" : "");
+        const cols = sourceName ? colsByName[sourceName] : null;
+        here = [...ancestors, {
+          name: itemVar,
+          source: sourceName || null,
+          columns: Array.isArray(cols) ? cols : null,
+        }];
+      }
+      for (const key of ["body", "then", "else", "try", "catch"]) {
+        if (Array.isArray(s[key])) {
+          if (walk(s[key], here)) return true;
+        }
+      }
+    }
+    return false;
+  }
+  walk(steps, []);
+  return out;
+}
+function parseSourceRoot(raw) {
+  if (typeof raw !== "string") return "";
+  const m = /\{\{\s*([a-zA-Z_$][\w$]*)/.exec(raw);
+  if (m) return m[1];
+  // raw JS expression like "products" — accept simple identifier
+  const m2 = /^([a-zA-Z_$][\w$]*)/.exec(raw.trim());
+  return m2 ? m2[1] : "";
 }
 
 /* ── Icons ── */
@@ -260,7 +312,7 @@ export default function WorkflowPanel({
   const capturedOutputs = React.useMemo(() => collectCapturedOutputs(steps), [steps]);
 
   return (
-    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId }}>
+    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId, variables, availableCapturedOutputs: capturedOutputs, steps }}>
     <div className="workflow-designer">
       <div className="workflow-header">
         <div className="workflow-title">
@@ -288,15 +340,8 @@ export default function WorkflowPanel({
           )}
         </div>
       )}
-      <WorkflowVariables
-        variables={variables}
-        capturedOutputs={capturedOutputs}
-        collapsed={variablesCollapsed}
-        onToggleCollapsed={onToggleVariablesCollapsed}
-        onAdd={(v) => onVariablesChange?.([...variables, v])}
-        onUpdate={(i, patch) => onVariablesChange?.(variables.map((v, idx) => idx === i ? { ...v, ...patch } : v))}
-        onRemove={(i) => onVariablesChange?.(variables.filter((_, idx) => idx !== i))}
-      />
+      <div className="workflow-layout">
+      <div className="workflow-canvas-area">
       <div className="workflow-canvas">
         <div className="flow-container">
           <div className="flow-start">
@@ -362,6 +407,18 @@ export default function WorkflowPanel({
           )}
         </div>
       </div>
+      </div> {/* /workflow-canvas-area */}
+      <WorkflowVariables
+        variables={variables}
+        capturedOutputs={capturedOutputs}
+        collapsed={variablesCollapsed}
+        onToggleCollapsed={onToggleVariablesCollapsed}
+        onAdd={(v) => onVariablesChange?.([...variables, v])}
+        onUpdate={(i, patch) => onVariablesChange?.(variables.map((v, idx) => idx === i ? { ...v, ...patch } : v))}
+        onRemove={(i) => onVariablesChange?.(variables.filter((_, idx) => idx !== i))}
+        layout="side"
+      />
+      </div> {/* /workflow-layout */}
 
       {pickerCtx && (
         <StepPicker
@@ -990,6 +1047,60 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
   );
 }
 
+/* ── Input wrapper with a ServiceNow-style variable picker ────────────
+   Wraps a single-line input with a "$" button that opens a popover
+   tree of available variables / captured outputs / loop-iteration
+   variables. Picking inserts at the current caret position. */
+function ScopedTextInput({ value, onChange, placeholder, type = "text", step }) {
+  const { variables = [], availableCapturedOutputs = [], steps: allSteps = [] } =
+    useContext(WPCtx) || {};
+  const inputRef = useRef(null);
+
+  // Compute iteration variables visible to THIS step (everything inside
+  // a FOR_EACH / FOR_EACH_ELEMENTS that reaches it).
+  const iterationVars = React.useMemo(
+    () => step ? iterationVarsForStep(allSteps, step.id, availableCapturedOutputs) : [],
+    [allSteps, step, availableCapturedOutputs]
+  );
+
+  const handlePick = (ref) => {
+    const el = inputRef.current;
+    if (!el) { onChange((value ?? "") + ref); return; }
+    const cur = el.value ?? "";
+    const a = el.selectionStart ?? cur.length;
+    const b = el.selectionEnd   ?? cur.length;
+    const next = cur.slice(0, a) + ref + cur.slice(b);
+    onChange(next);
+    // Restore caret position after the inserted ref so the user can keep
+    // typing in place.
+    requestAnimationFrame(() => {
+      try {
+        el.focus();
+        const pos = a + ref.length;
+        el.setSelectionRange(pos, pos);
+      } catch (_) {}
+    });
+  };
+
+  return (
+    <div className="vpick-input-row">
+      <input
+        ref={inputRef}
+        type={type}
+        value={value ?? ""}
+        placeholder={placeholder || ""}
+        onChange={e => onChange(e.target.value)}
+      />
+      <VariablePicker
+        variables={variables}
+        capturedOutputs={availableCapturedOutputs}
+        iterationVars={iterationVars}
+        onPick={handlePick}
+      />
+    </div>
+  );
+}
+
 /* ── Field Renderer ── */
 function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey }) {
   // hidden fields are stored in params but not shown in UI
@@ -1051,7 +1162,9 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
   return (
     <div className="form-group">
       <label>{label}</label>
-      {type === "string"  && <input type="text"   value={value ?? ""}   placeholder={placeholder || ""} onChange={e => onChange(e.target.value)} />}
+      {type === "string"  && (
+        <ScopedTextInput value={value} onChange={onChange} placeholder={placeholder} step={step} />
+      )}
       {type === "number"  && <input type="number" value={value ?? ""}   onChange={e => onChange(Number(e.target.value))} />}
       {type === "boolean" && <label style={{ display: "flex", alignItems: "center", gap: 8 }}><input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)} /><span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{value ? "Enabled" : "Disabled"}</span></label>}
       {type === "select"  && <select value={value ?? ""} onChange={e => onChange(e.target.value)}>{(options || []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>}
