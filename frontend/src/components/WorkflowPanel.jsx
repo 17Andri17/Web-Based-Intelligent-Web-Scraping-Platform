@@ -27,27 +27,61 @@ const EXTRACTION_TYPES = new Set([
 
 // Walk the workflow tree and return every named extraction step as a
 // captured-output variable. The variables panel uses this list to show
-// users "what's being captured" without them having to scroll the steps.
+// users "what's being captured" + which columns table-shaped outputs
+// expose, so dot-walking them via `{{name[*].column}}` is obvious.
 function collectCapturedOutputs(steps) {
   const out = [];
   const seen = new Set();
+
+  function columnsFromLoop(loopStep) {
+    if (!Array.isArray(loopStep.body)) return [];
+    const cols = [];
+    for (const c of loopStep.body) {
+      if (c && c.kind === "action" && EXTRACTION_TYPES.has(c.type)) {
+        const lbl = (c.label || "").trim();
+        if (lbl) cols.push(lbl);
+      }
+    }
+    return cols;
+  }
+
+  function columnsFromExtractList(step) {
+    const f = step.params && step.params.fields;
+    if (!f || typeof f !== "object") return [];
+    return Object.keys(f);
+  }
+
   const walk = (arr) => {
     for (const s of arr || []) {
       if (!s || typeof s !== "object") continue;
-      if (s.kind === "control" && EXTRACTION_TYPES.size /* control with extraction-shaped output (FOR_EACH_ELEMENTS) */
-          && s.type === "FOR_EACH_ELEMENTS"
+
+      // FOR_EACH_ELEMENTS with extractions inside → a "table" variable
+      if (s.kind === "control" && s.type === "FOR_EACH_ELEMENTS"
           && Array.isArray(s.body)
           && s.body.some(c => c?.kind === "action" && EXTRACTION_TYPES.has(c.type))) {
         const name = (s.label || "").trim();
         if (name && !seen.has(name)) {
-          out.push({ name, type: "table", stepId: s.id });
+          out.push({
+            name, type: "table", stepId: s.id,
+            columns: columnsFromLoop(s),
+            included: (s.advanced && s.advanced.includeInOutput) !== false,
+          });
           seen.add(name);
         }
-      } else if (s.kind === "action" && EXTRACTION_TYPES.has(s.type)) {
+      }
+      // Standalone extraction → string / list / table / json
+      else if (s.kind === "action" && EXTRACTION_TYPES.has(s.type)) {
         const name = (s.label || "").trim();
         if (name && !seen.has(name)) {
           const isList = s.type === "EXTRACT_LIST" || s.type === "EXTRACT_TABLE" || s.params?.multiple;
-          out.push({ name, type: isList ? "list" : typeForExtractType(s.type), stepId: s.id });
+          const type   = isList ? (s.type === "EXTRACT_LIST" ? "list" : typeForExtractType(s.type)) : typeForExtractType(s.type);
+          const columns = s.type === "EXTRACT_LIST"  ? columnsFromExtractList(s)
+                        : s.type === "EXTRACT_TABLE" ? ["(table headers)"]
+                        : [];
+          out.push({
+            name, type, stepId: s.id, columns,
+            included: (s.advanced && s.advanced.includeInOutput) !== false,
+          });
           seen.add(name);
         }
       }
@@ -107,8 +141,8 @@ function buildDefaultAdvanced(def) {
 function summariseParams(step, ctx = {}) {
   // RUN_SUBFLOW: resolve the workflowId to a name from the available
   // workflows list (when we have it) so the card reads as
-  // "subflow: Product Detail · url: {{product.link}}" instead of the
-  // useless numeric id.
+  // "subflow: Product Detail · url list: {{products[*].link}}"
+  // instead of the useless numeric id.
   if (step.type === "RUN_SUBFLOW") {
     const out = [];
     const id = step.params?.workflowId;
@@ -116,7 +150,13 @@ function summariseParams(step, ctx = {}) {
       const wf = (ctx.availableWorkflows || []).find(w => w.id === id);
       out.push(["subflow", wf ? wf.name : `#${id}`]);
     }
-    if (step.params?.url) out.push(["url", String(step.params.url)]);
+    const mode = step.params?.mode || "single";
+    if (mode === "iterate") {
+      out.push(["mode", "iterate"]);
+      if (step.params?.urlList) out.push(["url list", String(step.params.urlList)]);
+    } else if (step.params?.url) {
+      out.push(["url", String(step.params.url)]);
+    }
     return out;
   }
   // EXTRACT_LIST cards summarise specially: show the container selector
@@ -897,6 +937,32 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
           {isCustom && Object.keys(inputs).length === 0 && (
             <div style={{ color: "var(--text-muted)", fontSize: 13, padding: "8px 0" }}>
               This custom action has no declared inputs.
+            </div>
+          )}
+          {/* Every extraction step gets an extra "Include in final output"
+              toggle that the underlying action definitions don't have to
+              declare individually. When off, the step's value still
+              becomes a workflow variable (so downstream steps can use it)
+              but it doesn't appear in the results JSON — the typical
+              case is "extract links, iterate over them, but the final
+              output should only contain the per-link details." */}
+          {!isCtrl && EXTRACTION_TYPES.has(step.type) && (
+            <div className="form-group" style={{ marginTop: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={local.advanced?.includeInOutput !== false}
+                  onChange={e => setAdv("includeInOutput", e.target.checked)}
+                />
+                <span style={{ fontSize: 13 }}>
+                  Include in final output
+                  <span style={{ fontSize: 11, color: "var(--text-muted, #888)", marginLeft: 6 }}>
+                    {local.advanced?.includeInOutput === false
+                      ? "(off — this step's data is kept as a variable only, not exported)"
+                      : "(on — value appears in the results JSON)"}
+                  </span>
+                </span>
+              </label>
             </div>
           )}
           {Object.keys(advanced).length > 0 && (

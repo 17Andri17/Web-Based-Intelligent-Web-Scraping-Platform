@@ -1373,7 +1373,7 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
   [ACTION_TYPES.RUN_SUBFLOW]: {
     label: "Run Subflow",
     category: "Composition",
-    description: "Open a URL in a fresh browser page and run another saved workflow on it. Drop this inside a For-Each loop to visit every URL in a list (e.g. product detail pages collected from a listing page).",
+    description: "Open another saved workflow ('subflow') on one URL or iterate it over a list of URLs. Pick 'URL list' to point at a column of links from a previous Extract List step (e.g. {{products[*].link}}) and the subflow runs once per row, accumulating results.",
     inputs: {
       workflowId: {
         // Custom renderer in WorkflowPanel that pulls the user's saved
@@ -1383,11 +1383,32 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
         required: true,
         label: "Subflow (saved workflow)",
       },
+      mode: {
+        type: "select",
+        label: "Run on",
+        default: "single",
+        options: [
+          { label: "Single URL",                              value: "single"   },
+          { label: "List of URLs (iterate over each)",        value: "iterate"  },
+        ],
+      },
       url: {
         type: "string",
-        required: true,
-        label: "URL to open in the subflow",
+        label: "URL  (single mode)",
         placeholder: "https://example.com/{{product.link}}  — supports {{variables}}",
+        // Only meaningful in single mode but always shown so users see
+        // both fields. Backend ignores the unused one based on `mode`.
+      },
+      urlList: {
+        type: "string",
+        label: "URL list  (iterate mode)",
+        placeholder: "{{products[*].link}}  — dot-walk to pull a column out of a table variable",
+      },
+      itemVar: {
+        type: "string",
+        label: "Loop variable name  (iterate mode, optional)",
+        placeholder: "url",
+        default: "_url",
       },
       outputVar: {
         type: "string",
@@ -1395,14 +1416,24 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
         placeholder: "product_detail",
       },
     },
+    advanced: {
+      timeout: {
+        type: "number",
+        default: 30000,
+        label: "Per-iteration timeout (ms)",
+      },
+    },
     outputs: {
-      result: { type: "object", description: "The subflow's collected results" },
+      result: { type: "object", description: "The subflow's collected results (or an array when iterating)" },
     },
     // The real code generation lives on the backend (so it can reach the
     // DB and inline the subflow's full step tree). For the "Download
     // code" path we emit a small placeholder comment — the backend's
     // workflowCodegen.js handles RUN_SUBFLOW with the inlined version.
-    generateCode: ({ params }) => `// Subflow #${params.workflowId} on ${JSON.stringify(params.url || "")}\n`,
+    generateCode: ({ params }) =>
+      params.mode === "iterate"
+        ? `// Subflow #${params.workflowId} iterating over ${JSON.stringify(params.urlList || "")}\n`
+        : `// Subflow #${params.workflowId} on ${JSON.stringify(params.url || "")}\n`,
   },
 
 };

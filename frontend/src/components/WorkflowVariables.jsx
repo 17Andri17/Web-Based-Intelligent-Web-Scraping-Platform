@@ -70,7 +70,13 @@ export default function WorkflowVariables({
           {/* Quick how-to: where {{var}} actually works */}
           <div className="wvars-help">
             <span className="wvars-help-tag">tip</span>
-            Reference a variable in any selector, URL or text field as <code>{"{{name}}"}</code>. Example: container selector <code>{"{{selector}}"}</code> uses the variable's current value at run time and in the live preview below.
+            Reference a variable anywhere a step takes text — selector, URL, type-text content. Syntax:
+            <ul className="wvars-help-list">
+              <li><code>{"{{name}}"}</code> — value of a variable</li>
+              <li><code>{"{{table.column}}"}</code> — a field of an object</li>
+              <li><code>{"{{table[*].column}}"}</code> — the column from EVERY row of a list-of-objects (use this with the Run Subflow step's "URL list" mode to visit every link in a captured table)</li>
+            </ul>
+            Click a column name below to copy its reference.
           </div>
           {/* ── Captured outputs ─────────────────────────────────── */}
           <div className="wvars-section">
@@ -83,11 +89,7 @@ export default function WorkflowVariables({
             ) : (
               <div className="wvars-list">
                 {capturedOutputs.map(v => (
-                  <div key={v.stepId} className="wvars-row wvars-row--captured" title={`Captured from step "${v.name}"`}>
-                    <span className="wvars-pill wvars-pill--captured">▣</span>
-                    <span className="wvars-name">{v.name}</span>
-                    <span className="wvars-type">{v.type}</span>
-                  </div>
+                  <CapturedRow key={v.stepId} value={v} />
                 ))}
               </div>
             )}
@@ -152,6 +154,51 @@ export default function WorkflowVariables({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── Captured-output row (read-only, table-aware) ──────────────────── */
+function CapturedRow({ value }) {
+  const isTable = value.type === "table" || value.type === "list";
+  const cols = Array.isArray(value.columns) ? value.columns.filter(Boolean) : [];
+
+  const copy = (text) => { try { navigator.clipboard.writeText(text); } catch (_) {} };
+
+  return (
+    <div className={"wvars-row wvars-row--captured" + (value.included === false ? " wvars-row--hidden" : "")}
+         title={`Captured from step "${value.name}"`}>
+      <span className="wvars-pill wvars-pill--captured">▣</span>
+      <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, gap: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span className="wvars-name">{value.name}</span>
+          <span className="wvars-type">{value.type}</span>
+          {value.included === false && (
+            <span className="wvars-hidden-tag" title="This step's data does NOT appear in the final results JSON — it lives as a workflow variable only">
+              variable only
+            </span>
+          )}
+        </div>
+        {isTable && cols.length > 0 && (
+          <div className="wvars-cols">
+            <span className="wvars-cols-label">columns:</span>
+            {cols.map(c => {
+              const ref = `{{${value.name}[*].${c}}}`;
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  className="wvars-col-chip"
+                  title={`Click to copy ${ref} — produces the list of ${c} values`}
+                  onClick={() => copy(ref)}
+                >
+                  {c}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
