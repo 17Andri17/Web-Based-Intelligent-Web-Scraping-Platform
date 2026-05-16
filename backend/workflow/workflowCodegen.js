@@ -591,7 +591,20 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         capturedAliases: new Set(),   // subflow gets its own alias scope
       };
       subCtx.visitedSubflows.add(String(subflowId));
-      const subSteps = sub.steps || [];
+      // When inlining a subflow, its FIRST step is almost always a pinned
+      // NAVIGATE to the URL it was authored on. The parent step already
+      // opens _subPage at the URL the user wants (single mode) or the
+      // current iteration's URL (iterate mode), so re-navigating to the
+      // authored URL would just throw the work away. Strip a leading
+      // NAVIGATE so the subflow's remaining steps run on _subPage where
+      // the parent put it.
+      const rawSubSteps = sub.steps || [];
+      const subSteps = (
+        rawSubSteps.length > 0
+        && rawSubSteps[0]
+        && rawSubSteps[0].kind === 'action'
+        && rawSubSteps[0].type === 'NAVIGATE'
+      ) ? rawSubSteps.slice(1) : rawSubSteps;
       const subCode  = genStepList(subSteps, subCtx, params.mode === 'iterate' ? 5 : 4);
       const subAliasDecls = subCtx.capturedAliases.size === 0 ? '' :
         Array.from(subCtx.capturedAliases).map(a =>

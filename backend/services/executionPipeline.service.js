@@ -67,6 +67,10 @@ async function executeAndPersist(arg) {
   let currentSteps = clone(arg.workflow.steps || []);
   const meta = arg.workflow.meta || {};
   const customActions = arg.workflow.customActions || {};
+  // Threading subflows through every re-run too — otherwise the codegen
+  // hits its "Subflow #N unavailable" placeholder on repair retries.
+  const subflows = arg.workflow.subflows || {};
+  const rootWorkflowId = arg.workflow.id || arg.workflowId || null;
 
   const t0 = nowMs();
   const runId = runStore.createRun({ userId, workflowId, scheduleId, trigger });
@@ -101,7 +105,7 @@ async function executeAndPersist(arg) {
     attempt++;
     log(`── attempt ${attempt} ──`);
 
-    const workflowForRun = { steps: currentSteps, meta, customActions };
+    const workflowForRun = { id: rootWorkflowId, steps: currentSteps, meta, customActions, subflows };
     const { events, promise } = runner.runChild(workflowForRun, { signal });
     onRunnerEvents(events);
 
