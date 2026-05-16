@@ -54,6 +54,12 @@ function runChild(workflow, { signal } = {}) {
     let resultsObj = null;
     let errorInfo  = null;
     let buffer     = '';
+    // Keep the tail of stderr lines so that when the child exits non-zero
+    // WITHOUT emitting a structured STEP_ERROR (e.g. a SyntaxError that
+    // crashes the script before any STEP_BEGIN fires), we can still
+    // surface a useful message instead of "exited with code 1".
+    const stderrTail = [];
+    const STDERR_TAIL_MAX = 30;
 
     const handleLine = (line, isErr) => {
       if (!line) return;
@@ -77,7 +83,13 @@ function runChild(workflow, { signal } = {}) {
         return;
       }
       const level = isErr ? 'error' : 'info';
-      if (line.trim()) events.emit('log', { line, level });
+      if (line.trim()) {
+        if (isErr) {
+          stderrTail.push(line);
+          if (stderrTail.length > STDERR_TAIL_MAX) stderrTail.shift();
+        }
+        events.emit('log', { line, level });
+      }
     };
 
     const handleData = (data, isErr) => {
@@ -113,6 +125,22 @@ function runChild(workflow, { signal } = {}) {
       const success = exitCode === 0 && !errorInfo;
       if (cancelled && !errorInfo) {
         errorInfo = { message: 'Run cancelled by user', step: null, cancelled: true };
+      }
+      // Non-zero exit with no STEP_ERROR usually means the generated
+      // script failed BEFORE any step ran (e.g. a SyntaxError in the
+      // emitted code). Synthesise an errorInfo from the stderr tail so
+      // the user sees the actual JS error instead of "exited with N".
+      if (!success && !errorInfo && stderrTail.length > 0) {
+        // Best-effort headline: the first stderr line that looks like a
+        // typed Error (SyntaxError / TypeError / ReferenceError / …).
+        const errLine = stderrTail.find(l => /^[A-Z][A-Za-z]*Error:/.test(l))
+                     || stderrTail[stderrTail.length - 1];
+        errorInfo = {
+          message: errLine,
+          step: null,
+          stack: stderrTail.slice(-12).join('\n'),
+          preExecution: true,
+        };
       }
       resolve({ success, exitCode, results: resultsObj, errorInfo });
     });

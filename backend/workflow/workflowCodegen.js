@@ -98,6 +98,29 @@ function qExpr(s) {
   return refToJs(m[1], m[2], m[3]);
 }
 
+// Convert a user-typed "JS expression" field (FOR_EACH source, IF
+// expression, WHILE expression, REPEAT count, …) into a safe inlined
+// expression. Behaviour:
+//   - empty                       → fallback
+//   - "{{var}} < 5"               → "var < 5"           (textual subst)
+//   - "{{products[*].link}}"      → "(products || []).map(_x => _x.link)"
+//   - "someVar.length > 0"        → "someVar.length > 0" (raw JS, untouched)
+//
+// We do TEXTUAL substitution rather than wrapping in a template literal
+// because these fields are spliced directly into JS expression contexts
+// (the body of `if (...)`, `while ((...))`, `for (... < N; ...)` etc.) —
+// a string literal there would always be truthy, hiding the user's
+// intent. The surrounding text is treated as JS source, so users can
+// freely mix variables with operators.
+function jsExpr(s, fallback) {
+  if (typeof s !== 'string') return fallback;
+  const t = s.trim();
+  if (!t) return fallback;
+  if (!t.includes('{{')) return t;          // already raw JS
+  VAR_RX.lastIndex = 0;
+  return t.replace(VAR_RX, (_full, root, star, rest) => refToJs(root, star, rest));
+}
+
 const q = (s) => JSON.stringify(s || '');
 const num = (n, fallback = 0) => (typeof n === 'number' ? n : fallback);
 
@@ -677,20 +700,25 @@ function genControl(step, ctx, depth) {
   switch (type) {
 
     case 'IF': {
-      const expr = params.expression || 'false';
+      // Accept {{var}} interpolation in user-typed expressions — see jsExpr.
+      const expr = jsExpr(params.expression, 'false');
       const thenCode = genStepList(step.then || [], ctx, depth + 1);
       const elseCode = genStepList(step.else || [], ctx, depth + 1);
       return `if (${expr}) {\n${thenCode}} else {\n${elseCode}}\n`;
     }
 
     case 'FOR_EACH': {
-      const src    = params.source   || '[]';
+      // jsExpr converts a pure {{products[*].link}} reference into the
+      // matching JS expression so the user can drop a variable reference
+      // straight in. Falls back to the historical "raw JS" mode for
+      // anything else.
+      const src    = jsExpr(params.source, '[]');
       const item   = params.itemVar  || 'item';
       const idx    = params.indexVar || 'index';
       // Set inLoop so RUN_SUBFLOW / extraction inside the body accumulate
       // results into an array per iteration instead of overwriting.
       const body   = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
-      return `for (let ${idx} = 0; ${idx} < (${src} || []).length; ${idx}++) {\n  const ${item} = ${src}[${idx}];\n${body}}\n`;
+      return `{\n  const _src = ${src};\n  const _arr = Array.isArray(_src) ? _src : (_src || []);\n  for (let ${idx} = 0; ${idx} < _arr.length; ${idx}++) {\n    const ${item} = _arr[${idx}];\n${body}  }\n}\n`;
     }
 
     case 'FOR_EACH_ELEMENTS': {
@@ -768,7 +796,7 @@ function genControl(step, ctx, depth) {
 
 
     case 'WHILE': {
-      const expr = params.expression || 'false';
+      const expr = jsExpr(params.expression, 'false');
       const max  = num(params.maxIterations, 1000);
       const body = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
       return `{
@@ -781,7 +809,13 @@ ${body}  }
     }
 
     case 'REPEAT': {
-      const count = num(params.count, 10);
+      // num() doesn't understand {{var}} — when the user typed an
+      // interpolation it would silently fall back to 10. Route through
+      // jsExpr so `{{max_pages}}` resolves to the variable at runtime.
+      const countRaw = (params.count === undefined || params.count === null) ? '' : String(params.count);
+      const count = countRaw.includes('{{')
+        ? jsExpr(countRaw, '10')
+        : num(params.count, 10);
       const idx   = params.indexVar || 'i';
       const body  = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
       return `for (let ${idx} = 0; ${idx} < ${count}; ${idx}++) {\n${body}}\n`;
