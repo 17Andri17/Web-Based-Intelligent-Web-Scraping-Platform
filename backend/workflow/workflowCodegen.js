@@ -38,37 +38,64 @@ const indent = (code, levels = 1) =>
 
 // ─── String / interpolation helpers ──────────────────────────────────────
 // q(s) keeps the existing call-site semantics (`JSON.stringify` of a
-// string-or-falsy). qStr replaces `{{name}}` (or `{{path.like.this}}`)
-// patterns inside a string param with a JS expression — the generator
-// emits a template literal so the references resolve at runtime.
+// string-or-falsy). qStr replaces `{{name}}` (or `{{path.like.this}}`,
+// or `{{table[*].column}}`) patterns inside a string param with a JS
+// expression — the generator emits a template literal so the references
+// resolve at runtime.
 //
-// We accept ANY valid identifier (or dotted path) — declared workflow
-// variables (always available), loop iteration variables (`product` /
-// `i`), and captured-output aliases (`products`, `name`, …) are all
-// valid roots. Anything that doesn't look like an identifier (e.g.
-// "{{not a var}}") doesn't match and stays as literal text.
+// Syntax accepted inside {{…}}:
+//   {{name}}                   → ${name}
+//   {{name.nested.field}}      → ${name.nested.field}
+//   {{table[*]}}               → ${(table || [])}
+//   {{table[*].column}}        → ${(table || []).map(_x => _x.column)}
+//   {{table[*].col.sub}}       → ${(table || []).map(_x => _x.col.sub)}
+//
+// The `[*]` star says "iterate over the array and take this column from
+// each row" — i.e. project a column out of a list-of-objects variable.
+// Anything that doesn't match (e.g. "{{not a var}}") stays as literal
+// text so users aren't accidentally interpolating arbitrary braces.
 //
 // Both helpers escape backticks / existing ${...} sequences so the
 // generated code stays well-formed even when the user types tricky text.
-const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}/g;
+const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*)(\[\*\])?((?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}/g;
+
+function refToJs(root, star, rest) {
+  if (star) {
+    return rest
+      ? `(${root} || []).map(_x => _x${rest})`
+      : `(${root} || [])`;
+  }
+  return root + (rest || '');
+}
 
 function qStr(s /* declaredVars kept for back-compat — no longer used */) {
   if (typeof s !== 'string') return JSON.stringify(s == null ? '' : String(s));
   if (!s.includes('{{')) return JSON.stringify(s);
 
-  // Quick test: is there at least ONE identifier-shaped reference?
   VAR_RX.lastIndex = 0;
   if (!VAR_RX.test(s)) return JSON.stringify(s);
 
-  // Escape characters that would otherwise change the meaning of the
-  // template literal.
   const escaped = s
     .replace(/\\/g, '\\\\')
     .replace(/`/g, '\\`')
     .replace(/\$\{/g, '\\${');
-  // Substitute every {{name(.path)?}} → ${name(.path)?}.
-  const interpolated = escaped.replace(VAR_RX, (_full, path) => '${' + path + '}');
+  const interpolated = escaped.replace(VAR_RX, (_full, root, star, rest) =>
+    '${' + refToJs(root, star, rest) + '}'
+  );
   return '`' + interpolated + '`';
+}
+
+// Extract a JS EXPRESSION out of a string that's "essentially a template
+// reference" — i.e. exactly `{{var[*].something}}` (with optional
+// whitespace). Used for fields that should evaluate to an array / object
+// at runtime, not a string. Returns null if `s` isn't a pure template
+// reference — callers can fall back to literal-array parsing or default
+// to `[]`.
+function qExpr(s) {
+  if (typeof s !== 'string') return null;
+  const m = /^\s*\{\{\s*([a-zA-Z_$][\w$]*)(\[\*\])?((?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}\s*$/.exec(s);
+  if (!m) return null;
+  return refToJs(m[1], m[2], m[3]);
 }
 
 const q = (s) => JSON.stringify(s || '');
@@ -132,14 +159,23 @@ function genAction(step, ctx) {
   // ── Standard (page-level) code ──────────────────────────────────────────
   let store = '';
   if (isExtraction && !feCtx?.hasExtractions) {
-    const key = (label && label.trim()) ? label : `extracted_${varName}`;
-    if (ctx.inLoop) {
-      // Inside WHILE/REPEAT: accumulate into array instead of overwriting
-      store = `  if (!__results__[${JSON.stringify(key)}]) __results__[${JSON.stringify(key)}] = [];\n`
-            + `  if (Array.isArray(${varName})) __results__[${JSON.stringify(key)}].push(...${varName});\n`
-            + `  else if (${varName} !== null && ${varName} !== undefined) __results__[${JSON.stringify(key)}].push(${varName});\n`;
-    } else {
-      store = `  __results__[${JSON.stringify(key)}] = ${varName};\n`;
+    // "Include in final output" — when false the step still creates the
+    // JS variable so other steps can consume it (e.g. a list of links
+    // used for iteration), but the data is omitted from __results__. The
+    // typical use case: extract product links → iterate via RUN_SUBFLOW
+    // → final JSON contains only the per-product detail records, not
+    // the raw links list.
+    const includeInOutput = advanced.includeInOutput !== false;
+    if (includeInOutput) {
+      const key = (label && label.trim()) ? label : `extracted_${varName}`;
+      if (ctx.inLoop) {
+        // Inside WHILE/REPEAT: accumulate into array instead of overwriting
+        store = `  if (!__results__[${JSON.stringify(key)}]) __results__[${JSON.stringify(key)}] = [];\n`
+              + `  if (Array.isArray(${varName})) __results__[${JSON.stringify(key)}].push(...${varName});\n`
+              + `  else if (${varName} !== null && ${varName} !== undefined) __results__[${JSON.stringify(key)}].push(${varName});\n`;
+      } else {
+        store = `  __results__[${JSON.stringify(key)}] = ${varName};\n`;
+      }
     }
     // Mirror the named result into a JS variable with the same name, so
     // subsequent steps (FOR_EACH source, RUN_SUBFLOW url, …) can refer to
@@ -518,7 +554,6 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
                     || (label && label.trim())
                     || sub.name
                     || `subflow_${subflowId}`;
-      const subUrl   = q(params.url || '');
 
       // Generate the subflow's step code with its OWN context. We pass
       // through declaredVars + customActions + subflows so the subflow
@@ -534,29 +569,76 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
       };
       subCtx.visitedSubflows.add(String(subflowId));
       const subSteps = sub.steps || [];
-      const subCode  = genStepList(subSteps, subCtx, 4);
-      // Declare aliases collected during subflow codegen INSIDE the IIFE
-      // so the subflow's named extractions stay scoped to it (rather than
-      // leaking into the parent's `let` slots — which would also error
-      // out under "use strict" if the parent didn't declare them).
+      const subCode  = genStepList(subSteps, subCtx, params.mode === 'iterate' ? 5 : 4);
       const subAliasDecls = subCtx.capturedAliases.size === 0 ? '' :
-        Array.from(subCtx.capturedAliases).map(a => `      let ${a};`).join('\n');
+        Array.from(subCtx.capturedAliases).map(a =>
+          (params.mode === 'iterate' ? '        ' : '      ') + `let ${a};`
+        ).join('\n');
 
-      // Append-or-set logic mirrors the rest of the codegen: inside any
-      // outer loop, accumulate into an array; otherwise overwrite.
+      const safeSubName = (sub.name || 'unnamed').replace(/\*\//g, '*\\/');
+      const timeoutMs   = num(advanced.timeout, 30000);
+
+      // ── iterate mode: walk a list of URLs ────────────────────────────
+      if (params.mode === 'iterate') {
+        const itemVar = params.itemVar && /^[a-zA-Z_$][\w$]*$/.test(params.itemVar)
+          ? params.itemVar : '_url';
+        // Prefer the cleaner JS expression form (e.g. `(products || []).map(_x => _x.link)`)
+        // for fields written as a single {{table[*].column}}. Falls back
+        // to the template-literal `String(...)` form for hand-written
+        // arrays / mixed expressions.
+        const listExpr = qExpr(params.urlList || '') || `(${qStr(params.urlList || '')})`;
+        return [
+          `// Subflow (iterate): ${safeSubName} (id ${subflowId})`,
+          `{`,
+          `  const _urls = ${listExpr};`,
+          `  const _urlList = Array.isArray(_urls) ? _urls : [];`,
+          `  if (!__results__[${JSON.stringify(outKey)}]) __results__[${JSON.stringify(outKey)}] = [];`,
+          `  for (let _i = 0; _i < _urlList.length; _i++) {`,
+          `    const ${itemVar} = _urlList[_i];`,
+          `    if (${itemVar} == null || ${itemVar} === '') continue;`,
+          `    const _subPage = await browser.newPage();`,
+          `    try {`,
+          `      await applyStealthToPage(_subPage);`,
+          `      await _subPage.goto(String(${itemVar}), { waitUntil: 'load', timeout: ${timeoutMs} });`,
+          `      const _subResults = await (async (page) => {`,
+          `        const __results__ = {};`,
+          `        let __currentStep__ = null;`,
+          subAliasDecls,
+          `        try {`,
+          subCode,
+          `        } catch (err) {`,
+          `          console.error(${JSON.stringify(`Subflow ${outKey} iteration error:`)}, err && err.message);`,
+          `        }`,
+          `        return __results__;`,
+          `      })(_subPage);`,
+          `      _subResults._sourceUrl = String(${itemVar});`,
+          `      __results__[${JSON.stringify(outKey)}].push(_subResults);`,
+          `    } catch (err) {`,
+          `      console.error(${JSON.stringify(`Subflow ${outKey} failed on URL`)}, ${itemVar}, '—', err && err.message);`,
+          `    } finally {`,
+          `      try { await _subPage.close(); } catch (_) {}`,
+          `    }`,
+          `  }`,
+          `}`,
+          ``,
+        ].join('\n');
+      }
+
+      // ── single mode: one URL, one subflow invocation ─────────────────
+      const subUrl = q(params.url || '');
       const mergeBlock = ctx.inLoop
         ? `      if (!__results__[${JSON.stringify(outKey)}]) __results__[${JSON.stringify(outKey)}] = [];\n` +
           `      __results__[${JSON.stringify(outKey)}].push(_subResults);`
         : `      __results__[${JSON.stringify(outKey)}] = _subResults;`;
 
       return [
-        `// Subflow: ${(sub.name || 'unnamed').replace(/\*\//g, '*\\/')} (id ${subflowId})`,
+        `// Subflow: ${safeSubName} (id ${subflowId})`,
         `{`,
         `  const _subUrl = ${subUrl};`,
         `  const _subPage = await browser.newPage();`,
         `  try {`,
         `    await applyStealthToPage(_subPage);`,
-        `    await _subPage.goto(_subUrl, { waitUntil: 'load', timeout: ${num(advanced.timeout, 30000)} });`,
+        `    await _subPage.goto(_subUrl, { waitUntil: 'load', timeout: ${timeoutMs} });`,
         `    const _subResults = await (async (page) => {`,
         `      const __results__ = {};`,
         `      let __currentStep__ = null;`,
@@ -646,6 +728,14 @@ function genControl(step, ctx, depth) {
         ? (ctx.capturedAliases && ctx.capturedAliases.add(aliasName), `${aliasName} = ${resultsVar};`)
         : '';
 
+      // Same "Include in final output" semantics as standalone
+      // extractions — the JS alias is still emitted so the rows are
+      // usable downstream even if the user opts out of putting the
+      // table in the results JSON.
+      const includeInOutput = (step.advanced && step.advanced.includeInOutput) !== false;
+      const writebackLine = includeInOutput
+        ? `__results__[${JSON.stringify(resultsKey)}] = ${resultsVar};`
+        : `// (${resultsKey}: kept as JS variable only — excluded from results JSON)`;
       if (hasExtractions) {
         return [
           `const ${resultsVar} = [];`,
@@ -658,7 +748,7 @@ function genControl(step, ctx, depth) {
           `    ${resultsVar}.push(${rowVar});`,
           `  }`,
           `}`,
-          `__results__[${JSON.stringify(resultsKey)}] = ${resultsVar};`,
+          writebackLine,
           aliasLine,
           ``,
         ].join('\n');
