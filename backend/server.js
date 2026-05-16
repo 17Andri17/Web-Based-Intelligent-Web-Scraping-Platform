@@ -55,6 +55,50 @@ function resolveCustomActions(steps, userId) {
   return out;
 }
 
+// Collect every workflow id referenced (directly OR transitively) by a
+// RUN_SUBFLOW step. Returns a map { id → { name, steps, meta } } that the
+// codegen inlines. We follow subflows recursively so a subflow that
+// itself runs another subflow also gets resolved; cycle protection
+// happens at codegen time (visitedSubflows in ctx).
+function resolveSubflows(steps, userId, rootWorkflowId = null) {
+  function collectIds(arr, out) {
+    for (const s of arr || []) {
+      if (s && s.kind === 'action' && s.type === 'RUN_SUBFLOW') {
+        const id = s.params && Number(s.params.workflowId);
+        if (Number.isFinite(id) && id > 0) out.add(id);
+      }
+      ['body', 'then', 'else', 'try', 'catch'].forEach(k => {
+        if (Array.isArray(s?.[k])) collectIds(s[k], out);
+      });
+    }
+    return out;
+  }
+
+  const visited = new Set(rootWorkflowId ? [Number(rootWorkflowId)] : []);
+  const out = {};
+  const queue = Array.from(collectIds(steps, new Set()))
+    .filter(id => !visited.has(id));
+
+  while (queue.length) {
+    const id = queue.shift();
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const row = db.prepare(
+      'SELECT id, name, steps_json, meta_json FROM workflows WHERE id = ? AND user_id = ?'
+    ).get(id, userId);
+    if (!row) continue;
+    let steps_, meta_;
+    try { steps_ = JSON.parse(row.steps_json); } catch (_) { steps_ = []; }
+    try { meta_  = row.meta_json ? JSON.parse(row.meta_json) : {}; } catch (_) { meta_ = {}; }
+    out[id] = { id: row.id, name: row.name, steps: steps_, meta: meta_ };
+    // Recurse: any RUN_SUBFLOW inside this subflow we just fetched.
+    collectIds(steps_, new Set()).forEach(childId => {
+      if (!visited.has(childId)) queue.push(childId);
+    });
+  }
+  return out;
+}
+
 const PORT = process.env.PORT || 3001;
 
 const server     = http.createServer(app);
@@ -509,7 +553,8 @@ io.on('connection', async (socket) => {
       `).run(JSON.stringify(steps), meta ? JSON.stringify(meta) : null, workflowId, socket.user.id);
     }
 
-    const workflow = { steps, meta, customActions };
+    const subflows = resolveSubflows(steps, socket.user.id, workflowId);
+    const workflow = { id: workflowId, steps, meta, customActions, subflows };
     try {
       await executeWorkflow(workflow, socket, { userId: socket.user.id, workflowId });
     } catch (err) {
@@ -1077,7 +1122,8 @@ io.on('connection', async (socket) => {
       const meta = data.meta || userSessionMeta.get(userId) || {};
       const steps = data.steps || [];
       const customActions = resolveCustomActions(steps, socket.user.id);
-      const code = generateCode({ steps, meta, customActions });
+      const subflows = resolveSubflows(steps, socket.user.id, data.workflowId || null);
+      const code = generateCode({ id: data.workflowId, steps, meta, customActions, subflows });
       socket.emit('codeReady', { code });
     } catch (err) {
       socket.emit('message', `❌ Code generation error: ${err.message}`);

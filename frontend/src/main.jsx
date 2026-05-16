@@ -29,7 +29,12 @@ const SERVER_URL = API_BASE;
 // declarations, so we substitute the variable VALUES into selectors /
 // URLs / etc. before sending the payload to the backend's previewStep.
 // References to undeclared names are left untouched (verbatim text).
-const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*)\s*\}\}/g;
+// Same regex as the codegen — top-level identifier or dotted path.
+// Dotted paths only resolve if the ROOT identifier is a declared workflow
+// variable AND it's an object. (Iteration variables like `product.link`
+// only exist at run time, so the live preview leaves them as literal text
+// — the user can still verify them once they hit Run.)
+const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}/g;
 function resolveVars(s, vars) {
   if (typeof s !== "string" || !s.includes("{{")) return s;
   const map = new Map();
@@ -37,9 +42,16 @@ function resolveVars(s, vars) {
     if (v && typeof v.name === "string" && v.name) map.set(v.name, v.value);
   }
   if (map.size === 0) return s;
-  return s.replace(VAR_RX, (full, name) =>
-    map.has(name) ? String(map.get(name) ?? "") : full
-  );
+  return s.replace(VAR_RX, (full, path) => {
+    const parts = path.split(".");
+    if (!map.has(parts[0])) return full;     // root not a declared variable → leave for runtime
+    let cur = map.get(parts[0]);
+    for (let i = 1; i < parts.length; i++) {
+      if (cur == null || typeof cur !== "object") return full;
+      cur = cur[parts[i]];
+    }
+    return cur == null ? "" : String(cur);
+  });
 }
 function deepResolveVars(obj, vars) {
   if (obj == null) return obj;
@@ -170,6 +182,15 @@ function AppShell({ user, token, onLogout }) {
     try { setCustomActions(await customActionsApi.list()); } catch (_) {}
   }, []);
   useEffect(() => { refreshCustomActions(); }, [refreshCustomActions]);
+
+  // Saved-workflow list used by the RUN_SUBFLOW step's dropdown picker.
+  // Populated on first mount and refreshed when the Workflows menu
+  // creates / deletes a workflow (handled via onSaved/onLoaded below).
+  const [availableWorkflows, setAvailableWorkflows] = useState([]);
+  const refreshAvailableWorkflows = useCallback(async () => {
+    try { setAvailableWorkflows(await workflowsApi.list()); } catch (_) {}
+  }, []);
+  useEffect(() => { refreshAvailableWorkflows(); }, [refreshAvailableWorkflows]);
 
   // ── Socket ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1280,6 +1301,8 @@ function AppShell({ user, token, onLogout }) {
             onVariablesChange={setWorkflowVariables}
             variablesCollapsed={variablesCollapsed}
             onToggleVariablesCollapsed={() => setVariablesCollapsed(c => !c)}
+            availableWorkflows={availableWorkflows}
+            currentWorkflowId={currentWorkflowId}
           />
         )}
         {activeTab === "data" && (
@@ -1465,6 +1488,7 @@ function AppShell({ user, token, onLogout }) {
         onSaved={(wf) => {
           setCurrentWorkflowId(wf.id);
           setCurrentWorkflowName(wf.name);
+          refreshAvailableWorkflows();   // make the new/updated workflow pickable as a subflow
         }}
         onLoaded={(wf) => {
           // Normalise: mark the first NAVIGATE step as the pinned start URL.
