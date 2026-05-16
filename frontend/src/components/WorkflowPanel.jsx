@@ -1,4 +1,4 @@
-import { useState, useCallback, useContext, useRef } from "react";
+import { useState, useCallback, useContext, useRef, useMemo } from "react";
 import React from "react";
 import { actionDefinitions } from "../actions/actionDefinitions";
 import { controlDefinitions, isControlStep } from "../workflow/controlDefinitions";
@@ -108,9 +108,12 @@ function typeForExtractType(t) {
 
 // For a given step id, return all iteration variables visible to it
 // (i.e. the itemVar of every enclosing FOR_EACH / FOR_EACH_ELEMENTS).
-// Each entry is { name, source, columns } where columns come from the
-// captured-output the loop iterates over (so the picker can expose
-// `product.title` / `product.link` etc.).
+// Each entry tells the picker what the iteration item ACTUALLY is —
+// a row of a captured table, or a scalar (when the source was a
+// column-projection like {{products[*].link}}), or unknown — so the
+// picker doesn't lie about object fields that won't exist at runtime.
+//
+// Shape: { name, source, sourceColumn?, itemKind: 'row'|'scalar'|'unknown', columns? }
 function iterationVarsForStep(steps, stepId, capturedOutputs) {
   const out = [];
   const colsByName = {};
@@ -125,16 +128,40 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
       if (s.kind === "control" && (s.type === "FOR_EACH" || s.type === "FOR_EACH_ELEMENTS")) {
         const itemVar = s.params?.itemVar
           || (s.type === "FOR_EACH_ELEMENTS" ? "el" : "item");
-        // Source name: pull root variable from {{root[*].col}} / {{root}} / raw "root"
-        const sourceRaw = s.params?.source || "";
-        const sourceName = parseSourceRoot(sourceRaw)
-          || (s.type === "FOR_EACH_ELEMENTS" ? s.label?.trim() || "" : "");
-        const cols = sourceName ? colsByName[sourceName] : null;
-        here = [...ancestors, {
-          name: itemVar,
-          source: sourceName || null,
-          columns: Array.isArray(cols) ? cols : null,
-        }];
+
+        // FOR_EACH_ELEMENTS iterates over DOM nodes — rows aren't from a
+        // captured table; the columns are the labels of its own body's
+        // extraction steps. Synthesize a "row" with those columns.
+        if (s.type === "FOR_EACH_ELEMENTS") {
+          const innerCols = (s.body || [])
+            .filter(c => c && c.kind === "action" && EXTRACTION_TYPES.has(c.type))
+            .map(c => (c.label || "").trim())
+            .filter(Boolean);
+          here = [...ancestors, {
+            name: itemVar,
+            source: s.label?.trim() || null,
+            itemKind: "row",
+            columns: innerCols.length ? innerCols : null,
+          }];
+        } else {
+          // FOR_EACH iterates over whatever `params.source` evaluates to.
+          // The shape of each item depends on the source expression:
+          //   - {{table}}            → item is a row of `table`
+          //   - {{table[*]}}         → item is a row of `table`
+          //   - {{table[*].col}}     → item is the value of `col` (scalar)
+          //   - raw identifier       → item is a row if the identifier
+          //                            names a captured table, else
+          //                            unknown
+          const sourceRaw = s.params?.source || "";
+          const info = analyseSourceExpr(sourceRaw, colsByName);
+          here = [...ancestors, {
+            name: itemVar,
+            source: info.rootName || null,
+            sourceColumn: info.projectedColumn || null,
+            itemKind: info.itemKind,
+            columns: info.itemKind === "row" ? (colsByName[info.rootName] || null) : null,
+          }];
+        }
       }
       for (const key of ["body", "then", "else", "try", "catch"]) {
         if (Array.isArray(s[key])) {
@@ -147,13 +174,37 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
   walk(steps, []);
   return out;
 }
-function parseSourceRoot(raw) {
-  if (typeof raw !== "string") return "";
-  const m = /\{\{\s*([a-zA-Z_$][\w$]*)/.exec(raw);
-  if (m) return m[1];
-  // raw JS expression like "products" — accept simple identifier
+
+// Inspect a FOR_EACH source expression to decide what each iteration's
+// item will be. Returns { rootName, projectedColumn, itemKind }.
+function analyseSourceExpr(raw, colsByName) {
+  if (typeof raw !== "string" || !raw.trim()) {
+    return { rootName: "", projectedColumn: null, itemKind: "unknown" };
+  }
+  const m = /\{\{\s*([a-zA-Z_$][\w$]*)(\[\*\])?((?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}/.exec(raw);
+  if (m) {
+    const root = m[1];
+    const hasStar = !!m[2];
+    const path = m[3] ? m[3].slice(1).split(".") : [];
+    if (hasStar && path.length > 0) {
+      // {{table[*].col}} → each item is the column value (scalar)
+      return { rootName: root, projectedColumn: path.join("."), itemKind: "scalar" };
+    }
+    // {{table}} / {{table[*]}} / {{table.col}} → each item is a row of `table`
+    return { rootName: root, projectedColumn: null, itemKind: "row" };
+  }
+  // Raw identifier — if it names a captured table, item is a row;
+  // otherwise we can't be sure.
   const m2 = /^([a-zA-Z_$][\w$]*)/.exec(raw.trim());
-  return m2 ? m2[1] : "";
+  if (m2) {
+    const root = m2[1];
+    return {
+      rootName: root,
+      projectedColumn: null,
+      itemKind: Array.isArray(colsByName[root]) ? "row" : "unknown",
+    };
+  }
+  return { rootName: "", projectedColumn: null, itemKind: "unknown" };
 }
 
 /* ── Icons ── */
@@ -1051,7 +1102,7 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
    Wraps a single-line input with a "$" button that opens a popover
    tree of available variables / captured outputs / loop-iteration
    variables. Picking inserts at the current caret position. */
-function ScopedTextInput({ value, onChange, placeholder, type = "text", step }) {
+function ScopedTextInput({ value, onChange, placeholder, type = "text", step, expectedKind = "any" }) {
   const { variables = [], availableCapturedOutputs = [], steps: allSteps = [] } =
     useContext(WPCtx) || {};
   const inputRef = useRef(null);
@@ -1082,29 +1133,146 @@ function ScopedTextInput({ value, onChange, placeholder, type = "text", step }) 
     });
   };
 
+  // Detect whether the current value looks like a single template
+  // reference (e.g. "{{products[*].link}}") and, if so, infer the kind
+  // that it would resolve to. Compare against expectedKind — surface a
+  // friendly inline warning so the user doesn't run a broken workflow.
+  const mismatchWarning = useMemo(
+    () => detectInputMismatch(value, expectedKind, { variables, capturedOutputs: availableCapturedOutputs, iterationVars }),
+    [value, expectedKind, variables, availableCapturedOutputs, iterationVars]
+  );
+
   return (
-    <div className="vpick-input-row">
-      <input
-        ref={inputRef}
-        type={type}
-        value={value ?? ""}
-        placeholder={placeholder || ""}
-        onChange={e => onChange(e.target.value)}
-      />
-      <VariablePicker
-        variables={variables}
-        capturedOutputs={availableCapturedOutputs}
-        iterationVars={iterationVars}
-        onPick={handlePick}
-      />
+    <div className="vpick-input-col">
+      <div className="vpick-input-row">
+        <input
+          ref={inputRef}
+          type={type}
+          value={value ?? ""}
+          placeholder={placeholder || ""}
+          onChange={e => onChange(e.target.value)}
+          className={mismatchWarning ? "vpick-input-mismatch" : undefined}
+        />
+        <VariablePicker
+          variables={variables}
+          capturedOutputs={availableCapturedOutputs}
+          iterationVars={iterationVars}
+          onPick={handlePick}
+          expectedKind={expectedKind}
+        />
+      </div>
+      {mismatchWarning && (
+        <div className="vpick-input-warning" title={mismatchWarning}>
+          ⚠ {mismatchWarning}
+        </div>
+      )}
     </div>
   );
+}
+
+// Read the value of an input that's a single {{...}} reference, look up
+// the variable's kind, and return a human-readable warning when the
+// kind doesn't match what the field expects. Returns null when there's
+// no mismatch (either the value matches or it's not a pure reference,
+// in which case we can't easily decide).
+function detectInputMismatch(value, expectedKind, ctx) {
+  if (!expectedKind || expectedKind === "any") return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  // We only validate inputs that are EXACTLY one variable reference —
+  // mixed text + interpolation is always a string at runtime.
+  const m = /^\{\{\s*([a-zA-Z_$][\w$]*)(\[\*\])?((?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}$/.exec(trimmed);
+  if (!m) return null;
+  const root = m[1], hasStar = !!m[2], path = m[3] ? m[3].slice(1).split(".") : [];
+  // Determine what the reference resolves to:
+  //   {{X}}            → X's own kind
+  //   {{X[*]}}         → list  (the whole list)
+  //   {{X.field}}      → field on X (scalar if X is a row, else any)
+  //   {{X[*].field}}   → list of field values → list
+  let refKind = "any";
+  if (hasStar && path.length > 0) refKind = "list";
+  else if (hasStar) refKind = "list";
+  else if (path.length > 0) refKind = "scalar";
+  else {
+    // Lookup the root: iteration var > captured output > custom var
+    const iter = ctx.iterationVars.find(v => v.name === root);
+    if (iter) {
+      refKind = iter.itemKind === "row" ? "object"
+              : iter.itemKind === "scalar" ? "scalar" : "any";
+    } else {
+      const cap = ctx.capturedOutputs.find(c => c.name === root);
+      if (cap) refKind = (cap.type === "list" || cap.type === "table") ? "list" : "scalar";
+      else {
+        const cust = ctx.variables.find(v => v.name === root);
+        if (cust) refKind = cust.type === "json" ? "any" : "scalar";
+        else refKind = "any";   // unknown — don't false-flag
+      }
+    }
+  }
+  // Compatibility: scalar↔scalar, list↔list, object→scalar OK (often
+  // user types it knowingly), any matches anything
+  const COMPAT = {
+    scalar: new Set(["scalar", "any"]),
+    list:   new Set(["list",   "any"]),
+    object: new Set(["object", "any"]),
+  };
+  const allowed = COMPAT[expectedKind];
+  if (!allowed) return null;
+  if (allowed.has(refKind) || refKind === "any") return null;
+  // Build a useful message
+  if (expectedKind === "scalar" && refKind === "list") {
+    return `${trimmed} is a list — this field expects a single value. Use {{name[*].column}} on a list, or wrap with a FOR_EACH to iterate.`;
+  }
+  if (expectedKind === "list" && refKind === "scalar") {
+    return `${trimmed} is a single value — this field expects a list. Did you mean {{${root}[*].column}} or another list-shaped variable?`;
+  }
+  if (expectedKind === "list" && refKind === "object") {
+    return `${trimmed} is a row, not a list. Use the parent variable (e.g. {{products[*].link}}) instead.`;
+  }
+  return `${trimmed} is a ${kindLabel(refKind)} but this field expects a ${kindLabel(expectedKind)}.`;
+}
+function kindLabel(k) {
+  return k === "scalar" ? "single value" : k === "list" ? "list" : k === "object" ? "object" : "value";
+}
+
+// What shape of value does a step input expect? Used by the variable
+// picker to warn the user if the reference they're inserting won't fit
+// (a list dropped into a single-string field, etc). Conservative
+// defaults: anything not listed is treated as "any" so the picker never
+// surprises a user who knows what they're doing.
+const FIELD_EXPECTED_KIND = {
+  // Most string fields take a single value
+  selector:           "scalar",
+  url:                "scalar",
+  text:               "scalar",
+  containerSelector:  "scalar",
+  attribute:          "scalar",
+  destination:        "scalar",
+  searchValue:        "scalar",
+  replaceValue:       "scalar",
+  variableName:       "scalar",
+  scriptSelector:     "scalar",
+  jsonPath:           "scalar",
+  // RUN_SUBFLOW: single URL vs a list of URLs
+  urlList:            "list",
+  // Variables you set / append into are arrays
+  listName:           "list",
+  // For-each / loop sources are lists
+  source:             "list",
+};
+function expectedKindForField(stepType, fieldKey) {
+  // Override specific (stepType, field) pairs when the field name alone
+  // isn't enough. Currently only RUN_SUBFLOW.url is special (single URL)
+  // vs the urlList field — both are already covered above.
+  return FIELD_EXPECTED_KIND[fieldKey] || "any";
 }
 
 /* ── Field Renderer ── */
 function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey }) {
   // hidden fields are stored in params but not shown in UI
   if (type === "hidden") return null;
+
+  const expectedKind = expectedKindForField(step?.type, fieldKey);
 
   // keyvalue: rich fields editor used by EXTRACT_LIST. We pull socket
   // and the latest preview rows out of WPCtx so the AI auto-detect
@@ -1163,7 +1331,13 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
     <div className="form-group">
       <label>{label}</label>
       {type === "string"  && (
-        <ScopedTextInput value={value} onChange={onChange} placeholder={placeholder} step={step} />
+        <ScopedTextInput
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+          step={step}
+          expectedKind={expectedKind}
+        />
       )}
       {type === "number"  && <input type="number" value={value ?? ""}   onChange={e => onChange(Number(e.target.value))} />}
       {type === "boolean" && <label style={{ display: "flex", alignItems: "center", gap: 8 }}><input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)} /><span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{value ? "Enabled" : "Disabled"}</span></label>}
