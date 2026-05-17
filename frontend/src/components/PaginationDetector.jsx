@@ -61,7 +61,7 @@ function ConfidenceBar({ value, color }) {
 // ─── Generate WHILE loop steps for each pagination type ───────────────────────
 
 function generatePaginationSteps(suggestion) {
-  const { type, selector } = suggestion;
+  const { type, selector, containerSelector, hasNextButton } = suggestion;
 
   // WHILE control wrapper
   const makeWhile = (expression, maxIterations, bodySteps) => {
@@ -81,14 +81,68 @@ function generatePaginationSteps(suggestion) {
   const makeScroll = () => createAction(ACTION_TYPES.SCROLL_PAGE, { direction: "bottom" });
 
   switch (type) {
-    case "next_button":
-    case "page_numbers": {
+    case "next_button": {
       // WHILE selector exists → [YOUR EXTRACTIONS] → click next → wait for content
       const click   = makeClick(selector);
       click.label   = "Click next page";
       const wait    = makeWaitSel(selector);
       wait.label    = "Wait for next button";
       return makeWhile(`await page.$(\`${selector}\`) !== null`, 500, [click, wait]);
+    }
+
+    case "page_numbers": {
+      // When the detector found a Next link inside the numbered pagination,
+      // treat it exactly like next_button.
+      if (hasNextButton) {
+        const click   = makeClick(selector);
+        click.label   = "Click next page";
+        const wait    = makeWaitSel(selector);
+        wait.label    = "Wait for next button";
+        return makeWhile(`await page.$(\`${selector}\`) !== null`, 500, [click, wait]);
+      }
+
+      // No Next button — only numbered links. We can't click a single
+      // selector because each iteration needs a different number. The
+      // WHILE expression runs inside the container, finds the link whose
+      // number is one greater than the active page, and marks it with
+      // `data-pagi-target="1"`. The body's CLICK_ELEMENT then clicks
+      // that marker — a fresh marker is set on every iteration.
+      const container = containerSelector || selector;
+      const findAndMark = [
+        `await page.evaluate((sel) => {`,
+        `  const c = document.querySelector(sel);`,
+        `  if (!c) return false;`,
+        `  c.querySelectorAll('[data-pagi-target]').forEach(el => el.removeAttribute('data-pagi-target'));`,
+        `  const active = c.querySelector('[aria-current="page"],.active,[class~="active"],.current,[class~="current"],[class*="--active"],[class*="is-active"]');`,
+        `  let curN = NaN;`,
+        `  if (active) {`,
+        `    const t = (active.innerText || active.textContent || '').trim();`,
+        `    if (/^\\d+$/.test(t)) curN = parseInt(t, 10);`,
+        `  }`,
+        `  if (!Number.isFinite(curN)) {`,
+        `    const m = location.href.match(/[?&](?:page|paged|pg|pagenum|pageno|p)=(\\d+)/i) || location.pathname.match(/\\/(\\d+)\\/?$/);`,
+        `    if (m) curN = parseInt(m[1], 10);`,
+        `  }`,
+        `  if (!Number.isFinite(curN)) curN = 1;`,
+        `  const links = Array.from(c.querySelectorAll('a,button,[role="button"]'))`,
+        `    .map(a => {`,
+        `      const t = (a.innerText || a.textContent || '').trim();`,
+        `      return /^\\d+$/.test(t) ? { a, n: parseInt(t, 10) } : null;`,
+        `    })`,
+        `    .filter(Boolean);`,
+        `  if (!links.length) return false;`,
+        `  const target = links.find(x => x.n === curN + 1)`,
+        `             || links.filter(x => x.n > curN).sort((a, b) => a.n - b.n)[0];`,
+        `  if (!target) return false;`,
+        `  target.a.setAttribute('data-pagi-target', '1');`,
+        `  return true;`,
+        `}, ${JSON.stringify(container)})`,
+      ].join("\n");
+      const click  = makeClick('[data-pagi-target="1"]');
+      click.label  = "Click next numbered page";
+      const wait   = makeWait(2000);
+      wait.label   = "Wait for next page to load";
+      return makeWhile(findAndMark, 500, [click, wait]);
     }
 
     case "load_more": {

@@ -799,6 +799,8 @@ io.on('connection', async (socket) => {
                  .find(e => isNextLike(txt(e)) && vis(e));
           results.push({ type: 'page_numbers', confidence: 0.91,
             selector: nextInNav ? stableSelector(nextInNav) : stableSelector(container),
+            containerSelector: stableSelector(container),
+            hasNextButton: !!nextInNav,
             previewText: numLinks.map(e => txt(e)).slice(0,5).join(', ') + '\u2026',
             description: `Found numbered pagination with ${numLinks.length} page links.` });
           break;
