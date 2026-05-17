@@ -154,6 +154,13 @@ function AppShell({ user, token, onLogout }) {
   const [execPanelOpen, setExecPanelOpen] = useState(false);
   const [execStatus,    setExecStatus]    = useState("idle");
   const [execLogs,      setExecLogs]      = useState([]);
+  // Map stepId → "idle" | "running" | "done" | "error" — powers the live
+  // Flow tab in the Execution Panel.
+  const [execStepStates, setExecStepStates] = useState({});
+  // Map loopStepId → { total, index, running } so the Flow tab can show
+  // "N / M iterations" pills for active loops.
+  const [execIterations, setExecIterations] = useState({});
+  const [execLastStepId, setExecLastStepId] = useState(null);
   const [execResults,   setExecResults]   = useState(null);
   const sessionMetaRef = useRef({});
   // Workflow-level variables (ServiceNow-style). Kept in state so the
@@ -289,8 +296,43 @@ function AppShell({ user, token, onLogout }) {
     });
 
     // Execution events
-    socket.on("executionStarted", () => { setExecStatus("running"); setExecLogs([]); setExecResults(null); });
+    socket.on("executionStarted", () => {
+      setExecStatus("running"); setExecLogs([]); setExecResults(null);
+      setExecStepStates({}); setExecIterations({}); setExecLastStepId(null);
+    });
     socket.on("executionLog",     (entry) => { setExecLogs(prev => [...prev, entry]); });
+    // Live flow tracking: STEP_BEGIN flips a step into "running" and
+    // marks the previous one as "done" (since they execute sequentially
+    // and a STEP_BEGIN of step B implies step A finished). STEP_ERROR
+    // marks the current step as "error". Iteration events count loops.
+    socket.on("executionStepBegin", (info) => {
+      const id = info?.id;
+      if (!id) return;
+      setExecStepStates(prev => {
+        const next = { ...prev };
+        // mark whichever step was running as "done"
+        for (const k of Object.keys(next)) if (next[k] === "running") next[k] = "done";
+        next[id] = "running";
+        return next;
+      });
+      setExecLastStepId(id);
+    });
+    socket.on("executionStepError", (info) => {
+      const id = info?.step?.id;
+      if (!id) return;
+      setExecStepStates(prev => ({ ...prev, [id]: "error" }));
+    });
+    socket.on("executionIteration", (info) => {
+      const id = info?.stepId;
+      if (!id) return;
+      setExecIterations(prev => {
+        const cur = prev[id] || {};
+        if (info.kind === "start") return { ...prev, [id]: { total: info.total || 0, index: 0, running: true } };
+        if (info.kind === "tick")  return { ...prev, [id]: { ...cur, index: (info.index ?? 0) + 1, running: true } };
+        if (info.kind === "end")   return { ...prev, [id]: { ...cur, running: false } };
+        return prev;
+      });
+    });
     socket.on("executionDone",    ({ success, results, status }) => {
       // `status` is the persisted run status ('success' | 'error' | 'needs_review' | 'cancelled').
       // We map it to the local 4-state for the panel: idle/running/done/error.
@@ -1398,6 +1440,10 @@ function AppShell({ user, token, onLogout }) {
         isOpen={execPanelOpen} onClose={() => setExecPanelOpen(false)}
         logs={execLogs} status={execStatus} results={execResults}
         onCancel={handleCancelExecution}
+        steps={steps}
+        stepStates={execStepStates}
+        iterations={execIterations}
+        lastStepId={execLastStepId}
       />
 
       {/* ── URL-change confirmation ────────────────────────────────────── */}

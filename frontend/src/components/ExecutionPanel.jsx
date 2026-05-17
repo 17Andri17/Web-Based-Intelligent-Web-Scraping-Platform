@@ -10,8 +10,11 @@ import { useState, useRef, useEffect, useCallback } from "react";
      results       object | null    — { [labelName]: data }
      onCancel      fn
    ===================================================================== */
-export default function ExecutionPanel({ isOpen, onClose, logs, status, results, onCancel }) {
-  const [activeTab,    setActiveTab]    = useState('logs');
+export default function ExecutionPanel({
+  isOpen, onClose, logs, status, results, onCancel,
+  steps = [], stepStates = {}, iterations = {}, lastStepId = null,
+}) {
+  const [activeTab,    setActiveTab]    = useState('flow');
   const [selectedKey,  setSelectedKey]  = useState(null);
   const [exportFormat, setExportFormat] = useState('json');
   const logsEndRef = useRef(null);
@@ -82,9 +85,12 @@ export default function ExecutionPanel({ isOpen, onClose, logs, status, results,
 
         {/* ── Tabs ────────────────────────────────────────────────────── */}
         <div className="ep-tabs">
+          <button className={`ep-tab ${activeTab === 'flow' ? 'active' : ''}`} onClick={() => setActiveTab('flow')}>
+            <FlowIcon /> Flow
+            {status === 'running' && <span className="ep-tab-pulse" />}
+          </button>
           <button className={`ep-tab ${activeTab === 'logs' ? 'active' : ''}`} onClick={() => setActiveTab('logs')}>
             <TerminalIcon /> Logs
-            {status === 'running' && <span className="ep-tab-pulse" />}
           </button>
           <button className={`ep-tab ${activeTab === 'data' ? 'active' : ''}`} onClick={() => setActiveTab('data')}
             disabled={!hasResults}>
@@ -92,6 +98,28 @@ export default function ExecutionPanel({ isOpen, onClose, logs, status, results,
             {hasResults && <span className="ep-tab-badge">{resultKeys.length}</span>}
           </button>
         </div>
+
+        {/* ── Live Flow view ──────────────────────────────────────────── */}
+        {activeTab === 'flow' && (
+          <div className="ep-flow">
+            {(!steps || steps.length === 0) ? (
+              <div className="ep-empty-logs">No steps to show.</div>
+            ) : (
+              <ul className="ep-flow-tree">
+                {steps.map(s => (
+                  <FlowNode
+                    key={s.id}
+                    step={s}
+                    depth={0}
+                    stepStates={stepStates}
+                    iterations={iterations}
+                    lastStepId={lastStepId}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* ── Log view ────────────────────────────────────────────────── */}
         {activeTab === 'logs' && (
@@ -286,7 +314,93 @@ function formatCell(val) {
   return String(val);
 }
 
+/* =====================================================================
+   FlowNode — recursive renderer for one step in the live flow tree.
+   Children come from control blocks' branch arrays (body/then/else/etc).
+   ===================================================================== */
+const FLOW_BRANCH_KEYS = ["body", "then", "else", "try", "catch"];
+const FLOW_LOOP_TYPES  = new Set(["FOR_EACH", "FOR_EACH_ELEMENTS", "WHILE", "REPEAT"]);
+
+function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
+  if (!step || typeof step !== "object") return null;
+  const state = stepStates[step.id] || "idle";
+  const iter  = iterations[step.id];
+  const isLoop = step.kind === "control" && FLOW_LOOP_TYPES.has(step.type);
+  const isSubflowIter = step.kind === "action" && step.type === "RUN_SUBFLOW" && step.params?.mode === "iterate";
+
+  // Children: control branches OR subflow's outputVar marker (subflow
+  // expansion isn't a UI tree — its inlined steps fire STEP_BEGIN under
+  // the parent step. We just show the run-subflow row itself.)
+  const branches = [];
+  for (const key of FLOW_BRANCH_KEYS) {
+    if (Array.isArray(step[key]) && step[key].length > 0) {
+      branches.push([key, step[key]]);
+    }
+  }
+
+  const label = step.label?.trim() || friendlyType(step.type) || "step";
+
+  return (
+    <li className={"ep-flow-node ep-flow-state-" + state}>
+      <div className="ep-flow-row" style={{ paddingLeft: 4 + depth * 14 }}>
+        <FlowStatusDot state={state} running={state === "running"} />
+        <span className="ep-flow-type">{stepKindIcon(step)}</span>
+        <span className="ep-flow-label">{label}</span>
+        <span className="ep-flow-typetag">{friendlyType(step.type)}</span>
+        {(isLoop || isSubflowIter) && iter && (
+          <span className="ep-flow-iter" title={`Iteration ${iter.index} of ${iter.total}`}>
+            {iter.index}/{iter.total}
+            {iter.running && <span className="ep-flow-iter-pulse" />}
+          </span>
+        )}
+      </div>
+      {branches.map(([key, list]) => (
+        <ul key={key} className="ep-flow-branch">
+          {branches.length > 1 && <li className="ep-flow-branch-label" style={{ paddingLeft: 4 + (depth + 1) * 14 }}>{key}</li>}
+          {list.map(s => (
+            <FlowNode
+              key={s.id}
+              step={s}
+              depth={depth + 1}
+              stepStates={stepStates}
+              iterations={iterations}
+              lastStepId={lastStepId}
+            />
+          ))}
+        </ul>
+      ))}
+    </li>
+  );
+}
+function FlowStatusDot({ state, running }) {
+  return <span className={"ep-flow-dot ep-flow-dot--" + state}>{running ? <span className="ep-flow-dot-spin" /> : null}</span>;
+}
+function friendlyType(t) {
+  if (!t) return "";
+  return t.toLowerCase().replace(/_/g, " ");
+}
+function stepKindIcon(step) {
+  if (step.kind === "control") return "⌥";
+  switch (step.type) {
+    case "NAVIGATE":            return "🌐";
+    case "GO_BACK":             return "◀";
+    case "CLICK_ELEMENT":       return "▶";
+    case "TYPE_TEXT":           return "✏️";
+    case "SCROLL_PAGE":         return "📜";
+    case "WAIT":                return "⏱";
+    case "EXTRACT_TEXT":        return "📝";
+    case "EXTRACT_ATTRIBUTE":   return "🔗";
+    case "EXTRACT_HTML":        return "🧩";
+    case "EXTRACT_TABLE":       return "📋";
+    case "EXTRACT_LIST":        return "📑";
+    case "EXTRACT_JSON":        return "{}";
+    case "RUN_SUBFLOW":         return "⇉";
+    default:                    return "•";
+  }
+}
+
 /* ── Icons ── */
+function FlowIcon()     { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M8 6h6a2 2 0 0 1 2 2v2"/><path d="M8 18h6a2 2 0 0 0 2-2v-2"/></svg>; }
 function XIcon()        { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>; }
 function StopIcon()     { return <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>; }
 function TerminalIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="4,17 10,11 4,5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>; }
