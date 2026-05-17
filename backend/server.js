@@ -571,8 +571,19 @@ io.on('connection', async (socket) => {
       // ── Phase 1: high-confidence static DOM scan ───────────────────
       const staticResults = await page.evaluate(() => {
         const results = [];
-        const vis = el => !!(el && el.offsetParent !== null && el.getBoundingClientRect().width > 0);
-        const txt = el => (el.innerText || el.textContent || '').trim();
+
+        // ─── Helpers ──────────────────────────────────────────────
+        const vis = (el) => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          if (r.width < 2 || r.height < 2) return false;
+          const s = getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) < 0.05) return false;
+          if (el.offsetParent === null && s.position !== 'fixed') return false;
+          if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
+          return true;
+        };
+        const txt = (el) => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
         const stableSelector = (el) => {
           if (!el) return null;
           if (el.id) return '#' + CSS.escape(el.id);
@@ -584,111 +595,246 @@ io.on('connection', async (socket) => {
           if (ariaLabel) return `[aria-label="${CSS.escape(ariaLabel)}"]`;
           return el.tagName.toLowerCase();
         };
-        // Only exact start-of-text match; applied strictly inside confirmed containers
-        const NEXT_RE      = /^next\b|^[›»→>]$|^forward$|^load next$/i;
-        const LOAD_MORE_RE = /^(load more|show more|see more|view more|load additional|more results|show all results)$/i;
 
-        // 1. a[rel="next"] — unambiguous
-        const relNext = document.querySelector('a[rel="next"]');
-        if (relNext && vis(relNext)) {
-          results.push({ type: 'next_button', confidence: 0.97, selector: 'a[rel="next"]',
-            previewText: txt(relNext) || 'Next', description: 'Explicit <a rel="next"> link found.' });
-        }
+        // Match "Next", "Next →", "Next page" — but NOT bare ">" (used everywhere
+        // for breadcrumbs/expanders). Arrows ›»→ and ">>" are pagination-specific.
+        const NEXT_TEXT_RE  = /^(?:next\b|forward\s*$|load\s+next\s*$|next\s+page\s*$)/i;
+        const NEXT_ARROW_RE = /^(?:[›»→]+|>>+)\s*$/;
+        const isNextLike    = (s) => NEXT_TEXT_RE.test(s) || NEXT_ARROW_RE.test(s);
+        // Allow trailing words like "Load more posts" / "Show more results"
+        const LOAD_MORE_RE  = /^(?:load|show|see|view)\s+(?:more|additional|all)(?:\s+\w+){0,3}\s*$|^more\s+(?:results?|items?|posts?)\s*$/i;
 
-        // 2. Exact aria-label "Next" / "Next page"
-        if (!results.find(r => r.type === 'next_button')) {
-          const el = document.querySelector('[aria-label="Next"],[aria-label="Next page"],[aria-label="next page"],[aria-label="next"]');
-          if (el && vis(el)) {
-            results.push({ type: 'next_button', confidence: 0.93, selector: stableSelector(el),
-              previewText: txt(el) || 'Next', description: 'Found an exact aria-label "Next" button.' });
+        // Verified pagination containers — strict enough to avoid "pagerduty",
+        // "swiper-pagination" (carousel), or random nav menus.
+        const PAGINATION_CONTAINER_SELECTOR = [
+          'nav[aria-label*="page" i]:not([aria-label*="single" i])',
+          'nav[aria-label*="paginat" i]',
+          '[role="navigation"][aria-label*="page" i]',
+          '[role="navigation"][aria-label*="paginat" i]',
+          '[class~="pagination"]',
+          '[class*="pagination" i]:not([class*="swiper" i]):not([class*="slider" i]):not([class*="carousel" i])',
+          '[class~="pager"]',
+          '[class~="page-numbers"]',
+          '[class~="page-nav"]',
+          '[class~="pagenav"]',
+          'ul.pagination, ol.pagination, div.pagination',
+        ].join(',');
+
+        // Contexts where Next/Prev/More buttons are NOT pagination.
+        const EXCLUDED_CONTEXT_SELECTOR = [
+          '[class*="carousel" i]',
+          '[class*="slider" i]:not([class*="page-slider" i])',
+          '[class*="slideshow" i]',
+          '[class*="gallery" i]',
+          '[class*="lightbox" i]',
+          '[class*="modal" i]',
+          '[class*="dialog" i]',
+          '[class*="popup" i]',
+          '[class*="dropdown" i]',
+          '[class*="megamenu" i], [class*="mega-menu" i]',
+          '[class*="breadcrumb" i]',
+          '[class*="accordion" i]',
+          '[class*="swiper" i]',
+          '[class*="splide" i]',
+          '[class*="glide" i]',
+          '[class*="owl-carousel" i], [class*="owl-nav" i]',
+          '[class*="flickity" i]',
+          '[class*="tns-" i]',
+          '[class*="hero-" i], [class*="-hero" i]',
+          '[class*="banner" i]',
+          '[class*="testimonial" i]',
+          '[role="tablist"]',
+          '[role="dialog"]',
+          '[role="alertdialog"]',
+          '[role="menu"]',
+          '[role="menubar"]',
+          '[aria-roledescription*="carousel" i]',
+          '[aria-roledescription*="slide" i]',
+          'header',
+          'footer',
+          'aside',
+        ].join(',');
+
+        // True iff `el`'s nearest matching ancestor is an excluded context
+        // (and no verified pagination container sits between).
+        const isInExcludedContext = (el) => {
+          if (!el) return true;
+          let node = el.parentElement;
+          while (node && node !== document.body && node !== document.documentElement) {
+            if (node.matches && node.matches(PAGINATION_CONTAINER_SELECTOR)) return false;
+            if (node.matches && node.matches(EXCLUDED_CONTEXT_SELECTOR))     return true;
+            node = node.parentElement;
+          }
+          return false;
+        };
+
+        // A candidate must be visible AND not in an excluded context.
+        const valid = (el) => vis(el) && !isInExcludedContext(el);
+
+        // Does this container actually look like pagination? Rejects e.g.
+        // <nav aria-label="single page"> with one stray link, or a year-filter list.
+        const looksLikePagination = (container) => {
+          if (!container) return false;
+          const links = container.querySelectorAll('a,button,[role="button"]');
+          if (links.length < 2) return false;
+          let numeric = 0, nextish = 0;
+          for (const a of links) {
+            const t = txt(a);
+            if (/^\d+$/.test(t))     numeric++;
+            else if (isNextLike(t))  nextish++;
+            else if (/^(?:prev|previous|back|‹|«|←)\b/i.test(t)) nextish++;
+          }
+          return numeric >= 2 || (numeric >= 1 && nextish >= 1) || nextish >= 2;
+        };
+
+        // 1. a[rel="next"] — unambiguous spec-level signal
+        for (const el of document.querySelectorAll('a[rel="next"]')) {
+          if (valid(el)) {
+            results.push({ type: 'next_button', confidence: 0.97,
+              selector: 'a[rel="next"]',
+              previewText: txt(el) || 'Next',
+              description: 'Explicit <a rel="next"> link found.' });
+            break;
           }
         }
 
-        // 3. "Next*" text ONLY inside a verified pagination container — NO document fallback
+        // 2. Exact aria-label "Next" / "Next page" — filter out carousel/slider
+        //    arrows (the most common false positive for this rule).
         if (!results.find(r => r.type === 'next_button')) {
-          const container = document.querySelector(
-            'nav[aria-label*="page" i],nav[aria-label*="paginat" i],[class*="paginat"],[class*="pager"],[class="pagination"]'
+          const candidates = document.querySelectorAll(
+            '[aria-label="Next" i],[aria-label="Next page" i],[aria-label="Go to next page" i]'
           );
-          if (container) {
-            const el = Array.from(container.querySelectorAll('a,button'))
-              .find(el => NEXT_RE.test(txt(el).replace(/\s+/g,' ').trim()) && vis(el));
+          for (const el of candidates) {
+            if (!valid(el)) continue;
+            results.push({ type: 'next_button', confidence: 0.93,
+              selector: stableSelector(el),
+              previewText: txt(el) || 'Next',
+              description: 'Found an exact aria-label "Next" button.' });
+            break;
+          }
+        }
+
+        // 3. "Next*" text ONLY inside a verified pagination container
+        if (!results.find(r => r.type === 'next_button')) {
+          for (const container of document.querySelectorAll(PAGINATION_CONTAINER_SELECTOR)) {
+            if (isInExcludedContext(container))   continue;
+            if (!looksLikePagination(container))  continue;
+            const el = Array.from(container.querySelectorAll('a,button,[role="button"]'))
+              .find(e => isNextLike(txt(e)) && vis(e));
             if (el) {
-              results.push({ type: 'next_button', confidence: 0.88, selector: stableSelector(el),
-                previewText: txt(el), description: 'Found "Next" inside a confirmed pagination container.' });
+              results.push({ type: 'next_button', confidence: 0.88,
+                selector: stableSelector(el),
+                previewText: txt(el),
+                description: 'Found "Next" inside a confirmed pagination container.' });
+              break;
             }
           }
         }
 
-        // 3b. URL-sequence detection: link to /path/N+1/ when current page is /path/N/
-        //     Only fires when the increment is exactly +1 — very low false-positive rate
+        // 3b. URL-sequence detection: link to /path/N+1 or ?page=N+1.
+        //     Uses URL parser (not substring) and rejects excluded contexts.
         if (!results.find(r => r.type === 'next_button')) {
-          const pathname = window.location.pathname;
-          // Extract the last numeric segment from the current URL path
-          const currentNumMatch = pathname.match(/\/(\d+)\/?$/);
-          const currentNum = currentNumMatch ? parseInt(currentNumMatch[1]) : 1;
-          // Base path: everything before the trailing /N/
-          const basePath = currentNumMatch
-            ? pathname.slice(0, currentNumMatch.index)
-            : pathname.replace(/\/$/, '');
-          const nextNum = currentNum + 1;
+          const here       = new URL(location.href);
+          const pathMatch  = here.pathname.match(/\/(\d+)\/?$/);
+          const PAGE_PARAMS = ['page','paged','pg','pagenum','pageno','p'];
 
-          // Find a visible link whose href matches basePath/nextNum/
+          let currentNum    = 1;
+          let pageParamUsed = null;
+          for (const name of PAGE_PARAMS) {
+            const v = here.searchParams.get(name);
+            if (v && /^\d+$/.test(v)) { currentNum = parseInt(v, 10); pageParamUsed = name; break; }
+          }
+          if (pathMatch) currentNum = Math.max(currentNum, parseInt(pathMatch[1], 10));
+          const nextNum  = currentNum + 1;
+          const basePath = pathMatch ? here.pathname.slice(0, pathMatch.index) : here.pathname.replace(/\/$/, '');
+
           const linkToNextPage = Array.from(document.querySelectorAll('a[href]')).find(el => {
-            if (!vis(el)) return false;
-            const href = el.getAttribute('href') || '';
-            // Match absolute paths like /path/2/ or relative /2/
-            const hrefPath = href.startsWith('http') ? new URL(href, location.href).pathname : href.split('?')[0];
-            // Must end with /nextNum/ and share the same base path
-            return hrefPath === `${basePath}/${nextNum}/` ||
-                   hrefPath === `${basePath}/${nextNum}` ||
-                   // Also match ?page=N query param pattern
-                   href.includes(`page=${nextNum}`) ||
-                   href.includes(`p=${nextNum}`);
+            if (!valid(el)) return false;
+            let u;
+            try { u = new URL(el.getAttribute('href'), location.href); } catch { return false; }
+            if (u.origin !== here.origin) return false;
+            // Path-based: /…/N+1[/]
+            if (u.pathname === `${basePath}/${nextNum}` || u.pathname === `${basePath}/${nextNum}/`) return true;
+            // Query-based: ?page=N+1 (or other known param)
+            for (const name of PAGE_PARAMS) {
+              const v = u.searchParams.get(name);
+              if (v && parseInt(v, 10) === nextNum) {
+                // Bare `p=` is too generic — require a pagination-like text on the
+                // link unless the current URL is already using `p=` for paging.
+                if (name === 'p' && pageParamUsed !== 'p') {
+                  const t = txt(el);
+                  if (!isNextLike(t) && !/^\d+$/.test(t)) return false;
+                }
+                return true;
+              }
+            }
+            return false;
           });
 
           if (linkToNextPage) {
             results.push({
-              type: 'next_button', confidence: 0.87,
+              type: 'next_button', confidence: 0.86,
               selector: stableSelector(linkToNextPage),
               previewText: txt(linkToNextPage) || linkToNextPage.getAttribute('href'),
-              description: `Found a link to page ${nextNum} (URL sequence: …/${nextNum}/).`,
+              description: `Found a link to page ${nextNum} (URL sequence).`,
             });
           }
         }
 
         // 4. Numbered pages inside a verified pagination container
-        const paginationNav = document.querySelector(
-          'nav[aria-label*="page" i],[class*="paginat"],[class*="pager"],[class="pagination"]'
-        );
-        if (paginationNav) {
-          const numLinks = Array.from(paginationNav.querySelectorAll('a,button'))
-            .filter(el => /^\d+$/.test(txt(el).trim()) && vis(el));
-          if (numLinks.length >= 2) {
-            const nextInNav = paginationNav.querySelector('a[rel="next"],[aria-label="Next"],[aria-label="next"]')
-              || Array.from(paginationNav.querySelectorAll('a,button'))
-                   .find(el => NEXT_RE.test(txt(el).trim()) && vis(el));
-            results.push({ type: 'page_numbers', confidence: 0.91,
-              selector: nextInNav ? stableSelector(nextInNav) : stableSelector(paginationNav),
-              previewText: numLinks.map(el => txt(el)).slice(0,5).join(', ') + '\u2026',
-              description: `Found numbered pagination with ${numLinks.length} page links.` });
-          }
+        for (const container of document.querySelectorAll(PAGINATION_CONTAINER_SELECTOR)) {
+          if (isInExcludedContext(container)) continue;
+          const numLinks = Array.from(container.querySelectorAll('a,button'))
+            .filter(e => /^\d+$/.test(txt(e)) && vis(e));
+          if (numLinks.length < 2) continue;
+          // Reject year-filter lists like "2018 / 2020 / 2024" and other
+          // sparse non-pagination number runs.
+          const nums = numLinks.map(e => parseInt(txt(e), 10)).sort((a, b) => a - b);
+          const span = nums[nums.length - 1] - nums[0];
+          if (nums[0] >= 1900 && nums[0] <= 2100) continue;   // years
+          if (span > nums.length * 3) continue;               // too sparse
+
+          const nextInNav = container.querySelector('a[rel="next"],[aria-label*="Next" i]')
+            || Array.from(container.querySelectorAll('a,button,[role="button"]'))
+                 .find(e => isNextLike(txt(e)) && vis(e));
+          results.push({ type: 'page_numbers', confidence: 0.91,
+            selector: nextInNav ? stableSelector(nextInNav) : stableSelector(container),
+            previewText: numLinks.map(e => txt(e)).slice(0,5).join(', ') + '\u2026',
+            description: `Found numbered pagination with ${numLinks.length} page links.` });
+          break;
         }
 
-        // 5. Load-more button — exact text match only
+        // 5. Load-more button — context-filtered AND located at/below the median
+        //    repeating item. Real load-mores sit below a list, not in a sidebar
+        //    widget, header banner, dropdown, or comment thread.
+        const itemSel = 'li,article,[class*="item"],[class*="card"],[class*="result"],[class*="product"],[class*="post"]';
+        const items   = Array.from(document.querySelectorAll(itemSel)).filter(vis);
+        const itemMedianY = items.length
+          ? items.map(e => e.getBoundingClientRect().top + window.scrollY).sort((a, b) => a - b)[Math.floor(items.length / 2)]
+          : 0;
+
         const loadMoreEl = Array.from(document.querySelectorAll('a,button,[role="button"]'))
-          .find(el => LOAD_MORE_RE.test(txt(el).trim()) && vis(el));
+          .find(el => {
+            if (!valid(el)) return false;
+            if (!LOAD_MORE_RE.test(txt(el))) return false;
+            const y = el.getBoundingClientRect().top + window.scrollY;
+            if (items.length > 2 && y < itemMedianY) return false;
+            return true;
+          });
         if (loadMoreEl) {
-          results.push({ type: 'load_more', confidence: 0.92, selector: stableSelector(loadMoreEl),
-            previewText: txt(loadMoreEl), description: 'Found a "Load More" button below the content.' });
+          results.push({ type: 'load_more', confidence: 0.90,
+            selector: stableSelector(loadMoreEl),
+            previewText: txt(loadMoreEl),
+            description: 'Found a "Load More" button below the content.' });
         }
 
-        // 6. Infinite scroll library class/data markers
-        const infScrollEl = document.querySelector(
-          '[class*="infinite-scroll"],[data-infinite],[data-infinite-scroll],[class*="auto-load"],[class*="endless-scroll"]'
-        );
+        // 6. Infinite-scroll library class/data markers — also context-filtered.
+        const infScrollEl = Array.from(document.querySelectorAll(
+          '[class*="infinite-scroll" i],[data-infinite],[data-infinite-scroll],[class*="endless-scroll" i],[data-infinite-loader],[class*="auto-pager" i]'
+        )).find(el => !isInExcludedContext(el));
         if (infScrollEl) {
           results.push({ type: 'infinite_scroll', confidence: 0.88, selector: null,
-            previewText: infScrollEl.className || infScrollEl.tagName,
+            previewText: (infScrollEl.className || infScrollEl.tagName).toString().slice(0, 80),
             description: 'Found infinite-scroll library markers in the page DOM.' });
         }
 
@@ -696,20 +842,31 @@ io.on('connection', async (socket) => {
       });
 
       // ── Phase 2: empirical scroll test ─────────────────────────
+      //   Require BOTH a substantial height increase AND more list items
+      //   afterwards — lazy-loaded hero images alone shouldn't trigger this.
       const alreadyHasInfScroll = staticResults.some(r => r.type === 'infinite_scroll');
       if (!alreadyHasInfScroll) {
-        const beforeH = await page.evaluate(() => document.body.scrollHeight);
-        await page.evaluate(() => {
+        const ITEM_SEL = 'li,article,[class*="item"],[class*="card"],[class*="result"],[class*="product"],[class*="post"]';
+        const before = await page.evaluate((sel) => ({
+          h: document.body.scrollHeight,
+          n: document.querySelectorAll(sel).length,
+        }), ITEM_SEL);
+        await page.evaluate((sel) => {
           window.scrollTo(0, document.body.scrollHeight);
-          const items = document.querySelectorAll('li,article,[class*="item"],[class*="card"],[class*="result"],[class*="product"]');
-          if (items.length) items[items.length-1].scrollIntoView({ block:'end', behavior:'instant' });
-        });
+          const items = document.querySelectorAll(sel);
+          if (items.length) items[items.length - 1].scrollIntoView({ block: 'end', behavior: 'instant' });
+        }, ITEM_SEL);
         await new Promise(r => setTimeout(r, 2500));
-        const afterH = await page.evaluate(() => document.body.scrollHeight);
+        const after = await page.evaluate((sel) => ({
+          h: document.body.scrollHeight,
+          n: document.querySelectorAll(sel).length,
+        }), ITEM_SEL);
         await page.evaluate(() => window.scrollTo(0, 0));
-        if (afterH > beforeH + 100) {
+        const grew      = after.h - before.h > 300;
+        const moreItems = after.n - before.n >= 3;
+        if (grew && (moreItems || before.n === 0)) {
           staticResults.push({ type: 'infinite_scroll', confidence: 0.92, selector: null,
-            previewText: `Page grew ${afterH - beforeH}px after scrolling`,
+            previewText: `Page grew ${after.h - before.h}px and gained ${after.n - before.n} items`,
             description: 'Confirmed: new content loaded after scrolling to the bottom.' });
           staticResults.sort((a, b) => b.confidence - a.confidence);
         }
