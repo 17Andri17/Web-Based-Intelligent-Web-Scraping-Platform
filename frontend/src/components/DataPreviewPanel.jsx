@@ -48,6 +48,12 @@ function buildSections(steps) {
       // EXTRACT_LIST renders as its own tabular section — columns come
       // from `params.fields` and rows from previewRows / execResults.
       sections.push({ kind: "list", step });
+    } else if (step.kind === "action" && step.type === "RUN_SUBFLOW") {
+      // Subflow outputs can't be previewed live (they need a separate
+      // page that we'd have to navigate during preview), but we DO know
+      // they'll appear in the final results — surface that as a
+      // placeholder card so users can see the shape of the output.
+      sections.push({ kind: "subflow", step });
     } else if (step.kind === "action" && EXTRACTION_TYPES.has(step.type)) {
       sections.push({ kind: "field", step });
     }
@@ -59,7 +65,9 @@ function countAll(steps) {
   let n = 0;
   for (const s of steps || []) {
     if (typeof s !== "object" || !s) continue;
-    if (s.kind === "action" && EXTRACTION_TYPES.has(s.type)) n++;
+    // Subflows count as "data producers" too — even though we can't
+    // preview them, they will contribute keys to the final results JSON.
+    if (s.kind === "action" && (EXTRACTION_TYPES.has(s.type) || s.type === "RUN_SUBFLOW")) n++;
     for (const key of BRANCH_KEYS) {
       if (Array.isArray(s[key])) n += countAll(s[key]);
     }
@@ -72,6 +80,9 @@ function countNamed(steps) {
   for (const s of steps || []) {
     if (typeof s !== "object" || !s) continue;
     if (s.kind === "action" && EXTRACTION_TYPES.has(s.type) && s.label?.trim()) n++;
+    // RUN_SUBFLOW is "named" if it has a label or an outputVar.
+    if (s.kind === "action" && s.type === "RUN_SUBFLOW" &&
+        ((s.label && s.label.trim()) || (s.params?.outputVar && String(s.params.outputVar).trim()))) n++;
     for (const key of BRANCH_KEYS) {
       if (Array.isArray(s[key])) n += countNamed(s[key]);
     }
@@ -404,6 +415,69 @@ function kindIcon(kind) {
   return "Aa";
 }
 
+// ─── Subflow section (RUN_SUBFLOW placeholder) ─────────────────────────────
+// We can't run a subflow at preview time (it would open a new page and
+// navigate away), so this section just SHOWS the user where the
+// subflow's output will land in the final results JSON, with the key
+// name and whether it'll be one record or an array (iterate mode).
+
+function SubflowSection({ step, execResults, onUpdateLabel }) {
+  const outKey = (step.params?.outputVar && String(step.params.outputVar).trim())
+              || (step.label || "").trim()
+              || `subflow_${step.params?.workflowId || ""}`;
+  const isIterate = step.params?.mode === "iterate";
+
+  // After a run we DO have data — fall through to a small record/array
+  // preview if it landed on the configured key.
+  let realData = null;
+  if (execResults && execResults[outKey] !== undefined) {
+    realData = execResults[outKey];
+  }
+
+  return (
+    <div className="dp-section dp-section--subflow">
+      <div className="dp-section-header">
+        <div className="dp-section-header-left">
+          <span className="dp-loop-badge" style={{ background: "rgba(126, 92, 255, 0.12)", color: "#a371f7" }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <polyline points="9,18 15,12 9,6"/>
+            </svg>
+            Subflow
+          </span>
+          <EditableLabel
+            value={step.label || ""}
+            placeholder="Name this subflow step…"
+            className="dp-loop-label"
+            onCommit={v => onUpdateLabel(step.id, v)}
+          />
+          <span className="dp-src-pill dp-src--preview" style={{ background: "rgba(126, 92, 255, 0.08)", color: "#a371f7" }}>
+            {realData != null ? "live results" : "filled at run-time"}
+          </span>
+        </div>
+        <div className="dp-section-header-right">
+          {isIterate
+            ? <span className="dp-row-count">{Array.isArray(realData) ? `${realData.length} rec${realData.length === 1 ? "" : "s"}` : "list"}</span>
+            : <span className="dp-row-count">single record</span>}
+        </div>
+      </div>
+      <div className="dp-table-scroll" style={{ padding: "0 12px 12px" }}>
+        <div style={{ fontSize: 12, color: "var(--text-secondary, #aaa)", padding: "10px 12px", border: "1px dashed var(--border-soft, #2a2a2a)", borderRadius: 6 }}>
+          Output key: <code style={{ color: "var(--text-primary, #e6e6e6)" }}>{outKey}</code>
+          <br/>
+          {isIterate
+            ? <>Each iteration's subflow result is appended to an array under this key.<br/>Source URLs: <code style={{ color: "var(--text-primary, #e6e6e6)" }}>{String(step.params?.urlList || "(none)").slice(0, 80)}</code></>
+            : <>The subflow's whole <code>__results__</code> object lands under this key.</>}
+        </div>
+        {realData != null && (
+          <pre style={{ fontSize: 11, maxHeight: 240, overflow: "auto", background: "var(--bg, #0e0e0e)", padding: 8, marginTop: 8 }}>
+{JSON.stringify(realData, null, 2)}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Field section (standalone extraction) ───────────────────────────────────
 
 function FieldSection({ step, execResults, previewData, onUpdateLabel }) {
@@ -543,6 +617,16 @@ export default function DataPreviewPanel({ steps, execResults, previewData = {},
                 step={section.step}
                 execResults={execResults}
                 previewData={previewData}
+                onUpdateLabel={onUpdateLabel}
+              />
+            );
+          }
+          if (section.kind === "subflow") {
+            return (
+              <SubflowSection
+                key={section.step.id}
+                step={section.step}
+                execResults={execResults}
                 onUpdateLabel={onUpdateLabel}
               />
             );

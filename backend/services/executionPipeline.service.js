@@ -90,6 +90,7 @@ async function executeAndPersist(arg) {
     events.on('stepBegin', (info) => { lastStep = info; emit(callbacks, 'onStepBegin', info); });
     events.on('stepError', (info) => { emit(callbacks, 'onStepError', info); });
     events.on('results',   (r)    => { emit(callbacks, 'onResults', r); });
+    events.on('iteration', (info) => emit(callbacks, 'onIteration', info));
   };
 
   // ── Run + retry loop ─────────────────────────────────────────────────────

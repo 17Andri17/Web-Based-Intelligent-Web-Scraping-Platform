@@ -54,6 +54,7 @@ async function executeWorkflow(workflow, socket, opts = {}) {
         onLog: (entry) => socket?.emit('executionLog', entry),
         onStepBegin: (info) => socket?.emit('executionStepBegin', info),
         onStepError: (info) => socket?.emit('executionStepError', info),
+        onIteration: (info) => socket?.emit('executionIteration', info),
         onResults:   (r) => socket?.emit('executionResults', r),
         onDone: ({ run }) => {
           const results = run.results_json ? safeJson(run.results_json) : null;

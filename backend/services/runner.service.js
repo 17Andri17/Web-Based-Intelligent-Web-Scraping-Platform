@@ -11,6 +11,9 @@ const { generateCode } = require('../workflow/workflowCodegen');
 const RESULTS_MARKER = 'WORKFLOW_RESULTS:';
 const STEP_BEGIN     = 'STEP_BEGIN:';
 const STEP_ERROR     = 'STEP_ERROR:';
+const ITER_START     = 'ITER_START:';
+const ITER_TICK      = 'ITER_TICK:';
+const ITER_END       = 'ITER_END:';
 
 /* ===========================================================================
    runner.service
@@ -73,6 +76,21 @@ function runChild(workflow, { signal } = {}) {
           errorInfo = { message: line.slice(STEP_ERROR.length) };
         }
         events.emit('stepError', errorInfo);
+        return;
+      }
+      // Loop iteration markers — power the live "Flow" tab's
+      // "N/M iterations" progress for FOR_EACH / FOR_EACH_ELEMENTS /
+      // RUN_SUBFLOW iterate mode. Same opt-in shape as STEP_BEGIN.
+      if (line.startsWith(ITER_START)) {
+        try { events.emit('iteration', { kind: 'start', ...JSON.parse(line.slice(ITER_START.length)) }); } catch (_) {}
+        return;
+      }
+      if (line.startsWith(ITER_TICK)) {
+        try { events.emit('iteration', { kind: 'tick', ...JSON.parse(line.slice(ITER_TICK.length)) }); } catch (_) {}
+        return;
+      }
+      if (line.startsWith(ITER_END)) {
+        try { events.emit('iteration', { kind: 'end', ...JSON.parse(line.slice(ITER_END.length)) }); } catch (_) {}
         return;
       }
       if (line.startsWith(RESULTS_MARKER)) {

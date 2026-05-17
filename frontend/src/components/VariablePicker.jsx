@@ -339,20 +339,30 @@ function buildCapturedNode(v) {
 }
 
 function buildIterVarNode(iv) {
-  // iv: { name, source?, itemKind: 'row'|'scalar'|'unknown', columns?, sourceColumn? }
+  // iv: { name, source?, itemKind, columns?, sourceColumn?, loopType?, loopLabel? }
   const itemKind  = iv.itemKind || "unknown";
   const refKind   = itemKind === "row" ? "object"
                   : itemKind === "scalar" ? "scalar"
                   : "any";
-  // Helpful, accurate type label so users know what their item REALLY is:
-  //   - row → "row of products"
-  //   - scalar → "link from each products"  (or "value from each <source>")
-  //   - unknown → "loop item"
-  const typeLabel = itemKind === "scalar"
-    ? (iv.sourceColumn && iv.source ? `${iv.sourceColumn} from each ${iv.source}` : "loop value")
-    : itemKind === "row"
-      ? (iv.source ? `row of ${iv.source}` : "loop row")
-      : "loop item";
+
+  // Helpful, accurate type label so users know what their item REALLY is.
+  // Always include "in loop: <label or type>" when we have it, so a step
+  // nested in multiple loops can be visually disambiguated.
+  let baseLabel;
+  if (itemKind === "scalar") {
+    baseLabel = iv.sourceColumn && iv.source
+      ? `${iv.sourceColumn} from each ${iv.source}`
+      : "loop value";
+  } else if (itemKind === "row") {
+    baseLabel = iv.source ? `row of ${iv.source}` : "loop row";
+  } else {
+    baseLabel = "loop item";
+  }
+  const loopTag = iv.loopLabel
+    ? `from "${iv.loopLabel}"`
+    : iv.loopType === "FOR_EACH_ELEMENTS" ? "from for-each-elements"
+    : "from for-each";
+  const typeLabel = `${baseLabel} · ${loopTag}`;
 
   const node = {
     id: `it:${iv.name}`,

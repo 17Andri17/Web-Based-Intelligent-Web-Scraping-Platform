@@ -142,6 +142,8 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
             source: s.label?.trim() || null,
             itemKind: "row",
             columns: innerCols.length ? innerCols : null,
+            loopType: "FOR_EACH_ELEMENTS",
+            loopLabel: s.label?.trim() || "",
           }];
         } else {
           // FOR_EACH iterates over whatever `params.source` evaluates to.
@@ -160,6 +162,9 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
             sourceColumn: info.projectedColumn || null,
             itemKind: info.itemKind,
             columns: info.itemKind === "row" ? (colsByName[info.rootName] || null) : null,
+            loopType: "FOR_EACH",
+            loopLabel: s.label?.trim() || "",
+            sourceRaw,
           }];
         }
       }
@@ -172,7 +177,11 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
     return false;
   }
   walk(steps, []);
-  return out;
+  // Reverse so the INNERMOST loop's iteration variable is listed first.
+  // That's the one the user just nested into; the outer ones are still
+  // there but visually below — making it obvious which `item` belongs
+  // to which loop when steps are nested several levels deep.
+  return out.slice().reverse();
 }
 
 // Inspect a FOR_EACH source expression to decide what each iteration's

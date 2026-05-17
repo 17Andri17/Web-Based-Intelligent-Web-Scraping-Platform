@@ -623,13 +623,16 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         // to the template-literal `String(...)` form for hand-written
         // arrays / mixed expressions.
         const listExpr = qExpr(params.urlList || '') || `(${qStr(params.urlList || '')})`;
+        const subIdJson = JSON.stringify(step.id || '');
         return [
           `// Subflow (iterate): ${safeSubName} (id ${subflowId})`,
           `{`,
           `  const _urls = ${listExpr};`,
           `  const _urlList = Array.isArray(_urls) ? _urls : [];`,
           `  if (!__results__[${JSON.stringify(outKey)}]) __results__[${JSON.stringify(outKey)}] = [];`,
+          `  console.log('ITER_START:' + JSON.stringify({stepId: ${subIdJson}, total: _urlList.length}));`,
           `  for (let _i = 0; _i < _urlList.length; _i++) {`,
+          `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${subIdJson}, index: _i}));`,
           `    const ${itemVar} = _urlList[_i];`,
           `    if (${itemVar} == null || ${itemVar} === '') continue;`,
           `    const _subPage = await browser.newPage();`,
@@ -655,6 +658,7 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `      try { await _subPage.close(); } catch (_) {}`,
           `    }`,
           `  }`,
+          `  console.log('ITER_END:' + JSON.stringify({stepId: ${subIdJson}}));`,
           `}`,
           ``,
         ].join('\n');
@@ -731,7 +735,11 @@ function genControl(step, ctx, depth) {
       // Set inLoop so RUN_SUBFLOW / extraction inside the body accumulate
       // results into an array per iteration instead of overwriting.
       const body   = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
-      return `{\n  const _src = ${src};\n  const _arr = Array.isArray(_src) ? _src : (_src || []);\n  for (let ${idx} = 0; ${idx} < _arr.length; ${idx}++) {\n    const ${item} = _arr[${idx}];\n${body}  }\n}\n`;
+      // Iteration markers let the live "Flow" tab show "N/M iterations"
+      // for each running loop. ITER_START gives the total upfront so the
+      // UI can render a progress bar; ITER_TICK fires each iteration.
+      const stepIdJson = JSON.stringify(step.id || '');
+      return `{\n  const _src = ${src};\n  const _arr = Array.isArray(_src) ? _src : (_src || []);\n  console.log('ITER_START:' + JSON.stringify({stepId: ${stepIdJson}, total: _arr.length}));\n  for (let ${idx} = 0; ${idx} < _arr.length; ${idx}++) {\n    console.log('ITER_TICK:' + JSON.stringify({stepId: ${stepIdJson}, index: ${idx}}));\n    const ${item} = _arr[${idx}];\n${body}  }\n  console.log('ITER_END:' + JSON.stringify({stepId: ${stepIdJson}}));\n}\n`;
     }
 
     case 'FOR_EACH_ELEMENTS': {
@@ -777,17 +785,23 @@ function genControl(step, ctx, depth) {
       const writebackLine = includeInOutput
         ? `__results__[${JSON.stringify(resultsKey)}] = ${resultsVar};`
         : `// (${resultsKey}: kept as JS variable only — excluded from results JSON)`;
+
+      // Iteration markers (see FOR_EACH for the rationale).
+      const feIdJson = JSON.stringify(step.id || '');
       if (hasExtractions) {
         return [
           `const ${resultsVar} = [];`,
           `{`,
           `  const ${elsVar} = await page.$$(${sel});`,
+          `  console.log('ITER_START:' + JSON.stringify({stepId: ${feIdJson}, total: ${elsVar}.length}));`,
           `  for (let ${idxVar} = 0; ${idxVar} < ${elsVar}.length; ${idxVar}++) {`,
+          `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${feIdJson}, index: ${idxVar}}));`,
           `    const ${elVar} = ${elsVar}[${idxVar}];`,
           `    const ${rowVar} = { _index: ${idxVar} + 1 };`,
           body.trimEnd(),
           `    ${resultsVar}.push(${rowVar});`,
           `  }`,
+          `  console.log('ITER_END:' + JSON.stringify({stepId: ${feIdJson}}));`,
           `}`,
           writebackLine,
           aliasLine,
@@ -798,10 +812,13 @@ function genControl(step, ctx, depth) {
       return [
         `{`,
         `  const ${elsVar} = await page.$$(${sel});`,
+        `  console.log('ITER_START:' + JSON.stringify({stepId: ${feIdJson}, total: ${elsVar}.length}));`,
         `  for (let ${idxVar} = 0; ${idxVar} < ${elsVar}.length; ${idxVar}++) {`,
+        `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${feIdJson}, index: ${idxVar}}));`,
         `    const ${elVar} = ${elsVar}[${idxVar}];`,
         body.trimEnd(),
         `  }`,
+        `  console.log('ITER_END:' + JSON.stringify({stepId: ${feIdJson}}));`,
         `}`,
         ``,
       ].join('\n');
