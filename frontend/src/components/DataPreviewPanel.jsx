@@ -6,7 +6,12 @@ const EXTRACTION_TYPES = new Set([
   "EXTRACT_TEXT", "EXTRACT_ATTRIBUTE", "EXTRACT_HTML",
   "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON",
 ]);
-const LOOP_TYPES = new Set(["FOR_EACH_ELEMENTS", "FOR_EACH", "REPEAT", "WHILE"]);
+// Loop types that produce a fixed-shape preview table — one row per
+// matched element / iteration index. WHILE is intentionally excluded:
+// it has no a-priori iteration count (it runs until a runtime
+// condition flips), so we render its body inline instead of as a
+// table that would always be empty.
+const LOOP_TYPES = new Set(["FOR_EACH_ELEMENTS", "FOR_EACH", "REPEAT"]);
 const BRANCH_KEYS = ["body", "then", "else", "try", "catch"];
 
 const TYPE_ICON = {
@@ -25,7 +30,14 @@ function buildSections(steps) {
   for (const step of steps || []) {
     if (typeof step !== "object" || !step) continue;
 
-    if (step.kind === "control" && LOOP_TYPES.has(step.type)) {
+    if (step.kind === "control" && step.type === "WHILE") {
+      // WHILE has no fixed iteration count — render its body inline so
+      // each extraction inside gets its own preview section (the first
+      // iteration's data, just like a top-level extraction).
+      for (const key of BRANCH_KEYS) {
+        if (Array.isArray(step[key])) sections.push(...buildSections(step[key]));
+      }
+    } else if (step.kind === "control" && LOOP_TYPES.has(step.type)) {
       // Collect direct extraction children from branch arrays only
       const columns = [];
       for (const key of BRANCH_KEYS) {

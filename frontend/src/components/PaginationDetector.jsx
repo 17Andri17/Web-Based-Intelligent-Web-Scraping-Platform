@@ -82,11 +82,15 @@ function generatePaginationSteps(suggestion) {
 
   switch (type) {
     case "next_button": {
-      // WHILE selector exists → [YOUR EXTRACTIONS] → click next → wait for content
+      // WHILE selector exists → [YOUR EXTRACTIONS] → click next → wait.
+      // Use a fixed WAIT (not WAIT_FOR_SELECTOR) because the last page
+      // by definition has no Next button — a selector-wait would time
+      // out and throw on the very last iteration, even though reaching
+      // the end of pagination is the normal termination path.
       const click   = makeClick(selector);
       click.label   = "Click next page";
-      const wait    = makeWaitSel(selector);
-      wait.label    = "Wait for next button";
+      const wait    = makeWait(2000);
+      wait.label    = "Wait for next page to load";
       return makeWhile(`await page.$(\`${selector}\`) !== null`, 500, [click, wait]);
     }
 
@@ -96,8 +100,8 @@ function generatePaginationSteps(suggestion) {
       if (hasNextButton) {
         const click   = makeClick(selector);
         click.label   = "Click next page";
-        const wait    = makeWaitSel(selector);
-        wait.label    = "Wait for next button";
+        const wait    = makeWait(2000);
+        wait.label    = "Wait for next page to load";
         return makeWhile(`await page.$(\`${selector}\`) !== null`, 500, [click, wait]);
       }
 
