@@ -214,7 +214,7 @@ function SuggestionCard({ suggestion, onAdd }) {
   const handleAdd = () => {
     const step = generatePaginationSteps(suggestion);
     if (step) {
-      onAdd(step);
+      onAdd(step, suggestion.type);
       setAdded(true);
     }
   };
