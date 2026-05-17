@@ -348,8 +348,11 @@ function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
         <span className="ep-flow-label">{label}</span>
         <span className="ep-flow-typetag">{friendlyType(step.type)}</span>
         {(isLoop || isSubflowIter) && iter && (
-          <span className="ep-flow-iter" title={`Iteration ${iter.index} of ${iter.total}`}>
-            {iter.index}/{iter.total}
+          <span
+            className="ep-flow-iter"
+            title={iter.total ? `Iteration ${iter.index} of ${iter.total}` : `Iteration ${iter.index}`}
+          >
+            {iter.total ? `${iter.index}/${iter.total}` : iter.index}
             {iter.running && <span className="ep-flow-iter-pulse" />}
           </span>
         )}

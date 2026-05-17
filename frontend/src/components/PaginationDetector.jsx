@@ -77,40 +77,58 @@ function generatePaginationSteps(suggestion) {
   // Shared actions
   const makeClick = (sel) => createAction(ACTION_TYPES.CLICK_ELEMENT, { selector: sel });
   const makeWait  = (ms)  => createAction(ACTION_TYPES.WAIT,          { duration: ms });
-  const makeWaitSel = (sel) => createAction(ACTION_TYPES.WAIT_FOR_SELECTOR, { selector: sel });
   const makeScroll = () => createAction(ACTION_TYPES.SCROLL_PAGE, { direction: "bottom" });
+
+  // Build a do-while loop body: each iteration extracts the CURRENT page,
+  // then checks whether more pages exist, then clicks the next-page link.
+  // The IF check is positioned *before* the click so that on the last page
+  // we extract once and break out cleanly — without it, a plain WHILE
+  // either misses the first page (check + click runs before extract) or
+  // misses the last page (extract runs only when there's still a "next").
+  //
+  // Steps returned: [breakIf, click, wait]. The user drags their extraction
+  // steps to the TOP of the loop body — see the hint card under each
+  // suggestion. The loop's WHILE expression is just `true`; the break is
+  // gated by `breakWhen` (a JS expression that's truthy on the last page).
+  const makeDoWhileBody = (breakWhen, click, wait) => {
+    const breakIf = createControl(CONTROL_TYPES.IF, { expression: breakWhen });
+    breakIf.label = "Stop when last page reached";
+    breakIf.then  = [createAction(ACTION_TYPES.BREAK_LOOP, {})];
+    breakIf.else  = [];
+    return [breakIf, click, wait];
+  };
 
   switch (type) {
     case "next_button": {
-      // WHILE selector exists → [YOUR EXTRACTIONS] → click next → wait.
-      // Use a fixed WAIT (not WAIT_FOR_SELECTOR) because the last page
-      // by definition has no Next button — a selector-wait would time
-      // out and throw on the very last iteration, even though reaching
-      // the end of pagination is the normal termination path.
-      const click   = makeClick(selector);
-      click.label   = "Click next page";
-      const wait    = makeWait(2000);
-      wait.label    = "Wait for next page to load";
-      return makeWhile(`await page.$(\`${selector}\`) !== null`, 500, [click, wait]);
+      const click = makeClick(selector); click.label = "Click next page";
+      const wait  = makeWait(2000);      wait.label  = "Wait for next page to load";
+      return makeWhile(
+        "true", 500,
+        makeDoWhileBody(`(await page.$(\`${selector}\`)) === null`, click, wait)
+      );
     }
 
     case "page_numbers": {
       // When the detector found a Next link inside the numbered pagination,
       // treat it exactly like next_button.
       if (hasNextButton) {
-        const click   = makeClick(selector);
-        click.label   = "Click next page";
-        const wait    = makeWait(2000);
-        wait.label    = "Wait for next page to load";
-        return makeWhile(`await page.$(\`${selector}\`) !== null`, 500, [click, wait]);
+        const click = makeClick(selector); click.label = "Click next page";
+        const wait  = makeWait(2000);      wait.label  = "Wait for next page to load";
+        return makeWhile(
+          "true", 500,
+          makeDoWhileBody(`(await page.$(\`${selector}\`)) === null`, click, wait)
+        );
       }
 
-      // No Next button — only numbered links. We can't click a single
-      // selector because each iteration needs a different number. The
-      // WHILE expression runs inside the container, finds the link whose
-      // number is one greater than the active page, and marks it with
-      // `data-pagi-target="1"`. The body's CLICK_ELEMENT then clicks
-      // that marker — a fresh marker is set on every iteration.
+      // No Next button — only numbered links. We can't use a single
+      // static selector because each iteration needs a different number.
+      // The "find and mark" eval runs inside the container, identifies
+      // the active page, locates the link whose number is one greater,
+      // and tags it with `data-pagi-target="1"`. The body's click then
+      // targets that marker; a fresh marker is placed each iteration.
+      //
+      // We invert it for the break condition — when no `n+1` link
+      // exists we're on the last page, so the IF fires and breaks.
       const container = containerSelector || selector;
       const findAndMark = [
         `await page.evaluate((sel) => {`,
@@ -142,11 +160,12 @@ function generatePaginationSteps(suggestion) {
         `  return true;`,
         `}, ${JSON.stringify(container)})`,
       ].join("\n");
-      const click  = makeClick('[data-pagi-target="1"]');
-      click.label  = "Click next numbered page";
-      const wait   = makeWait(2000);
-      wait.label   = "Wait for next page to load";
-      return makeWhile(findAndMark, 500, [click, wait]);
+      const click = makeClick('[data-pagi-target="1"]'); click.label = "Click next numbered page";
+      const wait  = makeWait(2000);                      wait.label  = "Wait for next page to load";
+      return makeWhile(
+        "true", 500,
+        makeDoWhileBody(`!(${findAndMark})`, click, wait)
+      );
     }
 
     case "load_more": {
@@ -249,7 +268,7 @@ function SuggestionCard({ suggestion, onAdd }) {
           <polyline points="17,1 21,5 17,9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
           <polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
         </svg>
-        Adds a <strong>While</strong> loop — move your extraction steps inside the loop body
+        Adds a <strong>While</strong> loop — drag your extraction steps to the <strong>top</strong> of the loop body, above the "Stop" check
       </div>
     </div>
   );
@@ -370,7 +389,7 @@ export default function PaginationDetector({ isDetecting, suggestions, error, ma
                 <circle cx="12" cy="12" r="10"/>
                 <line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
               </svg>
-              After adding, drag your data extraction steps <strong>inside</strong> the loop body in the Workflow panel.
+              After adding, drag your data extraction steps to the <strong>top</strong> of the loop body — above the "Stop" check — so the first AND last pages are both captured.
             </div>
           </>
         )}

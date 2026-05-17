@@ -829,11 +829,19 @@ function genControl(step, ctx, depth) {
       const expr = jsExpr(params.expression, 'false');
       const max  = num(params.maxIterations, 1000);
       const body = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
+      // Emit ITER_START/TICK/END markers like FOR_EACH so the Flow tab
+      // can show the running iteration counter. `total: 0` signals
+      // "unknown upfront" — the UI renders just the index when there's
+      // no denominator.
+      const stepIdJson = JSON.stringify(step.id || '');
       return `{
   let _whileGuard = 0;
+  console.log('ITER_START:' + JSON.stringify({stepId: ${stepIdJson}, total: 0}));
   while ((${expr}) && _whileGuard < ${max}) {
+    console.log('ITER_TICK:' + JSON.stringify({stepId: ${stepIdJson}, index: _whileGuard}));
     _whileGuard++;
 ${body}  }
+  console.log('ITER_END:' + JSON.stringify({stepId: ${stepIdJson}}));
 }
 `.trim() + '\n';
     }
