@@ -173,6 +173,11 @@
 }
 
 /* ── Wrapper for inputs that should expose a picker ─────────────── */
+.vpick-input-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 .vpick-input-row {
   display: flex;
   align-items: center;
@@ -182,4 +187,32 @@
 .vpick-input-row > textarea {
   flex: 1;
   min-width: 0;
+}
+.vpick-input-mismatch {
+  border-color: #e89a4f !important;
+  background: rgba(232, 154, 79, 0.05) !important;
+}
+.vpick-input-warning {
+  font-size: 11px;
+  color: #e89a4f;
+  line-height: 1.4;
+  padding: 4px 8px;
+  background: rgba(232, 154, 79, 0.06);
+  border-left: 3px solid #e89a4f;
+  border-radius: 3px;
+}
+
+/* Mismatch state on picker rows */
+.vpick-leaf--mismatch { opacity: 0.55; }
+.vpick-leaf--mismatch:hover { opacity: 1; }
+.vpick-mismatch-tag {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(232, 154, 79, 0.18);
+  color: #e89a4f;
+  margin-left: 4px;
 }

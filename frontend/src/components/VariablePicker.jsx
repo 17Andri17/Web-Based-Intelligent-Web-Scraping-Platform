@@ -35,13 +35,37 @@ const TYPE_LABEL = {
   json:    "json",
   list:    "list",
   table:   "table",
+  scalar:  "value",
 };
+
+// Each picker node carries a "kind" describing its run-time shape.
+// `expectedKind` on the picker lets us flag references that look like
+// type mismatches (a list ref dropped into a single-value field, or
+// vice versa). The kinds intentionally collapse the JS type space to
+// what matters for field assignment:
+//   scalar = string / number / boolean
+//   list   = array (of anything)
+//   object = plain object / row
+//   any    = unknown / freeform (e.g. raw JSON variable)
+const COMPATIBLE = {
+  // expected:  compatible kinds
+  scalar: new Set(["scalar", "any"]),
+  list:   new Set(["list",   "any"]),
+  object: new Set(["object", "any"]),
+  any:    new Set(["scalar", "list", "object", "any"]),
+};
+function isCompatible(expectedKind, refKind) {
+  if (!expectedKind || expectedKind === "any") return true;
+  const allowed = COMPATIBLE[expectedKind];
+  return allowed ? allowed.has(refKind || "any") : true;
+}
 
 export default function VariablePicker({
   variables = [],
   capturedOutputs = [],
   iterationVars = [],
   onPick,
+  expectedKind = "any",
 }) {
   const [open, setOpen]     = useState(false);
   const [search, setSearch] = useState("");
@@ -118,13 +142,16 @@ export default function VariablePicker({
                   expanded={expanded}
                   setExpanded={setExpanded}
                   onPick={handlePick}
+                  expectedKind={expectedKind}
                 />
               ))}
             </ul>
           )}
 
           <div className="vpick-tip">
-            Click a leaf to insert its reference at the cursor.
+            {expectedKind && expectedKind !== "any"
+              ? <>This field expects a <strong>{expectedKindLabel(expectedKind)}</strong>. Mismatching references are dimmed — click to insert anyway.</>
+              : <>Click a leaf to insert its reference at the cursor.</>}
           </div>
         </div>
       )}
@@ -134,7 +161,7 @@ export default function VariablePicker({
 
 /* ── Tree nodes ─────────────────────────────────────────────────────── */
 
-function GroupNode({ node, expanded, setExpanded, onPick }) {
+function GroupNode({ node, expanded, setExpanded, onPick, expectedKind }) {
   return (
     <li className="vpick-group">
       <div className="vpick-group-header">{node.label}</div>
@@ -147,6 +174,7 @@ function GroupNode({ node, expanded, setExpanded, onPick }) {
             expanded={expanded}
             setExpanded={setExpanded}
             onPick={onPick}
+            expectedKind={expectedKind}
           />
         ))}
       </ul>
@@ -154,9 +182,18 @@ function GroupNode({ node, expanded, setExpanded, onPick }) {
   );
 }
 
-function Node({ node, depth, expanded, setExpanded, onPick }) {
+function Node({ node, depth, expanded, setExpanded, onPick, expectedKind }) {
   const hasChildren = Array.isArray(node.children) && node.children.length > 0;
   const isOpen = !!expanded[node.id];
+
+  // Type compatibility: dim nodes whose ref-shape doesn't match the
+  // field's expected kind, but still let the user click them (people
+  // sometimes know better — e.g. they want a string version of a list
+  // for logging). The tooltip explains the mismatch.
+  const compatible = isCompatible(expectedKind, node.kind);
+  const mismatchTip = !compatible
+    ? `This is a ${kindLabel(node.kind)} but the field expects a ${kindLabel(expectedKind)}. Click to insert anyway.`
+    : null;
 
   return (
     <li className="vpick-node">
@@ -182,13 +219,16 @@ function Node({ node, depth, expanded, setExpanded, onPick }) {
 
         <button
           type="button"
-          className={"vpick-leaf" + (node.disabled ? " vpick-leaf--disabled" : "")}
+          className={"vpick-leaf"
+            + (node.disabled  ? " vpick-leaf--disabled"   : "")
+            + (!compatible    ? " vpick-leaf--mismatch"   : "")}
           onClick={() => !node.disabled && onPick(node.ref)}
           disabled={!!node.disabled}
-          title={node.disabled ? "Reference can't be inserted directly" : `Insert ${node.ref}`}
+          title={node.disabled ? "Reference can't be inserted directly" : (mismatchTip || `Insert ${node.ref}`)}
         >
           <span className={"vpick-icon vpick-icon--" + (node.iconClass || "string")}>{node.icon || "$"}</span>
           <span className="vpick-name">{node.name}</span>
+          {!compatible && <span className="vpick-mismatch-tag">type mismatch</span>}
           {node.typeLabel && <span className="vpick-type">{node.typeLabel}</span>}
         </button>
       </div>
@@ -202,6 +242,7 @@ function Node({ node, depth, expanded, setExpanded, onPick }) {
               expanded={expanded}
               setExpanded={setExpanded}
               onPick={onPick}
+              expectedKind={expectedKind}
             />
           ))}
         </ul>
@@ -209,6 +250,17 @@ function Node({ node, depth, expanded, setExpanded, onPick }) {
     </li>
   );
 }
+
+function kindLabel(k) {
+  switch (k) {
+    case "scalar": return "single value";
+    case "list":   return "list";
+    case "object": return "object";
+    case "any":    return "any";
+    default:       return "value";
+  }
+}
+function expectedKindLabel(k) { return kindLabel(k); }
 
 /* ── Tree shape: build groups ──────────────────────────────────────── */
 
@@ -243,38 +295,43 @@ function buildTree({ variables, capturedOutputs, iterationVars }) {
 }
 
 function buildCustomNode(v) {
+  // Custom variables are typed by the user. number/string/boolean → scalar;
+  // json could be anything so we don't pretend to know.
+  const kind = (v.type === "json") ? "any" : "scalar";
   return {
     id: `c:${v.name}`,
     name: v.name,
     icon: "$",
     iconClass: v.type || "string",
     typeLabel: TYPE_LABEL[v.type] || v.type,
+    kind,
     ref: `{{${v.name}}}`,
   };
 }
 
 function buildCapturedNode(v) {
   const isTable = (v.type === "table" || v.type === "list") && Array.isArray(v.columns) && v.columns.length > 0;
+  // The variable itself: a list/table → kind=list; anything else → scalar.
+  const ownKind = (v.type === "list" || v.type === "table") ? "list" : "scalar";
   const node = {
     id: `cap:${v.name}`,
     name: v.name,
     icon: "▣",
     iconClass: v.type || "string",
     typeLabel: TYPE_LABEL[v.type] || v.type,
+    kind: ownKind,
     ref: `{{${v.name}}}`,
   };
   if (isTable) {
-    // For a table-shaped variable, two ways to dot-walk:
-    //  - pick a column at the [*] level → inserts {{name[*].col}}
-    //    (an array of that column's values, ideal for RUN_SUBFLOW
-    //    iterate mode)
-    //  - the whole variable is also clickable to insert {{name}}
+    // {{table[*].col}} is the COLUMN — i.e. a list of scalars from each
+    // row's `col`. That's a list ref, not a scalar.
     node.children = v.columns.filter(Boolean).map(col => ({
       id: `cap:${v.name}.${col}`,
       name: col,
       icon: "·",
       iconClass: "column",
       typeLabel: "column of " + (v.type || "list"),
+      kind: "list",
       ref: `{{${v.name}[*].${col}}}`,
     }));
   }
@@ -282,22 +339,43 @@ function buildCapturedNode(v) {
 }
 
 function buildIterVarNode(iv) {
-  // iv: { name: 'product', source?: 'products', columns?: ['title','link'] }
+  // iv: { name, source?, itemKind: 'row'|'scalar'|'unknown', columns?, sourceColumn? }
+  const itemKind  = iv.itemKind || "unknown";
+  const refKind   = itemKind === "row" ? "object"
+                  : itemKind === "scalar" ? "scalar"
+                  : "any";
+  // Helpful, accurate type label so users know what their item REALLY is:
+  //   - row → "row of products"
+  //   - scalar → "link from each products"  (or "value from each <source>")
+  //   - unknown → "loop item"
+  const typeLabel = itemKind === "scalar"
+    ? (iv.sourceColumn && iv.source ? `${iv.sourceColumn} from each ${iv.source}` : "loop value")
+    : itemKind === "row"
+      ? (iv.source ? `row of ${iv.source}` : "loop row")
+      : "loop item";
+
   const node = {
     id: `it:${iv.name}`,
     name: iv.name,
     icon: "→",
     iconClass: "iter",
-    typeLabel: iv.source ? `row of ${iv.source}` : "loop item",
+    typeLabel,
+    kind: refKind,
     ref: `{{${iv.name}}}`,
   };
-  if (Array.isArray(iv.columns) && iv.columns.length > 0) {
+
+  // Only expose `item.field` children when each iteration's item is
+  // actually an object. For a column projection like
+  // `{{exam_link[*].author_link}}`, the item is a STRING — surfacing
+  // `item.author_link` was the bug the user hit.
+  if (itemKind === "row" && Array.isArray(iv.columns) && iv.columns.length > 0) {
     node.children = iv.columns.filter(Boolean).map(col => ({
       id: `it:${iv.name}.${col}`,
       name: col,
       icon: "·",
       iconClass: "column",
       typeLabel: "field",
+      kind: "scalar",
       ref: `{{${iv.name}.${col}}}`,
     }));
   }
