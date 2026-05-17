@@ -797,12 +797,16 @@ io.on('connection', async (socket) => {
           const nextInNav = container.querySelector('a[rel="next"],[aria-label*="Next" i]')
             || Array.from(container.querySelectorAll('a,button,[role="button"]'))
                  .find(e => isNextLike(txt(e)) && vis(e));
-          results.push({ type: 'page_numbers', confidence: 0.91,
+          // When the visible page numbers don't start at 1 ("2, 3, 4, \u2026"),
+          // we can't directly verify the current page from the numbers
+          // alone \u2014 drop confidence slightly to flag the extra ambiguity.
+          const startsAtOne = nums[0] === 1;
+          results.push({ type: 'page_numbers', confidence: startsAtOne ? 0.91 : 0.85,
             selector: nextInNav ? stableSelector(nextInNav) : stableSelector(container),
             containerSelector: stableSelector(container),
             hasNextButton: !!nextInNav,
             previewText: numLinks.map(e => txt(e)).slice(0,5).join(', ') + '\u2026',
-            description: `Found numbered pagination with ${numLinks.length} page links.` });
+            description: `Found numbered pagination with ${numLinks.length} page links${startsAtOne ? '' : ` (visible starts at ${nums[0]})`}.` });
           break;
         }
 
