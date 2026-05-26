@@ -6,7 +6,12 @@
    Environment:
      LLM_API_KEY    – the API key (falls back to GROQ_API_KEY for back-compat)
      LLM_BASE_URL   – OpenAI-compatible base URL (default Groq's)
-     LLM_MODEL      – model id (default openai/gpt-oss-20b on Groq's free tier)
+     LLM_MODELS     – comma-separated model ids, best first. The client tries
+                      them in order and falls back to the next one when a model
+                      hits its rate limit (HTTP 429) or is otherwise unavailable
+                      (HTTP 5xx). Defaults to a free Groq chain (best → worst).
+     LLM_MODEL      – single model id; used as the primary when LLM_MODELS is
+                      unset (kept for back-compat).
      LLM_TIMEOUT_MS – per-request timeout (default 15000)
 
    Public API:
@@ -24,13 +29,37 @@ const DEFAULT_BASE_URL = 'https://api.groq.com/openai/v1';
 // route its output through a separate reasoning channel that leaves
 // message.content empty.
 const DEFAULT_MODEL    = 'llama-3.1-8b-instant';
+// Ordered fallback chain (best → worst), all free on Groq's tier. The smarter
+// 70b model is tried first; when it hits its rate limit we drop to the small,
+// high-throughput model that almost always has quota left.
+const DEFAULT_MODELS   = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
 const DEFAULT_TIMEOUT  = 15000;
+
+// HTTP_429 = rate limit reached; HTTP_5xx = provider unavailable. Both mean
+// "this model can't answer right now" → try the next one in the chain.
+function isFallbackCode(code) {
+  return code === 'HTTP_429' || /^HTTP_5\d\d$/.test(String(code || ''));
+}
+
+// Resolve the ordered model chain. LLM_MODELS (comma-separated, best first)
+// wins; otherwise fall back to the single LLM_MODEL, otherwise the built-in
+// free chain.
+function getModels() {
+  const fromList = (process.env.LLM_MODELS || '')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+  if (fromList.length) return fromList;
+  if (process.env.LLM_MODEL) return [process.env.LLM_MODEL.trim()];
+  return [...DEFAULT_MODELS];
+}
 
 function getConfig() {
   return {
     apiKey:  process.env.LLM_API_KEY || process.env.GROQ_API_KEY || '',
     baseUrl: (process.env.LLM_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, ''),
     model:   process.env.LLM_MODEL || DEFAULT_MODEL,
+    models:  getModels(),
     timeout: Number(process.env.LLM_TIMEOUT_MS) || DEFAULT_TIMEOUT,
   };
 }
@@ -39,18 +68,9 @@ function isConfigured() {
   return Boolean(getConfig().apiKey);
 }
 
-async function chat({ system, user, model, temperature = 0.2, maxTokens = 60, timeoutMs }) {
-  const cfg = getConfig();
-  if (!cfg.apiKey) {
-    const err = new Error('LLM not configured (set LLM_API_KEY or GROQ_API_KEY in environment)');
-    err.code = 'NO_API_KEY';
-    throw err;
-  }
-
-  const messages = [];
-  if (system) messages.push({ role: 'system', content: String(system) });
-  messages.push({ role: 'user', content: String(user || '') });
-
+// Single request against one specific model. Throws on any failure with an
+// `err.code` set (HTTP_<status>, EMPTY_RESPONSE, etc.).
+async function chatOnce(cfg, modelId, { messages, temperature, maxTokens, timeoutMs }) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs ?? cfg.timeout);
 
@@ -63,7 +83,7 @@ async function chat({ system, user, model, temperature = 0.2, maxTokens = 60, ti
         'Content-Type':  'application/json',
       },
       body: JSON.stringify({
-        model: model || cfg.model,
+        model: modelId,
         messages,
         temperature,
         max_tokens: maxTokens,
@@ -76,7 +96,7 @@ async function chat({ system, user, model, temperature = 0.2, maxTokens = 60, ti
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    const err = new Error(`LLM HTTP ${res.status}: ${body.slice(0, 200)}`);
+    const err = new Error(`LLM HTTP ${res.status} (${modelId}): ${body.slice(0, 200)}`);
     err.code = `HTTP_${res.status}`;
     throw err;
   }
@@ -101,6 +121,37 @@ async function chat({ system, user, model, temperature = 0.2, maxTokens = 60, ti
     throw err;
   }
   return text;
+}
+
+async function chat({ system, user, model, temperature = 0.2, maxTokens = 60, timeoutMs }) {
+  const cfg = getConfig();
+  if (!cfg.apiKey) {
+    const err = new Error('LLM not configured (set LLM_API_KEY or GROQ_API_KEY in environment)');
+    err.code = 'NO_API_KEY';
+    throw err;
+  }
+
+  const messages = [];
+  if (system) messages.push({ role: 'system', content: String(system) });
+  messages.push({ role: 'user', content: String(user || '') });
+
+  // An explicit per-call model opts out of the fallback chain; otherwise walk
+  // the configured chain (best → worst) and step down on rate-limit / outage.
+  const chain = model ? [model] : cfg.models;
+  const opts = { messages, temperature, maxTokens, timeoutMs };
+
+  let lastErr;
+  for (let i = 0; i < chain.length; i++) {
+    try {
+      return await chatOnce(cfg, chain[i], opts);
+    } catch (err) {
+      lastErr = err;
+      const hasNext = i < chain.length - 1;
+      if (hasNext && isFallbackCode(err.code)) continue;
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 async function safeChat(opts) {
