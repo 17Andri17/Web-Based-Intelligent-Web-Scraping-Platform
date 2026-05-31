@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Selector Benchmark Suite — Data Changed</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  /* Scenario 11 — per-variant hashed class names (DATA-CHANGED: regenerated build hashes) */
+  ._8Lp2Q { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  ._8Lp2Q ._Rm5xY { padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--bg); }
+  ._8Lp2Q ._Rm5xY ._Wn7tH { font-size: 13px; font-weight: 600; color: #fff; }
+  ._8Lp2Q ._Rm5xY ._Zb1kF { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  ._8Lp2Q ._Jy6vC { padding: 12px 14px; }
+  ._8Lp2Q ._Jy6vC ._Pq3sD { font-size: 20px; font-weight: 800; color: var(--warn); font-family: var(--sans); }
+  ._8Lp2Q ._Jy6vC ._Xk4nB { font-size: 10px; color: var(--muted); margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-badge">CSS Selector Benchmark Suite</div>
+  <h1 class="site-title">Selector<br>Evaluation Lab</h1>
+  <p class="site-subtitle">
+    The <strong>data-changed</strong> variant. Structure and class names match the base page, but every text value, image, and randomly-generated identifier (hash classes, etc.) has been replaced. Selectors built on the base page should still match here if they relied on stable structure rather than fragile data.
+  </p>
+  <div class="variant-badge variant-data">Variant: DATA CHANGED</div>
+  <div class="header-meta">
+    <div class="meta-item"><span class="meta-label">Scenarios</span><span class="meta-value">14</span></div>
+    <div class="meta-item"><span class="meta-label">Difficulty Tiers</span><span class="meta-value">4</span></div>
+    <div class="meta-item"><span class="meta-label">Target Elements</span><span class="meta-value">120+</span></div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-title">Scenarios</div>
+    <a class="nav-item" href="#s1"><span class="nav-dot" style="background:var(--easy)"></span>01 · Simple List</a>
+    <a class="nav-item" href="#s2"><span class="nav-dot" style="background:var(--easy)"></span>02 · Data Table</a>
+    <a class="nav-item" href="#s3"><span class="nav-dot" style="background:var(--easy)"></span>03 · ID-based</a>
+    <a class="nav-item" href="#s4"><span class="nav-dot" style="background:var(--medium)"></span>04 · Product Cards</a>
+    <a class="nav-item" href="#s5"><span class="nav-dot" style="background:var(--medium)"></span>05 · News Feed</a>
+    <a class="nav-item" href="#s6"><span class="nav-dot" style="background:var(--medium)"></span>06 · No Classes</a>
+    <a class="nav-item" href="#s7"><span class="nav-dot" style="background:var(--hard)"></span>07 · BEM Naming</a>
+    <a class="nav-item" href="#s8"><span class="nav-dot" style="background:var(--hard)"></span>08 · Ambiguous Groups</a>
+    <a class="nav-item" href="#s9"><span class="nav-dot" style="background:var(--hard)"></span>09 · State Pollution</a>
+    <a class="nav-item" href="#s10"><span class="nav-dot" style="background:var(--hard)"></span>10 · Deep Nesting</a>
+    <a class="nav-item" href="#s11"><span class="nav-dot" style="background:var(--extreme)"></span>11 · Hashed Classes</a>
+    <a class="nav-item" href="#s12"><span class="nav-dot" style="background:var(--extreme)"></span>12 · Data Attrs</a>
+    <a class="nav-item" href="#s13"><span class="nav-dot" style="background:var(--extreme)"></span>13 · Decoy Siblings</a>
+    <a class="nav-item" href="#s14"><span class="nav-dot" style="background:var(--extreme)"></span>14 · Inline Styles</a>
+  </nav>
+
+  <main class="main-content">
+    <div class="sections-grid">
+
+      <!-- S1 -->
+      <section class="scenario" id="s1">
+        <div class="scenario-header">
+          <div class="scenario-number">01</div>
+          <div class="scenario-meta"><div class="scenario-title">Simple Flat List</div><div class="scenario-desc">Different fruits, same class structure.</div><div class="tags"><span class="tag tag-easy">Easy</span></div></div>
+          <div class="diff-bar easy"><div class="diff-pip on"></div><div class="diff-pip"></div><div class="diff-pip"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <ul class="fruit-list" id="fruit-list">
+            <li class="fruit-item">🍒 Cherry</li>
+            <li class="fruit-item">🥝 Kiwi</li>
+            <li class="fruit-item">🍉 Watermelon</li>
+            <li class="fruit-item">🫐 Blueberry</li>
+            <li class="fruit-item">🍐 Pear</li>
+            <li class="fruit-item">🥥 Coconut</li>
+            <li class="fruit-item">🍈 Melon</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- S2 -->
+      <section class="scenario" id="s2">
+        <div class="scenario-header">
+          <div class="scenario-number">02</div>
+          <div class="scenario-meta"><div class="scenario-title">Data Table Rows</div><div class="scenario-desc">Different projects, same table structure.</div><div class="tags"><span class="tag tag-easy">Easy</span></div></div>
+          <div class="diff-bar easy"><div class="diff-pip on"></div><div class="diff-pip"></div><div class="diff-pip"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <table class="data-table" id="data-table">
+            <thead><tr><th>ID</th><th>Project</th><th>Owner</th><th>Status</th><th>Score</th></tr></thead>
+            <tbody id="table-body">
+              <tr class="data-row"><td>PRJ-101</td><td>Inventory Tracker</td><td>R. Mazur</td><td><span class="status-badge status-pending">Pending</span></td><td>72.5</td></tr>
+              <tr class="data-row"><td>PRJ-102</td><td>Search Indexer v3</td><td>L. Krawczyk</td><td><span class="status-badge status-active">Active</span></td><td>89.4</td></tr>
+              <tr class="data-row"><td>PRJ-103</td><td>Billing Refactor</td><td>S. Wójcik</td><td><span class="status-badge status-closed">Closed</span></td><td>55.8</td></tr>
+              <tr class="data-row"><td>PRJ-104</td><td>Mobile Push Service</td><td>D. Adamski</td><td><span class="status-badge status-active">Active</span></td><td>93.0</td></tr>
+              <tr class="data-row"><td>PRJ-105</td><td>Recommender v2</td><td>I. Pawlak</td><td><span class="status-badge status-pending">Pending</span></td><td>76.7</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- S3 -->
+      <section class="scenario" id="s3">
+        <div class="scenario-header">
+          <div class="scenario-number">03</div>
+          <div class="scenario-meta"><div class="scenario-title">ID-based Unique Elements</div><div class="scenario-desc">Same semantic IDs (stable in real apps), different values.</div><div class="tags"><span class="tag tag-easy">Easy</span></div></div>
+          <div class="diff-bar easy"><div class="diff-pip on"></div><div class="diff-pip"></div><div class="diff-pip"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="id-grid">
+            <div class="id-block" id="metric-cpu"><div class="id-block-name">CPU Usage</div><div class="id-block-val">42%</div></div>
+            <div class="id-block" id="metric-ram"><div class="id-block-name">RAM Usage</div><div class="id-block-val">8.9 GB</div></div>
+            <div class="id-block" id="metric-disk"><div class="id-block-name">Disk I/O</div><div class="id-block-val">512 MB/s</div></div>
+            <div class="id-block" id="metric-net"><div class="id-block-name">Network</div><div class="id-block-val">1.7 Gbps</div></div>
+            <div class="id-block" id="metric-req"><div class="id-block-name">Req/s</div><div class="id-block-val">24,910</div></div>
+            <div class="id-block" id="metric-err"><div class="id-block-name">Error Rate</div><div class="id-block-val">0.04%</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S4 -->
+      <section class="scenario" id="s4">
+        <div class="scenario-header">
+          <div class="scenario-number">04</div>
+          <div class="scenario-meta"><div class="scenario-title">Product Cards</div><div class="scenario-desc">Different products, same class hierarchy.</div><div class="tags"><span class="tag tag-medium">Medium</span></div></div>
+          <div class="diff-bar medium"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="product-grid" id="product-grid">
+            <div class="product-card"><div class="product-thumb">📱</div><div class="product-body"><div class="product-name">Phantom 12 Mini</div><div class="product-category">Mobile</div><div class="product-footer"><span class="product-price">$799</span><span class="product-rating">★ 4.5</span></div></div></div>
+            <div class="product-card"><div class="product-thumb">💻</div><div class="product-body"><div class="product-name">Nimbus Laptop 14</div><div class="product-category">Computing</div><div class="product-footer"><span class="product-price">$1,299</span><span class="product-rating">★ 4.8</span></div></div></div>
+            <div class="product-card"><div class="product-thumb">🎮</div><div class="product-body"><div class="product-name">PixelPad Controller</div><div class="product-category">Gaming</div><div class="product-footer"><span class="product-price">$79</span><span class="product-rating">★ 4.3</span></div></div></div>
+            <div class="product-card"><div class="product-thumb">🔊</div><div class="product-body"><div class="product-name">Boombox Mini 3</div><div class="product-category">Audio</div><div class="product-footer"><span class="product-price">$159</span><span class="product-rating">★ 4.6</span></div></div></div>
+            <div class="product-card"><div class="product-thumb">🖨️</div><div class="product-body"><div class="product-name">PrintForge Pro</div><div class="product-category">Office</div><div class="product-footer"><span class="product-price">$249</span><span class="product-rating">★ 4.1</span></div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S5 -->
+      <section class="scenario" id="s5">
+        <div class="scenario-header">
+          <div class="scenario-number">05</div>
+          <div class="scenario-meta"><div class="scenario-title">News Feed</div><div class="scenario-desc">Different headlines.</div><div class="tags"><span class="tag tag-medium">Medium</span></div></div>
+          <div class="diff-bar medium"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="news-feed" id="news-feed">
+            <div class="news-article"><div><div class="news-meta"><span class="news-tag news-tag-world">World</span><span class="news-source">BBC</span><span class="news-date">1h ago</span></div><div class="news-headline">UN climate conference closes with new emissions agreement</div><div class="news-summary">Delegates from 195 countries finalised a framework for the next decade of climate policy...</div></div><div class="news-views">19.6k views</div></div>
+            <div class="news-article"><div><div class="news-meta"><span class="news-tag news-tag-tech">Tech</span><span class="news-source">Wired</span><span class="news-date">3h ago</span></div><div class="news-headline">New ARM-based laptops outperform x86 rivals in efficiency tests</div><div class="news-summary">Benchmarks show a 38% energy reduction across mixed workloads while maintaining peak performance...</div></div><div class="news-views">12.3k views</div></div>
+            <div class="news-article"><div><div class="news-meta"><span class="news-tag news-tag-biz">Business</span><span class="news-source">Financial Times</span><span class="news-date">8h ago</span></div><div class="news-headline">European banks consolidate under new digital euro framework</div><div class="news-summary">The ECB has confirmed timelines for issuance of the retail digital euro and supervisory implications...</div></div><div class="news-views">4.1k views</div></div>
+            <div class="news-article"><div><div class="news-meta"><span class="news-tag news-tag-sci">Science</span><span class="news-source">Science</span><span class="news-date">2d ago</span></div><div class="news-headline">CRISPR therapy shows long-term safety in five-year follow-up</div><div class="news-summary">The cohort of 87 patients continues to show stable outcomes with no off-target events detected...</div></div><div class="news-views">28.9k views</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S6 -->
+      <section class="scenario" id="s6">
+        <div class="scenario-header">
+          <div class="scenario-number">06</div>
+          <div class="scenario-meta"><div class="scenario-title">No Classes</div><div class="scenario-desc">Same structure, different people.</div><div class="tags"><span class="tag tag-medium">Medium</span></div></div>
+          <div class="diff-bar medium"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <ul class="bare-list" id="classless-list">
+            <li><span>01</span><div><strong>Albert Einstein</strong><small>Theoretical Physicist · Relativity</small></div><b>$15.2M</b></li>
+            <li><span>02</span><div><strong>Hedy Lamarr</strong><small>Inventor · Frequency-Hopping</small></div><b>$11.4M</b></li>
+            <li><span>03</span><div><strong>Claude Shannon</strong><small>Engineer · Information Theory</small></div><b>$10.7M</b></li>
+            <li><span>04</span><div><strong>Rosalind Franklin</strong><small>Chemist · DNA Crystallography</small></div><b>$9.2M</b></li>
+            <li><span>05</span><div><strong>Dennis Ritchie</strong><small>Engineer · C / UNIX</small></div><b>$8.5M</b></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- S7 -->
+      <section class="scenario" id="s7">
+        <div class="scenario-header">
+          <div class="scenario-number">07</div>
+          <div class="scenario-meta"><div class="scenario-title">BEM Naming</div><div class="scenario-desc">Different datasets, identical BEM classes.</div><div class="tags"><span class="tag tag-hard">Hard</span></div></div>
+          <div class="diff-bar hard"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="c-catalog" id="bem-catalog">
+            <div class="c-catalog__item"><div class="c-catalog__header"><div class="c-catalog__title">Omega Tabular</div><div class="c-catalog__subtitle">Regression · v4.0</div></div><div class="c-catalog__body"><div class="c-catalog__stat"><span class="c-catalog__stat-label">Records</span><span class="c-catalog__stat-value">3.6M</span></div><div class="c-catalog__stat"><span class="c-catalog__stat-label">Features</span><span class="c-catalog__stat-value">142</span></div></div><div class="c-catalog__footer"><span class="c-catalog__tag">supervised</span><span class="c-catalog__score">90</span></div></div>
+            <div class="c-catalog__item"><div class="c-catalog__header"><div class="c-catalog__title">Sigma Codex</div><div class="c-catalog__subtitle">Code · v2.7</div></div><div class="c-catalog__body"><div class="c-catalog__stat"><span class="c-catalog__stat-label">Tokens</span><span class="c-catalog__stat-value">7.1B</span></div><div class="c-catalog__stat"><span class="c-catalog__stat-label">Languages</span><span class="c-catalog__stat-value">42</span></div></div><div class="c-catalog__footer"><span class="c-catalog__tag">unsupervised</span><span class="c-catalog__score">86</span></div></div>
+            <div class="c-catalog__item"><div class="c-catalog__header"><div class="c-catalog__title">Theta Imagery</div><div class="c-catalog__subtitle">CV · v3.5</div></div><div class="c-catalog__body"><div class="c-catalog__stat"><span class="c-catalog__stat-label">Images</span><span class="c-catalog__stat-value">820K</span></div><div class="c-catalog__stat"><span class="c-catalog__stat-label">Classes</span><span class="c-catalog__stat-value">2500</span></div></div><div class="c-catalog__footer"><span class="c-catalog__tag">labeled</span><span class="c-catalog__score">96</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S8 -->
+      <section class="scenario" id="s8">
+        <div class="scenario-header">
+          <div class="scenario-number">08</div>
+          <div class="scenario-meta"><div class="scenario-title">Ambiguous Groups</div><div class="scenario-desc">Different content, same dual-panel structure.</div><div class="tags"><span class="tag tag-hard">Hard</span></div></div>
+          <div class="diff-bar hard"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="two-cols">
+            <div class="list-panel" id="panel-a">
+              <div class="list-panel-header">Panel A — Databases</div>
+              <div class="list-panel-body">
+                <div class="entry-item"><span class="entry-dot dot-green"></span><span class="entry-name">MySQL</span><span class="entry-val">99.8%</span></div>
+                <div class="entry-item"><span class="entry-dot dot-blue"></span><span class="entry-name">DynamoDB</span><span class="entry-val">99.6%</span></div>
+                <div class="entry-item"><span class="entry-dot dot-orange"></span><span class="entry-name">Memcached</span><span class="entry-val">97.4%</span></div>
+                <div class="entry-item"><span class="entry-dot dot-red"></span><span class="entry-name">Neo4j</span><span class="entry-val">95.2%</span></div>
+              </div>
+            </div>
+            <div class="list-panel" id="panel-b">
+              <div class="list-panel-header">Panel B — Services</div>
+              <div class="list-panel-body">
+                <div class="entry-item"><span class="entry-dot dot-green"></span><span class="entry-name">Order Service</span><span class="entry-val">99.95%</span></div>
+                <div class="entry-item"><span class="entry-dot dot-orange"></span><span class="entry-name">Shipping API</span><span class="entry-val">98.1%</span></div>
+                <div class="entry-item"><span class="entry-dot dot-green"></span><span class="entry-name">Search Service</span><span class="entry-val">99.7%</span></div>
+                <div class="entry-item"><span class="entry-dot dot-red"></span><span class="entry-name">Reporting</span><span class="entry-val">93.6%</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S9 -->
+      <section class="scenario" id="s9">
+        <div class="scenario-header">
+          <div class="scenario-number">09</div>
+          <div class="scenario-meta"><div class="scenario-title">State-class Pollution</div><div class="scenario-desc">Different plans, different transient states than the base page.</div><div class="tags"><span class="tag tag-hard">Hard</span></div></div>
+          <div class="diff-bar hard"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="toggle-grid" id="option-grid">
+            <div class="option-card selected"><div class="option-name">Hobby</div><div class="option-desc">For side projects</div></div>
+            <div class="option-card"><div class="option-name">Solo</div><div class="option-desc">Single developer</div></div>
+            <div class="option-card active"><div class="option-name">Studio</div><div class="option-desc">Small teams</div></div>
+            <div class="option-card disabled"><div class="option-name">Beta</div><div class="option-desc">Closed beta</div></div>
+            <div class="option-card loading"><div class="option-name">Scale</div><div class="option-desc">Mid-market</div></div>
+            <div class="option-card"><div class="option-name">Enterprise+</div><div class="option-desc">Custom contract</div></div>
+            <div class="option-card active"><div class="option-name">Edu</div><div class="option-desc">For universities</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S10 -->
+      <section class="scenario" id="s10">
+        <div class="scenario-header">
+          <div class="scenario-number">10</div>
+          <div class="scenario-meta"><div class="scenario-title">Deep Nesting</div><div class="scenario-desc">Same 5-level structure, different staff.</div><div class="tags"><span class="tag tag-hard">Hard</span></div></div>
+          <div class="diff-bar hard"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="org-chart" id="org-chart">
+            <div class="org-division">
+              <div class="org-division-header">📈 Product Division</div>
+              <div class="org-teams">
+                <div class="org-team">
+                  <div class="org-team-header">Growth Team</div>
+                  <div class="org-members">
+                    <div class="org-member"><div class="org-avatar">JM</div><div class="org-info"><div class="org-member-name">Julia Mazur</div><div class="org-member-role">Head of Growth</div></div><div class="org-member-score">96</div></div>
+                    <div class="org-member"><div class="org-avatar">RC</div><div class="org-info"><div class="org-member-name">Rafał Czerniak</div><div class="org-member-role">Analytics Lead</div></div><div class="org-member-score">89</div></div>
+                  </div>
+                </div>
+                <div class="org-team">
+                  <div class="org-team-header">Design Team</div>
+                  <div class="org-members">
+                    <div class="org-member"><div class="org-avatar">OW</div><div class="org-info"><div class="org-member-name">Olga Walczak</div><div class="org-member-role">Design Director</div></div><div class="org-member-score">92</div></div>
+                    <div class="org-member"><div class="org-avatar">SK</div><div class="org-info"><div class="org-member-name">Szymon Kruk</div><div class="org-member-role">UX Researcher</div></div><div class="org-member-score">85</div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="org-division">
+              <div class="org-division-header">🛡️ Security Division</div>
+              <div class="org-teams">
+                <div class="org-team">
+                  <div class="org-team-header">AppSec</div>
+                  <div class="org-members">
+                    <div class="org-member"><div class="org-avatar">NB</div><div class="org-info"><div class="org-member-name">Natalia Borowska</div><div class="org-member-role">Security Lead</div></div><div class="org-member-score">98</div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S11 (regenerated hash classes) -->
+      <section class="scenario" id="s11">
+        <div class="scenario-header">
+          <div class="scenario-number">11</div>
+          <div class="scenario-meta"><div class="scenario-title">Hashed Classes</div><div class="scenario-desc">Class hashes regenerated as they would be on a real CSS-modules rebuild.</div><div class="tags"><span class="tag tag-extreme">Extreme</span></div></div>
+          <div class="diff-bar extreme"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="hash-grid" id="hash-grid">
+            <div class="_8Lp2Q"><div class="_Rm5xY"><div class="_Wn7tH">Queue Depth</div><div class="_Zb1kF">Worker Pool · EU-West</div></div><div class="_Jy6vC"><div class="_Pq3sD">312</div><div class="_Xk4nB">stable for 1h</div></div></div>
+            <div class="_8Lp2Q"><div class="_Rm5xY"><div class="_Wn7tH">P50 Response</div><div class="_Zb1kF">Edge Functions</div></div><div class="_Jy6vC"><div class="_Pq3sD">38ms</div><div class="_Xk4nB">-4ms this hour</div></div></div>
+            <div class="_8Lp2Q"><div class="_Rm5xY"><div class="_Wn7tH">Active Sessions</div><div class="_Zb1kF">Auth Service</div></div><div class="_Jy6vC"><div class="_Pq3sD">21.4K</div><div class="_Xk4nB">+8% vs yesterday</div></div></div>
+            <div class="_8Lp2Q"><div class="_Rm5xY"><div class="_Wn7tH">Storage Used</div><div class="_Zb1kF">Object Store</div></div><div class="_Jy6vC"><div class="_Pq3sD">4.1 TB</div><div class="_Xk4nB">11% growth/mo</div></div></div>
+            <div class="_8Lp2Q"><div class="_Rm5xY"><div class="_Wn7tH">CDN Hit Rate</div><div class="_Zb1kF">Global Edge</div></div><div class="_Jy6vC"><div class="_Pq3sD">91.2%</div><div class="_Xk4nB">↓ 0.4% today</div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S12 (data-testid stable, values vary) -->
+      <section class="scenario" id="s12">
+        <div class="scenario-header">
+          <div class="scenario-number">12</div>
+          <div class="scenario-meta"><div class="scenario-title">data-* Attributes</div><div class="scenario-desc"><code>data-testid</code> values remain stable across rebuilds; status values vary.</div><div class="tags"><span class="tag tag-extreme">Extreme</span></div></div>
+          <div class="diff-bar extreme"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="attr-grid" id="attr-grid">
+            <div class="feature-row" data-testid="feature-search" data-feature="search" data-tier="free"><div class="feature-icon">🔍</div><div class="feature-label"><div class="feature-name">Universal Search</div><div class="feature-plan">All plans</div></div><span class="feature-status" data-status="on">Enabled</span></div>
+            <div class="feature-row" data-testid="feature-export" data-feature="export" data-tier="pro"><div class="feature-icon">📤</div><div class="feature-label"><div class="feature-name">XLSX / CSV Export</div><div class="feature-plan">Pro &amp; above</div></div><span class="feature-status" data-status="off">Disabled</span></div>
+            <div class="feature-row" data-testid="feature-api" data-feature="api" data-tier="pro"><div class="feature-icon">⚙️</div><div class="feature-label"><div class="feature-name">REST &amp; Webhook API</div><div class="feature-plan">Pro &amp; above</div></div><span class="feature-status" data-status="on">Enabled</span></div>
+            <div class="feature-row" data-testid="feature-collab" data-feature="collab" data-tier="team"><div class="feature-icon">👥</div><div class="feature-label"><div class="feature-name">Real-time Collaboration</div><div class="feature-plan">Team plan</div></div><span class="feature-status" data-status="on">Enabled</span></div>
+            <div class="feature-row" data-testid="feature-sso" data-feature="sso" data-tier="enterprise"><div class="feature-icon">🔐</div><div class="feature-label"><div class="feature-name">SAML SSO</div><div class="feature-plan">Enterprise</div></div><span class="feature-status" data-status="pro">Upgrade</span></div>
+            <div class="feature-row" data-testid="feature-audit" data-feature="audit" data-tier="enterprise"><div class="feature-icon">📋</div><div class="feature-label"><div class="feature-name">Compliance Audit Log</div><div class="feature-plan">Enterprise</div></div><span class="feature-status" data-status="pro">Upgrade</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S13 -->
+      <section class="scenario" id="s13">
+        <div class="scenario-header">
+          <div class="scenario-number">13</div>
+          <div class="scenario-meta"><div class="scenario-title">Decoy Siblings</div><div class="scenario-desc">Different posts and ads, identical class structure.</div><div class="tags"><span class="tag tag-extreme">Extreme</span></div></div>
+          <div class="diff-bar extreme"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div class="mixed-feed" id="mixed-feed">
+            <div class="feed-post"><div class="feed-post-header"><div class="post-avatar">📝</div><div><div class="post-user">@docs_team</div><div class="post-time">15 min ago</div></div></div><div class="post-body">Documentation portal v4 is live. Search now indexes code blocks and example output.</div><div class="post-stats"><span class="post-stat">❤️ 62</span><span class="post-stat">💬 9</span><span class="post-stat">🔁 11</span></div></div>
+            <div class="feed-ad"><span class="feed-ad-label">AD</span><span>Unlimited cloud storage from $4/mo — try CloudVault free.</span></div>
+            <div class="feed-post"><div class="feed-post-header"><div class="post-avatar">🛠️</div><div><div class="post-user">@infra_eng</div><div class="post-time">45 min ago</div></div></div><div class="post-body">Major K8s cluster upgrade complete. Cold start times down by 38%.</div><div class="post-stats"><span class="post-stat">❤️ 154</span><span class="post-stat">💬 21</span><span class="post-stat">🔁 36</span></div></div>
+            <div class="feed-post"><div class="feed-post-header"><div class="post-avatar">🧪</div><div><div class="post-user">@qa_lead</div><div class="post-time">2 hr ago</div></div></div><div class="post-body">New E2E suite covers 92% of user flows. Run time reduced from 18 minutes to 4.</div><div class="post-stats"><span class="post-stat">❤️ 88</span><span class="post-stat">💬 17</span><span class="post-stat">🔁 24</span></div></div>
+            <div class="feed-ad"><span class="feed-ad-label">AD</span><span>Apify Platform — orchestrate any scraper at scale. Start free tier today.</span></div>
+            <div class="feed-post"><div class="feed-post-header"><div class="post-avatar">🎓</div><div><div class="post-user">@phd_student</div><div class="post-time">5 hr ago</div></div></div><div class="post-body">Paper accepted at ICLR! Novel selector-generation method using contrastive DOM embeddings.</div><div class="post-stats"><span class="post-stat">❤️ 421</span><span class="post-stat">💬 73</span><span class="post-stat">🔁 95</span></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- S14 -->
+      <section class="scenario" id="s14">
+        <div class="scenario-header">
+          <div class="scenario-number">14</div>
+          <div class="scenario-meta"><div class="scenario-title">Inline Styles</div><div class="scenario-desc">Different locations, identical inline-style hierarchy.</div><div class="tags"><span class="tag tag-extreme">Extreme</span></div></div>
+          <div class="diff-bar extreme"><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div><div class="diff-pip on"></div></div>
+        </div>
+        <div class="demo-area">
+          <span class="demo-label">LIVE TARGET</span>
+          <div id="inline-demo" class="inline-demo">
+            <div style="display:flex;gap:12px;align-items:center;padding:12px 14px;background:#1e2230;border:1px solid #2a2f42;border-radius:6px;margin-bottom:6px">
+              <div style="width:36px;height:36px;border-radius:50%;background:#111318;border:1px solid #353b52;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">🏝️</div>
+              <div style="flex:1"><div style="font-size:13px;font-weight:600;color:#e8eaf0">Bora Bora Lagoon</div><div style="font-size:11px;color:#666e8a">French Polynesia · 0m</div></div>
+              <div style="font-size:14px;font-weight:700;color:#4af0b4;font-family:Syne,sans-serif">29°C</div>
+            </div>
+            <div style="display:flex;gap:12px;align-items:center;padding:12px 14px;background:#1e2230;border:1px solid #2a2f42;border-radius:6px;margin-bottom:6px">
+              <div style="width:36px;height:36px;border-radius:50%;background:#111318;border:1px solid #353b52;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">🏞️</div>
+              <div style="flex:1"><div style="font-size:13px;font-weight:600;color:#e8eaf0">Banff Valley</div><div style="font-size:11px;color:#666e8a">Canada · 1,384m</div></div>
+              <div style="font-size:14px;font-weight:700;color:#4af0b4;font-family:Syne,sans-serif">-7°C</div>
+            </div>
+            <div style="display:flex;gap:12px;align-items:center;padding:12px 14px;background:#1e2230;border:1px solid #2a2f42;border-radius:6px;margin-bottom:6px">
+              <div style="width:36px;height:36px;border-radius:50%;background:#111318;border:1px solid #353b52;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">🏛️</div>
+              <div style="flex:1"><div style="font-size:13px;font-weight:600;color:#e8eaf0">Athens Acropolis</div><div style="font-size:11px;color:#666e8a">Greece · 150m</div></div>
+              <div style="font-size:14px;font-weight:700;color:#4af0b4;font-family:Syne,sans-serif">22°C</div>
+            </div>
+            <div style="display:flex;gap:12px;align-items:center;padding:12px 14px;background:#1e2230;border:1px solid #2a2f42;border-radius:6px">
+              <div style="width:36px;height:36px;border-radius:50%;background:#111318;border:1px solid #353b52;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">🌲</div>
+              <div style="flex:1"><div style="font-size:13px;font-weight:600;color:#e8eaf0">Yakushima Forest</div><div style="font-size:11px;color:#666e8a">Japan · 600m</div></div>
+              <div style="font-size:14px;font-weight:700;color:#4af0b4;font-family:Syne,sans-serif">15°C</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
