@@ -913,104 +913,179 @@
     });
   }
 
-  function buildExactGroupSelector(els) {
-    if (!els || els.length === 0) return null;
+  /* ---------------------------------------------------------------------------
+     A CSS path that is GUARANTEED unique for `el`. We anchor at the nearest
+     ancestor carrying a stable #id (falling back to <body>) and append a
+     :nth-child chain. Unlike the generator's safety-net, every result is
+     verified to resolve to exactly one node — this is the backbone of the
+     "the selector must match the same elements" guarantee.
+     ------------------------------------------------------------------------- */
+  function cssUniquePath(el) {
+    var parts = [];
+    var cur   = el;
+    while (cur && !isBoundary(cur)) {
+      if (isStableId(cur.id)) {
+        parts.unshift('#' + cssEscape(cur.id));
+        var anchored = parts.join(' > ');
+        if (isUnique(anchored, el)) return anchored;
+        break;
+      }
+      var parent = cur.parentElement;
+      if (!parent) break;
+      var idx = Array.from(parent.children).indexOf(cur) + 1;
+      parts.unshift(cur.tagName.toLowerCase() + ':nth-child(' + idx + ')');
+      cur = parent;
+    }
+    var full = parts.join(' > ');
+    var bodyAnchored = 'body > ' + full;
+    if (isUnique(bodyAnchored, el)) return bodyAnchored;
+    if (full && isUnique(full, el)) return full;
+    return null;
+  }
+
+  /* ---------------------------------------------------------------------------
+     Unique CSS anchors for the nearest-common-ancestor and a few levels above
+     it. Each returned anchor is verified to match exactly one element so it is
+     safe to use as a scoping prefix.
+     ------------------------------------------------------------------------- */
+  function uniqueAnchorSelectors(startEl, maxUp) {
+    var out  = [];
+    var seen = {};
+    var el   = startEl;
+    var up   = 0;
+    while (el && !isBoundary(el) && up <= maxUp) {
+      var sel = null;
+      if (isStableId(el.id)) {
+        sel = '#' + cssEscape(el.id);
+      } else {
+        var r = getSelectorsForElement(el);
+        if (r.primary && r.primary.type === 'css' && isUnique(r.primary.value, el)) {
+          sel = r.primary.value;
+        } else {
+          sel = cssUniquePath(el);
+        }
+      }
+      if (sel && !seen[sel] && isUnique(sel, el)) {
+        seen[sel] = true;
+        out.push({ sel: sel, depth: up });
+      }
+      el = el.parentElement;
+      up++;
+    }
+    return out;
+  }
+
+  /* A comma-union of per-element unique CSS paths — exact by construction. */
+  function perElementCssUnion(els) {
+    var parts = [];
+    for (var i = 0; i < els.length; i++) {
+      var p = cssUniquePath(els[i]);
+      if (!p) return null;
+      parts.push(p);
+    }
+    return parts.length ? parts.join(', ') : null;
+  }
+
+  function groupSetExact(sel, els) {
+    var m = tryQSA(sel);
+    return !!(m && setsMatch(m, els));
+  }
+
+  function nthPenalty(value) {
+    return (value.match(/:nth-(child|of-type)/g) || []).length * 9;
+  }
+
+  /* ---------------------------------------------------------------------------
+     Collect every CSS selector whose querySelectorAll resolves to EXACTLY the
+     target set — never a superset. Results are ranked so the cleanest
+     (class-based, id-anchored, no positional indices) come first. A
+     per-element union is always appended as a guaranteed-exact last resort.
+     ------------------------------------------------------------------------- */
+  function collectExactGroupSelectors(els) {
+    var out = [];
+    if (!els || els.length === 0) return out;
+
+    function consider(sel, score, strategy) {
+      if (!sel) return;
+      for (var k = 0; k < out.length; k++) if (out[k].value === sel) return;
+      if (!groupSetExact(sel, els)) return;
+      var finalScore = score - nthPenalty(sel) - Math.floor(sel.length / 60);
+      out.push({ value: sel, type: 'css', strategy: strategy, score: finalScore });
+    }
 
     if (els.length === 1) {
       var single = getSelectorsForElement(els[0]);
-      return single.primary ? single.primary.value : null;
+      if (single.primary) {
+        out.push({ value: single.primary.value, type: single.primary.type,
+                   strategy: single.primary.strategy, score: 100 });
+        (single.fallbacks || []).forEach(function(f, i) {
+          out.push({ value: f.value, type: f.type, strategy: f.strategy, score: 50 - i });
+        });
+      }
+      return out;
     }
 
     var tag        = els[0].tagName.toLowerCase();
     var allSameTag = els.every(function(e) { return e.tagName.toLowerCase() === tag; });
     var shared     = sharedStableClasses(els);
 
-    function exactMatch(sel) {
-      var m = tryQSA(sel);
-      return !!(m && setsMatch(m, els));
+    // 1) Global shared-class selectors (cleanest when they happen to be exact)
+    for (var n = Math.min(shared.length, 3); n >= 1; n--) {
+      var clsPart = shared.slice(0, n).map(function(c) { return '.' + cssEscape(c); }).join('');
+      if (allSameTag) consider(tag + clsPart, 92 + n, 'group-class-tag');
+      consider(clsPart, 90 + n, 'group-class');
     }
 
-    function coversAll(sel) {
-      var m = tryQSA(sel);
-      if (!m || m.length === 0) return false;
-      var s = new Set(m);
-      return els.every(function(e) { return s.has(e); });
-    }
+    // 2) Scope-anchored selectors (NCA and a few ancestors above it)
+    var nca = findNCA(els);
+    if (nca && !isBoundary(nca)) {
+      var anchors = uniqueAnchorSelectors(nca, 4);
+      for (var ax = 0; ax < anchors.length; ax++) {
+        var aSel     = anchors[ax].sel;
+        var depthPen = anchors[ax].depth * 2;
+        var idBonus  = aSel.indexOf('#') === 0 ? 6 : 0;
 
-    // 1) Global shared class (exact)
-    for (var n = Math.min(shared.length, 2); n >= 1; n--) {
-      var clsPart  = shared.slice(0, n).map(function(c) { return '.' + cssEscape(c); }).join('');
-      var variants = allSameTag ? [tag + clsPart, clsPart] : [clsPart];
-      for (var vi = 0; vi < variants.length; vi++) {
-        if (exactMatch(variants[vi])) return variants[vi];
-      }
-    }
-
-    // 2) Ancestor anchor
-    var nca      = findNCA(els);
-    var scopeEl  = nca;
-    var scopeSel = null;
-
-    if (scopeEl && !isBoundary(scopeEl)) {
-      var scopeResult = getSelectorsForElement(scopeEl);
-      if (scopeResult.primary) {
-        scopeSel = scopeResult.primary.value;
-      } else {
-        var sCls = getStableClasses(scopeEl);
-        if (sCls.length) {
-          scopeSel = scopeEl.tagName.toLowerCase() + '.' + sCls.map(cssEscape).join('.');
-        } else if (scopeEl.id && isStableId(scopeEl.id)) {
-          scopeSel = '#' + cssEscape(scopeEl.id);
-        } else {
-          scopeSel = scopeEl.tagName.toLowerCase();
+        for (var sn = Math.min(shared.length, 2); sn >= 1; sn--) {
+          var sCls = shared.slice(0, sn).map(function(c) { return '.' + cssEscape(c); }).join('');
+          consider(aSel + ' ' + sCls,   72 + idBonus - depthPen, 'scope-desc-class');
+          consider(aSel + ' > ' + sCls, 71 + idBonus - depthPen, 'scope-child-class');
+          if (allSameTag) {
+            consider(aSel + ' ' + tag + sCls,   70 + idBonus - depthPen, 'scope-desc-class');
+            consider(aSel + ' > ' + tag + sCls, 69 + idBonus - depthPen, 'scope-child-class');
+          }
+        }
+        if (allSameTag) {
+          consider(aSel + ' > ' + tag, 50 + idBonus - depthPen, 'scope-child-tag');
+          consider(aSel + ' ' + tag,   46 + idBonus - depthPen, 'scope-desc-tag');
         }
       }
     }
 
-    if (scopeSel) {
-      // a) Shared class exact
-      for (var sn = Math.min(shared.length, 2); sn >= 1; sn--) {
-        var sClsPart = shared.slice(0, sn).map(function(c) { return '.' + cssEscape(c); }).join('');
-        var segs = allSameTag
-          ? [tag + sClsPart, sClsPart, '> ' + tag + sClsPart, '> ' + sClsPart]
-          : [sClsPart, '> ' + sClsPart];
-        for (var si = 0; si < segs.length; si++) {
-          var ssel = scopeSel + ' ' + segs[si];
-          if (exactMatch(ssel)) return ssel;
-        }
-      }
+    // 3) Guaranteed-exact per-element union (last resort)
+    consider(perElementCssUnion(els), 8, 'per-element-union');
 
-      // b) Shared class covers-all (superset OK)
-      for (var cn = Math.min(shared.length, 2); cn >= 1; cn--) {
-        var cClsPart = shared.slice(0, cn).map(function(c) { return '.' + cssEscape(c); }).join('');
-        var cSegs = allSameTag
-          ? [tag + cClsPart, cClsPart, '> ' + tag + cClsPart, '> ' + cClsPart]
-          : [cClsPart, '> ' + cClsPart];
-        for (var ci = 0; ci < cSegs.length; ci++) {
-          var csel = scopeSel + ' ' + cSegs[ci];
-          if (coversAll(csel)) return csel;
-        }
-      }
+    out.sort(function(a, b) { return b.score - a.score; });
+    return out;
+  }
 
-      // c) Tag-only covers-all
-      if (allSameTag) {
-        var tagSel = scopeSel + ' ' + tag;
-        if (coversAll(tagSel)) return tagSel;
-      }
-
-      // d) Relative nth-child paths from ancestor
-      var relPaths = els.map(function(e) { return buildNthPath(e, scopeEl); });
-      if (relPaths.every(Boolean)) {
-        return relPaths.map(function(p) { return scopeSel + ' ' + p; }).join(', ');
-      }
+  /* Primary + ranked fallbacks for a set of elements (all exact matches). */
+  function buildGroupSelectors(els) {
+    var list = collectExactGroupSelectors(els);
+    if (!list.length) {
+      return { primary: null, fallbacks: [] };
     }
+    return {
+      primary:   list[0].value,
+      fallbacks: list.slice(1, 6).map(function(s) {
+        return { value: s.value, type: s.type || 'css', strategy: s.strategy };
+      }),
+    };
+  }
 
-    // 3) Last resort: use nearest common ancestor + descendant tag
-    if (allSameTag && scopeSel) {
-      return scopeSel + ' ' + tag;
-    }
-
-    return null;
+  function buildExactGroupSelector(els) {
+    if (!els || els.length === 0) return null;
+    var list = collectExactGroupSelectors(els);
+    return list.length ? list[0].value : null;
   }
 
   function strategyDirectSiblings(seed) {
@@ -1135,13 +1210,141 @@
   }
 
   /* =========================================================================
+     HIERARCHICAL (TIERED) SIMILAR ELEMENTS
+     ─────────────────────────────────────────────────────────────────────────
+     Instead of selecting every similar element on the page in one shot, expose
+     a ladder of progressively wider, NESTED groups:
+
+        tier 0  →  the nearest similar siblings (same immediate container)
+        tier 1  →  the next ring out (same section / division)
+        …        →  …
+        tier N  →  every similar element on the page
+
+     The UI proposes tier 0 first; confirming it reveals tier 1, and so on, so
+     the user decides exactly how broad the selection should be. Each tier owns
+     an exact selector (querySelectorAll === that tier's elements) plus
+     fallbacks. For elements without stable classes there is only a single
+     nearest-siblings tier.
+     ========================================================================= */
+
+  function classPoolForSeed(seed) {
+    var stable = getStableClasses(seed);
+    if (!stable.length) return null;
+    var tag = seed.tagName.toLowerCase();
+    for (var n = Math.min(stable.length, 2); n >= 1; n--) {
+      var clsPart = stable.slice(0, n).map(function(c) { return '.' + cssEscape(c); }).join('');
+      var sel     = tag + clsPart;
+      var m       = tryQSA(sel);
+      if (m && m.indexOf(seed) !== -1 && m.length >= 2 && m.length <= 400) {
+        return { sel: sel, els: m };
+      }
+    }
+    return null;
+  }
+
+  function looksLikeHeader(el) {
+    if (!el || !el.tagName) return false;
+    var tag = el.tagName.toLowerCase();
+    if (/^h[1-6]$/.test(tag) || tag === 'legend' || tag === 'caption' ||
+        tag === 'summary' || tag === 'th') return true;
+    var cls = (el.getAttribute && el.getAttribute('class')) || '';
+    return /header|title|heading|caption/i.test(cls);
+  }
+
+  // Best-effort human-friendly name for a tier's scope: a nearby header label
+  // (the common "<x-header> + <x-body>" pattern) falling back to id / class.
+  function headerTextNear(scope) {
+    if (!scope) return '';
+    var prev = scope.previousElementSibling;
+    if (looksLikeHeader(prev)) {
+      var pt = normalizeText(prev.textContent).slice(0, 40);
+      if (pt) return pt;
+    }
+    for (var i = 0; i < scope.children.length; i++) {
+      if (looksLikeHeader(scope.children[i])) {
+        var ct = normalizeText(scope.children[i].textContent).slice(0, 40);
+        if (ct) return ct;
+      }
+    }
+    return '';
+  }
+
+  function tierLabel(scope, count, isGlobal) {
+    if (isGlobal || !scope) return 'All ' + count + ' on page';
+    var h = headerTextNear(scope);
+    if (h) return h + ' (' + count + ')';
+    if (scope.id && isStableId(scope.id)) return '#' + scope.id + ' (' + count + ')';
+    var sc = getStableClasses(scope);
+    if (sc.length) return '.' + sc[0] + ' (' + count + ')';
+    return scope.tagName.toLowerCase() + ' (' + count + ')';
+  }
+
+  function decorateTier(els, scope, isGlobal, index, total) {
+    var gs = buildGroupSelectors(els);
+    return {
+      els:       els,
+      count:     els.length,
+      primary:   gs.primary,
+      fallbacks: gs.fallbacks,
+      label:     tierLabel(scope, els.length, isGlobal),
+      strategy:  'tier-' + (index + 1) + '-of-' + total,
+    };
+  }
+
+  function findSimilarTiers(seed) {
+    if (!seed || isBoundary(seed)) return { tiers: [], strategy: 'none' };
+
+    var classPool = classPoolForSeed(seed);
+
+    // ── No stable classes → a single nearest-siblings tier (structural) ─────
+    if (!classPool) {
+      var direct = strategyDirectSiblings(seed);
+      if (direct && direct.els.length > 1) {
+        var t = decorateTier(direct.els, seed.parentElement, true, 0, 1);
+        t.strategy = 'structural';
+        return { tiers: [t], strategy: 'structural-tiers' };
+      }
+      return { tiers: [], strategy: 'none' };
+    }
+
+    // ── Stable classes → climb ancestors building nested cumulative tiers ───
+    var pool      = classPool.els;
+    var rawTiers  = [];
+    var seenSizes = {};
+    var anc       = seed.parentElement;
+    var guard     = 0;
+    while (anc && !isBoundary(anc) && guard++ < 40) {
+      var setA = pool.filter(function(p) { return anc.contains(p); });
+      if (setA.length >= 2 && !seenSizes[setA.length]) {
+        seenSizes[setA.length] = true;
+        rawTiers.push({ els: setA, scope: anc });
+      }
+      if (setA.length >= pool.length) break;
+      anc = anc.parentElement;
+    }
+    if (!rawTiers.length || rawTiers[rawTiers.length - 1].els.length < pool.length) {
+      if (!seenSizes[pool.length]) rawTiers.push({ els: pool.slice(), scope: null });
+    }
+
+    var total = rawTiers.length;
+    var tiers = rawTiers.map(function(rt, i) {
+      var isGlobal = (rt.scope === null) || (rt.els.length === pool.length);
+      return decorateTier(rt.els, rt.scope, isGlobal, i, total);
+    });
+
+    return { tiers: tiers, strategy: 'class-tiers' };
+  }
+
+  /* =========================================================================
      PUBLIC API
      ========================================================================= */
 
   window.SelectorGenerator = {
     getSelectorsForElement: getSelectorsForElement,
     findSimilarElements: findSimilarElements,
+    findSimilarTiers: findSimilarTiers,
     buildGroupSelector: buildExactGroupSelector,
+    buildGroupSelectors: buildGroupSelectors,
     getStableClasses: getStableClasses,
   };
 
