@@ -262,13 +262,7 @@ export default function ExtractListFieldsEditor({
               return (
                 <div key={name} className="elfe-row">
                   <div className="elfe-row-top">
-                    <input
-                      className="elfe-name"
-                      value={name}
-                      onChange={e => { /* renames happen on blur */ }}
-                      onBlur={e => renameField(name, e.target.value)}
-                      title="Field name (snake_case)"
-                    />
+                    <FieldNameInput name={name} onRename={renameField} />
                     <select
                       className="elfe-kind"
                       value={f.kind}
@@ -314,6 +308,24 @@ export default function ExtractListFieldsEditor({
         )}
       </div>
     </div>
+  );
+}
+
+/* ── FieldNameInput — local state so the user can actually type ───────── */
+
+function FieldNameInput({ name, onRename }) {
+  const [val, setVal] = useState(name);
+  // Sync if the parent committed a rename that changed the key
+  useEffect(() => { setVal(name); }, [name]);
+  return (
+    <input
+      className="elfe-name"
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => onRename(name, val)}
+      onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+      title="Field name (snake_case)"
+    />
   );
 }
 
