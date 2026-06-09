@@ -706,6 +706,12 @@ function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit
 /* ── ControlBlock ── */
 function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPickerOpen, onEditOpen, onDelete, onReorder }) {
   const [collapsed, setCollapsed] = useState(false);
+  // Pagination loops default to a "simple" view that hides the
+  // auto-generated IF/BREAK/click/wait machinery behind an "Advanced
+  // controls" toggle. The underlying tree is unchanged, only what's
+  // rendered.
+  const isPagination = step.meta?.kind === 'pagination';
+  const [advanced, setAdvanced] = useState(false);
   const def = controlDefinitions[step.type];
   const wp  = useContext(WPCtx) || {};
   const { insertTarget, onSetInsertTarget, activeId } = wp;
@@ -714,16 +720,50 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
   const isInsideTarget = insertTarget?.stepId === step.id && insertTarget?.type === 'inside';
   const isAfterTarget  = insertTarget?.stepId === step.id && insertTarget?.type === 'after';
 
+  // For pagination loops we substitute the generic control-type badge
+  // and label so the block reads as a single semantic "Pagination"
+  // step instead of as a raw While + If.
+  const PAGINATION_STRATEGY_LABEL = {
+    next_button:  'Pagination — Next button',
+    page_numbers: 'Pagination — Page numbers',
+    load_more:    'Pagination — Load more',
+  };
+  const headerLabel = isPagination
+    ? (PAGINATION_STRATEGY_LABEL[step.meta?.strategy] || 'Pagination loop')
+    : `${def.label}${step.label ? ` — ${step.label}` : ''}`;
+  const headerIcon  = isPagination ? '↻' : def.icon;
+  const headerColor = isPagination ? '#58a6ff' : def.color;
+  const headerBg    = isPagination ? 'rgba(88,166,255,0.08)' : def.bgColor;
+
   return (
-    <div className={`control-block ${isAfterTarget ? "control-block--insert-target" : ""}`} style={{ "--ctrl-color": def.color, "--ctrl-bg": def.bgColor }}>
+    <div className={`control-block ${isPagination ? 'control-block--pagination' : ''} ${isAfterTarget ? 'control-block--insert-target' : ''}`}
+         style={{ "--ctrl-color": headerColor, "--ctrl-bg": headerBg }}>
       <div className="control-block-header">
         <div className="step-drag-handle" {...(dragHandleProps || {})}><DragDotsIcon /></div>
-        <div className="control-type-badge">{def.icon}</div>
+        <div className="control-type-badge">{headerIcon}</div>
         <div className="control-info">
-          <span className="control-label">{def.label}{step.label ? ` — ${step.label}` : ""}</span>
-          {summary && <code className="control-expr">{summary}</code>}
+          <span className="control-label">{headerLabel}</span>
+          {!isPagination && summary && <code className="control-expr">{summary}</code>}
+          {isPagination && (
+            <code className="control-expr" title="Click ⚙ to view the underlying While/If steps">
+              clicks the next-page link until none remains
+            </code>
+          )}
         </div>
         <div className="step-actions">
+          {isPagination && (
+            <button
+              className={`step-action-btn ${advanced ? 'active' : ''}`}
+              title={advanced ? 'Hide loop control steps' : 'Show advanced loop control steps'}
+              onClick={() => setAdvanced(a => !a)}
+            >
+              {/* gear */}
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </button>
+          )}
           {onSetInsertTarget && (
             <button
               className={`step-action-btn ${isInsideTarget ? "active" : ""}`}
@@ -759,34 +799,75 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
           {def.branches.map((branch, bIdx) => {
             const branchSteps = step[branch.key] || [];
             const branchPath  = [...containerPath, index, branch.key];
+
+            // Pagination simple view: hide the auto-generated infrastructure
+            // steps so the user sees only the extractions they've added.
+            // We rely on infrastructure being a contiguous suffix of the
+            // body (guaranteed by `generatePaginationSteps`); if a user
+            // has reordered things in advanced mode, fall back to showing
+            // everything so we don't lie about the execution order.
+            const infraSuffix = (() => {
+              if (!isPagination) return 0;
+              let n = 0;
+              for (let i = branchSteps.length - 1; i >= 0; i--) {
+                if (branchSteps[i].meta?.infrastructure) n++;
+                else break;
+              }
+              return n;
+            })();
+            const cleanLayout = infraSuffix === branchSteps.filter(s => s.meta?.infrastructure).length;
+            const showSimple  = isPagination && !advanced && cleanLayout;
+            const userSteps   = showSimple ? branchSteps.slice(0, branchSteps.length - infraSuffix) : branchSteps;
+            const userEnd     = branchSteps.length - infraSuffix; // real-index slot where new steps land in simple view
+
             return (
               <div key={branch.key} className="control-branch">
-                <div className="branch-label-row">
-                  <div className="branch-label" style={{ color: def.color }}>{branch.label}</div>
-                  <div className="branch-line" style={{ background: def.color }} />
-                </div>
+                {!isPagination && (
+                  <div className="branch-label-row">
+                    <div className="branch-label" style={{ color: def.color }}>{branch.label}</div>
+                    <div className="branch-line" style={{ background: def.color }} />
+                  </div>
+                )}
                 <div className="branch-body">
-                  {branchSteps.length === 0 ? (
+                  {userSteps.length === 0 ? (
                     <div className="branch-empty">
-                      <span>{branch.emptyLabel}</span>
+                      <span>{isPagination ? 'Drop your extraction steps here — they run once per page' : branch.emptyLabel}</span>
                       <InsertRow containerPath={branchPath} index={0} onPickerOpen={onPickerOpen} isEnd />
                     </div>
                   ) : (
                     <>
-                      <StepList steps={branchSteps} containerPath={branchPath} depth={depth + 1}
+                      <StepList steps={userSteps} containerPath={branchPath} depth={depth + 1}
                         onPickerOpen={onPickerOpen} onEditOpen={onEditOpen}
                         onDelete={onDelete} onReorder={onReorder} />
                       {/* "Add step" button shown only when NOT dragging —
-                          StepList's own last InsertRow is the drop target during drag */}
+                          StepList's own last InsertRow is the drop target during drag.
+                          In pagination simple view it targets the slot right
+                          before the hidden infrastructure suffix. */}
                       {!activeId && (
                         <div style={{ display:"flex", justifyContent:"center", marginTop:8 }}>
-                          <button className="branch-add-btn" style={{ color: def.color, borderColor: def.color }}
-                            onClick={() => onPickerOpen({ containerPath: branchPath, index: null })}>
+                          <button className="branch-add-btn" style={{ color: headerColor, borderColor: headerColor }}
+                            onClick={() => onPickerOpen({ containerPath: branchPath, index: showSimple ? userEnd : null })}>
                             + Add step
                           </button>
                         </div>
                       )}
                     </>
+                  )}
+
+                  {/* Pagination "Advanced controls" footer — collapsed by
+                      default. Clicking expands the IF/BREAK/click/wait
+                      steps as normal editable cards directly below. */}
+                  {showSimple && infraSuffix > 0 && (
+                    <button
+                      className="pagination-advanced-toggle"
+                      onClick={() => setAdvanced(true)}
+                      title="Show the underlying loop control steps"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <polyline points="6,9 12,15 18,9"/>
+                      </svg>
+                      Advanced loop controls ({infraSuffix} step{infraSuffix !== 1 ? 's' : ''} — stop check, click, wait)
+                    </button>
                   )}
                 </div>
                 {bIdx < def.branches.length - 1 && <div className="branch-separator" />}
@@ -798,13 +879,20 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
 
       {collapsed && (
         <div className="control-collapsed-hint">
-          {def.branches.map((b, i) => (
-            <span key={b.key}>
-              {i > 0 && <span style={{ color: "var(--text-muted)" }}> · </span>}
-              <strong style={{ color: def.color }}>{b.label}</strong>{" "}
-              {(step[b.key] || []).length} step{(step[b.key] || []).length !== 1 ? "s" : ""}
+          {isPagination ? (
+            <span>
+              <strong style={{ color: headerColor }}>{(step.body || []).filter(s => !s.meta?.infrastructure).length}</strong>
+              {' '}extraction step{(step.body || []).filter(s => !s.meta?.infrastructure).length !== 1 ? 's' : ''} per page
             </span>
-          ))}
+          ) : (
+            def.branches.map((b, i) => (
+              <span key={b.key}>
+                {i > 0 && <span style={{ color: "var(--text-muted)" }}> · </span>}
+                <strong style={{ color: def.color }}>{b.label}</strong>{" "}
+                {(step[b.key] || []).length} step{(step[b.key] || []).length !== 1 ? "s" : ""}
+              </span>
+            ))
+          )}
         </div>
       )}
     </div>

@@ -63,7 +63,10 @@ function ConfidenceBar({ value, color }) {
 function generatePaginationSteps(suggestion) {
   const { type, selector, containerSelector, hasNextButton } = suggestion;
 
-  // WHILE control wrapper
+  // WHILE control wrapper — tagged with meta.kind = 'pagination' so the
+  // Workflow tab can render it as a single "Pagination" block by default
+  // and tuck the IF/BREAK/click/wait machinery behind an "Advanced
+  // controls" toggle that only technical users need to open.
   const makeWhile = (expression, maxIterations, bodySteps) => {
     const loop = createControl(CONTROL_TYPES.WHILE, {
       expression,
@@ -71,12 +74,17 @@ function generatePaginationSteps(suggestion) {
     });
     loop.label = TYPE_INFO[type]?.loopLabel || "Pagination loop";
     loop.body  = bodySteps;
+    loop.meta  = { kind: 'pagination', strategy: type };
     return loop;
   };
 
-  // Shared actions
-  const makeClick = (sel) => createAction(ACTION_TYPES.CLICK_ELEMENT, { selector: sel });
-  const makeWait  = (ms)  => createAction(ACTION_TYPES.WAIT,          { duration: ms });
+  // Auto-generated infrastructure step — marked so the Workflow tab can
+  // hide it in the simplified pagination view. The data is preserved
+  // verbatim, so advanced users (and code-gen) see the real thing.
+  const infra = (step) => { step.meta = { infrastructure: true }; return step; };
+
+  const makeClick = (sel) => infra(createAction(ACTION_TYPES.CLICK_ELEMENT, { selector: sel }));
+  const makeWait  = (ms)  => infra(createAction(ACTION_TYPES.WAIT,          { duration: ms }));
   const makeScroll = () => createAction(ACTION_TYPES.SCROLL_PAGE, { direction: "bottom" });
 
   // Build a do-while loop body: each iteration extracts the CURRENT page,
@@ -93,8 +101,9 @@ function generatePaginationSteps(suggestion) {
   const makeDoWhileBody = (breakWhen, click, wait) => {
     const breakIf = createControl(CONTROL_TYPES.IF, { expression: breakWhen });
     breakIf.label = "Stop when last page reached";
-    breakIf.then  = [createAction(ACTION_TYPES.BREAK_LOOP, {})];
+    breakIf.then  = [infra(createAction(ACTION_TYPES.BREAK_LOOP, {}))];
     breakIf.else  = [];
+    breakIf.meta  = { infrastructure: true };
     return [breakIf, click, wait];
   };
 
@@ -214,7 +223,7 @@ function SuggestionCard({ suggestion, onAdd }) {
   const handleAdd = () => {
     const step = generatePaginationSteps(suggestion);
     if (step) {
-      onAdd(step);
+      onAdd(step, suggestion.type);
       setAdded(true);
     }
   };

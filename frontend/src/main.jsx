@@ -696,8 +696,20 @@ function AppShell({ user, token, onLogout }) {
       const loc = findStepLocation(stepsRef.current, target.stepId);
       if (loc) {
         if (target.type === 'inside') {
-          addStepAt(step, [...loc.containerPath, loc.index, 'body'], null);
+          // `index` is optional. When set (e.g. pagination loops aim
+          // index:0 so extractions land BEFORE the IF/click/wait that
+          // came pre-populated in the body), we insert at that slot
+          // and then advance the target so subsequent adds chain
+          // naturally after THIS new step — instead of all going to
+          // the same index 0 in reverse order.
+          const insertIdx = target.index ?? null;
+          addStepAt(step, [...loc.containerPath, loc.index, 'body'], insertIdx);
           showToast(`✓ Step added inside loop`, "success");
+          if (insertIdx !== null) {
+            setInsertTarget({ type: 'after', stepId: step.id });
+          }
+          maybeAutoNameStep(step);
+          return;
         } else {
           addStepAt(step, loc.containerPath, loc.index + 1);
           showToast(`✓ Step added after target`, "success");
@@ -1389,16 +1401,23 @@ function AppShell({ user, token, onLogout }) {
             socketRef.current?.emit("detectPagination");
           }}
           onClose={() => { setPaginationOpen(false); setPaginationManualWaiting(false); socketRef.current?.emit("resetSelection"); }}
-          onAdd={(step) => {
+          onAdd={(step, pagType) => {
             addStep(step);
             // Auto-set insert target based on pagination type:
-            // Button/load-more → inside loop (each page needs scraping)
-            // Infinite scroll → after loop (scrape after all content loads)
-            const pType = step.params?.expression?.includes('scrollTo') ||
-                          step.params?.expression?.includes('scrollHeight')
-              ? 'infinite_scroll' : 'button';
-            if (pType === 'infinite_scroll') {
+            //   next_button / page_numbers → inside the loop AT INDEX 0
+            //     so the user's extractions land BEFORE the pre-populated
+            //     "Stop"/click/wait do-while triplet — otherwise the
+            //     first iteration clicks before extracting and the first
+            //     page's data is lost.
+            //   load_more → inside at the end (existing behaviour): the
+            //     loop clicks first so newly-revealed items can be
+            //     extracted after.
+            //   infinite_scroll → after the loop: scrape once everything
+            //     has been loaded by scrolling.
+            if (pagType === 'infinite_scroll') {
               setInsertTarget({ type: 'after', stepId: step.id });
+            } else if (pagType === 'next_button' || pagType === 'page_numbers') {
+              setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
             } else {
               setInsertTarget({ type: 'inside', stepId: step.id });
             }
