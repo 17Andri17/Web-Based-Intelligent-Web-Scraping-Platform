@@ -32,6 +32,7 @@
     /^(d-|g-|p-|m-|ms-|me-|ps-|pe-|mt-|mb-|fw-|fs-|text-|bg-|border-|rounded|float-|order-|col-|row-|offset-)/,
     /_{2}[a-zA-Z0-9_-]+_{2}[A-Za-z0-9_-]{4,}$/,
     /^[a-f0-9]{6,}$/i,
+    /^_(?=[A-Za-z0-9]*[A-Z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{3,9}$/,
   ];
 
   const SKIP_ATTRS = new Set([
@@ -913,6 +914,14 @@
     });
   }
 
+  function sharedAllClasses(els) {
+    if (!els.length) return [];
+    var sets = els.map(function(e) { return new Set(splitClasses(e.className)); });
+    return Array.from(sets[0]).filter(function(c) {
+      return sets.every(function(s) { return s.has(c); });
+    });
+  }
+
   /* ---------------------------------------------------------------------------
      A CSS path that is GUARANTEED unique for `el`. We anchor at the nearest
      ancestor carrying a stable #id (falling back to <body>) and append a
@@ -1063,6 +1072,26 @@
 
     // 3) Guaranteed-exact per-element union (last resort)
     consider(perElementCssUnion(els), 8, 'per-element-union');
+
+    // 4) Hashed/unstable shared classes — work today but regenerate on rebuild.
+    //    Add as low-score fallbacks so structural candidates stay preferred.
+    var hashedCls = sharedAllClasses(els).filter(function(c) { return !isStableClass(c); });
+    if (hashedCls.length > 0) {
+      var firstClsPart = hashedCls.slice(0, 1).map(function(c) { return '.' + cssEscape(c); }).join('');
+      if (allSameTag) consider(tag + firstClsPart, 37, 'hashed-class-tag');
+      consider(firstClsPart, 35, 'hashed-class');
+      if (nca && !isBoundary(nca)) {
+        var ncaAnchor = uniqueAnchorSelectors(nca, 1)[0];
+        if (ncaAnchor) {
+          consider(ncaAnchor.sel + ' ' + firstClsPart,       32, 'hashed-scope-class');
+          consider(ncaAnchor.sel + ' > ' + firstClsPart,     31, 'hashed-scope-child-class');
+          if (allSameTag) {
+            consider(ncaAnchor.sel + ' ' + tag + firstClsPart,   30, 'hashed-scope-class-tag');
+            consider(ncaAnchor.sel + ' > ' + tag + firstClsPart, 29, 'hashed-scope-child-class-tag');
+          }
+        }
+      }
+    }
 
     out.sort(function(a, b) { return b.score - a.score; });
     return out;

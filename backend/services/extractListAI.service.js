@@ -56,6 +56,7 @@ function buildUserPrompt({ sampleHtml, userHint, existingFields }) {
   lines.push('- If the value lives ON THE CONTAINER ITSELF (e.g. the container is an <a> and you want its href, or it carries data-* attributes), set "selector" to "" (empty string) and read from the container directly.');
   lines.push('- Otherwise the selector targets a DESCENDANT of the container.');
   lines.push('- Use stable anchors when possible: data-* attributes, aria-label, role, semantic tags.');
+  lines.push('- NEVER use CSS-module / build-time hashed class names as selectors. These are short, random-looking class names like ._8Lp2Q, ._3xK9m, .sc-7bLkzJ, or any class that mixes uppercase letters, lowercase letters, and digits in a short string (3-10 chars) — they regenerate on every build and will immediately break the scraper. Instead use tag names, nth-child(), data-* attributes, aria-label/role, or other stable structural selectors.');
   lines.push('- "kind":"text" → extract textContent (default for visible text).');
   lines.push('- "kind":"attr" → extract an attribute, and you MUST include "attribute" (e.g. "href" for links, "src" for images).');
   lines.push('- "kind":"html" → innerHTML (rarely needed).');
