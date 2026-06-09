@@ -6,6 +6,9 @@ import { CONTROL_TYPES } from "../workflow/controlDefinitions";
 // Human-readable label for the detection strategy sent from SelectorTool
 function strategyLabel(strategy) {
   if (!strategy) return '';
+  const tier = /^tier-(\d+)-of-(\d+)$/.exec(strategy);
+  if (tier) return `⬡ scope ${tier[1]}/${tier[2]}`;
+  if (strategy === 'structural') return '⚭ siblings';
   if (strategy.startsWith('A')) return '⚭ siblings';
   if (strategy.startsWith('B')) return '⬡ ancestor-relative';
   if (strategy.startsWith('C')) return '▣ ancestor-cards';
@@ -238,7 +241,26 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
-          {element.softHighlightCount} similar element{element.softHighlightCount !== 1 ? "s" : ""} highlighted in amber — click one to select all of them
+          {(() => {
+            const tiers   = element.tierSummary || [];
+            const nearest = tiers[0];
+            if (nearest) {
+              const name = (nearest.label || "").replace(/\s*\(\d+\)\s*$/, "");
+              const more = tiers.length > 1;
+              return (
+                <>
+                  Click the amber {element.softHighlightCount === 1 ? "item" : "items"} to select{" "}
+                  <strong>{name}</strong> ({nearest.count} element{nearest.count !== 1 ? "s" : ""})
+                  {more ? " — then keep clicking amber to widen the scope step by step" : ""}.
+                </>
+              );
+            }
+            return (
+              <>
+                {element.softHighlightCount} similar element{element.softHighlightCount !== 1 ? "s" : ""} highlighted in amber — click one to select all of them
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -383,6 +405,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
   const handleAddForEach = () => {
     const control = createControl(CONTROL_TYPES.FOR_EACH_ELEMENTS, {
       selector: selection.commonSelector,
+      fallbackSelectors: selection.fallbackSelectors || [],
       itemVar: "el",
       indexVar: "i",
     });
@@ -398,7 +421,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
       ...buildDefaultParams(def),
       containerSelector: selection.commonSelector,
       selectorType: "css",
-      fallbackSelectors: [],
+      fallbackSelectors: selection.fallbackSelectors || [],
       fields: {},
     };
     const step = createAction("EXTRACT_LIST", params, buildDefaultAdvanced(def));
@@ -494,6 +517,61 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
           Matches exactly <strong>{selection.matchCount}</strong> element{selection.matchCount !== 1 ? 's' : ''}
         </div>
       </div>
+
+      {/* ── Hierarchical similarity-scope progress ─────────────────────────── */}
+      {typeof selection.tierCount === "number" && selection.tierCount > 1 && (
+        <div className="ei-tier-progress" style={{
+          margin: "0 12px 10px", padding: "10px 12px",
+          background: "rgba(210,153,34,0.06)", border: "1px solid rgba(210,153,34,0.25)",
+          borderRadius: 8, fontSize: 12,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+            <span style={{ color: "#d29922", fontWeight: 600 }}>⬡ Similarity scope</span>
+            <span style={{ marginLeft: "auto", color: "#8b949e" }}>
+              step {(selection.tierIndex ?? 0) + 1} of {selection.tierCount}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+            {Array.from({ length: selection.tierCount }).map((_, i) => (
+              <div key={i} style={{
+                flex: 1, height: 4, borderRadius: 2,
+                background: i <= (selection.tierIndex ?? 0) ? "#3fb950" : "rgba(255,255,255,0.12)",
+              }} />
+            ))}
+          </div>
+          <div style={{ color: "#c9d1d9" }}>
+            Currently selecting{" "}
+            <strong style={{ color: "#3fb950" }}>{selection.tierLabel || `${selection.matchCount} elements`}</strong>.
+          </div>
+          {selection.nextTier ? (
+            <div style={{ marginTop: 6, color: "#d29922" }}>
+              ➕ Click any <strong>amber</strong> element on the page to widen to{" "}
+              <strong>{selection.nextTier.label}</strong> (+{selection.nextTier.added}), or click a
+              green item to stop here.
+            </div>
+          ) : (
+            <div style={{ marginTop: 6, color: "#8b949e" }}>
+              Widest scope reached — this is every matching element on the page.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Fallback selectors (robustness after DOM changes) ──────────────── */}
+      {(selection.fallbackSelectors || []).length > 0 && (
+        <div style={{ margin: "0 12px 10px", fontSize: 11, color: "#8b949e" }}>
+          <div style={{ marginBottom: 4 }}>
+            Fallback selectors ({selection.fallbackSelectors.length}) — tried in order if the primary breaks:
+          </div>
+          {selection.fallbackSelectors.slice(0, 3).map((f, i) => (
+            <code key={i} style={{
+              display: "block", padding: "3px 6px", marginBottom: 3,
+              background: "rgba(255,255,255,0.04)", borderRadius: 4,
+              color: "#79c0ff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>{typeof f === "string" ? f : f.value}</code>
+          ))}
+        </div>
+      )}
 
       <div className="ei-body">
         <div className="ei-multi-notice">

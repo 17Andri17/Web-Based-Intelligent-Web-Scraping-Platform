@@ -11,12 +11,17 @@
 
   let selState     = 'idle';
   let currentEl    = null;   // seed element (first click)
-  let softEls      = [];     // amber — proposed similar group
+  let softEls      = [];     // amber — proposed similar group (next tier)
   let hardEls      = [];     // green — confirmed selection
   let softSelector = null;   // CSS selector for the soft group
   let softStrategy = null;   // human-readable strategy label
   let hoverEl      = null;
   let tooltip      = null;
+
+  // Hierarchical similar-selection: an ordered ladder of progressively wider,
+  // nested groups. tier 0 = nearest similar siblings … last tier = whole page.
+  let tierList     = [];     // decorated tiers from SelectorGenerator.findSimilarTiers
+  let pendingTier  = -1;     // index of the tier currently proposed in amber
 
   const originalStyles = new Map();
 
@@ -106,6 +111,8 @@
     currentEl    = null;
     softSelector = null;
     softStrategy = null;
+    tierList     = [];
+    pendingTier  = -1;
     selState     = 'idle';
   }
 
@@ -460,62 +467,102 @@
     selState  = 'first_selected';
     applyHard([target]);
 
-    let group;
+    let tierResult;
     try {
-      group = window.SelectorGenerator.findSimilarElements(target);
+      tierResult = window.SelectorGenerator.findSimilarTiers(target);
     } catch (_) {
-      group = { els: [target], selector: null, strategy: 'none' };
+      tierResult = { tiers: [], strategy: 'none' };
     }
+    tierList     = tierResult.tiers || [];
+    pendingTier  = -1;
+    softSelector = null;
+    softStrategy = null;
 
-    const siblings = group.els.filter(function(el) { return el !== target; });
-
-    if (siblings.length > 0) {
-      softSelector = group.selector;
-      softStrategy = group.strategy;
-      applySoft(siblings);
+    let softCount = 0;
+    if (tierList.length && tierList[0].els.length > 1) {
+      pendingTier  = 0;
+      softSelector = tierList[0].primary;
+      softStrategy = tierResult.strategy;
+      const extras = tierList[0].els.filter(function(el) { return el !== target; });
+      applySoft(extras);
+      softCount = extras.length;
     }
 
     tooltip.style.display = 'none';
     const info = buildElementInfo(target);
-    info.softHighlightCount = siblings.length;
-    info.softSelector       = group.selector;
-    info.softStrategy       = group.strategy;
+    info.softHighlightCount = softCount;
+    info.softSelector       = softSelector;
+    info.softStrategy       = softStrategy;
+    info.pendingTier        = pendingTier;
+    info.tierSummary        = tierList.map(function(t, i) {
+      return { index: i, count: t.count, label: t.label };
+    });
     window.sendToNode({ type: 'elementSelected', element: info });
   }
 
-  function confirmSiblingGroup() {
-    const allEls = [currentEl].concat(softEls.slice());
-    clearArr(softEls);
-    applyHard(allEls);
-    selState = 'multi_selected';
+  /* Build the multiElementSelected payload for a confirmed tier. */
+  function sendTierSelection(tier, idx) {
     tooltip.style.display = 'none';
+    const next = tierList[idx + 1] || null;
+    window.sendToNode({
+      type:              'multiElementSelected',
+      commonSelector:    tier.primary || '',
+      fallbackSelectors: tier.fallbacks || [],
+      matchCount:        tier.els.length,
+      selectorCount:     tier.els.length,
+      strategy:          tier.strategy || softStrategy || '',
+      elements:          tier.els.map(buildElementInfo),
+      tierIndex:         idx,
+      tierCount:         tierList.length,
+      tierLabel:         tier.label || '',
+      nextTier:          next ? {
+        count: next.count,
+        label: next.label,
+        added: next.count - tier.els.length,
+      } : null,
+    });
+  }
 
-    const buildGroup = (window.SelectorGenerator && window.SelectorGenerator.buildGroupSelector)
-      ? window.SelectorGenerator.buildGroupSelector
-      : function() { return null; };
+  // Confirm the amber-highlighted tier as a green selection. If a wider tier
+  // exists, reveal the newly-reachable elements in amber so the user can keep
+  // expanding; otherwise the selection is final.
+  function confirmPendingTier() {
+    if (pendingTier < 0 || !tierList[pendingTier]) return;
+    const idx  = pendingTier;
+    const tier = tierList[idx];
 
-    let finalSelector = softSelector || buildGroup(allEls) || '';
+    clearArr(softEls);
+    applyHard(tier.els.slice());
 
-    if (finalSelector) {
-      try {
-        const matched   = Array.from(document.querySelectorAll(finalSelector));
-        const allCovered = allEls.every(function(e) { return matched.indexOf(e) !== -1; });
-        if (!allCovered) {
-          finalSelector = buildGroup(allEls) || finalSelector;
-        }
-      } catch (_) {
-        finalSelector = buildGroup(allEls) || finalSelector;
-      }
+    const nextIdx = idx + 1;
+    let nextExtras = [];
+    if (tierList[nextIdx]) {
+      const confirmedSet = tier.els;
+      nextExtras = tierList[nextIdx].els.filter(function(el) {
+        return confirmedSet.indexOf(el) === -1;
+      });
     }
 
-    window.sendToNode({
-      type:           'multiElementSelected',
-      commonSelector: finalSelector,
-      matchCount:     allEls.length,
-      selectorCount:  allEls.length,
-      strategy:       softStrategy || '',
-      elements:       allEls.map(buildElementInfo),
-    });
+    if (nextExtras.length) {
+      pendingTier  = nextIdx;
+      softSelector = tierList[nextIdx].primary;
+      applySoft(nextExtras);
+      selState = 'expandable';
+    } else {
+      pendingTier  = -1;
+      softSelector = null;
+      selState = 'multi_selected';
+    }
+
+    sendTierSelection(tier, idx);
+  }
+
+  // Lock in the current green selection without expanding any further.
+  function finalizeStop() {
+    clearArr(softEls);
+    pendingTier  = -1;
+    softSelector = null;
+    selState     = 'multi_selected';
   }
 
   /* =========================================================================
@@ -563,8 +610,18 @@
       } else {
         tooltip.textContent = '✕ Outside loop scope — only elements inside the highlighted items are selectable';
       }
-    } else if (selState === 'first_selected' && (softEls.indexOf(target) !== -1 || isInside(target, softEls))) {
-      tooltip.textContent = '⬡ Click to select all ' + (softEls.length + 1) + ' similar elements';
+    } else if ((selState === 'first_selected' || selState === 'expandable') &&
+               (softEls.indexOf(target) !== -1 || isInside(target, softEls))) {
+      const pt = (pendingTier >= 0 && tierList[pendingTier]) ? tierList[pendingTier] : null;
+      if (pt) {
+        const name = pt.label.replace(/\s*\(\d+\)\s*$/, '');
+        tooltip.textContent = '⬡ Click to select ' + name +
+          ' — ' + pt.count + ' element' + (pt.count !== 1 ? 's' : '');
+      } else {
+        tooltip.textContent = '⬡ Click to select the highlighted group';
+      }
+    } else if (selState === 'expandable' && (hardEls.indexOf(target) !== -1 || isInside(target, hardEls))) {
+      tooltip.textContent = '✓ ' + hardEls.length + ' selected — click here to finish, or click an amber item to widen';
     } else if (selState === 'first_selected' && (hardEls.indexOf(target) !== -1 || isInside(target, hardEls))) {
       tooltip.textContent = '✕ Click again to deselect';
     } else if (selState === 'multi_selected') {
@@ -596,12 +653,26 @@
       if (_forEachScopeSel !== null) { doFirstClick(target); return; }
 
       if (softEls.indexOf(target) !== -1 || isInside(target, softEls)) {
-        confirmSiblingGroup();
+        confirmPendingTier();
         return;
       }
       if (hardEls.indexOf(target) !== -1 || isInside(target, hardEls)) {
         fullReset();
         window.sendToNode({ type: 'selectionCleared' });
+        return;
+      }
+      doFirstClick(target);
+      return;
+    }
+
+    if (selState === 'expandable') {
+      // Amber → expand to the next (wider) tier. Green → finish here.
+      if (softEls.indexOf(target) !== -1 || isInside(target, softEls)) {
+        confirmPendingTier();
+        return;
+      }
+      if (hardEls.indexOf(target) !== -1 || isInside(target, hardEls)) {
+        finalizeStop();
         return;
       }
       doFirstClick(target);
