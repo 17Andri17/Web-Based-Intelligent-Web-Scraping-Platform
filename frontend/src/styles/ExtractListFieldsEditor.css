@@ -205,3 +205,143 @@
 .elfe-btn--ghost:hover:not(:disabled) {
   background: rgba(79, 156, 249, 0.08);
 }
+.elfe-btn--pick {
+  background: transparent;
+  color: #58a6ff;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+}
+.elfe-btn--pick:hover:not(:disabled) {
+  background: rgba(88, 166, 255, 0.1);
+}
+.elfe-btn--pick-active {
+  background: rgba(63, 185, 80, 0.1);
+  border: 1px solid rgba(63, 185, 80, 0.4);
+  color: #3fb950;
+  font-weight: 600;
+}
+.elfe-btn--pick-active:hover:not(:disabled) {
+  background: rgba(63, 185, 80, 0.17);
+}
+
+/* ── Fields header — two-button row ──────────────────────────────────── */
+.elfe-fields-header-btns {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ── Pick-mode instruction banner ────────────────────────────────────── */
+.elfe-pick-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: rgba(88, 166, 255, 0.07);
+  border: 1px dashed rgba(88, 166, 255, 0.35);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #58a6ff;
+  margin-bottom: 4px;
+}
+.elfe-pick-banner svg { flex-shrink: 0; opacity: 0.75; }
+.elfe-pick-banner strong { color: #79c0ff; }
+
+/* ── Pending-pick card ────────────────────────────────────────────────── */
+.elfe-pick-pending {
+  background: rgba(88, 166, 255, 0.06);
+  border: 1px solid rgba(88, 166, 255, 0.25);
+  border-radius: 7px;
+  padding: 10px 12px;
+  margin-bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.elfe-pick-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.elfe-pick-sel {
+  font-size: 12px;
+  background: rgba(255,255,255,0.05);
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: #e6edf3;
+  font-family: 'SF Mono', Menlo, monospace;
+}
+.elfe-pick-kind-tag {
+  font-size: 10px;
+  font-family: 'SF Mono', Menlo, monospace;
+  padding: 2px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.elfe-pick-kind-tag.text { background: rgba(63,185,80,0.12);  color: #3fb950; }
+.elfe-pick-kind-tag.attr { background: rgba(88,166,255,0.12); color: #58a6ff; }
+.elfe-pick-sample-val {
+  font-size: 11px;
+  color: #8b949e;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.elfe-pick-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.elfe-pick-name-label {
+  font-size: 11px;
+  color: #8b949e;
+  flex-shrink: 0;
+}
+.elfe-pick-name-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg, #0d1117);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 5px;
+  color: var(--text, #e6edf3);
+  font-size: 12px;
+  font-family: 'SF Mono', Menlo, monospace;
+  padding: 5px 8px;
+}
+.elfe-pick-name-input:focus {
+  outline: none;
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88,166,255,0.15);
+}
+.elfe-pick-confirm-btn {
+  flex-shrink: 0;
+  padding: 5px 14px;
+}
+.elfe-pick-discard-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #8b949e;
+  border-radius: 5px;
+  font-size: 13px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.elfe-pick-discard-btn:hover { color: #e6776a; border-color: rgba(230,119,106,0.3); }
+.elfe-pick-warn {
+  font-size: 11px;
+  color: #d29922;
+  background: rgba(210,153,34,0.07);
+  border-left: 2px solid #d29922;
+  padding: 4px 8px;
+  border-radius: 3px;
+}
