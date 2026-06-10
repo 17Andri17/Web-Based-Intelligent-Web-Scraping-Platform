@@ -362,7 +362,7 @@ function AppShell({ user, token, onLogout }) {
       setPaginationSuggestions(suggestions || []);
       setPaginationError(error || null);
     });
-    socket.on("previewResult", ({ stepId, previewValue, previewValues, previewElements, previewRows, totalMatched, previewError, notFound }) => {
+    socket.on("previewResult", ({ stepId, previewValue, previewValues, previewElements, previewRows, previewTable, totalMatched, previewError, notFound }) => {
       setPreviewData(prev => ({
         ...prev,
         [stepId]: {
@@ -371,6 +371,7 @@ function AppShell({ user, token, onLogout }) {
           ...(previewValues   !== undefined ? { previewValues }   : {}),
           ...(previewElements !== undefined ? { previewElements } : {}),
           ...(previewRows     !== undefined ? { previewRows }     : {}),
+          ...(previewTable    !== undefined ? { previewTable }    : {}),
           ...(totalMatched    !== undefined ? { totalMatched }    : {}),
           ...(previewError    !== undefined ? { previewError }    : {}),
           ...(notFound        !== undefined ? { notFound }        : {}),

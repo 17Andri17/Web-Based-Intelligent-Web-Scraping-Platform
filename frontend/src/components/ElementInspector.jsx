@@ -68,7 +68,12 @@ const CATEGORIES = [
       { type: "EXTRACT_HTML",      icon: "🧩", needsEl: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], mode: "inner" }) },
       { type: "EXTRACT_TABLE",     icon: "📋", needsEl: true, quickAdd: true,
-        smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], hasHeader: true }),
+        smartDefault: (el) => ({
+          selector:          el.tableSelector?.value     || el.selector,
+          selectorType:      el.tableSelector?.type      || el.selectorType || "css",
+          fallbackSelectors: el.tableSelector?.fallbacks || el.fallbackSelectors || [],
+          hasHeader: true,
+        }),
         showWhen: (el) => el.isTable },
       { type: "EXTRACT_LIST",      icon: "📑", needsEl: true,
         smartDefault: (el) => ({ containerSelector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },

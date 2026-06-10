@@ -382,7 +382,35 @@
     const isLink  = tag === 'a' || !!el.closest('a');
     const isInput = ['input', 'textarea', 'select'].indexOf(tag) !== -1;
     const isImg   = tag === 'img';
-    const isTable = tag === 'table' || !!el.querySelector('table');
+    // A table is in play when the element IS a table, sits INSIDE one (closest
+    // ancestor — the nearest enclosing table wins for nested tables), or
+    // CONTAINS one. We resolve the actual <table> node so the EXTRACT_TABLE
+    // step targets it directly rather than the clicked cell/wrapper.
+    const tableEl = el.closest('table') || (tag !== 'table' ? el.querySelector('table') : el);
+    const isTable = !!tableEl;
+    let tableSelector = null;
+    if (tableEl) {
+      if (tableEl === el && primary) {
+        tableSelector = { value: primary.value, type: primary.type, fallbacks: fallbackSelectors };
+      } else {
+        try {
+          const tr = window.SelectorGenerator.getSelectorsForElement(tableEl, {
+            actionType: 'generic', maxFallbacks: 3,
+          });
+          if (tr.primary) {
+            tableSelector = {
+              value: tr.primary.value,
+              type:  tr.primary.type,
+              fallbacks: (tr.fallbacks || []).map(function(f) {
+                return { value: f.value, type: f.type, strategy: f.strategy };
+              }),
+            };
+          }
+        } catch (_) {
+          tableSelector = { value: buildSimpleSelector(tableEl), type: 'css', fallbacks: [] };
+        }
+      }
+    }
     const text    = (el.textContent || '').trim().slice(0, 120);
     const href    = el.getAttribute('href') || null;
     const src     = el.getAttribute('src')  || null;
@@ -428,6 +456,7 @@
       href:   href,
       src:    src,
       isLink: isLink, isInput: isInput, isImg: isImg, isTable: isTable,
+      tableSelector: tableSelector,
       attrs:  attrs,
       breadcrumb: breadcrumb,
       classes: Array.from(el.classList).join(' '),
