@@ -68,6 +68,21 @@
     return !!cls && !isUnstableClass(cls);
   }
 
+  // A class that we exclude from primary selectors because it looks build-time
+  // generated (CSS-modules, styled-components, JSS, hex hashes) BUT which can
+  // still be worth keeping as a low-priority fallback — these hashes sometimes
+  // survive rebuilds, and when nothing better exists they beat raw text. We do
+  // NOT include utility / state classes here (is-active, col-md-6, …) since
+  // those are genuinely meaningless as identifiers.
+  function isHashLikeClass(cls) {
+    if (!cls) return false;
+    if (/^_[A-Za-z0-9]{3,9}$/.test(cls)) return true;             // CSS-modules: _8Lp2Q
+    if (/^[a-zA-Z]{1,4}-[A-Za-z0-9]{5,}$/.test(cls) && /[A-Z]/.test(cls)) return true; // styled-components: sc-bdfBwQ
+    if (/^[A-Za-z][A-Za-z]*-?\d{3,}$/.test(cls)) return true;     // JSS: jss123 / makeStyles-root-12
+    if (/[a-f0-9]{6,}/i.test(cls) && /\d/.test(cls)) return true; // hex-ish hashes
+    return false;
+  }
+
   function isStableId(id) {
     return !!id && !isRandomLike(id) && !/^\d+$/.test(id);
   }
@@ -388,7 +403,18 @@
     var structuralPath = buildCssPath(chain, el, 6);
     if (structuralPath) add(structuralPath, 'structural-path', 40);
 
-    // Tier 13: Full path with nth disambiguation
+    // Tier 12.5: Hash-like class fallbacks. These classes look build-time
+    // generated so they are excluded from primary selectors, but they often
+    // survive rebuilds and are a far better fallback than text. Kept at low
+    // priority so any stable class / structural path always wins.
+    var hashCls = elInfo.classList.filter(isHashLikeClass);
+    for (var hi = 0; hi < Math.min(hashCls.length, 2); hi++) {
+      add(elInfo.tag + '.' + cssEscape(hashCls[hi]), 'hashed-class-tag', 28);
+      add('.' + cssEscape(hashCls[hi]),              'hashed-class',     26);
+    }
+
+    // Tier 13: Full path with nth disambiguation (purely structural — never
+    // text-based, so it is always safe as a deep fallback).
     var fullPath = chain.map(function(info, i) {
       var isLast = i === chain.length - 1;
       if (isLast) return nodeToCss(info, 'nth-of-type');
@@ -397,6 +423,16 @@
       return info.tag + ':nth-child(' + info.nthChild + ')';
     }).join(' > ');
     add(fullPath, 'full-path', 20);
+
+    // Tier 14: Guaranteed-unique structural nth-child path. cssUniquePath()
+    // always resolves to exactly one node (anchored on the nearest #id, else
+    // <body>), so this ensures every element has a robust structural selector
+    // and text is never the only option — critical for table cells and inline-
+    // styled elements with no classes or ids.
+    var uniqueNth = cssUniquePath(el, 'nth-child');
+    if (uniqueNth) add(uniqueNth, 'unique-nth-path', 24);
+    var uniqueType = cssUniquePath(el, 'nth-of-type');
+    if (uniqueType && uniqueType !== uniqueNth) add(uniqueType, 'unique-nth-path', 23);
 
     return candidates;
   }
@@ -439,11 +475,13 @@
       add('//' + elInfo.tag + '[@aria-label=' + xpathString(ariaLabel) + ']', 'aria-label', 88);
     }
 
-    // Tier 4: Exact text match (now backup priority)
+    // Tier 4: Exact text match — last-resort only. Text content breaks on any
+    // copy edit, so these get a low base priority and a further penalty in
+    // scoreCandidate; they survive purely as a final fallback.
     if (innerText && innerText.length >= 2 && innerText.length <= 80) {
-      add('//' + elInfo.tag + '[normalize-space(.)=' + xpathString(innerText) + ']', 'text-exact', 35);
+      add('//' + elInfo.tag + '[normalize-space(.)=' + xpathString(innerText) + ']', 'text-exact', 18);
       if (innerText.length >= 20) {
-        add('//' + elInfo.tag + '[contains(normalize-space(.), ' + xpathString(innerText) + ')]', 'text-contains', 25);
+        add('//' + elInfo.tag + '[contains(normalize-space(.), ' + xpathString(innerText) + ')]', 'text-contains', 10);
       }
     }
 
@@ -488,9 +526,6 @@
       var simplePath = relChain.map(function(n) { return n.tag; }).join('/');
       add(ancXPath + '//' + elInfo.tag, 'ancestor+tag', 60);
       add(ancXPath + '//' + simplePath, 'ancestor+path', 58);
-      if (innerText && innerText.length >= 2 && innerText.length <= 60) {
-        add(ancXPath + '//' + elInfo.tag + '[normalize-space(.)=' + xpathString(innerText) + ']', 'ancestor+text', 30);
-      }
       break;
     }
 
@@ -505,9 +540,9 @@
         }
         var albl = info.attributes['aria-label'];
         if (albl && !isRandomLike(albl)) return '//' + info.tag + '[@aria-label=' + xpathString(albl) + ']';
-        if (isLast && innerText && innerText.length >= 2 && innerText.length <= 60) {
-          return '//' + info.tag + '[normalize-space(.)=' + xpathString(innerText) + ']';
-        }
+        // The ROBULA path is a structural deep-fallback; it must NEVER rely on
+        // text content (breaks on any copy edit). Classless segments use a
+        // positional index instead.
         if (info.stableClasses.length) {
           return '/' + info.tag + '[contains(concat(\' \', normalize-space(@class), \' \'), ' + xpathString(' ' + info.stableClasses[0] + ' ') + ')]';
         }
@@ -529,9 +564,13 @@
      ========================================================================= */
 
   function tryUniquify(candidate, el) {
+    // If the candidate already resolves to exactly one node, it is only usable
+    // when that node is OUR target — a selector matching a single *wrong*
+    // element (e.g. an ancestor+nth strategy that resolved to a sibling card
+    // instead of the nested leaf) must be rejected, never returned as-is.
+    if (isUnique(candidate.value, el, candidate.type)) return candidate;
     var n = countMatches(candidate.value, candidate.type);
-    if (n === 1) return candidate;
-    if (n <= 0 || n > 6) return null;
+    if (n <= 1 || n > 6) return null;
 
     if (candidate.type === 'css') {
       var matched = Array.from(document.querySelectorAll(candidate.value));
@@ -601,12 +640,30 @@
     if (candidate.type === 'xpath' && v.indexOf('contains(') !== -1) score -= 2;
     if (candidate.strategy === 'absolute-path' || candidate.strategy === 'full-path') score -= 15;
 
-    var stableStrategies = ['test-id', 'id', 'aria', 'aria-label', 'text-exact', 'href', 'img-alt', 'type+name',
+    // Text-content selectors are brittle (break on any copy change) — they are
+    // kept only as a last-resort fallback, never allowed to outrank a
+    // structural / class / attribute selector. A hard penalty pushes every
+    // text-based strategy below the structural candidates. We match both the
+    // strategy name and any text predicate embedded in the value (e.g. a
+    // ROBULA path whose leaf falls back to normalize-space()).
+    if (isTextStrategy(candidate.strategy) || hasTextPredicate(v)) score -= 40;
+
+    var stableStrategies = ['test-id', 'id', 'aria', 'aria-label', 'href', 'img-alt', 'type+name',
                             'ancestor+leaf-nth-child', 'ancestor+leaf-nth-of-type'];
     if (stableStrategies.indexOf(candidate.strategy) !== -1) score += 5;
 
     candidate.score = score;
     return candidate;
+  }
+
+  function isTextStrategy(strategy) {
+    return strategy === 'text-exact' || strategy === 'text-contains' ||
+           strategy === 'ancestor+text' || strategy === 'robula-path-text';
+  }
+
+  function hasTextPredicate(value) {
+    return /normalize-space\(\.\)\s*=/.test(value) ||
+           /contains\(\s*normalize-space\(\.\)/.test(value);
   }
 
   /* =========================================================================
@@ -621,8 +678,10 @@
     if (s === 'test-id' || s === 'test-id-tag') return 'test-id';
     if (s.indexOf('aria') === 0) return 'aria';
     if (s === 'semantic-input' || s === 'type+name') return 'semantic-input';
+    if (s === 'hashed-class' || s === 'hashed-class-tag') return 'hashed-class';
     if (s.indexOf('class') === 0 || s.indexOf('multi-class') === 0 || s === 'bem-contains') return 'class';
     if (s.indexOf('ancestor+') === 0) return 'ancestor';
+    if (s === 'unique-nth-path') return 'unique-nth';
     if (s === 'structural-path' || s === 'full-path' || s === 'robula-path' || s === 'absolute-path') return 'structural';
     if (s.indexOf('data-attr') === 0) return 'data-attr';
     if (s === 'img-alt') return 'img-alt';
@@ -633,6 +692,7 @@
   var BASIS_LIMITS = {
     href: 1, text: 1, id: 1, 'test-id': 1, aria: 1,
     'semantic-input': 1, 'class': 2, ancestor: 2, structural: 1,
+    'unique-nth': 2, 'hashed-class': 1,
     'data-attr': 1, 'img-alt': 1, role: 1,
   };
 
@@ -688,7 +748,21 @@
       return true;
     });
 
-    var finalList     = applyBasisDedup(deduped);
+    // Cap text-content selectors to at most ONE across the whole output, and
+    // only when there is no non-text alternative left to offer. Text is the
+    // weakest basis (breaks on any copy change), so it is kept purely as a
+    // genuine last resort — never multiple text variants, never crowding out
+    // structural fallbacks. The list is score-sorted, so the single survivor is
+    // the best-scoring text candidate.
+    var sawText = false;
+    var capped  = deduped.filter(function(c) {
+      if (!(isTextStrategy(c.strategy) || hasTextPredicate(c.value))) return true;
+      if (sawText) return false;
+      sawText = true;
+      return true;
+    });
+
+    var finalList     = applyBasisDedup(capped);
     var primary       = finalList[0] || null;
     var fallbackPool  = finalList.slice(1);
     var fallbacks     = applyBasisDedup(fallbackPool).slice(0, maxFallbacks);
@@ -929,7 +1003,8 @@
      verified to resolve to exactly one node — this is the backbone of the
      "the selector must match the same elements" guarantee.
      ------------------------------------------------------------------------- */
-  function cssUniquePath(el) {
+  function cssUniquePath(el, mode) {
+    mode = mode || 'nth-child';
     var parts = [];
     var cur   = el;
     while (cur && !isBoundary(cur)) {
@@ -941,8 +1016,17 @@
       }
       var parent = cur.parentElement;
       if (!parent) break;
-      var idx = Array.from(parent.children).indexOf(cur) + 1;
-      parts.unshift(cur.tagName.toLowerCase() + ':nth-child(' + idx + ')');
+      var tag = cur.tagName.toLowerCase();
+      var step;
+      if (mode === 'nth-of-type') {
+        var typeIdx = Array.from(parent.children)
+          .filter(function(c) { return c.tagName === cur.tagName; }).indexOf(cur) + 1;
+        step = tag + ':nth-of-type(' + typeIdx + ')';
+      } else {
+        var idx = Array.from(parent.children).indexOf(cur) + 1;
+        step = tag + ':nth-child(' + idx + ')';
+      }
+      parts.unshift(step);
       cur = parent;
     }
     var full = parts.join(' > ');
