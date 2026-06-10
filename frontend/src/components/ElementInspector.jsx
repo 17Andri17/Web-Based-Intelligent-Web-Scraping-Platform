@@ -76,7 +76,13 @@ const CATEGORIES = [
         }),
         showWhen: (el) => el.isTable },
       { type: "EXTRACT_LIST",      icon: "📑", needsEl: true,
-        smartDefault: (el) => ({ containerSelector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
+        smartDefault: (el) => ({
+          containerSelector: el.softSelector || el.selector,
+          selectorType: el.selectorType || "css",
+          fallbackSelectors: el.softSelector
+            ? (el.softFallbacks || [])
+            : (el.fallbackSelectors || []),
+        }) },
     ],
   },
   {

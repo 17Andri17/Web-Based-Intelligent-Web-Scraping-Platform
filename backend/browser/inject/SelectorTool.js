@@ -324,8 +324,24 @@
     r = tryRel(fullSel);
     if (r) return r;
 
-    // Absolute last resort: tag-only path (may not be unique, but kept for compatibility)
-    return segments.map(function(s) { return s.tag; }).join(' > ');
+    // Strategy D: Full nth-child path from scope to target — guaranteed unique
+    var nthParts = [];
+    var nthCur = el;
+    var nthOk  = true;
+    while (nthCur && nthCur !== scopeEl) {
+      var nthParent = nthCur.parentElement;
+      if (!nthParent) { nthOk = false; break; }
+      var nthIdx = Array.from(nthParent.children).indexOf(nthCur) + 1;
+      nthParts.unshift(nthCur.tagName.toLowerCase() + ':nth-child(' + nthIdx + ')');
+      nthCur = nthParent;
+    }
+    if (nthOk && nthParts.length) {
+      var r = tryRel(nthParts.join(' > '));
+      if (r) return r;
+    }
+
+    // Nothing produced a unique match — caller will fall back to absolute selector.
+    return null;
   }
 
   /* =========================================================================
@@ -609,6 +625,9 @@
     const info = buildElementInfo(target);
     info.softHighlightCount = softCount;
     info.softSelector       = softSelector;
+    info.softFallbacks      = (pendingTier >= 0 && tierList[pendingTier])
+      ? (tierList[pendingTier].fallbacks || [])
+      : [];
     info.softStrategy       = softStrategy;
     info.pendingTier        = pendingTier;
     info.tierSummary        = tierList.map(function(t, i) {
@@ -805,12 +824,12 @@
       var relSel = buildRelativeSelector(tgt, containerEl);
       if (!relSel) return;
 
-      // Verify selector generalises across sibling containers
+      // Verify selector resolves to exactly one element in each sibling container
       var worksInSiblings = _listPickContainers
         .filter(function(c) { return c !== containerEl; })
         .slice(0, 8)
         .every(function(c) {
-          try { return c.querySelectorAll(relSel).length >= 1; }
+          try { return c.querySelectorAll(relSel).length === 1; }
           catch (_) { return false; }
         });
 
