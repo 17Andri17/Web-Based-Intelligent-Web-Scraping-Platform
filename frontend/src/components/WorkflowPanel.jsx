@@ -334,6 +334,7 @@ export default function WorkflowPanel({
   variables = [], onVariablesChange,
   variablesCollapsed = false, onToggleVariablesCollapsed,
   availableWorkflows = [], currentWorkflowId = null,
+  listPickStepId = null, onStartListPick, onStopListPick,
 }) {
   const [pickerCtx, setPickerCtx]   = useState(null);
   const [editingCtx, setEditingCtx] = useState(null);
@@ -372,7 +373,7 @@ export default function WorkflowPanel({
   const capturedOutputs = React.useMemo(() => collectCapturedOutputs(steps), [steps]);
 
   return (
-    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId, variables, availableCapturedOutputs: capturedOutputs, steps }}>
+    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId, variables, availableCapturedOutputs: capturedOutputs, steps, listPickStepId, onStartListPick, onStopListPick }}>
     <div className="workflow-designer">
       <div className="workflow-header">
         <div className="workflow-title">
@@ -1375,10 +1376,11 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
   // and the latest preview rows out of WPCtx so the AI auto-detect
   // button and per-field sample values work without prop-drilling.
   if (type === "keyvalue") {
-    const { socket, previewData } = useContext(WPCtx) || {};
+    const { socket, previewData, listPickStepId, onStartListPick, onStopListPick } = useContext(WPCtx) || {};
     const previewRows = step && previewData && previewData[step.id]?.previewRows;
     const containerSelector = step?.params?.containerSelector || "";
     const selectorType      = step?.params?.selectorType || "css";
+    const pickActive        = !!(step && listPickStepId === step.id);
     return (
       <div className="form-group">
         <label>{label}</label>
@@ -1389,6 +1391,9 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
           selectorType={selectorType}
           socket={socket}
           previewRows={previewRows}
+          pickActive={pickActive}
+          onStartPick={() => onStartListPick && onStartListPick(step.id, containerSelector)}
+          onStopPick={() => onStopListPick && onStopListPick()}
         />
       </div>
     );

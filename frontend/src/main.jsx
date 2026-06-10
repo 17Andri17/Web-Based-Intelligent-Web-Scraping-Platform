@@ -81,6 +81,13 @@ function AppShell({ user, token, onLogout }) {
   const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById, addStepAt, moveStepById } = useWorkflow();
   const [activeTab, setActiveTab] = useState("stream");
 
+  // List-field pick coordination — lifted here so pick mode survives the
+  // tab switch from Workflow → Live Browser (the editor that starts the
+  // pick would otherwise unmount and kill the mode). Tracks which
+  // EXTRACT_LIST step is currently picking; null = not picking.
+  const [listPickStepId,      setListPickStepId]      = useState(null);
+  const [sidebarExpandStepId, setSidebarExpandStepId] = useState(null);
+
   const canvasRef            = useRef(null);
   const canvasContainerRef   = useRef(null);
   const socketRef            = useRef(null);
@@ -799,6 +806,33 @@ function AppShell({ user, token, onLogout }) {
     setForEachCtx(null);
   }, [forEachCtx]);
 
+  // ── List-field pick (click elements in the page to add EXTRACT_LIST fields) ─
+  const handleStartListPick = useCallback((stepId, containerSelector) => {
+    if (!socketRef.current || !containerSelector) return;
+    setListPickStepId(stepId);
+    socketRef.current.emit("startListFieldPick", { containerSelector });
+    // Bring the live browser into view with this step's editor open in the
+    // workflow sidebar, so the page is clickable AND the fields editor (which
+    // receives the picks) stays mounted.
+    setActiveTab("stream");
+    setShowSidebar(true);
+    setSidebarTab("workflow");
+    setSidebarExpandStepId(stepId);
+  }, []);
+
+  const handleStopListPick = useCallback(() => {
+    setListPickStepId(null);
+    socketRef.current?.emit("stopListFieldPick");
+  }, []);
+
+  const handleSidebarExpandHandled = useCallback(() => setSidebarExpandStepId(null), []);
+
+  // Safety: if the user navigates away from the Live Browser tab while a pick
+  // is in progress, stop it so the page isn't left intercepting clicks.
+  useEffect(() => {
+    if (listPickStepId && activeTab !== "stream") handleStopListPick();
+  }, [activeTab, listPickStepId, handleStopListPick]);
+
   // ── Run / Download / Cancel ───────────────────────────────────────────────
   const handleRun = () => {
     if (!socketRef.current || steps.length === 0) return;
@@ -1322,6 +1356,13 @@ function AppShell({ user, token, onLogout }) {
                   <CompactWorkflowSidebar
                     steps={steps}
                     forEachCtx={forEachCtx}
+                    socket={socket}
+                    previewData={previewData}
+                    listPickStepId={listPickStepId}
+                    onStartListPick={handleStartListPick}
+                    onStopListPick={handleStopListPick}
+                    expandStepId={sidebarExpandStepId}
+                    onExpandHandled={handleSidebarExpandHandled}
                     reselectStepId={reselectStepId}
                     onReselect={(id, isLoop) => {
                       setReselectStepId(id);
@@ -1364,6 +1405,9 @@ function AppShell({ user, token, onLogout }) {
             onToggleVariablesCollapsed={() => setVariablesCollapsed(c => !c)}
             availableWorkflows={availableWorkflows}
             currentWorkflowId={currentWorkflowId}
+            listPickStepId={listPickStepId}
+            onStartListPick={handleStartListPick}
+            onStopListPick={handleStopListPick}
           />
         )}
         {activeTab === "data" && (
