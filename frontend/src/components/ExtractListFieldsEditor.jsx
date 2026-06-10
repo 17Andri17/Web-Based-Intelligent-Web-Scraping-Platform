@@ -54,6 +54,14 @@ export default function ExtractListFieldsEditor({
   // response with the right invocation (in case the user clicks twice).
   const pendingRequestId = useRef(null);
 
+  // ── Browser-pick state ────────────────────────────────────────────────
+  const [pickActive, setPickActive]   = useState(false);
+  const [pendingPick, setPendingPick] = useState(null); // field info from browser
+  const [pickName, setPickName]       = useState("");
+  const pickNameRef                   = useRef(null);
+  const pickActiveRef                 = useRef(false);
+  useEffect(() => { pickActiveRef.current = pickActive; }, [pickActive]);
+
   // Listen for the AI response from the backend.
   useEffect(() => {
     if (!socket) return;
@@ -106,6 +114,28 @@ export default function ExtractListFieldsEditor({
     return () => socket.off("aiExtractListFieldsResult", onResult);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, normalised]);
+
+  // Listen for field picks from the browser (list-field-pick mode).
+  useEffect(() => {
+    if (!socket) return;
+    const onBrowserEvent = (data) => {
+      if (data.type !== 'listFieldPicked') return;
+      setPendingPick(data);
+      setPickName(uniqueName(sanitiseFieldName(data.suggestedName || data.tag || "field"), normalised));
+      setTimeout(() => { pickNameRef.current?.focus(); pickNameRef.current?.select(); }, 40);
+    };
+    socket.on("browserEvent", onBrowserEvent);
+    return () => socket.off("browserEvent", onBrowserEvent);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, normalised]);
+
+  // Stop pick mode when the component unmounts (user closes the step editor).
+  useEffect(() => {
+    return () => {
+      if (pickActiveRef.current) socket?.emit("stopListFieldPick");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket]);
 
   // Refresh sample values from previewRows whenever they come in.
   useEffect(() => {
@@ -183,6 +213,36 @@ export default function ExtractListFieldsEditor({
     onChange({ ...normalised, [name]: { selector: "", kind: "text", attribute: null } });
   };
 
+  // ── Browser-pick handlers ─────────────────────────────────────────────
+  const startPicking = () => {
+    if (!socket || !containerSelector) return;
+    setPendingPick(null);
+    setPickActive(true);
+    socket.emit("startListFieldPick", { containerSelector });
+  };
+
+  const stopPicking = () => {
+    setPickActive(false);
+    setPendingPick(null);
+    socket?.emit("stopListFieldPick");
+  };
+
+  const confirmPickedField = () => {
+    if (!pendingPick) return;
+    const raw  = sanitiseFieldName(pickName) || sanitiseFieldName(pendingPick.suggestedName) || "field";
+    const name = uniqueName(raw, normalised);
+    const spec = {
+      selector:  pendingPick.relativeSelector,
+      kind:      pendingPick.kind || "text",
+      attribute: pendingPick.kind === "attr" ? (pendingPick.attribute || null) : null,
+    };
+    onChange({ ...normalised, [name]: spec });
+    setAiSamples(prev => ({ ...prev, [name]: pendingPick.sampleValue ?? null }));
+    setPendingPick(null);
+    setPickName("");
+    // Stay in pick mode so the user can keep picking more fields.
+  };
+
   // ── Render ────────────────────────────────────────────────────────────
   const fieldNames = Object.keys(normalised);
 
@@ -247,12 +307,78 @@ export default function ExtractListFieldsEditor({
       <div className="elfe-fields">
         <div className="elfe-fields-header">
           <span>Fields ({fieldNames.length})</span>
-          <button type="button" className="elfe-btn elfe-btn--ghost" onClick={addBlankField}>+ Add field</button>
+          <div className="elfe-fields-header-btns">
+            <button
+              type="button"
+              className={`elfe-btn ${pickActive ? "elfe-btn--pick-active" : "elfe-btn--pick"}`}
+              onClick={pickActive ? stopPicking : startPicking}
+              disabled={!containerSelector}
+              title={!containerSelector ? "Set a container selector first" : "Click elements inside the containers to add them as fields"}
+            >
+              {pickActive ? "× Stop picking" : "🎯 Pick from page"}
+            </button>
+            <button type="button" className="elfe-btn elfe-btn--ghost" onClick={addBlankField}>+ Add field</button>
+          </div>
         </div>
+
+        {/* Pick-mode instruction banner */}
+        {pickActive && !pendingPick && (
+          <div className="elfe-pick-banner">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/>
+              <line x1="12" y1="3" x2="12" y2="1"/><line x1="12" y1="21" x2="12" y2="23"/>
+              <line x1="3" y1="12" x2="1" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+            </svg>
+            Click any element <strong>inside</strong> the highlighted containers on the page — it will be added as a field here.
+          </div>
+        )}
+
+        {/* Pending pick — name + confirm */}
+        {pendingPick && (
+          <div className="elfe-pick-pending">
+            <div className="elfe-pick-meta">
+              <code className="elfe-pick-sel">{pendingPick.relativeSelector}</code>
+              <span className={`elfe-pick-kind-tag ${pendingPick.kind}`}>
+                {pendingPick.kind === "attr" ? `@${pendingPick.attribute}` : "text"}
+              </span>
+              {pendingPick.sampleValue && (
+                <span className="elfe-pick-sample-val">
+                  {truncate(pendingPick.sampleValue, 60)}
+                </span>
+              )}
+            </div>
+            <div className="elfe-pick-name-row">
+              <span className="elfe-pick-name-label">Field name:</span>
+              <input
+                ref={pickNameRef}
+                className="elfe-pick-name-input"
+                value={pickName}
+                onChange={e => setPickName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter") confirmPickedField();
+                  if (e.key === "Escape") setPendingPick(null);
+                }}
+                placeholder="field_name"
+                spellCheck={false}
+              />
+              <button type="button" className="elfe-btn elfe-btn--primary elfe-pick-confirm-btn" onClick={confirmPickedField}>
+                Add
+              </button>
+              <button type="button" className="elfe-btn elfe-pick-discard-btn" onClick={() => setPendingPick(null)} title="Discard this pick">
+                ✕
+              </button>
+            </div>
+            {pendingPick.worksInSiblings === false && (
+              <div className="elfe-pick-warn">
+                ⚠ This selector may not resolve in all containers — review and adjust the selector if needed.
+              </div>
+            )}
+          </div>
+        )}
 
         {fieldNames.length === 0 ? (
           <div className="elfe-empty">
-            No fields yet. Click <strong>Auto-detect fields</strong> above or add one manually.
+            No fields yet. Click <strong>Auto-detect fields</strong> above, <strong>pick from page</strong>, or add one manually.
           </div>
         ) : (
           <div className="elfe-rows">

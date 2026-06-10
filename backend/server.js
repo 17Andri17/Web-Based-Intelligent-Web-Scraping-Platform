@@ -200,6 +200,25 @@ io.on('connection', async (socket) => {
     } catch (_) {}
   });
 
+  // ── List-field pick mode ──────────────────────────────────────────────────
+  socket.on('startListFieldPick', async ({ containerSelector }) => {
+    try {
+      const page = await getActivePage();
+      if (page) await page.evaluate((sel) => {
+        if (typeof window.__startListFieldPick__ === 'function') window.__startListFieldPick__(sel);
+      }, containerSelector || '');
+    } catch (_) {}
+  });
+
+  socket.on('stopListFieldPick', async () => {
+    try {
+      const page = await getActivePage();
+      if (page) await page.evaluate(() => {
+        if (typeof window.__stopListFieldPick__ === 'function') window.__stopListFieldPick__();
+      });
+    } catch (_) {}
+  });
+
   // ── Reset selection ───────────────────────────────────────────────────────
   socket.on('resetSelection', async () => {
     try {

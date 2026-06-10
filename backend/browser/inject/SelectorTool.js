@@ -23,11 +23,26 @@
   let tierList     = [];     // decorated tiers from SelectorGenerator.findSimilarTiers
   let pendingTier  = -1;     // index of the tier currently proposed in amber
 
+  // List-field-pick mode — activated when user clicks "Pick from page" in
+  // the EXTRACT_LIST step editor. Highlights containers, lets user click
+  // child elements, emits relative selectors back to the frontend.
+  let _listPickMode       = false;
+  let _listPickContainers = [];
+  let _listPickHoverEl    = null;
+  let _listPickOverlay    = null;
+
   const originalStyles = new Map();
 
   const SOFT_OUTLINE  = '2px dashed #d29922';
   const HARD_OUTLINE  = '2px solid #3fb950';
   const HOVER_OUTLINE = '2px solid #58a6ff';
+
+  const CONTAINER_PICK_OUTLINE     = '2px solid rgba(163,113,247,0.55)';
+  const CONTAINER_PICK_SHADOW      = 'inset 0 0 0 9999px rgba(163,113,247,0.06)';
+  const FIELD_PICK_HOVER_OUTLINE   = '2px solid #58a6ff';
+  const FIELD_PICK_HOVER_SHADOW    = 'inset 0 0 0 9999px rgba(88,166,255,0.11)';
+  const FIELD_PICK_CONFIRM_OUTLINE = '2px solid #3fb950';
+  const FIELD_PICK_CONFIRM_SHADOW  = 'inset 0 0 0 9999px rgba(63,185,80,0.13)';
 
   /* =========================================================================
      STYLE HELPERS
@@ -311,6 +326,79 @@
 
     // Absolute last resort: tag-only path (may not be unique, but kept for compatibility)
     return segments.map(function(s) { return s.tag; }).join(' > ');
+  }
+
+  /* =========================================================================
+     LIST-FIELD PICK HELPERS
+     ========================================================================= */
+
+  function _inferFieldKind(el) {
+    var tag = el.tagName.toLowerCase();
+    if (tag === 'img') return { kind: 'attr', attribute: 'src' };
+    if (tag === 'a')   return { kind: 'attr', attribute: 'href' };
+    var href = el.getAttribute('href');
+    var src  = el.getAttribute('src');
+    if (href) return { kind: 'attr', attribute: 'href' };
+    if (src)  return { kind: 'attr', attribute: 'src' };
+    return { kind: 'text', attribute: null };
+  }
+
+  function _extractPickSample(el, kind, attribute) {
+    if (kind === 'attr' && attribute) return (el.getAttribute(attribute) || '').slice(0, 200);
+    return ((el.textContent || el.innerText || '').trim()).slice(0, 200);
+  }
+
+  function _suggestFieldName(tag, relSel, kind, attribute) {
+    if (kind === 'attr' && attribute) {
+      if (attribute === 'href') return 'link';
+      if (attribute === 'src')  return 'image';
+      return attribute.replace(/-/g, '_');
+    }
+    // Try to get a meaningful class name from the selector
+    var clsMatch = relSel.match(/\.([a-zA-Z][a-zA-Z0-9_-]*)/);
+    if (clsMatch) {
+      var cls = clsMatch[1].replace(/-/g, '_').toLowerCase().slice(0, 30);
+      // Skip obvious hashes (short, mixed case+digits) and numeric-only names
+      var looksLikeHash = /^[a-f0-9]{4,}$/.test(cls) || /[0-9]{3,}/.test(cls);
+      var tooShort = cls.length <= 1;
+      if (!looksLikeHash && !tooShort) return cls;
+    }
+    // Semantic fallbacks from tag
+    var semantics = { h1:'title', h2:'title', h3:'title', h4:'subtitle',
+                      p:'description', time:'date', span:'value',
+                      img:'image', a:'link', button:'button' };
+    return semantics[tag] || tag;
+  }
+
+  function _createListPickOverlay() {
+    if (_listPickOverlay) return;
+    _listPickOverlay = document.createElement('div');
+    _listPickOverlay.style.cssText = [
+      'position:fixed', 'inset:0', 'pointer-events:none',
+      'z-index:2147483640',
+      'background:rgba(0,0,0,0)',
+      'transition:background 200ms ease',
+    ].join(';');
+    document.body.appendChild(_listPickOverlay);
+    requestAnimationFrame(function() {
+      if (_listPickOverlay) _listPickOverlay.style.background = 'rgba(0,0,0,0.40)';
+    });
+  }
+
+  function _removeListPickOverlay() {
+    if (!_listPickOverlay) return;
+    var el = _listPickOverlay;
+    _listPickOverlay = null;
+    el.style.background = 'rgba(0,0,0,0)';
+    setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
+  }
+
+  function _clearListPickHover() {
+    if (!_listPickHoverEl) return;
+    var el = _listPickHoverEl;
+    _listPickHoverEl = null;
+    restoreStyle(el, 'outline');
+    restoreStyle(el, 'box-shadow');
   }
 
   /* =========================================================================
@@ -599,6 +687,40 @@
      ========================================================================= */
 
   function onMouseMove(e) {
+    // ── List-field-pick mode (takes priority over selection mode) ──────────
+    if (_listPickMode) {
+      var tgt = e.target;
+      if (tgt === tooltip) return;
+      var ownerContainer = null;
+      for (var ci = 0; ci < _listPickContainers.length; ci++) {
+        if (_listPickContainers[ci] === tgt || _listPickContainers[ci].contains(tgt)) {
+          ownerContainer = _listPickContainers[ci];
+          break;
+        }
+      }
+      if (tgt !== _listPickHoverEl) {
+        _clearListPickHover();
+        if (ownerContainer && tgt !== ownerContainer) {
+          _listPickHoverEl = tgt;
+          setStyle(tgt, 'outline',    FIELD_PICK_HOVER_OUTLINE, true);
+          setStyle(tgt, 'box-shadow', FIELD_PICK_HOVER_SHADOW,  true);
+        }
+      }
+      if (tooltip) {
+        if (ownerContainer && tgt !== ownerContainer) {
+          tooltip.textContent = '🎯 Click to add as field: ' + getElPath(tgt, 3);
+        } else if (ownerContainer === tgt) {
+          tooltip.textContent = '⚠ Click a child element inside, not the container itself';
+        } else {
+          tooltip.textContent = '↩ Outside containers — move inside the purple-outlined items';
+        }
+        tooltip.style.cssText += ';transform:none';
+        tooltip.style.display = 'block';
+        placeTooltip(e);
+      }
+      return;
+    }
+
     if (!window.__SELECTION_MODE__) return;
     const target = e.target;
 
@@ -663,6 +785,62 @@
   }
 
   function onClick(e) {
+    // ── List-field-pick mode (takes priority over selection mode) ──────────
+    if (_listPickMode) {
+      var tgt = e.target;
+      if (tgt === tooltip) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Find the owning container
+      var containerEl = null;
+      for (var ci = 0; ci < _listPickContainers.length; ci++) {
+        if (_listPickContainers[ci] === tgt || _listPickContainers[ci].contains(tgt)) {
+          containerEl = _listPickContainers[ci];
+          break;
+        }
+      }
+      if (!containerEl || tgt === containerEl) return; // clicked outside or on the container itself
+
+      var relSel = buildRelativeSelector(tgt, containerEl);
+      if (!relSel) return;
+
+      // Verify selector generalises across sibling containers
+      var worksInSiblings = _listPickContainers
+        .filter(function(c) { return c !== containerEl; })
+        .slice(0, 8)
+        .every(function(c) {
+          try { return c.querySelectorAll(relSel).length >= 1; }
+          catch (_) { return false; }
+        });
+
+      var kindInfo   = _inferFieldKind(tgt);
+      var sampleVal  = _extractPickSample(tgt, kindInfo.kind, kindInfo.attribute);
+      var suggested  = _suggestFieldName(tgt.tagName.toLowerCase(), relSel, kindInfo.kind, kindInfo.attribute);
+
+      window.sendToNode({
+        type:             'listFieldPicked',
+        relativeSelector: relSel,
+        kind:             kindInfo.kind,
+        attribute:        kindInfo.attribute || null,
+        sampleValue:      sampleVal,
+        suggestedName:    suggested,
+        tag:              tgt.tagName.toLowerCase(),
+        worksInSiblings:  worksInSiblings,
+      });
+
+      // Brief green flash to confirm
+      _clearListPickHover();
+      setStyle(tgt, 'outline',    FIELD_PICK_CONFIRM_OUTLINE, true);
+      setStyle(tgt, 'box-shadow', FIELD_PICK_CONFIRM_SHADOW,  true);
+      var flashEl = tgt;
+      setTimeout(function() {
+        restoreStyle(flashEl, 'outline');
+        restoreStyle(flashEl, 'box-shadow');
+      }, 700);
+      return;
+    }
+
     if (!window.__SELECTION_MODE__) return;
     e.preventDefault();
     e.stopPropagation();
@@ -825,6 +1003,55 @@
      ========================================================================= */
 
   window.__resetSelection__ = function() { fullReset(); };
+
+  window.__startListFieldPick__ = function(containerSelector) {
+    window.__stopListFieldPick__(); // idempotent — clear any previous state
+    fullReset();                    // clear any normal element selection
+    _listPickMode = true;
+    try {
+      _listPickContainers = Array.from(document.querySelectorAll(containerSelector));
+    } catch (_) { _listPickContainers = []; }
+    _listPickContainers.forEach(function(el) {
+      storeOriginalStyle(el, 'outline');
+      storeOriginalStyle(el, 'box-shadow');
+      storeOriginalStyle(el, 'position');
+      storeOriginalStyle(el, 'z-index');
+      el.style.setProperty('outline',    CONTAINER_PICK_OUTLINE, 'important');
+      el.style.setProperty('box-shadow', CONTAINER_PICK_SHADOW,  'important');
+      if (getComputedStyle(el).position === 'static') {
+        el.style.setProperty('position', 'relative', 'important');
+      }
+      el.style.setProperty('z-index', '2147483641', 'important');
+    });
+    _createListPickOverlay();
+    if (tooltip) {
+      tooltip.textContent = '🎯 Click an element inside the highlighted containers to add it as a field';
+      tooltip.style.display = 'block';
+      tooltip.style.top  = '12px';
+      tooltip.style.left = '50%';
+      tooltip.style.setProperty('transform', 'translateX(-50%)');
+    }
+  };
+
+  window.__stopListFieldPick__ = function() {
+    if (!_listPickMode) return;
+    _listPickMode = false;
+    _clearListPickHover();
+    _listPickContainers.forEach(function(el) {
+      restoreStyle(el, 'outline');
+      restoreStyle(el, 'box-shadow');
+      restoreStyle(el, 'position');
+      restoreStyle(el, 'z-index');
+    });
+    _listPickContainers = [];
+    _removeListPickOverlay();
+    if (tooltip) {
+      tooltip.style.display = 'none';
+      tooltip.style.transform = '';
+      tooltip.style.top  = '';
+      tooltip.style.left = '';
+    }
+  };
 
   window.__highlightAncestor__ = function(levelsUp) {
     if (!currentEl) return;
