@@ -60,6 +60,10 @@ function buildSections(steps) {
       // EXTRACT_LIST renders as its own tabular section — columns come
       // from `params.fields` and rows from previewRows / execResults.
       sections.push({ kind: "list", step });
+    } else if (step.kind === "action" && step.type === "EXTRACT_TABLE") {
+      // EXTRACT_TABLE renders as a real grid — headers + rows from
+      // previewTable (live) or execResults (post-run array of row objects).
+      sections.push({ kind: "tableExtract", step });
     } else if (step.kind === "action" && step.type === "RUN_SUBFLOW") {
       // Subflow outputs can't be previewed live (they need a separate
       // page that we'd have to navigate during preview), but we DO know
@@ -427,6 +431,141 @@ function kindIcon(kind) {
   return "Aa";
 }
 
+// ─── Table-extract section (EXTRACT_TABLE) ───────────────────────────────────
+// Renders the targeted <table> as a real grid. Two data sources, normalised
+// to { headers: string[], rows: string[][] }:
+//   • live preview  → previewData[id].previewTable { headers, rows, totalRows }
+//   • post-run data → execResults[label]: array of row-objects (header mode)
+//                     or array of cell-arrays (headerless mode)
+
+function normaliseTableData(execRow, previewTable) {
+  // 1. Post-run results take precedence.
+  if (Array.isArray(execRow) && execRow.length > 0) {
+    const first = execRow[0];
+    if (first && typeof first === "object" && !Array.isArray(first)) {
+      const headers = Object.keys(first);
+      const rows = execRow.map(o => headers.map(h => {
+        const v = o ? o[h] : null;
+        return v === null || v === undefined ? null : (typeof v === "object" ? JSON.stringify(v) : String(v));
+      }));
+      return { headers, rows, source: "results", totalRows: rows.length };
+    }
+    if (Array.isArray(first)) {
+      const rows = execRow.map(r => (Array.isArray(r) ? r.map(c => (c == null ? null : String(c))) : []));
+      return { headers: [], rows, source: "results", totalRows: rows.length };
+    }
+  }
+  // 2. Live DOM preview.
+  if (previewTable && Array.isArray(previewTable.rows)) {
+    return {
+      headers: Array.isArray(previewTable.headers) ? previewTable.headers : [],
+      rows: previewTable.rows.map(r => (Array.isArray(r) ? r.map(c => (c == null ? null : String(c))) : [])),
+      source: "preview",
+      totalRows: previewTable.totalRows ?? previewTable.rows.length,
+    };
+  }
+  return null;
+}
+
+function TableExtractSection({ step, execResults, previewData, onUpdateLabel }) {
+  const execRow = execResults && step.label?.trim() ? execResults[step.label.trim()] : null;
+  const previewTable = previewData[step.id]?.previewTable || null;
+  const previewError = previewData[step.id]?.previewError || null;
+
+  const data = useMemo(
+    () => normaliseTableData(execRow, previewTable),
+    [execRow, previewTable]
+  );
+
+  const colCount = data
+    ? Math.max(data.headers.length, ...data.rows.map(r => r.length), 1)
+    : 1;
+  const headers = data && data.headers.length > 0
+    ? data.headers
+    : Array.from({ length: colCount }, (_, i) => `Column ${i + 1}`);
+  const shownRows = data ? data.rows.slice(0, 200) : [];
+
+  return (
+    <div className="dp-section dp-section--table">
+      <div className="dp-section-header">
+        <div className="dp-section-header-left">
+          <span className="dp-loop-badge">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/>
+              <line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
+            </svg>
+            Extract Table
+          </span>
+          <EditableLabel
+            value={step.label || ""}
+            placeholder="Name this table…"
+            className="dp-loop-label"
+            onCommit={v => onUpdateLabel(step.id, v)}
+          />
+          {data && (
+            <span className={`dp-src-pill ${data.source === "results" ? "dp-src--results" : "dp-src--preview"}`}>
+              {data.source === "results" ? "live results" : "dom preview"}
+            </span>
+          )}
+        </div>
+        <div className="dp-section-header-right">
+          {data && data.rows.length > 0 && (
+            <span className="dp-row-count">
+              {data.rows.length} row{data.rows.length !== 1 ? "s" : ""}
+              {data.totalRows > data.rows.length ? ` of ${data.totalRows}` : ""}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="dp-table-scroll">
+        <table className="dp-table">
+          <thead className="dp-thead">
+            <tr>
+              <th className="dp-th dp-th--num">#</th>
+              {headers.map((h, i) => (
+                <th key={i} className="dp-th">
+                  <div className="dp-th-inner">
+                    <span className="dp-col-label has-value">{h || `Column ${i + 1}`}</span>
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shownRows.length > 0 ? shownRows.map((row, i) => (
+              <tr key={i} className={`dp-tr ${i % 2 === 1 ? "dp-tr--alt" : ""}`}>
+                <td className="dp-td dp-td--num">{i + 1}</td>
+                {headers.map((_, ci) => {
+                  const v = row[ci];
+                  if (v === null || v === undefined) {
+                    return <td key={ci} className="dp-td"><span className="dp-cell-empty">—</span></td>;
+                  }
+                  const s = String(v);
+                  return (
+                    <td key={ci} className="dp-td">
+                      <span className="dp-cell-val" title={s}>{s.length > 90 ? s.slice(0, 90) + "…" : s}</span>
+                    </td>
+                  );
+                })}
+              </tr>
+            )) : (
+              <tr>
+                <td colSpan={headers.length + 1} className="dp-td--hint">
+                  {previewError
+                    ? `Couldn't read the table: ${previewError}`
+                    : "Run the workflow, or make sure the selector points at a table on the live page"}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ─── Subflow section (RUN_SUBFLOW placeholder) ─────────────────────────────
 // We can't run a subflow at preview time (it would open a new page and
 // navigate away), so this section just SHOWS the user where the
@@ -625,6 +764,17 @@ export default function DataPreviewPanel({ steps, execResults, previewData = {},
           if (section.kind === "list") {
             return (
               <ListSection
+                key={section.step.id}
+                step={section.step}
+                execResults={execResults}
+                previewData={previewData}
+                onUpdateLabel={onUpdateLabel}
+              />
+            );
+          }
+          if (section.kind === "tableExtract") {
+            return (
+              <TableExtractSection
                 key={section.step.id}
                 step={section.step}
                 execResults={execResults}

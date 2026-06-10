@@ -1354,6 +1354,50 @@ io.on('connection', async (socket) => {
         return;
       }
 
+      // ── EXTRACT_TABLE: parse the targeted <table> into headers + rows so the
+      //    Data Preview tab can render it as a real grid (matching the final
+      //    extracted shape) instead of mashing every cell into one string.
+      if (type === 'EXTRACT_TABLE') {
+        const tableSel  = params?.selector || 'table';
+        const hasHeader = params?.hasHeader !== false;
+        const data = await page.evaluate((sel, hasHeaderFlag) => {
+          const isXPath = sel.startsWith('/') || sel.startsWith('(');
+          let table = null;
+          try {
+            if (isXPath) {
+              const r = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+              table = r.singleNodeValue;
+            } else {
+              table = document.querySelector(sel);
+            }
+          } catch (_) { return { error: 'invalid table selector' }; }
+          if (!table) return { error: 'no element matched' };
+          // The selector may point at a cell/wrapper rather than the <table>.
+          // Resolve to the nearest enclosing table, or the first descendant.
+          if (table.tagName !== 'TABLE') {
+            table = (table.closest && table.closest('table')) || table.querySelector('table');
+          }
+          if (!table) return { error: 'no table found' };
+          const allRows = Array.from(table.querySelectorAll('tr'));
+          let headers = [];
+          let bodyRows = allRows;
+          if (hasHeaderFlag && allRows.length > 0) {
+            headers = Array.from(allRows[0].querySelectorAll('th,td')).map(c => (c.textContent || '').trim());
+            bodyRows = allRows.slice(1);
+          }
+          const cells = bodyRows.slice(0, 50).map(row =>
+            Array.from(row.querySelectorAll('td,th')).map(c => (c.textContent || '').trim())
+          );
+          return { headers, rows: cells, totalRows: bodyRows.length, hasHeader: hasHeaderFlag };
+        }, tableSel, hasHeader).catch(() => ({ error: 'preview failed' }));
+        socket.emit('previewResult', {
+          stepId,
+          previewTable: data && !data.error ? data : null,
+          previewError: data?.error || null,
+        });
+        return;
+      }
+
       // ── Shared helpers (serialisable — passed into page.evaluate) ──────────
       // Detect XPath: starts with / or ( (e.g. (//div...)[1] pattern)
       // queryAll: returns array of elements using CSS or XPath as appropriate
