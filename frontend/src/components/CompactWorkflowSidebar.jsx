@@ -1,4 +1,10 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useContext, createContext } from "react";
+import ExtractListFieldsEditor from "./ExtractListFieldsEditor";
+import "../styles/ExtractListFieldsEditor.css";
+
+// Context so the deeply-nested StepEditor can reach the socket, preview data
+// and list-field-pick coordination without drilling props through StepCard.
+const CWSCtx = createContext(null);
 
 // ─── Step metadata ───────────────────────────────────────────────────────────
 
@@ -133,6 +139,7 @@ function InlineInput({ value, placeholder, mono, onSave }) {
 // ─── Step editor ─────────────────────────────────────────────────────────────
 
 function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onReselect, onCancelReselect }) {
+  const cws = useContext(CWSCtx) || {};
   const selector  = step.params?.selector || step.params?.containerSelector || "";
   const attribute = step.params?.attribute || "";
   const multiple  = !!step.params?.multiple;
@@ -179,7 +186,27 @@ function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onRes
         </div>
       )}
 
-      {step.type?.startsWith("EXTRACT_") && step.type !== "EXTRACT_JSON" && (
+      {/* EXTRACT_LIST: full fields editor (AI auto-detect, click-to-pick,
+          manual fields) — same options as the Workflow tab, available here
+          on the Live Browser so the page is visible while picking. */}
+      {step.type === "EXTRACT_LIST" && (
+        <div className="cws-field">
+          <label className="cws-label">Fields</label>
+          <ExtractListFieldsEditor
+            value={step.params?.fields || {}}
+            onChange={(fields) => onUpdateParams(step.id, { fields })}
+            containerSelector={step.params?.containerSelector || ""}
+            selectorType={step.params?.selectorType || "css"}
+            socket={cws.socket}
+            previewRows={cws.previewData && cws.previewData[step.id]?.previewRows}
+            pickActive={cws.listPickStepId === step.id}
+            onStartPick={() => cws.onStartListPick && cws.onStartListPick(step.id, step.params?.containerSelector || "")}
+            onStopPick={() => cws.onStopListPick && cws.onStopListPick()}
+          />
+        </div>
+      )}
+
+      {step.type?.startsWith("EXTRACT_") && step.type !== "EXTRACT_JSON" && step.type !== "EXTRACT_LIST" && (
         <label className="cws-checkbox-row">
           <input type="checkbox" checked={multiple} onChange={e=>onUpdateParams(step.id,{multiple:e.target.checked})} />
           Extract all matching elements
@@ -300,10 +327,22 @@ export default function CompactWorkflowSidebar({
   onHighlight, onClearHighlight,
   onUpdateParams, onUpdateLabel,
   insertTarget, onSetInsertTarget, onMoveStep,
+  socket, previewData,
+  listPickStepId = null, onStartListPick, onStopListPick,
+  expandStepId = null, onExpandHandled,
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const forEachCtxStepId = forEachCtx?.stepId || null;
   const flat = flattenSteps(steps, 0, [], forEachCtxStepId, null);
+
+  // Auto-expand a step when asked from the parent (e.g. when "Pick from page"
+  // is clicked on the Workflow tab, we jump here and open that step's editor).
+  useEffect(() => {
+    if (expandStepId) {
+      setSelectedId(expandStepId);
+      onExpandHandled && onExpandHandled();
+    }
+  }, [expandStepId, onExpandHandled]);
 
   const handleHover = useCallback((sel) => { if (sel) onHighlight(sel); }, [onHighlight]);
   const handleLeave = useCallback(() => { onClearHighlight(); }, [onClearHighlight]);
@@ -314,6 +353,7 @@ export default function CompactWorkflowSidebar({
   const isRootEnd = insertTarget?.type === 'root_end' || (!insertTarget && true); // default
 
   return (
+    <CWSCtx.Provider value={{ socket, previewData, listPickStepId, onStartListPick, onStopListPick }}>
     <div className="cws-content">
       {/* ForEach context banner */}
       {forEachCtxStepId && (
@@ -466,5 +506,6 @@ export default function CompactWorkflowSidebar({
         </div>
       )}
     </div>
+    </CWSCtx.Provider>
   );
 }

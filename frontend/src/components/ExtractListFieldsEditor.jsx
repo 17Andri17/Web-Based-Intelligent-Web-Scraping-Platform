@@ -34,6 +34,9 @@ export default function ExtractListFieldsEditor({
   selectorType = "css",
   socket,
   previewRows,
+  pickActive = false,
+  onStartPick,
+  onStopPick,
 }) {
   // ── Normalise the incoming value once so the rest of the component sees
   // a single uniform shape. We never persist this normalised form back
@@ -55,12 +58,16 @@ export default function ExtractListFieldsEditor({
   const pendingRequestId = useRef(null);
 
   // ── Browser-pick state ────────────────────────────────────────────────
-  const [pickActive, setPickActive]   = useState(false);
+  // pickActive is owned by the parent (lifted to AppShell so the mode
+  // survives the Workflow → Live Browser tab switch). We only keep the
+  // transient pending-pick + name here.
   const [pendingPick, setPendingPick] = useState(null); // field info from browser
   const [pickName, setPickName]       = useState("");
   const pickNameRef                   = useRef(null);
-  const pickActiveRef                 = useRef(false);
+  const pickActiveRef                 = useRef(pickActive);
   useEffect(() => { pickActiveRef.current = pickActive; }, [pickActive]);
+  // Clear any stale pending-pick card when picking is turned off.
+  useEffect(() => { if (!pickActive) setPendingPick(null); }, [pickActive]);
 
   // Listen for the AI response from the backend.
   useEffect(() => {
@@ -120,6 +127,7 @@ export default function ExtractListFieldsEditor({
     if (!socket) return;
     const onBrowserEvent = (data) => {
       if (data.type !== 'listFieldPicked') return;
+      if (!pickActiveRef.current) return; // not this editor's pick session
       setPendingPick(data);
       setPickName(uniqueName(sanitiseFieldName(data.suggestedName || data.tag || "field"), normalised));
       setTimeout(() => { pickNameRef.current?.focus(); pickNameRef.current?.select(); }, 40);
@@ -128,14 +136,6 @@ export default function ExtractListFieldsEditor({
     return () => socket.off("browserEvent", onBrowserEvent);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, normalised]);
-
-  // Stop pick mode when the component unmounts (user closes the step editor).
-  useEffect(() => {
-    return () => {
-      if (pickActiveRef.current) socket?.emit("stopListFieldPick");
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket]);
 
   // Refresh sample values from previewRows whenever they come in.
   useEffect(() => {
@@ -214,17 +214,17 @@ export default function ExtractListFieldsEditor({
   };
 
   // ── Browser-pick handlers ─────────────────────────────────────────────
+  // Start/stop are owned by the parent (AppShell): it flips the live-browser
+  // tab into view, keeps this editor mounted, and toggles the page-side mode.
   const startPicking = () => {
-    if (!socket || !containerSelector) return;
+    if (!containerSelector) return;
     setPendingPick(null);
-    setPickActive(true);
-    socket.emit("startListFieldPick", { containerSelector });
+    onStartPick && onStartPick();
   };
 
   const stopPicking = () => {
-    setPickActive(false);
     setPendingPick(null);
-    socket?.emit("stopListFieldPick");
+    onStopPick && onStopPick();
   };
 
   const confirmPickedField = () => {
