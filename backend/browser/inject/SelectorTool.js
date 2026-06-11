@@ -281,7 +281,10 @@
       if (r) return r;
     }
 
-    // Strategy B: shortest suffix of the path that resolves uniquely
+    // Strategy B: shortest suffix of the path that resolves uniquely.
+    // For the full path (start === 0), prefix with :scope so the first
+    // combinator anchors to a direct child of the container rather than
+    // matching the same tag combination at any nesting depth.
     for (let start = segments.length - 1; start >= 0; start--) {
       const path = segments.slice(start).map(function(s) {
         if (s.cls.length >= 2) return s.tag + '.' + esc(s.cls[0]) + '.' + esc(s.cls[1]);
@@ -290,25 +293,35 @@
       }).join(' > ');
       let r = tryRel(path);
       if (r) return r;
+      // Full path with :scope anchor
+      if (start === 0) {
+        r = tryRel(':scope > ' + path);
+        if (r) return r;
+      }
 
       const pathDesc = segments.slice(start).map(function(s) {
         return s.cls.length ? s.tag + '.' + esc(s.cls[0]) : s.tag;
       }).join(' ');
       r = tryRel(pathDesc);
       if (r) return r;
+      if (start === 0) {
+        r = tryRel(':scope > ' + pathDesc);
+        if (r) return r;
+      }
     }
 
-    // Strategy C: nth-child fallback on leaf element
+    // Strategy C: nth-child / nth-of-type on the leaf, with :scope prefix so
+    // the intermediate path is anchored to the container's direct children.
     var leafParent = el.parentElement;
     var leafIdxChild = Array.from(leafParent.children).indexOf(el) + 1;
     var leafTag = el.tagName.toLowerCase();
     var leafSel = leafTag + ':nth-child(' + leafIdxChild + ')';
     var fullSel;
     if (leafParent === scopeEl) {
-      fullSel = leafSel;
+      fullSel = ':scope > ' + leafSel;
     } else {
       var intermediate = segments.slice(0, -1).map(function(s) { return s.tag; }).join(' > ');
-      fullSel = intermediate + ' > ' + leafSel;
+      fullSel = ':scope > ' + intermediate + ' > ' + leafSel;
     }
     var r = tryRel(fullSel);
     if (r) return r;
@@ -317,14 +330,19 @@
     var leafIdxType = Array.from(leafParent.children).filter(function(c) { return c.tagName === leafTag; }).indexOf(el) + 1;
     leafSel = leafTag + ':nth-of-type(' + leafIdxType + ')';
     if (leafParent === scopeEl) {
-      fullSel = leafSel;
+      fullSel = ':scope > ' + leafSel;
     } else {
-      fullSel = intermediate + ' > ' + leafSel;
+      fullSel = ':scope > ' + intermediate + ' > ' + leafSel;
     }
     r = tryRel(fullSel);
     if (r) return r;
 
-    // Strategy D: Full nth-child path from scope to target — guaranteed unique
+    // Strategy D: Full :scope-anchored nth-child path — truly guaranteed unique.
+    // Without :scope, 'div:nth-child(2) > span:nth-child(1)' matches any span
+    // that is the 1st child of a 2nd-child div ANYWHERE inside the container,
+    // not just the one on the direct-child path we walked up. :scope > anchors
+    // the first combinator to a direct child of the container, so the full
+    // positional path is unambiguous.
     var nthParts = [];
     var nthCur = el;
     var nthOk  = true;
@@ -336,7 +354,7 @@
       nthCur = nthParent;
     }
     if (nthOk && nthParts.length) {
-      var r = tryRel(nthParts.join(' > '));
+      var r = tryRel(':scope > ' + nthParts.join(' > '));
       if (r) return r;
     }
 
@@ -819,7 +837,15 @@
           break;
         }
       }
-      if (!containerEl || tgt === containerEl) return; // clicked outside or on the container itself
+      if (!containerEl) return; // clicked outside any container
+      if (tgt === containerEl) {
+        // Click landed on container padding — fall back to last hovered child
+        if (_listPickHoverEl && containerEl.contains(_listPickHoverEl)) {
+          tgt = _listPickHoverEl;
+        } else {
+          return;
+        }
+      }
 
       var relSel = buildRelativeSelector(tgt, containerEl);
       if (!relSel) return;
@@ -1029,7 +1055,17 @@
     _listPickMode = true;
     try {
       _listPickContainers = Array.from(document.querySelectorAll(containerSelector));
-    } catch (_) { _listPickContainers = []; }
+    } catch (_) {
+      // containerSelector may be an XPath expression — try document.evaluate
+      try {
+        var xr = document.evaluate(containerSelector, document, null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        _listPickContainers = [];
+        for (var xi = 0; xi < xr.snapshotLength; xi++) {
+          _listPickContainers.push(xr.snapshotItem(xi));
+        }
+      } catch (_2) { _listPickContainers = []; }
+    }
     _listPickContainers.forEach(function(el) {
       storeOriginalStyle(el, 'outline');
       storeOriginalStyle(el, 'box-shadow');
