@@ -6,6 +6,13 @@ const EXTRACTION_TYPES = new Set([
   'EXTRACT_TABLE', 'EXTRACT_LIST', 'EXTRACT_JSON',
 ]);
 
+// Extraction types whose "0 records / empty fields" outcome the self-healing
+// pipeline knows how to repair (selector-based). EXTRACT_JSON is excluded: it
+// reads structured data, not DOM selectors, so a selector swap can't fix it.
+const HEALABLE_EXTRACTION_TYPES = new Set([
+  'EXTRACT_TEXT', 'EXTRACT_ATTRIBUTE', 'EXTRACT_HTML', 'EXTRACT_TABLE', 'EXTRACT_LIST',
+]);
+
 // ─── Build the JS literal for the selectors array passed to runtime helpers ──
 // params must have: selector (string), selectorType ('css'|'xpath'),
 //                   fallbackSelectors ([{value,type}] or [string] for back-compat)
@@ -212,6 +219,14 @@ function genAction(step, ctx) {
         if (ctx.capturedAliases) ctx.capturedAliases.add(alias);
         store += `  ${alias} = ${varName};\n`;
       }
+    }
+
+    // Emit record-count / field-fill stats so the execution pipeline can
+    // detect a step that "succeeded" but captured nothing and trigger
+    // self-healing. Only for selector-repairable extraction types.
+    if (HEALABLE_EXTRACTION_TYPES.has(type) && step.id) {
+      const statsKey = (label && label.trim()) ? label : `extracted_${varName}`;
+      store += `  await __emitStepStats(page, { stepId: ${JSON.stringify(step.id)}, type: ${JSON.stringify(type)}, label: ${JSON.stringify(label || '')}, key: ${JSON.stringify(statsKey)}, multiple: ${!!params.multiple} }, ${varName});\n`;
     }
   }
 
@@ -805,6 +820,11 @@ function genControl(step, ctx, depth) {
           `}`,
           writebackLine,
           aliasLine,
+          // Record-count / field-fill stats for the loop's rows → drives
+          // self-healing when the loop selector (or an inner field) breaks.
+          (step.id
+            ? `await __emitStepStats(page, { stepId: ${JSON.stringify(step.id)}, type: "FOR_EACH_ELEMENTS", label: ${JSON.stringify(resultsKey)}, key: ${JSON.stringify(resultsKey)}, multiple: true }, ${resultsVar});`
+            : ''),
           ``,
         ].join('\n');
       }
@@ -1095,13 +1115,71 @@ async function __snapshotPageHtml(page) {
   } catch (_) { return null; }
 }
 
+/**
+ * Compute record-count + per-field fill statistics for an extraction result.
+ * A list/multiple result is an array (count = length; fields tallied from the
+ * row objects). A scalar is 0 (nothing) or 1. This is what lets the platform
+ * notice a step that "succeeded" but captured nothing — the silent failure a
+ * broken selector produces.
+ */
+function __extractionStats(v) {
+  if (Array.isArray(v)) {
+    const fields = {};
+    for (const row of v) {
+      if (row && typeof row === 'object' && !Array.isArray(row)) {
+        for (const k of Object.keys(row)) {
+          if (k === '_index') continue;
+          const val = row[k];
+          if (!fields[k]) fields[k] = { nonEmpty: 0, total: 0 };
+          fields[k].total++;
+          if (val != null && String(val).trim() !== '') fields[k].nonEmpty++;
+        }
+      }
+    }
+    return { count: v.length, fields };
+  }
+  return { count: (v == null || (typeof v === 'string' && v.trim() === '')) ? 0 : 1, fields: {} };
+}
+
+// A result worth snapshotting for possible self-healing. For a COLLECTION
+// (list/loop) that means ≤1 record or a field empty in every record; for a
+// SCALAR single value it means nothing came back (count 1 is the healthy
+// state for a single extraction, so it must NOT trigger a snapshot).
+function __suspiciousStats(st, isCollection) {
+  if (!st) return false;
+  const c = st.count || 0;
+  if (isCollection ? c <= 1 : c === 0) return true;
+  for (const k of Object.keys(st.fields || {})) {
+    const f = st.fields[k];
+    if (f && f.total > 0 && f.nonEmpty === 0) return true;
+  }
+  return false;
+}
+
+function __safeUrl(page) { try { return page.url(); } catch (_) { return null; } }
+
+// Emit a STEP_RESULT marker (record counts / field fill) for an extraction,
+// plus a STEP_SNAPSHOT of the page when the result looks broken — the runner
+// forwards both to the execution pipeline, which decides whether to self-heal.
+async function __emitStepStats(page, info, value) {
+  try {
+    const st = __extractionStats(value);
+    if (__suspiciousStats(st, Array.isArray(value))) {
+      const html = await __snapshotPageHtml(page);
+      console.log('STEP_SNAPSHOT:' + JSON.stringify({ stepId: info.stepId, url: __safeUrl(page), html: html }));
+    }
+    console.log('STEP_RESULT:' + JSON.stringify(Object.assign({}, info, { count: st.count, fields: st.fields })));
+  } catch (_) {}
+}
+
 async function run() {
   const __results__ = {};
   let __currentStep__ = null;
 ${variablesCode}${capturedAliasesCode}
   const browser = await puppeteer.launch({
-    // to delete:
-    executablePath: 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
+    // Honour CHROME_PATH when set (Linux servers / CI / containers); fall back
+    // to the local Chrome install used during development.
+    executablePath: process.env.CHROME_PATH || 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
     headless: true,
     args: [
       '--no-sandbox',

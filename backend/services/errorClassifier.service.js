@@ -85,6 +85,8 @@ function summarise(category, message, stepLabel) {
       return `The target page returned an error response while running ${stepRef}. Check the URL is still reachable and not blocked / rate-limited.`;
     case 'SELECTOR':
       return `Could not locate the element used by ${stepRef}. The website's HTML may have changed — the platform attempted an automatic repair via the LLM.`;
+    case 'EMPTY_RESULT':
+      return `${stepRef} ran without error but captured no data — its selector matched nothing, which almost always means the page structure changed. The platform attempted an automatic repair.`;
     case 'LLM':
       return `The AI repair service is unavailable right now (${truncate(message)}). This run has been flagged for manual review.`;
     default:
@@ -101,7 +103,7 @@ function truncate(s, n = 200) {
 // UNKNOWN errors get one repair attempt too, on the theory that a TypeError
 // reading `.click` of null almost always means a missing selector.
 function shouldAttemptRepair(category) {
-  return category === 'SELECTOR' || category === 'UNKNOWN';
+  return category === 'SELECTOR' || category === 'UNKNOWN' || category === 'EMPTY_RESULT';
 }
 
 module.exports = { classifyError, summarise, shouldAttemptRepair };
