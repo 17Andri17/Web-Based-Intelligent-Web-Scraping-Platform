@@ -67,6 +67,13 @@ router.get('/:id', (req, res) => {
     applied:         r.applied === 1,
     verified:        r.verified === 1,
     llmError:        r.llm_error,
+    // Self-healing metadata: how the step was repaired ('selector' |
+    // 'field-drop' | 'remove-step' | 'manual'), the deterministic
+    // verification evidence, and whether it was auto-written into the
+    // saved workflow.
+    repairKind:      r.repair_kind || 'selector',
+    evidence:        r.evidence_json ? safeJson(r.evidence_json) : null,
+    autoAdopted:     r.auto_adopted === 1,
     createdAt:       r.created_at,
   }));
   res.json({ run: out });

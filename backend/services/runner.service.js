@@ -14,6 +14,8 @@ const STEP_ERROR     = 'STEP_ERROR:';
 const ITER_START     = 'ITER_START:';
 const ITER_TICK      = 'ITER_TICK:';
 const ITER_END       = 'ITER_END:';
+const STEP_RESULT    = 'STEP_RESULT:';    // per-extraction record-count / field-fill stats
+const STEP_SNAPSHOT  = 'STEP_SNAPSHOT:';  // page HTML captured when a step looks broken
 
 /* ===========================================================================
    runner.service
@@ -56,6 +58,8 @@ function runChild(workflow, { signal } = {}) {
 
     let resultsObj = null;
     let errorInfo  = null;
+    const stepResults   = [];   // [{ stepId, type, label, key, count, fields, multiple }]
+    const stepSnapshots = {};   // stepId → { url, html }
     let buffer     = '';
     // Keep the tail of stderr lines so that when the child exits non-zero
     // WITHOUT emitting a structured STEP_ERROR (e.g. a SyntaxError that
@@ -100,6 +104,19 @@ function runChild(workflow, { signal } = {}) {
         } catch (_) {}
         return;
       }
+      // Extraction stats / snapshots — structured, never logged. These power
+      // empty-result detection + self-healing in the execution pipeline.
+      if (line.startsWith(STEP_RESULT)) {
+        try { stepResults.push(JSON.parse(line.slice(STEP_RESULT.length))); } catch (_) {}
+        return;
+      }
+      if (line.startsWith(STEP_SNAPSHOT)) {
+        try {
+          const s = JSON.parse(line.slice(STEP_SNAPSHOT.length));
+          if (s && s.stepId) stepSnapshots[s.stepId] = { url: s.url || null, html: s.html || null };
+        } catch (_) {}
+        return;
+      }
       const level = isErr ? 'error' : 'info';
       if (line.trim()) {
         if (isErr) {
@@ -134,7 +151,8 @@ function runChild(workflow, { signal } = {}) {
       try { fs.unlinkSync(tmpFile); } catch (_) {}
       events.emit('log', { line: `❌ Failed to start runner: ${err.message}`, level: 'error' });
       resolve({ success: false, exitCode: -1, results: null,
-                errorInfo: errorInfo || { message: err.message, step: null } });
+                errorInfo: errorInfo || { message: err.message, step: null },
+                stepResults, stepSnapshots });
     });
 
     child.on('close', (exitCode) => {
@@ -160,7 +178,7 @@ function runChild(workflow, { signal } = {}) {
           preExecution: true,
         };
       }
-      resolve({ success, exitCode, results: resultsObj, errorInfo });
+      resolve({ success, exitCode, results: resultsObj, errorInfo, stepResults, stepSnapshots });
     });
   });
 

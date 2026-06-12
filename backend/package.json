@@ -4,7 +4,8 @@
   "description": "",
   "main": "app.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node test/healing-pure.test.js",
+    "test:browser": "node test/healing-integration.test.js && node test/healing-e2e.test.js",
     "start": "node server.js"
   },
   "keywords": [],

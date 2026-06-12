@@ -295,15 +295,21 @@ function RepairsView({ repairs }) {
           border: "1px solid " + (r.verified ? "#3ea66f" : r.applied ? "#e89a4f" : "#a44"),
           borderRadius: 6, padding: 10, fontSize: 12,
         }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-            <strong>Attempt #{r.attempt} · {r.stepType}</strong>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, gap: 8 }}>
+            <strong style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              Attempt #{r.attempt} · {r.stepType}
+              {r.repairKind && <RepairKindChip kind={r.repairKind} />}
+            </strong>
             <span style={{
               fontSize: 11,
               color: r.verified ? "#3ea66f" : r.applied ? "#e89a4f" : "#a44",
+              textAlign: "right",
             }}>
               {r.llmError ? `LLM error: ${r.llmError}` :
+               r.repairKind === "manual" ? "manual action needed" :
                r.verified ? "verified" : r.applied ? "applied (not yet verified)" : "rejected"}
               {r.confidence ? ` · ${r.confidence}` : ""}
+              {r.autoAdopted && <span style={{ color: "#3ea66f" }}> · auto-adopted</span>}
             </span>
           </div>
           {r.errorMessage && (
@@ -322,9 +328,39 @@ function RepairsView({ repairs }) {
           {r.explanation && (
             <div style={{ marginTop: 6, color: "var(--text-secondary)" }}>{r.explanation}</div>
           )}
+          {r.evidence && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-secondary)" }}>
+                Verification evidence (checked against the live page, no AI)
+              </summary>
+              <pre style={{ fontSize: 11, background: "var(--bg, #0e0e0e)", padding: 8, marginTop: 6, overflow: "auto" }}>
+{JSON.stringify(r.evidence, null, 2)}
+              </pre>
+            </details>
+          )}
         </div>
       ))}
     </div>
+  );
+}
+
+const REPAIR_KIND_LABELS = {
+  selector:      { label: "selector fix",  color: "#4f9cf9" },
+  "field-drop":  { label: "field dropped", color: "#e89a4f" },
+  "remove-step": { label: "step removed",  color: "#e89a4f" },
+  manual:        { label: "needs you",     color: "#e0556a" },
+};
+
+function RepairKindChip({ kind }) {
+  const k = REPAIR_KIND_LABELS[kind] || { label: kind, color: "#888" };
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em",
+      padding: "1px 6px", borderRadius: 8, color: k.color,
+      border: `1px solid ${k.color}`, background: "transparent",
+    }}>
+      {k.label}
+    </span>
   );
 }
 

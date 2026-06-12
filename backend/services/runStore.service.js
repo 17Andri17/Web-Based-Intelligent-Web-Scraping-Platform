@@ -24,6 +24,9 @@ function finishRun(runId, patch) {
     'status', 'finished_at', 'duration_ms', 'results_json',
     'error_message', 'error_category', 'failed_step_id', 'failed_step_type',
     'failed_step_label', 'ai_summary', 'retry_count',
+    // Previously omitted — the patched workflow was computed but never saved,
+    // so the "Adopt AI-repaired workflow" button never had anything to adopt.
+    'patched_steps_json',
   ];
   const fields = Object.keys(patch).filter(k => allowed.includes(k));
   if (fields.length === 0) return;
@@ -89,13 +92,14 @@ function recordRepair({
   runId, workflowId, stepId, stepType, attempt,
   errorMessage, originalParams, suggestedParams, explanation, confidence,
   applied = false, verified = false, llmError = null,
+  repairKind = null, evidence = null, autoAdopted = false,
 }) {
   const info = db.prepare(`
     INSERT INTO run_repairs
       (run_id, workflow_id, step_id, step_type, attempt, error_message,
        original_params, suggested_params, explanation, confidence,
-       applied, verified, llm_error)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       applied, verified, llm_error, repair_kind, evidence_json, auto_adopted)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     runId, workflowId, stepId, stepType, attempt,
     truncate(errorMessage, 1000),
@@ -106,8 +110,39 @@ function recordRepair({
     applied ? 1 : 0,
     verified ? 1 : 0,
     truncate(llmError, 500),
+    repairKind || null,
+    evidence == null ? null : truncate(JSON.stringify(evidence), 4000),
+    autoAdopted ? 1 : 0,
   );
   return info.lastInsertRowid;
+}
+
+// Parsed results_json from the most recent successful runs of a workflow.
+// Used by self-healing to (a) establish a baseline record count per output
+// key and (b) show the LLM what a field "used to" contain.
+function recentSuccessfulResults(workflowId, limit = 5) {
+  const rows = db.prepare(`
+    SELECT results_json FROM runs
+    WHERE workflow_id = ? AND status = 'success' AND results_json IS NOT NULL
+    ORDER BY started_at DESC
+    LIMIT ?
+  `).all(workflowId, limit);
+  const out = [];
+  for (const r of rows) {
+    try { out.push(JSON.parse(r.results_json)); } catch (_) {}
+  }
+  return out;
+}
+
+// Persist a healed step tree back into the saved workflow (auto-adopt path).
+// Returns the number of rows changed (0 if the workflow no longer exists or
+// isn't owned by the user).
+function updateWorkflowSteps(workflowId, userId, steps) {
+  return db.prepare(`
+    UPDATE workflows
+    SET steps_json = ?, updated_at = datetime('now')
+    WHERE id = ? AND user_id = ?
+  `).run(JSON.stringify(steps), workflowId, userId).changes;
 }
 
 function markRepairVerified(repairId, verified) {
@@ -118,7 +153,8 @@ function listRepairsForRun(runId) {
   return db.prepare(`
     SELECT id, step_id, step_type, attempt, error_message,
            original_params, suggested_params, explanation, confidence,
-           applied, verified, llm_error, created_at
+           applied, verified, llm_error, repair_kind, evidence_json,
+           auto_adopted, created_at
     FROM run_repairs
     WHERE run_id = ?
     ORDER BY attempt ASC, id ASC
@@ -241,6 +277,8 @@ module.exports = {
   appendLog, getLogs, clearLogCounter,
   // repairs
   recordRepair, markRepairVerified, listRepairsForRun,
+  // self-healing helpers
+  recentSuccessfulResults, updateWorkflowSteps,
   // schedules
   listSchedulesForUser, getScheduleByWorkflow, upsertSchedule,
   deleteSchedule, dueSchedules, bumpScheduleAfterRun, getScheduleById,

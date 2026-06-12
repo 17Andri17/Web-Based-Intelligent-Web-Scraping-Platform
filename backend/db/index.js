@@ -145,5 +145,9 @@ addColumnIfMissing('runs', 'patched_steps_json', 'TEXT');
 addColumnIfMissing('runs', 'failed_step_type',   'TEXT');
 addColumnIfMissing('runs', 'failed_step_label',  'TEXT');
 addColumnIfMissing('schedules', 'anchor_at', 'TEXT');
+// Self-healing metadata on each repair attempt.
+addColumnIfMissing('run_repairs', 'repair_kind',  'TEXT');     // 'selector' | 'field-drop' | 'remove-step' | 'manual'
+addColumnIfMissing('run_repairs', 'evidence_json', 'TEXT');    // deterministic verification evidence
+addColumnIfMissing('run_repairs', 'auto_adopted', 'INTEGER NOT NULL DEFAULT 0');
 
 module.exports = db;
