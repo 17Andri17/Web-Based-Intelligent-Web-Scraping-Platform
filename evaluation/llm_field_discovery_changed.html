@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Benchmark — Field Discovery · Changed</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  /* ── Page chrome (identical look to base) ──────────────────────── */
+  .shop-header { padding: 28px 40px; background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+  .shop-logo { font-family: var(--sans); font-size: 22px; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+  .shop-logo span { color: var(--accent); }
+  .shop-nav { display: flex; gap: 20px; font-size: 12px; color: var(--muted); }
+  .catalog-wrapper { max-width: 1100px; margin: 0 auto; padding: 40px; }
+  .catalog-title { font-family: var(--sans); font-size: 28px; font-weight: 800; color: #fff; margin-bottom: 6px; }
+  .catalog-subtitle { font-size: 12px; color: var(--muted); margin-bottom: 32px; }
+  .filter-bar { display: flex; gap: 10px; margin-bottom: 32px; flex-wrap: wrap; }
+  .filter-chip { padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border); background: var(--bg3); font-size: 11px; color: var(--muted); cursor: pointer; }
+  .filter-chip.active { border-color: var(--accent); color: var(--accent); background: rgba(74,240,180,0.08); }
+  .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
+
+  /*
+   * CHANGED VARIANT — structural overhaul.
+   *
+   * All BEM class names are gone. The visual output is identical to the
+   * base but the HTML is completely different:
+   *   • Tag names changed (div→article, span→b/em/small, p→blockquote)
+   *   • All semantic class names replaced with short utility tokens
+   *   • Nesting depth increased (extra wrappers inserted)
+   *   • Some data moved to data-* attributes instead of text content
+   *   • Sibling order shuffled within the card body
+   *   • No IDs anywhere
+   *
+   * Every selector the engine would have produced from the base variant
+   * (.product-card__title, .product-card__price, etc.) returns 0 matches.
+   * The LLM must reason from structure and visible text to find the fields.
+   */
+
+  /* Utility tokens — intentionally opaque names */
+  .vg-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .vg-media { font-size: 56px; background: var(--surface); margin: 10px 14px; border-radius: 8px; padding: 24px; display: flex; align-items: center; justify-content: center; }
+  .vg-top { padding: 10px 14px 0; min-height: 26px; }
+  .vg-lbl { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 9px; border-radius: 10px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .lbl-s { background: rgba(240,96,96,0.15); color: var(--accent3); border: 1px solid rgba(240,96,96,0.35); }
+  .lbl-n { background: rgba(74,240,180,0.12); color: var(--accent);  border: 1px solid rgba(74,240,180,0.3); }
+  .lbl-h { background: rgba(240,160,64,0.12); color: var(--warn);    border: 1px solid rgba(240,160,64,0.3); }
+  .vg-inner { padding: 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .vg-vendor { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  .vg-hl { font-family: var(--sans); font-size: 15px; font-weight: 700; color: #fff; line-height: 1.3; }
+  .vg-copy { font-size: 11px; color: var(--muted); line-height: 1.6; }
+  .vg-prices { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+  .vg-cur { font-family: var(--sans); font-size: 18px; font-weight: 800; color: var(--accent); }
+  .vg-was { font-size: 12px; color: var(--muted); text-decoration: line-through; }
+  .vg-off { font-size: 10px; font-weight: 600; color: var(--accent3); }
+  .vg-social { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .vg-stars { color: var(--warn); font-weight: 600; }
+  .vg-votes { color: var(--muted); }
+  .vg-bot { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .vg-stock { font-size: 11px; font-weight: 600; }
+  .stk-ok  { color: var(--easy); }
+  .stk-low { color: var(--warn); }
+  .stk-no  { color: var(--accent3); }
+  .vg-dlv { font-size: 10px; color: var(--muted); }
+
+  /* Info callout */
+  .info-box { background: rgba(192,64,240,0.07); border: 1px solid rgba(192,64,240,0.25); border-radius: 8px; padding: 16px 20px; font-size: 12px; color: var(--muted); line-height: 1.7; margin-bottom: 32px; }
+  .info-box strong { color: var(--extreme); }
+
+  /* Ground truth table */
+  .gt-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 40px; }
+  .gt-table th { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border2); color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; font-size: 10px; }
+  .gt-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .gt-table code { font-family: var(--mono); color: var(--accent); font-size: 10px; }
+  .gt-table .field-name { color: var(--purple); }
+  .gt-table .opt { color: var(--muted); font-style: italic; }
+  .section-label { font-family: var(--sans); font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin: 40px 0 12px; }
+  .diff-note { font-size: 10px; color: var(--extreme); margin-left: 8px; }
+</style>
+</head>
+<body>
+
+<!-- ── Storefront chrome (identical appearance) ──────────────────── -->
+<header class="shop-header">
+  <div class="shop-logo">Volt<span>Gear</span></div>
+  <nav class="shop-nav">
+    <span>Wearables</span>
+    <span>Audio</span>
+    <span>Photography</span>
+    <span>Smart Home</span>
+    <span>Peripherals</span>
+  </nav>
+</header>
+
+<!-- ── Catalog ──────────────────────────────────────────────────── -->
+<div class="catalog-wrapper">
+
+  <h1 class="catalog-title">Electronics Catalog</h1>
+  <p class="catalog-subtitle">6 products · Sorted by popularity</p>
+
+  <div class="info-box">
+    <strong>LLM Field Discovery Benchmark — CHANGED variant.</strong><br>
+    Identical visual output to the base, but the HTML structure is completely different. All BEM class names are gone, tag names changed,
+    nesting depth increased, and sibling order shuffled. Every selector the engine generated on the base variant returns <em>0 matches</em> here.
+    This variant is used for: <strong>(a)</strong> field-discovery scoring when the LLM is given the changed HTML directly, and
+    <strong>(b)</strong> self-healing evaluation where a broken base-variant selector must be repaired against this page's HTML.
+  </div>
+
+  <div class="filter-bar">
+    <span class="filter-chip active">All</span>
+    <span class="filter-chip">Wearables</span>
+    <span class="filter-chip">Audio</span>
+    <span class="filter-chip">Photography</span>
+    <span class="filter-chip">Smart Home</span>
+  </div>
+
+  <!--
+    STRUCTURAL CHANGES vs base:
+    ─────────────────────────────────────────────────────────────────
+    Base element                   → Changed element
+    ─────────────────────────────────────────────────────────────────
+    div.product-card               → article.vg-card  [tag + class]
+    div.product-card__badge-row    → div.vg-top        [class]
+    span.product-card__badge       → b.vg-lbl          [tag + class]
+    div.product-card__image-wrapper→ div.vg-media       [class]
+    div.product-card__body         → div.vg-inner       [class; extra wrapper added inside]
+    div.product-card__brand        → small.vg-vendor    [tag + class]
+    div.product-card__title        → h3.vg-hl           [tag + class]
+    p.product-card__description    → blockquote.vg-copy [tag + class]
+    div.product-card__pricing      → div.vg-prices      [class; order: was/cur/off → cur/was/off]
+    span.product-card__price       → em.vg-cur          [tag + class; also data-value attr added]
+    span.product-card__original-price→ del.vg-was       [tag + class]
+    span.product-card__discount    → b.vg-off           [tag + class]
+    div.product-card__meta         → div.vg-social      [class; shuffled before pricing]
+    span.product-card__rating      → span.vg-stars      [class]
+    span.product-card__review-count→ span.vg-votes      [class]
+    div.product-card__footer       → div.vg-bot         [class]
+    span.product-card__availability→ span.vg-stock      [class + state classes changed]
+    span.product-card__shipping    → small.vg-dlv       [tag + class]
+  -->
+
+  <div class="product-grid" id="product-grid">
+
+    <!-- Card 1 — Sony Smartwatch -->
+    <article class="vg-card" data-pid="101">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-s">Sale</b>
+      </div>
+      <div class="vg-media">⌚</div>
+      <div class="vg-inner">
+        <!-- meta moved above title/desc (order change) -->
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.8</span>
+          <span class="vg-votes">(2,341 reviews)</span>
+        </div>
+        <div>
+          <!-- extra wrapper div inserted around brand+title -->
+          <small class="vg-vendor">Sony</small>
+          <h3 class="vg-hl">Chrono Pro X Smartwatch</h3>
+        </div>
+        <blockquote class="vg-copy">AMOLED display, GPS tracking, and 7-day battery life in a 42mm titanium case.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="279">$279</em>
+          <del class="vg-was">$349</del>
+          <b class="vg-off">−20%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-ok">In Stock</span>
+        <small class="vg-dlv">Free shipping</small>
+      </div>
+    </article>
+
+    <!-- Card 2 — Bose Headphones -->
+    <article class="vg-card" data-pid="102">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-n">New</b>
+      </div>
+      <div class="vg-media">🎧</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.6</span>
+          <span class="vg-votes">(1,087 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Bose</small>
+          <h3 class="vg-hl">SoundForge 900 Headphones</h3>
+        </div>
+        <blockquote class="vg-copy">Industry-leading ANC with 30-hour battery and multipoint Bluetooth 5.3 pairing.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="199">$199</em>
+          <del class="vg-was">$249</del>
+          <b class="vg-off">−20%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-ok">In Stock</span>
+        <small class="vg-dlv">Free shipping</small>
+      </div>
+    </article>
+
+    <!-- Card 3 — Lumix Camera (no badge, no discount) -->
+    <article class="vg-card" data-pid="103">
+      <div class="vg-top"></div>
+      <div class="vg-media">📷</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.9</span>
+          <span class="vg-votes">(473 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Lumix</small>
+          <h3 class="vg-hl">Lumix 4K Compact Camera</h3>
+        </div>
+        <blockquote class="vg-copy">1-inch sensor, 5-axis stabilisation, and 4K 60fps video in a jacket-pocket body.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="599">$599</em>
+          <del class="vg-was"></del>
+          <b class="vg-off"></b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-low">Only 3 left</span>
+        <small class="vg-dlv">Ships in 2 days</small>
+      </div>
+    </article>
+
+    <!-- Card 4 — Keychron Keyboard -->
+    <article class="vg-card" data-pid="104">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-h">Hot</b>
+      </div>
+      <div class="vg-media">⌨️</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.7</span>
+          <span class="vg-votes">(3,812 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Keychron</small>
+          <h3 class="vg-hl">KeyMaster TKL Mechanical</h3>
+        </div>
+        <blockquote class="vg-copy">Hot-swappable switches, per-key RGB, and aluminium base — tenkeyless layout.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="129">$129</em>
+          <del class="vg-was">$149</del>
+          <b class="vg-off">−13%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-ok">In Stock</span>
+        <small class="vg-dlv">Free shipping</small>
+      </div>
+    </article>
+
+    <!-- Card 5 — Logitech TrackPad -->
+    <article class="vg-card" data-pid="105">
+      <div class="vg-top"></div>
+      <div class="vg-media">🖱️</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.4</span>
+          <span class="vg-votes">(920 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Logitech</small>
+          <h3 class="vg-hl">TrackPad Ultra Wireless</h3>
+        </div>
+        <blockquote class="vg-copy">Haptic feedback, 4-month battery, and multi-touch gestures compatible with all OSes.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="89">$89</em>
+          <del class="vg-was"></del>
+          <b class="vg-off"></b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-ok">In Stock</span>
+        <small class="vg-dlv">Free shipping</small>
+      </div>
+    </article>
+
+    <!-- Card 6 — Philips Hub -->
+    <article class="vg-card" data-pid="106">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-s">Sale</b>
+      </div>
+      <div class="vg-media">💡</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.2</span>
+          <span class="vg-votes">(654 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Philips</small>
+          <h3 class="vg-hl">Smart Bulb Hub Pro</h3>
+        </div>
+        <blockquote class="vg-copy">Controls up to 50 Zigbee bulbs, supports Matter, and integrates with all major voice assistants.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="49">$49</em>
+          <del class="vg-was">$69</del>
+          <b class="vg-off">−29%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-no">Out of Stock</span>
+        <small class="vg-dlv">—</small>
+      </div>
+    </article>
+
+  </div><!-- /product-grid -->
+
+  <!-- ── Ground truth: changed selectors ────────────────────────── -->
+  <div class="section-label">Ground Truth — Changed Variant Selectors</div>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:16px;">
+    Selectors are relative to <code>article.vg-card</code>. Use these to score field-discovery responses on this variant,
+    and to verify self-healing repairs.
+  </p>
+  <table class="gt-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Field</th>
+        <th>Expected name</th>
+        <th>Base selector</th>
+        <th>Changed selector</th>
+        <th>What broke</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td><td>Product title</td><td class="field-name"><code>product_title</code></td>
+        <td><code>.product-card__title</code></td>
+        <td><code>h3.vg-hl</code></td>
+        <td>Class + tag both changed</td>
+      </tr>
+      <tr>
+        <td>2</td><td>Brand</td><td class="field-name"><code>brand</code></td>
+        <td><code>.product-card__brand</code></td>
+        <td><code>small.vg-vendor</code></td>
+        <td>Class + tag both changed</td>
+      </tr>
+      <tr>
+        <td>3</td><td>Price</td><td class="field-name"><code>price</code></td>
+        <td><code>.product-card__price</code></td>
+        <td><code>em.vg-cur</code></td>
+        <td>Class + tag; also <code>data-value</code> attr available</td>
+      </tr>
+      <tr>
+        <td>4</td><td>Original price</td><td class="field-name"><code>original_price</code></td>
+        <td><code>.product-card__original-price</code></td>
+        <td><code>del.vg-was</code></td>
+        <td>Class + tag; now a <code>&lt;del&gt;</code></td>
+      </tr>
+      <tr>
+        <td>5</td><td>Discount</td><td class="field-name"><code>discount</code></td>
+        <td><code>.product-card__discount</code></td>
+        <td><code>b.vg-off</code></td>
+        <td>Class + tag changed</td>
+      </tr>
+      <tr>
+        <td>6</td><td>Rating</td><td class="field-name"><code>rating</code></td>
+        <td><code>.product-card__rating</code></td>
+        <td><code>.vg-stars</code></td>
+        <td>Class changed; also moved before title in DOM</td>
+      </tr>
+      <tr>
+        <td>7</td><td>Review count</td><td class="field-name"><code>review_count</code></td>
+        <td><code>.product-card__review-count</code></td>
+        <td><code>.vg-votes</code></td>
+        <td>Class changed; moved before title</td>
+      </tr>
+      <tr>
+        <td>8</td><td>Availability</td><td class="field-name"><code>availability</code></td>
+        <td><code>.product-card__availability</code></td>
+        <td><code>.vg-stock</code></td>
+        <td>Class changed; state classes differ (<code>stk-ok/low/no</code>)</td>
+      </tr>
+      <tr>
+        <td>9</td><td>Description</td><td class="field-name"><code>description</code></td>
+        <td><code>.product-card__description</code></td>
+        <td><code>blockquote.vg-copy</code></td>
+        <td>Class + tag; <code>&lt;p&gt;</code> → <code>&lt;blockquote&gt;</code></td>
+      </tr>
+      <tr>
+        <td>10</td><td>Badge</td><td class="field-name"><code>badge</code></td>
+        <td><code>.product-card__badge</code></td>
+        <td><code>b.vg-lbl</code></td>
+        <td>Class + tag; <code>&lt;span&gt;</code> → <code>&lt;b&gt;</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ── Self-healing reference ──────────────────────────────────── -->
+  <div class="section-label">Self-Healing Reference — Broken Steps</div>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:16px;">
+    These are the 8 core steps (badge and description excluded as lower priority) that would be passed to the self-healing LLM call.
+    Each row shows the original selector, the error it produces on this page, and the correct repaired selector.
+  </p>
+  <table class="gt-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Step / field</th>
+        <th>Original (broken) selector</th>
+        <th>Error</th>
+        <th>Correct repair</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>Extract title</td><td><code>.product-card__title</code></td><td>No elements found</td><td><code>h3.vg-hl</code></td></tr>
+      <tr><td>2</td><td>Extract brand</td><td><code>.product-card__brand</code></td><td>No elements found</td><td><code>small.vg-vendor</code></td></tr>
+      <tr><td>3</td><td>Extract price</td><td><code>.product-card__price</code></td><td>No elements found</td><td><code>em.vg-cur</code></td></tr>
+      <tr><td>4</td><td>Extract original price</td><td><code>.product-card__original-price</code></td><td>No elements found</td><td><code>del.vg-was</code></td></tr>
+      <tr><td>5</td><td>Extract discount</td><td><code>.product-card__discount</code></td><td>No elements found</td><td><code>b.vg-off</code></td></tr>
+      <tr><td>6</td><td>Extract rating</td><td><code>.product-card__rating</code></td><td>No elements found</td><td><code>.vg-stars</code></td></tr>
+      <tr><td>7</td><td>Extract review count</td><td><code>.product-card__review-count</code></td><td>No elements found</td><td><code>.vg-votes</code></td></tr>
+      <tr><td>8</td><td>Extract availability</td><td><code>.product-card__availability</code></td><td>No elements found</td><td><code>.vg-stock</code></td></tr>
+    </tbody>
+  </table>
+
+</div><!-- /catalog-wrapper -->
+</body>
+</html>

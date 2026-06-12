@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Benchmark — Field Discovery · Base</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  /* ── Page-specific overrides ─────────────────────────────────── */
+  .shop-header { padding: 28px 40px; background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+  .shop-logo { font-family: var(--sans); font-size: 22px; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+  .shop-logo span { color: var(--accent); }
+  .shop-nav { display: flex; gap: 20px; font-size: 12px; color: var(--muted); }
+
+  .catalog-wrapper { max-width: 1100px; margin: 0 auto; padding: 40px; }
+  .catalog-title { font-family: var(--sans); font-size: 28px; font-weight: 800; color: #fff; margin-bottom: 6px; }
+  .catalog-subtitle { font-size: 12px; color: var(--muted); margin-bottom: 32px; }
+
+  /* Filter bar */
+  .filter-bar { display: flex; gap: 10px; margin-bottom: 32px; flex-wrap: wrap; }
+  .filter-chip { padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border); background: var(--bg3); font-size: 11px; color: var(--muted); cursor: pointer; }
+  .filter-chip.active { border-color: var(--accent); color: var(--accent); background: rgba(74,240,180,0.08); }
+
+  /* Product grid */
+  .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
+
+  /* Product card — clean BEM structure (BASE variant) */
+  .product-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .product-card__badge-row { padding: 10px 14px 0; min-height: 26px; }
+  .product-card__badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 9px; border-radius: 10px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .product-card__badge--sale { background: rgba(240,96,96,0.15); color: var(--accent3); border: 1px solid rgba(240,96,96,0.35); }
+  .product-card__badge--new  { background: rgba(74,240,180,0.12); color: var(--accent);  border: 1px solid rgba(74,240,180,0.3); }
+  .product-card__badge--hot  { background: rgba(240,160,64,0.12); color: var(--warn);    border: 1px solid rgba(240,160,64,0.3); }
+  .product-card__image-wrapper { padding: 24px; display: flex; align-items: center; justify-content: center; font-size: 56px; background: var(--surface); margin: 10px 14px; border-radius: 8px; }
+  .product-card__body { padding: 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .product-card__brand { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  .product-card__title { font-family: var(--sans); font-size: 15px; font-weight: 700; color: #fff; line-height: 1.3; }
+  .product-card__description { font-size: 11px; color: var(--muted); line-height: 1.6; }
+  .product-card__pricing { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+  .product-card__price { font-family: var(--sans); font-size: 18px; font-weight: 800; color: var(--accent); }
+  .product-card__original-price { font-size: 12px; color: var(--muted); text-decoration: line-through; }
+  .product-card__discount { font-size: 10px; font-weight: 600; color: var(--accent3); }
+  .product-card__meta { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .product-card__rating { color: var(--warn); font-weight: 600; }
+  .product-card__review-count { color: var(--muted); }
+  .product-card__footer { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .product-card__availability { font-size: 11px; font-weight: 600; }
+  .product-card__availability--in-stock { color: var(--easy); }
+  .product-card__availability--low-stock { color: var(--warn); }
+  .product-card__availability--out-of-stock { color: var(--accent3); }
+  .product-card__shipping { font-size: 10px; color: var(--muted); }
+
+  /* Info callout */
+  .info-box { background: rgba(74,144,240,0.07); border: 1px solid rgba(74,144,240,0.25); border-radius: 8px; padding: 16px 20px; font-size: 12px; color: var(--muted); line-height: 1.7; margin-bottom: 32px; }
+  .info-box strong { color: var(--accent2); }
+
+  /* Ground truth table */
+  .gt-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 40px; }
+  .gt-table th { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border2); color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; font-size: 10px; }
+  .gt-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .gt-table code { font-family: var(--mono); color: var(--accent); font-size: 10px; }
+  .gt-table .field-name { color: var(--purple); }
+  .gt-table .opt { color: var(--muted); font-style: italic; }
+  .section-label { font-family: var(--sans); font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin: 40px 0 12px; }
+</style>
+</head>
+<body>
+
+<!-- ── Storefront chrome ─────────────────────────────────────────── -->
+<header class="shop-header">
+  <div class="shop-logo">Volt<span>Gear</span></div>
+  <nav class="shop-nav">
+    <span>Wearables</span>
+    <span>Audio</span>
+    <span>Photography</span>
+    <span>Smart Home</span>
+    <span>Peripherals</span>
+  </nav>
+</header>
+
+<!-- ── Catalog ──────────────────────────────────────────────────── -->
+<div class="catalog-wrapper">
+
+  <h1 class="catalog-title">Electronics Catalog</h1>
+  <p class="catalog-subtitle">6 products · Sorted by popularity</p>
+
+  <div class="info-box">
+    <strong>LLM Field Discovery Benchmark — BASE variant.</strong><br>
+    Feed the HTML of <em>one representative <code>.product-card</code></em> to the LLM and ask it to enumerate extractable fields with relative CSS selectors.
+    The <strong>ground truth</strong> table below lists all 10 expected fields. Score each suggested field: <strong>2 pts</strong> if the selector resolves to the correct element,
+    <strong>1 pt</strong> if the name is descriptive snake_case, 0 otherwise. Also track coverage (fields found / 10).
+    Run each scenario (with-prompt / without-prompt) <strong>3 times</strong> and report mean ± range.
+  </div>
+
+  <div class="filter-bar">
+    <span class="filter-chip active">All</span>
+    <span class="filter-chip">Wearables</span>
+    <span class="filter-chip">Audio</span>
+    <span class="filter-chip">Photography</span>
+    <span class="filter-chip">Smart Home</span>
+  </div>
+
+  <!-- ── Product grid ──────────────────────────────────────────── -->
+  <div class="product-grid" id="product-grid">
+
+    <!-- Card 1 -->
+    <div class="product-card" data-product-id="101">
+      <div class="product-card__badge-row">
+        <span class="product-card__badge product-card__badge--sale">Sale</span>
+      </div>
+      <div class="product-card__image-wrapper">⌚</div>
+      <div class="product-card__body">
+        <div class="product-card__brand">Sony</div>
+        <div class="product-card__title">Chrono Pro X Smartwatch</div>
+        <p class="product-card__description">AMOLED display, GPS tracking, and 7-day battery life in a 42mm titanium case.</p>
+        <div class="product-card__pricing">
+          <span class="product-card__price">$279</span>
+          <span class="product-card__original-price">$349</span>
+          <span class="product-card__discount">−20%</span>
+        </div>
+        <div class="product-card__meta">
+          <span class="product-card__rating">★ 4.8</span>
+          <span class="product-card__review-count">(2,341 reviews)</span>
+        </div>
+      </div>
+      <div class="product-card__footer">
+        <span class="product-card__availability product-card__availability--in-stock">In Stock</span>
+        <span class="product-card__shipping">Free shipping</span>
+      </div>
+    </div>
+
+    <!-- Card 2 -->
+    <div class="product-card" data-product-id="102">
+      <div class="product-card__badge-row">
+        <span class="product-card__badge product-card__badge--new">New</span>
+      </div>
+      <div class="product-card__image-wrapper">🎧</div>
+      <div class="product-card__body">
+        <div class="product-card__brand">Bose</div>
+        <div class="product-card__title">SoundForge 900 Headphones</div>
+        <p class="product-card__description">Industry-leading ANC with 30-hour battery and multipoint Bluetooth 5.3 pairing.</p>
+        <div class="product-card__pricing">
+          <span class="product-card__price">$199</span>
+          <span class="product-card__original-price">$249</span>
+          <span class="product-card__discount">−20%</span>
+        </div>
+        <div class="product-card__meta">
+          <span class="product-card__rating">★ 4.6</span>
+          <span class="product-card__review-count">(1,087 reviews)</span>
+        </div>
+      </div>
+      <div class="product-card__footer">
+        <span class="product-card__availability product-card__availability--in-stock">In Stock</span>
+        <span class="product-card__shipping">Free shipping</span>
+      </div>
+    </div>
+
+    <!-- Card 3 -->
+    <div class="product-card" data-product-id="103">
+      <div class="product-card__badge-row"></div>
+      <div class="product-card__image-wrapper">📷</div>
+      <div class="product-card__body">
+        <div class="product-card__brand">Lumix</div>
+        <div class="product-card__title">Lumix 4K Compact Camera</div>
+        <p class="product-card__description">1-inch sensor, 5-axis stabilisation, and 4K 60fps video in a jacket-pocket body.</p>
+        <div class="product-card__pricing">
+          <span class="product-card__price">$599</span>
+          <span class="product-card__original-price"></span>
+          <span class="product-card__discount"></span>
+        </div>
+        <div class="product-card__meta">
+          <span class="product-card__rating">★ 4.9</span>
+          <span class="product-card__review-count">(473 reviews)</span>
+        </div>
+      </div>
+      <div class="product-card__footer">
+        <span class="product-card__availability product-card__availability--low-stock">Only 3 left</span>
+        <span class="product-card__shipping">Ships in 2 days</span>
+      </div>
+    </div>
+
+    <!-- Card 4 -->
+    <div class="product-card" data-product-id="104">
+      <div class="product-card__badge-row">
+        <span class="product-card__badge product-card__badge--hot">Hot</span>
+      </div>
+      <div class="product-card__image-wrapper">⌨️</div>
+      <div class="product-card__body">
+        <div class="product-card__brand">Keychron</div>
+        <div class="product-card__title">KeyMaster TKL Mechanical</div>
+        <p class="product-card__description">Hot-swappable switches, per-key RGB, and aluminium base — tenkeyless layout.</p>
+        <div class="product-card__pricing">
+          <span class="product-card__price">$129</span>
+          <span class="product-card__original-price">$149</span>
+          <span class="product-card__discount">−13%</span>
+        </div>
+        <div class="product-card__meta">
+          <span class="product-card__rating">★ 4.7</span>
+          <span class="product-card__review-count">(3,812 reviews)</span>
+        </div>
+      </div>
+      <div class="product-card__footer">
+        <span class="product-card__availability product-card__availability--in-stock">In Stock</span>
+        <span class="product-card__shipping">Free shipping</span>
+      </div>
+    </div>
+
+    <!-- Card 5 -->
+    <div class="product-card" data-product-id="105">
+      <div class="product-card__badge-row"></div>
+      <div class="product-card__image-wrapper">🖱️</div>
+      <div class="product-card__body">
+        <div class="product-card__brand">Logitech</div>
+        <div class="product-card__title">TrackPad Ultra Wireless</div>
+        <p class="product-card__description">Haptic feedback, 4-month battery, and multi-touch gestures compatible with all OSes.</p>
+        <div class="product-card__pricing">
+          <span class="product-card__price">$89</span>
+          <span class="product-card__original-price"></span>
+          <span class="product-card__discount"></span>
+        </div>
+        <div class="product-card__meta">
+          <span class="product-card__rating">★ 4.4</span>
+          <span class="product-card__review-count">(920 reviews)</span>
+        </div>
+      </div>
+      <div class="product-card__footer">
+        <span class="product-card__availability product-card__availability--in-stock">In Stock</span>
+        <span class="product-card__shipping">Free shipping</span>
+      </div>
+    </div>
+
+    <!-- Card 6 -->
+    <div class="product-card" data-product-id="106">
+      <div class="product-card__badge-row">
+        <span class="product-card__badge product-card__badge--sale">Sale</span>
+      </div>
+      <div class="product-card__image-wrapper">💡</div>
+      <div class="product-card__body">
+        <div class="product-card__brand">Philips</div>
+        <div class="product-card__title">Smart Bulb Hub Pro</div>
+        <p class="product-card__description">Controls up to 50 Zigbee bulbs, supports Matter, and integrates with all major voice assistants.</p>
+        <div class="product-card__pricing">
+          <span class="product-card__price">$49</span>
+          <span class="product-card__original-price">$69</span>
+          <span class="product-card__discount">−29%</span>
+        </div>
+        <div class="product-card__meta">
+          <span class="product-card__rating">★ 4.2</span>
+          <span class="product-card__review-count">(654 reviews)</span>
+        </div>
+      </div>
+      <div class="product-card__footer">
+        <span class="product-card__availability product-card__availability--out-of-stock">Out of Stock</span>
+        <span class="product-card__shipping">—</span>
+      </div>
+    </div>
+
+  </div><!-- /product-grid -->
+
+  <!-- ── Ground truth table ──────────────────────────────────── -->
+  <div class="section-label">Ground Truth — 10 Expected Fields</div>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:16px;">
+    These are the fields a human expert would annotate. Selectors are relative to the <code>.product-card</code> root.
+    Fields marked <span class="opt">optional</span> may reasonably be omitted by the model; omitting them does not count against coverage.
+  </p>
+  <table class="gt-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Field</th>
+        <th>Expected name</th>
+        <th>Selector (relative)</th>
+        <th>Extraction kind</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>Product title</td><td class="field-name"><code>product_title</code></td><td><code>.product-card__title</code></td><td>text</td><td>Core — always expected</td></tr>
+      <tr><td>2</td><td>Brand</td><td class="field-name"><code>brand</code></td><td><code>.product-card__brand</code></td><td>text</td><td>Core</td></tr>
+      <tr><td>3</td><td>Price</td><td class="field-name"><code>price</code></td><td><code>.product-card__price</code></td><td>text</td><td>Core</td></tr>
+      <tr><td>4</td><td>Original price</td><td class="field-name"><code>original_price</code></td><td><code>.product-card__original-price</code></td><td>text</td><td>Core</td></tr>
+      <tr><td>5</td><td>Discount</td><td class="field-name"><code>discount</code></td><td><code>.product-card__discount</code></td><td>text</td><td>Core</td></tr>
+      <tr><td>6</td><td>Rating</td><td class="field-name"><code>rating</code></td><td><code>.product-card__rating</code></td><td>text</td><td>Core</td></tr>
+      <tr><td>7</td><td>Review count</td><td class="field-name"><code>review_count</code></td><td><code>.product-card__review-count</code></td><td>text</td><td>Core</td></tr>
+      <tr><td>8</td><td>Availability</td><td class="field-name"><code>availability</code></td><td><code>.product-card__availability</code></td><td>text</td><td>Core</td></tr>
+      <tr><td>9</td><td>Description</td><td class="field-name"><code>description</code></td><td><code>.product-card__description</code></td><td>text</td><td>Core</td></tr>
+      <tr><td>10</td><td>Badge / label</td><td class="field-name"><code>badge</code></td><td><code>.product-card__badge</code></td><td>text</td><td><span class="opt">Optional</span> — absent on some cards</td></tr>
+    </tbody>
+  </table>
+
+</div><!-- /catalog-wrapper -->
+</body>
+</html>
