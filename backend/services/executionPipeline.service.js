@@ -104,6 +104,11 @@ async function executeAndPersist(arg) {
   // Self-healing bookkeeping.
   const healLog = [];              // [{ stepId, confidence, kind, autoEligible }]
   const stepDisposition = new Map(); // stepId → 'manual' | 'healed' (avoid loops)
+  const manualFieldsByStep = new Map(); // stepId → Set(fieldName): present-but-
+  //                                       unverifiable fields left for the user.
+  //                                       We don't re-heal these (avoids a loop)
+  //                                       but the run is flagged needs_review.
+  const manualFieldNotes = [];     // human-readable "field X in step Y" notes
   let reviewMessage = null;        // set when we escalate an empty-result to manual
 
   // eslint-disable-next-line no-constant-condition
@@ -125,7 +130,7 @@ async function executeAndPersist(arg) {
       // ── Empty-result detection: a "successful" run that captured nothing ──
       const broken = detectBrokenSteps({
         stepResults: result.stepResults, snapshots: result.stepSnapshots,
-        currentSteps, priorResults, stepDisposition,
+        currentSteps, priorResults, stepDisposition, manualFieldsByStep,
       });
 
       if (broken.length === 0) {
@@ -184,6 +189,18 @@ async function executeAndPersist(arg) {
       stepDisposition.set(target.step.id, 'healed');
       healLog.push({ stepId: target.step.id, confidence: healed.confidence, kind: healed.kind,
                      autoEligible: healed.autoEligible, repairId: healed.repairId });
+      // Fields the healer couldn't safely re-map are kept as-is and flagged:
+      // record them so the confirmation re-run doesn't try to heal them again
+      // (which would loop), and so we can surface them to the user.
+      if (healed.manualFields && healed.manualFields.length) {
+        const set = manualFieldsByStep.get(target.step.id) || new Set();
+        for (const f of healed.manualFields) {
+          set.add(f);
+          manualFieldNotes.push(`"${f}" in "${target.step.label || target.step.type}"`);
+        }
+        manualFieldsByStep.set(target.step.id, set);
+        log(`• field(s) ${healed.manualFields.map(f => `"${f}"`).join(', ')} left for manual review; the rest of the step is healed.`, 'error');
+      }
       log(`• re-running to confirm the fix for "${target.step.label || target.step.type}"…`);
       continue; // re-run to verify end-to-end
     }
@@ -345,6 +362,14 @@ async function executeAndPersist(arg) {
       aiSummary += ' Some steps were healed for this run — you can adopt those fixes from run history while you address the rest.';
     }
     failedStepInfo = stepInfoFrom(lastError && lastError.step);
+  } else if (manualFieldNotes.length > 0) {
+    // The run captured data and the list itself was healed, but one or more
+    // fields couldn't be verified and were left for the user to finish. Flag
+    // for review (with the data + an adoptable proposal), don't call it a
+    // clean success.
+    status = 'needs_review';
+    errorCategory = 'EMPTY_RESULT';
+    aiSummary = `Self-healed ${healLog.length} step(s); captured the data we could verify. ${manualFieldNotes.length} field(s) need a manual selector: ${manualFieldNotes.join(', ')}. Adopt the fix from run history, then point those field(s) at the right element.`;
   } else if (finalResults || lastError == null) {
     status = 'success';
     if (appliedAnyPatch) {
@@ -406,7 +431,7 @@ async function executeAndPersist(arg) {
 // to heal it this run (wasHealed). Side-effect-free: the caller decides what
 // to do. Not-yet-healed steps are returned first so they get repaired before
 // we conclude that an already-applied fix failed to hold.
-function detectBrokenSteps({ stepResults, snapshots, currentSteps, priorResults, stepDisposition }) {
+function detectBrokenSteps({ stepResults, snapshots, currentSteps, priorResults, stepDisposition, manualFieldsByStep }) {
   const byStep = aggregateStats(stepResults || []);
   const broken = [];
   for (const stat of byStep.values()) {
@@ -416,6 +441,13 @@ function detectBrokenSteps({ stepResults, snapshots, currentSteps, priorResults,
     const baseline = baselineFor(priorResults, stat.key);
     const verdict = healingStats.classifyStep(stat, baseline);
     if (!verdict.broken) continue;
+    // Fields already flagged for the user to fix by hand aren't re-healed —
+    // otherwise the confirmation re-run would loop on the same field forever.
+    const manualSet = manualFieldsByStep && manualFieldsByStep.get(stat.stepId);
+    if (manualSet && manualSet.size && verdict.severity === 'field') {
+      verdict.brokenFields = verdict.brokenFields.filter(f => !manualSet.has(f));
+      if (verdict.brokenFields.length === 0) continue; // only manual fields empty
+    }
     const snap = (snapshots && snapshots[stat.stepId]) || null;
     broken.push({ step, stat, verdict, snapshot: snap, wasHealed: stepDisposition.get(stat.stepId) === 'healed' });
   }
@@ -500,6 +532,7 @@ async function healAndApply(ctx) {
     outcome: 'patch', steps: applied.steps,
     confidence: outcome.confidence, kind: 'selector',
     autoEligible: outcome.confidence === 'high',
+    manualFields: outcome.manualFields || [],
     repairId,
   };
 }

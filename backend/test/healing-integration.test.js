@@ -116,17 +116,24 @@ function ok(name, cond) {
     ok('A: disappeared "coupon_code" dropped', !f.coupon_code && outA.droppedFields.includes('coupon_code'));
     ok('A: kept fields all present', ['title','brand','price','original_price','discount','rating','review_count','availability'].every(n => f[n]));
     ok('A: confidence high (clean verified remap)', outA.confidence === 'high');
+    ok('A: no fields left for manual', (outA.manualFields || []).length === 0);
     ok('A: evidence records container count > 1', outA.evidence && outA.evidence.container && outA.evidence.container.count >= 2);
 
     // ── Scenario B: a WRONG price selector (returns brand text) must be
-    //    rejected by the deterministic validators → manual, never adopted. ─
+    //    rejected by the validators. The rest of the step still heals; the
+    //    bad field is left UNCHANGED and flagged for manual review — never
+    //    adopted, and never sinking the whole step. ─────────────────────────
     WRONG_PRICE = true;
     const outB = await healing.healStep({
       step: brokenListStep(), verdict, snapshotHtml: changedHtml, pageUrl: 'file://changed',
       historySamples: {},
     });
-    ok('B: wrong price selector is NOT silently adopted', outB.outcome === 'manual');
-    ok('B: manual reason mentions the field', /price/i.test(outB.explanation || ''));
+    ok('B: step still heals (not whole-step manual)', outB.outcome === 'patch');
+    ok('B: price is flagged for manual review', (outB.manualFields || []).includes('price'));
+    ok('B: wrong price selector NOT adopted (kept original)',
+       outB.newParams.fields.price && outB.newParams.fields.price.selector === '.product-card__price');
+    ok('B: other fields still healed (title)', outB.newParams.fields.title && outB.newParams.fields.title.selector === 'h3.vg-hl');
+    ok('B: confidence downgraded to medium', outB.confidence === 'medium');
 
     // ── Scenario C: EXTRACT_TABLE is escalated to manual, never "verified"
     //    via the single-element heuristic. ─────────────────────────────────
