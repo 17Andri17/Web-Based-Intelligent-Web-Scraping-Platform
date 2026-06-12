@@ -110,6 +110,11 @@ async function executeAndPersist(arg) {
   while (true) {
     attempt++;
     log(`── attempt ${attempt} ──`);
+    // finalResults must reflect ONLY the final attempt's outcome. Each
+    // terminal state sets it within its own iteration, so resetting here
+    // prevents a healed-but-then-thrown run from carrying stale partial
+    // data forward and being mis-recorded as 'success'.
+    finalResults = null;
 
     const workflowForRun = { id: rootWorkflowId, steps: currentSteps, meta, customActions, subflows };
     const { events, promise } = runner.runChild(workflowForRun, { signal });
@@ -226,13 +231,17 @@ async function executeAndPersist(arg) {
     // healer; everything else (clicks, waits) uses the legacy selector patch.
     const stepSnapshot = (result.stepSnapshots && result.stepSnapshots[failedStep.id]) || null;
     const snapshotHtml = (stepSnapshot && stepSnapshot.html) || lastError.html || null;
+    const extractionStep = findStep(currentSteps, failedStep.id);
 
-    if (EXTRACTION_TYPES.has(failedStep.type) && snapshotHtml) {
+    // Use the richer staged healer only for an extraction step we can actually
+    // locate in the current tree (a step inside a subflow definition won't be
+    // found — fall through to the legacy patch path rather than healing a
+    // params-less stub).
+    if (extractionStep && EXTRACTION_TYPES.has(failedStep.type) && snapshotHtml) {
       repairAttempts++;
-      const originalStep = findStep(currentSteps, failedStep.id) || { ...failedStep };
       const verdict = { brokenFields: [], reason: 'threw', count: 0 };
       const healed = await healAndApply({
-        target: { step: originalStep, stat: { count: 0, fields: {} }, verdict, snapshot: { html: snapshotHtml, url: lastError.url } },
+        target: { step: extractionStep, stat: { count: 0, fields: {} }, verdict, snapshot: { html: snapshotHtml, url: lastError.url } },
         currentSteps, priorResults, meta, customActions, subflows, rootWorkflowId,
         runId, workflowId, attempt: repairAttempts, log, errorMessage: errMsg,
       });
@@ -299,15 +308,22 @@ async function executeAndPersist(arg) {
   // and EVERY applied heal was high-confidence + auto-eligible (verified).
   const anyManual = Array.from(stepDisposition.values()).includes('manual');
   const healedOk = appliedAnyPatch && !!finalResults && !anyManual;
-  const autoAdopt = healedOk && healLog.length > 0 && healLog.every(h => h.autoEligible && h.confidence === 'high');
+  const wantAutoAdopt = healedOk && healLog.length > 0 && healLog.every(h => h.autoEligible && h.confidence === 'high');
 
-  if (healedOk && autoAdopt) {
+  // `adopted` tracks whether the saved workflow was ACTUALLY updated — not
+  // merely that we wanted to. If the write fails (workflow deleted / owner
+  // changed) we must fall back to persisting patched_steps_json so the user
+  // can still adopt the verified fix manually, rather than losing it.
+  let adopted = false;
+  if (wantAutoAdopt) {
     const changed = safeCall(() => runStore.updateWorkflowSteps(workflowId, userId, currentSteps), 0);
     if (changed) {
+      adopted = true;
       log('🔒 high-confidence fix verified — applied to the saved workflow automatically.');
       for (const h of healLog) { if (h.repairId) safeCall(() => markAutoAdopted(h.repairId)); }
     }
-  } else if (healedOk) {
+  }
+  if (healedOk && !adopted) {
     log('💡 fix verified for this run — review it in run history and click "Adopt AI-repaired workflow" to keep it.');
   }
 
@@ -317,16 +333,22 @@ async function executeAndPersist(arg) {
 
   if (anyManual || (lastError && lastError.category === 'EMPTY_RESULT')) {
     // A broken step we couldn't safely heal — needs human attention even
-    // though other steps may have produced data (which we still keep).
+    // though other steps may have produced data (which we still keep). Use
+    // the REAL error category: a thrown selector failure that escalated to
+    // manual stays 'SELECTOR'; only a genuine empty result is 'EMPTY_RESULT'.
     status = 'needs_review';
-    errorCategory = 'EMPTY_RESULT';
+    errorCategory = (lastError && lastError.category) || 'EMPTY_RESULT';
     finalErrorMessage = (lastError && lastError.message) || 'A step captured no data';
-    aiSummary = reviewMessage || errorClassifier.summarise('EMPTY_RESULT', finalErrorMessage, lastError && lastError.step && lastError.step.label);
+    aiSummary = reviewMessage || errorClassifier.summarise(errorCategory, finalErrorMessage, lastError && lastError.step && lastError.step.label);
+    // If we DID heal other steps, tell the user the partial fix is adoptable.
+    if (appliedAnyPatch && !adopted) {
+      aiSummary += ' Some steps were healed for this run — you can adopt those fixes from run history while you address the rest.';
+    }
     failedStepInfo = stepInfoFrom(lastError && lastError.step);
   } else if (finalResults || lastError == null) {
     status = 'success';
     if (appliedAnyPatch) {
-      aiSummary = autoAdopt
+      aiSummary = adopted
         ? `Self-healed ${healLog.length} step(s) and adopted the fix into the saved workflow; run completed successfully.`
         : `Self-healed ${healLog.length} step(s) for this run; review and adopt the fix to make it permanent.`;
     }
@@ -364,9 +386,11 @@ async function executeAndPersist(arg) {
     failed_step_label: failedStepInfo.label,
     ai_summary: aiSummary,
     retry_count: attempt - 1,
-    // Persist the healed steps whenever we applied a fix that wasn't already
+    // Persist the healed steps whenever we applied a fix that wasn't actually
     // auto-written into the saved workflow, so the user can adopt it later.
-    patched_steps_json: (appliedAnyPatch && !autoAdopt) ? JSON.stringify(currentSteps) : null,
+    // Gated on `adopted` (the real outcome), not the intent, so a failed
+    // auto-write still leaves a manual-adopt fallback instead of losing it.
+    patched_steps_json: (appliedAnyPatch && !adopted) ? JSON.stringify(currentSteps) : null,
   });
   runStore.clearLogCounter(runId);
 

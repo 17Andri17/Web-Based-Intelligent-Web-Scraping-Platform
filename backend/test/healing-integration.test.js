@@ -128,6 +128,16 @@ function ok(name, cond) {
     ok('B: wrong price selector is NOT silently adopted', outB.outcome === 'manual');
     ok('B: manual reason mentions the field', /price/i.test(outB.explanation || ''));
 
+    // ── Scenario C: EXTRACT_TABLE is escalated to manual, never "verified"
+    //    via the single-element heuristic. ─────────────────────────────────
+    const outC = await healing.healStep({
+      step: { id: 'tbl', kind: 'action', type: 'EXTRACT_TABLE', label: 'data', params: { selector: '.product-table' } },
+      verdict: { broken: true, reason: 'no-records', brokenFields: [], count: 0 },
+      snapshotHtml: changedHtml, pageUrl: 'file://changed',
+    });
+    ok('C: broken table escalates to manual (no bogus auto-fix)', outC.outcome === 'manual');
+    ok('C: table manual reason mentions table', /table/i.test(outC.explanation || ''));
+
     await verify.closeVerificationBrowser();
     console.log(`\n${passed} checks passed`);
   } catch (err) {

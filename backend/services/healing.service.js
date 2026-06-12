@@ -56,6 +56,16 @@ async function healStep(args) {
   if (!llm.isConfigured()) return manual('LLM not configured', 'AI assistance is unavailable (set LLM_API_KEY).', 'NO_API_KEY');
   if (!args.snapshotHtml) return manual('no snapshot', 'No page snapshot was captured at the time of failure, so the page could not be analysed.');
 
+  // EXTRACT_TABLE is collection-shaped (its records are rows) but it has no
+  // per-row container/field selectors we can verify the way a list does — a
+  // single-selector swap can't be checked for "is this actually a table with
+  // rows", so a wrong guess could be wrongly marked "verified". Per the
+  // notify-don't-mis-repair principle, escalate tables to manual review.
+  if (step.type === 'EXTRACT_TABLE') {
+    return manual('table repair not supported',
+      'This table captured no rows. Automatic table repair is not supported — re-select the table in the editor. The platform will not guess a table selector, to avoid capturing the wrong data.');
+  }
+
   const shape = normalizeListShape(step);
   if (shape.isList) return healList({ ...args, shape });
   return healSingle(args);
@@ -152,7 +162,7 @@ async function healList(args) {
         if (repaired.quality < STRONG_VALID_RATE) anyLowConfidence = true;
       } else if (repaired.outcome === 'drop') {
         droppedFields.push(field.name);
-        evidence.fields[field.name] = { selector: null, validRate: 0, reasons: ['disappeared'], dropped: true };
+        evidence.fields[field.name] = { selector: null, quality: 0, presence: 0, reasons: ['disappeared'], dropped: true };
         log(`  · field "${field.name}" appears to have disappeared — dropping it (keeping the rest).`);
       } else {
         // ambiguous — data may exist but we can't verify a safe selector. Do
@@ -491,7 +501,11 @@ function cleanRelative(raw) {
 
 async function withSnapshotOrManual(html, fn, args) {
   const result = await verify.withSnapshot(html, fn);
-  if (result && result.error) {
+  // withSnapshot signals its OWN failure (browser unavailable, bad content)
+  // with a bare { error } and no `outcome`. A real verdict from fn always
+  // carries `outcome`, so we only treat the former as a manual escalation —
+  // never mistake a legitimate outcome that happens to mention an error.
+  if (result && result.error && !result.outcome) {
     return manual('verification unavailable', `Could not analyse the page snapshot: ${result.error}`);
   }
   return result;
