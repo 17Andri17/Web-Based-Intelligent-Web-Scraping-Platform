@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Benchmark — Field Discovery · Hard Scenarios</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  /* ── Layout ─────────────────────────────────────────────────── */
+  .page-wrapper { max-width: 1000px; margin: 0 auto; padding: 40px; }
+
+  /* ── Scenario block ──────────────────────────────────────────── */
+  .fd-scenario { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 48px; }
+  .fd-scenario-header { background: var(--bg2); padding: 20px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 16px; }
+  .fd-scenario-number { font-family: var(--sans); font-size: 36px; font-weight: 800; color: var(--border2); line-height: 1; min-width: 44px; }
+  .fd-scenario-meta { flex: 1; }
+  .fd-scenario-title { font-family: var(--sans); font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  .fd-scenario-desc { font-size: 11px; color: var(--muted); line-height: 1.7; margin-bottom: 8px; }
+
+  /* ── Demo area ───────────────────────────────────────────────── */
+  .fd-demo { padding: 24px; background: var(--bg); border-bottom: 1px solid var(--border); }
+  .fd-demo-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 12px; }
+  /* "sample item" highlight — this is the HTML fed to the LLM */
+  .fd-sample { outline: 2px dashed rgba(74,240,180,0.5); outline-offset: 4px; border-radius: 6px; position: relative; }
+  .fd-sample::before { content: 'SAMPLE FED TO LLM'; position: absolute; top: -18px; left: 0; font-size: 9px; color: var(--accent); letter-spacing: 0.1em; font-weight: 600; }
+
+  /* ── Ground truth table ──────────────────────────────────────── */
+  .fd-gt { padding: 24px; }
+  .fd-gt-title { font-family: var(--sans); font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; }
+  .gt-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .gt-table th { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border2); color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; font-size: 10px; }
+  .gt-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; line-height: 1.5; }
+  .gt-table code { font-family: var(--mono); color: var(--accent); font-size: 10px; }
+  .field-name { color: var(--purple); font-family: var(--mono); font-size: 10px; }
+  .opt { color: var(--muted); font-style: italic; font-size: 10px; }
+  .hard-note { color: var(--accent3); font-size: 10px; }
+
+  /* ── Difficulty badge ────────────────────────────────────────── */
+  .diff-hard    { background: rgba(224,85,85,0.12);    color: var(--hard);    border: 1px solid rgba(224,85,85,0.3);    padding: 2px 10px; border-radius: 10px; font-size: 10px; font-weight: 600; letter-spacing: 0.05em; display: inline-block; }
+  .diff-extreme { background: rgba(192,64,240,0.12);   color: var(--extreme); border: 1px solid rgba(192,64,240,0.3);   padding: 2px 10px; border-radius: 10px; font-size: 10px; font-weight: 600; letter-spacing: 0.05em; display: inline-block; }
+
+  /* ── S5 — News feed ──────────────────────────────────────────── */
+  .news-feed { display: flex; flex-direction: column; gap: 1px; }
+  .news-article { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 14px 16px; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; }
+  .news-article > div:first-child { flex: 1; }
+  .news-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .news-tag { font-size: 9px; font-weight: 600; padding: 1px 7px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .news-tag-tech  { background: rgba(74,144,240,0.12); color: var(--accent2); border: 1px solid rgba(74,144,240,0.3); }
+  .news-tag-biz   { background: rgba(74,240,180,0.10); color: var(--accent);  border: 1px solid rgba(74,240,180,0.25); }
+  .news-tag-sci   { background: rgba(163,113,247,0.12); color: var(--purple); border: 1px solid rgba(163,113,247,0.3); }
+  .news-tag-world { background: rgba(240,160,64,0.12); color: var(--warn);   border: 1px solid rgba(240,160,64,0.3); }
+  .news-source { font-size: 11px; color: var(--muted); font-weight: 600; }
+  .news-date   { font-size: 10px; color: var(--muted); }
+  .news-headline { font-family: var(--sans); font-size: 14px; font-weight: 700; color: #fff; line-height: 1.4; margin-bottom: 4px; }
+  .news-summary  { font-size: 11px; color: var(--muted); line-height: 1.6; }
+  .news-views    { font-size: 11px; color: var(--muted); white-space: nowrap; padding-top: 2px; }
+
+  /* ── S11 — Hashed cards ─────────────────────────────────────── */
+  ._3xK9m { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  ._3xK9m ._7aRpQ { padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--bg); }
+  ._3xK9m ._7aRpQ ._mNq4w { font-size: 13px; font-weight: 600; color: #fff; }
+  ._3xK9m ._7aRpQ ._kRzJ5 { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  ._3xK9m ._2dLp8 { padding: 12px 14px; }
+  ._3xK9m ._2dLp8 ._9wEm1 { font-size: 20px; font-weight: 800; color: var(--warn); font-family: var(--sans); }
+  ._3xK9m ._2dLp8 ._vXc3n { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .hash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+
+  /* ── S13 — Decoy feed ────────────────────────────────────────── */
+  .mixed-feed { display: flex; flex-direction: column; gap: 8px; }
+  .feed-post { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .feed-post-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .post-avatar { font-size: 22px; }
+  .post-user { font-size: 12px; font-weight: 600; color: var(--accent2); }
+  .post-time { font-size: 10px; color: var(--muted); }
+  .post-body { font-size: 12px; color: var(--text); line-height: 1.6; margin-bottom: 10px; }
+  .post-stats { display: flex; gap: 14px; }
+  .post-stat { font-size: 11px; color: var(--muted); }
+  /* Decoy ads — visually distinct */
+  .feed-ad { background: rgba(240,96,96,0.04); border: 1px dashed rgba(240,96,96,0.25); border-radius: 8px; padding: 10px 14px; font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 10px; }
+  .feed-ad-label { font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: rgba(240,96,96,0.15); color: var(--accent3); letter-spacing: 0.08em; flex-shrink: 0; }
+
+  /* ── Info box ────────────────────────────────────────────────── */
+  .info-box { background: rgba(74,144,240,0.07); border: 1px solid rgba(74,144,240,0.25); border-radius: 8px; padding: 14px 18px; font-size: 11px; color: var(--muted); line-height: 1.7; margin-bottom: 36px; }
+  .info-box strong { color: var(--accent2); }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-badge">LLM Field Discovery Benchmark</div>
+  <h1 class="site-title">Hard<br>Scenarios</h1>
+  <p class="site-subtitle">
+    Three scenarios selected from the Experiment 2 benchmark suite to challenge LLM field discovery beyond the easy product-card baseline.
+    Feed the HTML of the <strong>highlighted sample item</strong> (dashed green outline) to the model and score its proposed fields against the ground truth below each scenario.
+  </p>
+  <div class="variant-badge variant-base">Variant: BASE (from Experiment 2 benchmark)</div>
+  <div class="header-meta">
+    <div class="meta-item"><span class="meta-label">Scenarios</span><span class="meta-value">3</span></div>
+    <div class="meta-item"><span class="meta-label">Difficulty</span><span class="meta-value">Hard → Extreme</span></div>
+    <div class="meta-item"><span class="meta-label">Total fields</span><span class="meta-value">16</span></div>
+  </div>
+</header>
+
+<div class="page-wrapper">
+
+  <div class="info-box">
+    <strong>Scoring rule (same as easy baseline):</strong>
+    For each suggested field: <strong>+2 pts</strong> if the relative CSS/XPath selector resolves to exactly the correct element(s),
+    <strong>+1 pt</strong> if the name is descriptive snake_case. Coverage = fields found / expected fields.
+    Omitting an <em class="opt">optional</em> field does not penalise coverage.
+    Run each scenario (with-prompt / without-prompt) <strong>3×</strong> and report mean ± range.
+  </div>
+
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!-- SCENARIO A — S5: News Feed                                   -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <div class="fd-scenario" id="fd-s5">
+    <div class="fd-scenario-header">
+      <div class="fd-scenario-number">A</div>
+      <div class="fd-scenario-meta">
+        <div class="fd-scenario-title">News Feed Article Card <span style="font-size:12px;color:var(--muted);font-weight:400;">(from Experiment 2 · S5)</span></div>
+        <div class="fd-scenario-desc">
+          Rich article cards with multi-level nesting and <strong>variable inner structure</strong>: some articles carry a single topic tag, one carries two.
+          The LLM must handle the variable tag field (suggest extracting all <code>.news-tag</code> or just the first) and correctly distinguish
+          source, date, headline, summary, and view count — all of which share similar nesting depth.
+        </div>
+        <span class="diff-hard">Hard</span>
+      </div>
+    </div>
+
+    <div class="fd-demo">
+      <div class="fd-demo-label">Live items — highlighted item is the sample fed to the LLM</div>
+      <div class="news-feed" id="news-feed">
+
+        <!-- ▼ SAMPLE ITEM (first article — single tag) ▼ -->
+        <div class="news-article fd-sample">
+          <div>
+            <div class="news-meta">
+              <span class="news-tag news-tag-tech">Tech</span>
+              <span class="news-source">The Verge</span>
+              <span class="news-date">2h ago</span>
+            </div>
+            <div class="news-headline">Anthropic releases Claude 5 with extended reasoning capabilities</div>
+            <div class="news-summary">The model introduces persistent memory and multi-modal tool use in a single unified context window...</div>
+          </div>
+          <div class="news-views">14.2k views</div>
+        </div>
+
+        <!-- remaining items (not fed to LLM, shown for context) -->
+        <div class="news-article">
+          <div>
+            <div class="news-meta">
+              <span class="news-tag news-tag-biz">Business</span>
+              <span class="news-source">Bloomberg</span>
+              <span class="news-date">5h ago</span>
+            </div>
+            <div class="news-headline">EU AI Act enforcement begins — major platforms face compliance audits</div>
+            <div class="news-summary">Regulators have issued first wave of compliance requirements to tier-1 providers under the new framework...</div>
+          </div>
+          <div class="news-views">8.7k views</div>
+        </div>
+
+        <!-- article with TWO tags — edge case -->
+        <div class="news-article">
+          <div>
+            <div class="news-meta">
+              <span class="news-tag news-tag-sci">Science</span>
+              <span class="news-tag news-tag-tech">Tech</span>
+              <span class="news-source">Nature</span>
+              <span class="news-date">1d ago</span>
+            </div>
+            <div class="news-headline">Quantum error correction milestone reached by Google DeepMind collaboration</div>
+            <div class="news-summary">A 99.9% fidelity threshold was demonstrated on a 72-qubit surface code array, marking a pivotal step...</div>
+          </div>
+          <div class="news-views">22.1k views</div>
+        </div>
+
+        <div class="news-article">
+          <div>
+            <div class="news-meta">
+              <span class="news-tag news-tag-world">World</span>
+              <span class="news-source">Reuters</span>
+              <span class="news-date">3h ago</span>
+            </div>
+            <div class="news-headline">Poland leads EU in semiconductor factory investments for 2026</div>
+            <div class="news-summary">Three new fabrication facilities announced across Wrocław, Gdańsk, and Kraków with €4.2B in grants...</div>
+          </div>
+          <div class="news-views">5.4k views</div>
+        </div>
+
+      </div>
+    </div><!-- /fd-demo -->
+
+    <div class="fd-gt">
+      <div class="fd-gt-title">Ground Truth — 6 fields · selectors relative to <code>.news-article</code></div>
+      <table class="gt-table">
+        <thead>
+          <tr><th>#</th><th>Field</th><th>Expected name</th><th>Selector</th><th>Kind</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>Headline</td><td class="field-name">headline</td><td><code>.news-headline</code></td><td>text</td><td>Core</td></tr>
+          <tr><td>2</td><td>Source</td><td class="field-name">source</td><td><code>.news-source</code></td><td>text</td><td>Core</td></tr>
+          <tr><td>3</td><td>Date</td><td class="field-name">published_at</td><td><code>.news-date</code></td><td>text</td><td>Core — accept <code>date</code> / <code>time</code> as equivalent names</td></tr>
+          <tr><td>4</td><td>Summary</td><td class="field-name">summary</td><td><code>.news-summary</code></td><td>text</td><td>Core</td></tr>
+          <tr><td>5</td><td>View count</td><td class="field-name">view_count</td><td><code>.news-views</code></td><td>text</td><td>Core — note: element is a sibling of the main content div, not a descendant</td></tr>
+          <tr><td>6</td><td>Tag(s)</td><td class="field-name">tags</td><td><code>.news-tag</code></td><td>text / html</td><td><span class="opt">Optional</span> — accept <code>tag</code> or <code>category</code>; extracting as list is preferred; extracting only first tag gets partial credit</td></tr>
+        </tbody>
+      </table>
+      <p style="font-size:10px;color:var(--muted);margin-top:10px;">
+        <strong>Challenge:</strong> field 5 (<code>.news-views</code>) lives outside the main inner <code>div</code> — a model that anchors to <code>div:first-child</code> will miss it.
+        Field 6 is variable-count; expect some confusion about how to express it as a single selector.
+      </p>
+    </div>
+  </div><!-- /fd-s5 -->
+
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!-- SCENARIO B — S11: Hashed Classes                             -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <div class="fd-scenario" id="fd-s11">
+    <div class="fd-scenario-header">
+      <div class="fd-scenario-number">B</div>
+      <div class="fd-scenario-meta">
+        <div class="fd-scenario-title">Hashed / Obfuscated Metric Card <span style="font-size:12px;color:var(--muted);font-weight:400;">(from Experiment 2 · S11)</span></div>
+        <div class="fd-scenario-desc">
+          All class names are CSS-module-style hashes (<code>._3xK9m</code>, <code>._mNq4w</code>, etc.) that carry no semantic meaning.
+          The LLM <strong>cannot</strong> infer field roles from class names and must reason entirely from position, tag names, and visible text content.
+          Selectors must use the hashed class names directly — no natural names are available.
+          This is the hardest naming scenario: a field called <code>._mNq4w</code> should be named <code>metric_name</code>, but the model only sees the hash.
+        </div>
+        <span class="diff-extreme">Extreme</span>
+      </div>
+    </div>
+
+    <div class="fd-demo">
+      <div class="fd-demo-label">Live items — highlighted item is the sample fed to the LLM</div>
+      <div class="hash-grid" id="hash-grid">
+
+        <!-- ▼ SAMPLE ITEM ▼ -->
+        <div class="_3xK9m fd-sample" style="margin-top:20px;">
+          <div class="_7aRpQ">
+            <div class="_mNq4w">Latency P99</div>
+            <div class="_kRzJ5">API Gateway · Prod</div>
+          </div>
+          <div class="_2dLp8">
+            <div class="_9wEm1">142ms</div>
+            <div class="_vXc3n">+3ms vs last hour</div>
+          </div>
+        </div>
+
+        <div class="_3xK9m">
+          <div class="_7aRpQ">
+            <div class="_mNq4w">Throughput</div>
+            <div class="_kRzJ5">Message Queue · Prod</div>
+          </div>
+          <div class="_2dLp8">
+            <div class="_9wEm1">48K/s</div>
+            <div class="_vXc3n">-1.2K vs peak</div>
+          </div>
+        </div>
+
+        <div class="_3xK9m">
+          <div class="_7aRpQ">
+            <div class="_mNq4w">Cache Hit Rate</div>
+            <div class="_kRzJ5">Redis Cluster</div>
+          </div>
+          <div class="_2dLp8">
+            <div class="_9wEm1">94.7%</div>
+            <div class="_vXc3n">↑ 0.3% today</div>
+          </div>
+        </div>
+
+        <div class="_3xK9m">
+          <div class="_7aRpQ">
+            <div class="_mNq4w">Error Budget</div>
+            <div class="_kRzJ5">SLO Tracking</div>
+          </div>
+          <div class="_2dLp8">
+            <div class="_9wEm1">68.4%</div>
+            <div class="_vXc3n">21 days remaining</div>
+          </div>
+        </div>
+
+        <div class="_3xK9m">
+          <div class="_7aRpQ">
+            <div class="_mNq4w">Cold Start</div>
+            <div class="_kRzJ5">Lambda Functions</div>
+          </div>
+          <div class="_2dLp8">
+            <div class="_9wEm1">380ms</div>
+            <div class="_vXc3n">avg across 6 regions</div>
+          </div>
+        </div>
+
+        <div class="_3xK9m">
+          <div class="_7aRpQ">
+            <div class="_mNq4w">Db Conn Pool</div>
+            <div class="_kRzJ5">PostgreSQL · Primary</div>
+          </div>
+          <div class="_2dLp8">
+            <div class="_9wEm1">87/100</div>
+            <div class="_vXc3n">13 idle connections</div>
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /fd-demo -->
+
+    <div class="fd-gt">
+      <div class="fd-gt-title">Ground Truth — 4 fields · selectors relative to <code>._3xK9m</code></div>
+      <table class="gt-table">
+        <thead>
+          <tr><th>#</th><th>Field</th><th>Expected name</th><th>Selector</th><th>Kind</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td><td>Metric name / title</td><td class="field-name">metric_name</td>
+            <td><code>._mNq4w</code></td><td>text</td>
+            <td>Core — also accept structural equivalent <code>._7aRpQ > div:first-child</code>; accept <code>title</code> / <code>name</code> as names</td>
+          </tr>
+          <tr>
+            <td>2</td><td>Context / source</td><td class="field-name">context</td>
+            <td><code>._kRzJ5</code></td><td>text</td>
+            <td>Core — also accept <code>._7aRpQ > div:last-child</code>; accept <code>source</code> / <code>label</code> as names</td>
+          </tr>
+          <tr>
+            <td>3</td><td>Metric value</td><td class="field-name">value</td>
+            <td><code>._9wEm1</code></td><td>text</td>
+            <td>Core — also accept <code>._2dLp8 > div:first-child</code>; accept <code>metric_value</code> / <code>current_value</code></td>
+          </tr>
+          <tr>
+            <td>4</td><td>Delta / change note</td><td class="field-name">delta</td>
+            <td><code>._vXc3n</code></td><td>text</td>
+            <td>Core — also accept <code>._2dLp8 > div:last-child</code>; accept <code>change</code> / <code>trend</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <p style="font-size:10px;color:var(--muted);margin-top:10px;">
+        <strong>Selector scoring note:</strong> hash-based selectors (<code>._mNq4w</code>) and equivalent structural selectors (<code>._7aRpQ > div:first-child</code>)
+        both receive full selector credit as long as they resolve to the correct element.
+        <span class="hard-note">Name scoring is the primary challenge here</span> — the model must infer semantic names from visible text content alone.
+      </p>
+    </div>
+  </div><!-- /fd-s11 -->
+
+
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <!-- SCENARIO C — S13: Decoy Siblings / Social Feed Post          -->
+  <!-- ════════════════════════════════════════════════════════════ -->
+  <div class="fd-scenario" id="fd-s13">
+    <div class="fd-scenario-header">
+      <div class="fd-scenario-number">C</div>
+      <div class="fd-scenario-meta">
+        <div class="fd-scenario-title">Social Feed Post (Decoy Siblings) <span style="font-size:12px;color:var(--muted);font-weight:400;">(from Experiment 2 · S13)</span></div>
+        <div class="fd-scenario-desc">
+          A mixed feed with <code>.feed-post</code> items interspersed with <code>.feed-ad</code> decoys.
+          The sample item (one <code>.feed-post</code>) has a straightforward header but three <strong>sibling stat spans</strong>
+          (<code>.post-stat</code>) that must be individually identified as likes, comments, and reposts —
+          requiring the LLM to use <code>:nth-child</code> disambiguation or emoji-text anchoring.
+        </div>
+        <span class="diff-hard">Hard</span>
+      </div>
+    </div>
+
+    <div class="fd-demo">
+      <div class="fd-demo-label">Live feed — highlighted item is the sample fed to the LLM</div>
+      <div class="mixed-feed" id="mixed-feed">
+
+        <!-- ▼ SAMPLE ITEM ▼ -->
+        <div class="feed-post fd-sample" style="margin-top:20px;">
+          <div class="feed-post-header">
+            <div class="post-avatar">🧑‍💻</div>
+            <div>
+              <div class="post-user">@jan_kowalski</div>
+              <div class="post-time">10 min ago</div>
+            </div>
+          </div>
+          <div class="post-body">Just shipped the thesis prototype — CSS selector generation with multi-strategy scoring is working great across 14 test scenarios!</div>
+          <div class="post-stats">
+            <span class="post-stat">❤️ 48</span>
+            <span class="post-stat">💬 12</span>
+            <span class="post-stat">🔁 7</span>
+          </div>
+        </div>
+
+        <div class="feed-ad">
+          <span class="feed-ad-label">AD</span>
+          <span>Upgrade to Pro and scrape 10× faster with our residential proxy network — zero blocks, zero captchas.</span>
+        </div>
+
+        <div class="feed-post">
+          <div class="feed-post-header">
+            <div class="post-avatar">👩‍🔬</div>
+            <div>
+              <div class="post-user">@researcher_ml</div>
+              <div class="post-time">34 min ago</div>
+            </div>
+          </div>
+          <div class="post-body">New paper out: LLM-assisted selector recovery after DOM mutations achieves 91% accuracy on dynamic SPAs.</div>
+          <div class="post-stats">
+            <span class="post-stat">❤️ 203</span>
+            <span class="post-stat">💬 41</span>
+            <span class="post-stat">🔁 88</span>
+          </div>
+        </div>
+
+        <div class="feed-post">
+          <div class="feed-post-header">
+            <div class="post-avatar">🤖</div>
+            <div>
+              <div class="post-user">@bot_daily</div>
+              <div class="post-time">1 hr ago</div>
+            </div>
+          </div>
+          <div class="post-body">Daily reminder: always test your scrapers against live mutations.</div>
+          <div class="post-stats">
+            <span class="post-stat">❤️ 91</span>
+            <span class="post-stat">💬 6</span>
+            <span class="post-stat">🔁 22</span>
+          </div>
+        </div>
+
+        <div class="feed-ad">
+          <span class="feed-ad-label">AD</span>
+          <span>DataBroker™ — 2 billion fresh records, updated daily. GDPR compliant. Try free.</span>
+        </div>
+
+        <div class="feed-post">
+          <div class="feed-post-header">
+            <div class="post-avatar">🎓</div>
+            <div>
+              <div class="post-user">@pwr_thesis</div>
+              <div class="post-time">2 hr ago</div>
+            </div>
+          </div>
+          <div class="post-body">Masters defense coming up — built a web-based scraping platform with intelligent element selection.</div>
+          <div class="post-stats">
+            <span class="post-stat">❤️ 317</span>
+            <span class="post-stat">💬 58</span>
+            <span class="post-stat">🔁 14</span>
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /fd-demo -->
+
+    <div class="fd-gt">
+      <div class="fd-gt-title">Ground Truth — 6 fields · selectors relative to <code>.feed-post</code></div>
+      <table class="gt-table">
+        <thead>
+          <tr><th>#</th><th>Field</th><th>Expected name</th><th>Selector</th><th>Kind</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td><td>Username</td><td class="field-name">username</td>
+            <td><code>.post-user</code></td><td>text</td>
+            <td>Core — accept <code>user</code> / <code>author</code></td>
+          </tr>
+          <tr>
+            <td>2</td><td>Time</td><td class="field-name">posted_at</td>
+            <td><code>.post-time</code></td><td>text</td>
+            <td>Core — accept <code>time</code> / <code>timestamp</code></td>
+          </tr>
+          <tr>
+            <td>3</td><td>Post text</td><td class="field-name">content</td>
+            <td><code>.post-body</code></td><td>text</td>
+            <td>Core — accept <code>body</code> / <code>text</code> / <code>post_text</code></td>
+          </tr>
+          <tr>
+            <td>4</td><td>Likes</td><td class="field-name">likes</td>
+            <td><code>.post-stat:nth-child(1)</code></td><td>text</td>
+            <td><span class="hard-note">Hard</span> — must be scoped to 1st span; accept <code>.post-stats .post-stat:first-child</code> or XPath <code>contains(.,'❤️')</code></td>
+          </tr>
+          <tr>
+            <td>5</td><td>Comments</td><td class="field-name">comments</td>
+            <td><code>.post-stat:nth-child(2)</code></td><td>text</td>
+            <td><span class="hard-note">Hard</span> — must be 2nd span; accept emoji-anchored XPath</td>
+          </tr>
+          <tr>
+            <td>6</td><td>Reposts</td><td class="field-name">reposts</td>
+            <td><code>.post-stat:nth-child(3)</code></td><td>text</td>
+            <td><span class="opt">Optional</span> — accept <code>shares</code>; many models will stop at 2 stats</td>
+          </tr>
+        </tbody>
+      </table>
+      <p style="font-size:10px;color:var(--muted);margin-top:10px;">
+        <strong>Challenge:</strong> all three stat spans share the identical class <code>.post-stat</code>.
+        The LLM must produce three distinct selectors using positional pseudoselectors or XPath text anchors.
+        Suggesting a single <code>.post-stat</code> selector for all three is a common failure mode — score it as <em>one field found, two missed</em>.
+      </p>
+    </div>
+  </div><!-- /fd-s13 -->
+
+</div><!-- /page-wrapper -->
+</body>
+</html>
