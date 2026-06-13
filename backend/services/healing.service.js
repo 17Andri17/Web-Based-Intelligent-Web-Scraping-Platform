@@ -137,47 +137,86 @@ async function healList(args) {
       return manual('verification failed', `Could not verify item fields: ${baseline.error}`, undefined, evidence);
     }
 
+    // First pass (no AI): keep every field that already works against the
+    // (possibly re-pointed) container; collect the rest for repair.
+    const toRepair = [];
     for (const field of shape.fields) {
       const rec = baseline.fields[field.name] || { samples: [], hitCount: 0, surveyed: 0 };
       const judged = validators.assessFieldSamples(field, rec.samples);
-      evidence.fields[field.name] = { selector: rec.selector ?? field.selector, quality: judged.quality, presence: judged.presence, reasons: judged.reasons, changed: false };
-
-      const stillWorks = judged.ok && (!brokenSet.has(field.name));
-
-      if (stillWorks) {
+      if (judged.ok && !brokenSet.has(field.name)) {
         keptFields.push({ ...field, selector: rec.rescuedToSelf ? '' : rec.selector });
+        evidence.fields[field.name] = { selector: rec.selector ?? field.selector, quality: judged.quality, presence: judged.presence, changed: false };
         verifiedCount++;
-        continue;
+      } else {
+        toRepair.push(field);
+        evidence.fields[field.name] = { selector: field.selector, quality: 0, presence: 0, changed: false };
+      }
+    }
+
+    // Repair pass: ONE batched LLM call proposes selectors for ALL broken
+    // fields at once (a single request — not one per field — so we don't burn
+    // the rate limit and fall back to a weaker model mid-list, which used to
+    // leave the tail of fields unhealed until a later run). Every proposal is
+    // then verified against the snapshot in a single DOM pass.
+    if (toRepair.length) {
+      const sampleHtml = await firstContainerHtml(page, containerSelector, containerType);
+      const batch = await proposeFieldsBatch({ sampleHtml, fields: toRepair, historySamples });
+
+      // Flatten the proposed candidates into uniquely-named specs so a single
+      // verifyListFields call checks them all; we then pick, per field, the
+      // first candidate that validates.
+      const specs = [];
+      const disappeared = {};
+      for (const field of toRepair) {
+        const prop = batch.ok ? batch.byName[field.name] : null;
+        if (prop && prop.disappeared) disappeared[field.name] = true;
+        const cands = (prop && prop.candidates) || [];
+        cands.forEach((c, i) => specs.push({
+          name: `${field.name}@@${i}`, _field: field.name, _idx: i,
+          selector: c.selector, kind: c.kind || field.kind, attribute: c.attribute ?? field.attribute,
+        }));
+      }
+      let verified = { fields: {} };
+      if (specs.length) {
+        verified = await verify.verifyListFields(page, {
+          containerSelector, type: containerType, fields: specs, sampleSize: FIELD_SAMPLE_SIZE,
+        });
+        if (verified.error) verified = { fields: {} };
       }
 
-      // This field needs attention — propose a replacement relative selector.
-      const repaired = await repairField({
-        page, containerSelector, containerType, field,
-        sampleHtml: await firstContainerHtml(page, containerSelector, containerType),
-        historySamples: historySamples && historySamples[field.name],
-        log,
-      });
+      for (const field of toRepair) {
+        // Among this field's candidates (in model order), take the first whose
+        // extracted values are sensible.
+        const mine = specs.filter(s => s._field === field.name).sort((a, b) => a._idx - b._idx);
+        let picked = null;
+        for (const s of mine) {
+          const rec = verified.fields && verified.fields[s.name];
+          if (!rec) continue;
+          const judged = validators.assessFieldSamples(s, rec.samples);
+          if (judged.ok) { picked = { s, rec, judged }; break; }
+        }
 
-      if (repaired.outcome === 'remap') {
-        keptFields.push({ ...field, selector: repaired.selector, kind: repaired.kind || field.kind, attribute: repaired.attribute ?? field.attribute });
-        evidence.fields[field.name] = { selector: repaired.selector, quality: repaired.quality, presence: repaired.presence, reasons: [], changed: true };
-        verifiedCount++;
-        if (repaired.quality < STRONG_VALID_RATE) anyLowConfidence = true;
-      } else if (repaired.outcome === 'drop') {
-        droppedFields.push(field.name);
-        evidence.fields[field.name] = { selector: null, quality: 0, presence: 0, reasons: ['disappeared'], dropped: true };
-        log(`  · field "${field.name}" appears to have disappeared — dropping it (keeping the rest).`);
-      } else {
-        // Ambiguous — data may still be present but we can't verify a safe
-        // selector. Do NOT guess and do NOT sink the whole step: keep the
-        // field's CURRENT selector (it returns empty, never the WRONG value)
-        // and flag it for the user to finish by hand. Everything we could
-        // verify is still healed and will capture data.
-        keptFields.push({ ...field });
-        manualFields.push(field.name);
-        evidence.fields[field.name] = { selector: field.selector, quality: 0, presence: 0, reasons: ['unverifiable'], manual: true };
-        anyLowConfidence = true;
-        log(`  · field "${field.name}" could not be safely re-mapped — left unchanged and flagged for manual review (the rest of the step is still healed).`);
+        if (picked) {
+          const sel = picked.rec.rescuedToSelf ? '' : picked.s.selector;
+          keptFields.push({ ...field, selector: sel, kind: picked.s.kind, attribute: picked.s.attribute });
+          evidence.fields[field.name] = { selector: sel, quality: picked.judged.quality, presence: picked.judged.presence, changed: true };
+          verifiedCount++;
+          if (picked.judged.quality < STRONG_VALID_RATE) anyLowConfidence = true;
+          log(`  · field "${field.name}" → "${truncate(sel, 60)}" (quality ${picked.judged.quality.toFixed(2)} presence ${picked.judged.presence.toFixed(2)})`);
+        } else if (disappeared[field.name]) {
+          droppedFields.push(field.name);
+          evidence.fields[field.name] = { selector: null, quality: 0, presence: 0, reasons: ['disappeared'], dropped: true };
+          log(`  · field "${field.name}" appears to have disappeared — dropping it (keeping the rest).`);
+        } else {
+          // Couldn't verify a safe selector and the data may still be present:
+          // don't guess and don't sink the step — keep the field's current
+          // (empty, never WRONG) selector and flag it for manual review.
+          keptFields.push({ ...field });
+          manualFields.push(field.name);
+          evidence.fields[field.name] = { selector: field.selector, quality: 0, presence: 0, reasons: ['unverifiable'], manual: true };
+          anyLowConfidence = true;
+          log(`  · field "${field.name}" could not be safely re-mapped — left unchanged and flagged for manual review (the rest of the step is still healed).`);
+        }
       }
     }
 
@@ -210,33 +249,6 @@ async function healList(args) {
       evidence,
     };
   }, args);
-}
-
-// Verify a single field, proposing & checking replacement selectors. Returns
-// { outcome:'remap', selector, kind, attribute, validRate } |
-// { outcome:'drop' } | { outcome:'ambiguous' }.
-async function repairField({ page, containerSelector, containerType, field, sampleHtml, historySamples, log }) {
-  const proposal = await proposeFieldSelector({ sampleHtml, field, historySamples });
-  if (proposal.ok) {
-    for (const cand of proposal.candidates) {
-      const fieldSpec = { name: field.name, selector: cand.selector, kind: cand.kind || field.kind, attribute: cand.attribute ?? field.attribute };
-      const v = await verify.verifyListFields(page, {
-        containerSelector, type: containerType, fields: [fieldSpec], sampleSize: FIELD_SAMPLE_SIZE,
-      });
-      const rec = v.fields && v.fields[field.name];
-      if (!rec) continue;
-      const judged = validators.assessFieldSamples(fieldSpec, rec.samples);
-      log(`  · field "${field.name}" candidate "${truncate(cand.selector, 60)}" → quality ${judged.quality.toFixed(2)} presence ${judged.presence.toFixed(2)}`);
-      if (judged.ok) {
-        return { outcome: 'remap', selector: rec.rescuedToSelf ? '' : cand.selector, kind: fieldSpec.kind, attribute: fieldSpec.attribute, quality: judged.quality, presence: judged.presence };
-      }
-    }
-  }
-  // No candidate validated. If the model judged the field absent from the
-  // sample item, treat it as a clean drop; otherwise it's ambiguous.
-  if (proposal.ok && proposal.disappeared) return { outcome: 'drop' };
-  if (!proposal.ok && proposal.code === 'DISAPPEARED') return { outcome: 'drop' };
-  return { outcome: 'ambiguous' };
 }
 
 /* =========================================================================
@@ -321,44 +333,60 @@ async function proposeContainerSelectors({ snapshotHtml, current, fields, label 
   return { ok: true, selectors, confidence: obj.confidence };
 }
 
-async function proposeFieldSelector({ sampleHtml, field, historySamples }) {
+// Propose replacement selectors for ALL broken fields in ONE request. Doing
+// this per-field used to fire N sequential LLM calls, exhaust the provider
+// rate limit, and fall back to a weaker model partway through — leaving the
+// tail of fields unhealed until a later run. One batched call keeps the whole
+// list on the strongest available model and lets a single run heal everything.
+// Returns { ok, byName: { [field]: { candidates:[{selector,kind,attribute}], disappeared } } }.
+async function proposeFieldsBatch({ sampleHtml, fields, historySamples }) {
   const sys = [
-    'You repair ONE broken field selector inside a repeating list item. You are given the CURRENT HTML of one sample item.',
-    'Return ONE JSON object only: {"candidates":[{"selector":"<css relative to item>","kind":"text|attr|html","attribute":"<only if attr>"}],"disappeared":true|false,"confidence":"high|medium|low"}.',
-    'Selectors are CSS relative to the item (never start with html/body). Use "" to read from the item element itself. If the value clearly no longer exists in this item, set "disappeared":true and return an empty candidates array.',
-    'Avoid hashed/random class names. Provide 1-3 candidates best-first.',
+    'You repair broken field selectors for items in a repeating list. You are given the CURRENT HTML of ONE sample item and a list of fields whose selectors no longer match.',
+    'For EACH field, propose 1-2 CSS selectors RELATIVE to the item that extract its value, or mark it disappeared if that data is genuinely no longer present in the item.',
+    'Return ONE JSON object only: {"fields":[{"name":"<exact name given>","candidates":[{"selector":"<css>","kind":"text|attr|html","attribute":"<only if attr>"}],"disappeared":true|false}]}.',
+    'Selectors are relative to the item (never start with html/body); use "" to read from the item element itself. Avoid hashed/random class names. Keep each field\'s "name" EXACTLY as given.',
   ].join('\n');
-  const hist = Array.isArray(historySamples) && historySamples.length
-    ? `\nThis field PREVIOUSLY contained values like: ${historySamples.slice(0, 4).map(v => JSON.stringify(truncate(String(v), 60))).join(', ')}`
-    : '';
+
+  const fieldLines = fields.map(f => {
+    const hist = historySamples && Array.isArray(historySamples[f.name]) && historySamples[f.name].length
+      ? ` — previously like: ${historySamples[f.name].slice(0, 3).map(v => JSON.stringify(truncate(String(v), 50))).join(', ')}`
+      : '';
+    return `- name="${f.name}" kind="${f.kind || 'text'}"${f.attribute ? ` attribute="${f.attribute}"` : ''} old_selector="${f.selector || '(item itself)'}"${hist}`;
+  }).join('\n');
+
   const user = [
-    `Field to repair: name="${field.name}" kind="${field.kind || 'text'}"${field.attribute ? ` attribute="${field.attribute}"` : ''}`,
-    `Previous (now empty) selector: ${field.selector || '(the item itself)'}`,
-    hist,
-    '',
     'Sample item HTML:',
     '```html', truncate(sampleHtml || '', 16000), '```',
+    '',
+    'Fields to repair:',
+    fieldLines,
     '',
     'Return the JSON object only.',
   ].join('\n');
 
-  const res = await llm.safeChat({ system: sys, user, temperature: 0.1, maxTokens: 400, timeoutMs: 30000 });
-  if (!res.ok) return { ok: false, error: res.error, code: res.code };
-  const obj = PARSE.parse(res.text);
-  if (!obj) return { ok: false, error: 'bad JSON', code: 'BAD_JSON' };
-  if (obj.disappeared === true && (!Array.isArray(obj.candidates) || obj.candidates.length === 0)) {
-    return { ok: false, code: 'DISAPPEARED', disappeared: true };
+  // Budget scales with field count so the model has room to answer for all of
+  // them; capped so a runaway response can't stall the run.
+  const maxTokens = Math.min(1800, 250 + fields.length * 120);
+  const res = await llm.safeChat({ system: sys, user, temperature: 0.1, maxTokens, timeoutMs: 40000 });
+  if (!res.ok) return { ok: false, error: res.error, code: res.code, byName: {} };
+  const obj = PARSE.parse(res.text, { preferKeys: ['fields'] });
+  const arr = obj && Array.isArray(obj.fields) ? obj.fields : null;
+  if (!arr) return { ok: false, error: 'bad JSON', code: 'BAD_JSON', byName: {} };
+
+  const byName = {};
+  for (const entry of arr) {
+    if (!entry || typeof entry.name !== 'string') continue;
+    const candidates = (Array.isArray(entry.candidates) ? entry.candidates : [])
+      .filter(c => c && typeof c.selector === 'string')
+      .map(c => ({
+        selector: cleanRelative(c.selector),
+        kind: c.kind === 'attr' || c.kind === 'attribute' ? 'attr' : c.kind === 'html' ? 'html' : 'text',
+        attribute: typeof c.attribute === 'string' ? c.attribute.trim() : null,
+      }))
+      .slice(0, 3);
+    byName[entry.name] = { candidates, disappeared: entry.disappeared === true };
   }
-  const candidates = (Array.isArray(obj.candidates) ? obj.candidates : [])
-    .filter(c => c && typeof c.selector === 'string')
-    .map(c => ({
-      selector: cleanRelative(c.selector),
-      kind: c.kind === 'attr' || c.kind === 'attribute' ? 'attr' : c.kind === 'html' ? 'html' : 'text',
-      attribute: typeof c.attribute === 'string' ? c.attribute.trim() : null,
-    }))
-    .slice(0, 4);
-  if (!candidates.length) return { ok: false, error: 'no candidates', code: 'NO_CANDIDATES', disappeared: !!obj.disappeared };
-  return { ok: true, candidates, disappeared: !!obj.disappeared };
+  return { ok: true, byName };
 }
 
 async function proposeSingleSelector({ snapshotHtml, step, historySamples }) {

@@ -43,18 +43,19 @@ llm.safeChat = async ({ system, user }) => {
   if (/repair a broken web-scraping list selector/i.test(system)) {
     return { ok: true, text: JSON.stringify({ selectors: [{ value: 'article.vg-card', type: 'css' }], confidence: 'high' }) };
   }
-  if (/repair ONE broken field selector/i.test(system)) {
-    const m = /name="([^"]+)"/.exec(user);
-    const name = m && m[1];
-    if (WRONG_PRICE && name === 'price') {
-      return { ok: true, text: JSON.stringify({ candidates: [{ selector: 'small.vg-vendor', kind: 'text' }], disappeared: false, confidence: 'medium' }) };
-    }
-    if (DISAPPEARED.has(name)) {
-      return { ok: true, text: JSON.stringify({ candidates: [], disappeared: true, confidence: 'high' }) };
-    }
-    const rep = FIELD_REPAIR[name];
-    if (rep) return { ok: true, text: JSON.stringify({ candidates: [rep], disappeared: false, confidence: 'high' }) };
-    return { ok: true, text: JSON.stringify({ candidates: [], disappeared: true, confidence: 'low' }) };
+  if (/repair broken field selectors/i.test(system)) {
+    // Batched call: answer for every requested field in one response.
+    const names = [...user.matchAll(/name="([^"]+)"/g)].map(m => m[1]);
+    const fields = names.map((name) => {
+      if (WRONG_PRICE && name === 'price') {
+        return { name, candidates: [{ selector: 'small.vg-vendor', kind: 'text' }], disappeared: false };
+      }
+      if (DISAPPEARED.has(name)) return { name, candidates: [], disappeared: true };
+      const rep = FIELD_REPAIR[name];
+      if (rep) return { name, candidates: [rep], disappeared: false };
+      return { name, candidates: [], disappeared: true };
+    });
+    return { ok: true, text: JSON.stringify({ fields }) };
   }
   return { ok: false, error: 'unexpected prompt', code: 'TEST' };
 };
