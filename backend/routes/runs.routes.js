@@ -31,6 +31,9 @@ function serialize(row) {
     } : null,
     hasResults:        !!row.results_json,
     hasPatchedSteps:   !!row.patched_steps_json,
+    // The workflow version this run executed — present means it can be
+    // restored (rolled back to) with one click from run history.
+    versionId:         row.version_id ?? null,
   };
 }
 
@@ -124,17 +127,48 @@ router.post('/:id/apply-patch', (req, res) => {
     WHERE id = ? AND user_id = ?
   `).run(row.patched_steps_json, row.workflow_id, req.user.id);
 
+  // Record the adopted state as a restorable version.
   const updated = db.prepare('SELECT * FROM workflows WHERE id = ?').get(row.workflow_id);
-  res.json({
-    workflow: {
-      id: updated.id,
-      name: updated.name,
-      steps: safeJson(updated.steps_json) || [],
-      meta:  updated.meta_json ? safeJson(updated.meta_json) : null,
-      updatedAt: updated.updated_at,
-    },
-  });
+  runStore.ensureVersion(row.workflow_id, req.user.id, safeJson(row.patched_steps_json) || [],
+    updated.meta_json ? safeJson(updated.meta_json) : null, 'adopt');
+  res.json({ workflow: serializeWorkflow(updated) });
 });
+
+// One-click rollback: restore the workflow to the exact version this run
+// executed. Run history is the version timeline, so this is "roll back to how
+// the workflow was for that run".
+router.post('/:id/restore', (req, res) => {
+  const row = runStore.getRunForUser(Number(req.params.id), req.user.id);
+  if (!row) return res.status(404).json({ error: 'Run not found' });
+  if (!row.version_id) return res.status(400).json({ error: 'This run has no recorded version to restore' });
+  const version = runStore.getVersionForUser(row.version_id, req.user.id);
+  if (!version) return res.status(404).json({ error: 'Version not found' });
+  const owns = db.prepare('SELECT id FROM workflows WHERE id = ? AND user_id = ?')
+                  .get(row.workflow_id, req.user.id);
+  if (!owns) return res.status(404).json({ error: 'Workflow no longer exists' });
+
+  // Restore steps (and meta if the version captured it). The restored state is
+  // already a version row, so no new version is created — the next run will
+  // simply reference it again.
+  db.prepare(`
+    UPDATE workflows
+    SET steps_json = ?, meta_json = COALESCE(?, meta_json), updated_at = datetime('now')
+    WHERE id = ? AND user_id = ?
+  `).run(version.steps_json, version.meta_json, row.workflow_id, req.user.id);
+
+  const updated = db.prepare('SELECT * FROM workflows WHERE id = ?').get(row.workflow_id);
+  res.json({ workflow: serializeWorkflow(updated), restoredVersionId: version.id });
+});
+
+function serializeWorkflow(w) {
+  return {
+    id: w.id,
+    name: w.name,
+    steps: safeJson(w.steps_json) || [],
+    meta:  w.meta_json ? safeJson(w.meta_json) : null,
+    updatedAt: w.updated_at,
+  };
+}
 
 function safeJson(s) { try { return JSON.parse(s); } catch (_) { return null; } }
 

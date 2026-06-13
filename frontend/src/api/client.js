@@ -85,4 +85,6 @@ export const runsApi = {
     return r.data;
   },
   applyPatch: (id) => api.post(`/api/runs/${id}/apply-patch`).then(r => r.data.workflow),
+  // Roll the workflow back to the exact version this run executed.
+  restore:    (id) => api.post(`/api/runs/${id}/restore`).then(r => r.data.workflow),
 };

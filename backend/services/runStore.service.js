@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const db = require('../db');
 
 /* ===========================================================================
@@ -11,11 +12,11 @@ const db = require('../db');
    ========================================================================= */
 
 // ── runs ───────────────────────────────────────────────────────────────────
-function createRun({ userId, workflowId, scheduleId = null, parentRunId = null, trigger = 'manual' }) {
+function createRun({ userId, workflowId, scheduleId = null, parentRunId = null, trigger = 'manual', versionId = null }) {
   const info = db.prepare(`
-    INSERT INTO runs (user_id, workflow_id, schedule_id, parent_run_id, trigger, status)
-    VALUES (?, ?, ?, ?, ?, 'running')
-  `).run(userId, workflowId, scheduleId, parentRunId, trigger);
+    INSERT INTO runs (user_id, workflow_id, schedule_id, parent_run_id, trigger, status, version_id)
+    VALUES (?, ?, ?, ?, ?, 'running', ?)
+  `).run(userId, workflowId, scheduleId, parentRunId, trigger, versionId);
   return info.lastInsertRowid;
 }
 
@@ -47,7 +48,7 @@ function listRunsForUser(userId, { limit = 50, workflowId = null } = {}) {
     return db.prepare(`
       SELECT id, workflow_id, schedule_id, trigger, status, started_at, finished_at,
              duration_ms, error_message, error_category, failed_step_label,
-             ai_summary, retry_count, parent_run_id
+             ai_summary, retry_count, parent_run_id, version_id
       FROM runs
       WHERE user_id = ? AND workflow_id = ?
       ORDER BY started_at DESC
@@ -57,7 +58,7 @@ function listRunsForUser(userId, { limit = 50, workflowId = null } = {}) {
   return db.prepare(`
     SELECT id, workflow_id, schedule_id, trigger, status, started_at, finished_at,
            duration_ms, error_message, error_category, failed_step_label,
-           ai_summary, retry_count, parent_run_id
+           ai_summary, retry_count, parent_run_id, version_id
     FROM runs
     WHERE user_id = ?
     ORDER BY started_at DESC
@@ -132,6 +133,46 @@ function recentSuccessfulResults(workflowId, limit = 5) {
     try { out.push(JSON.parse(r.results_json)); } catch (_) {}
   }
   return out;
+}
+
+// ── workflow versions (rollback history) ────────────────────────────────────
+function hashSteps(steps) {
+  return crypto.createHash('sha256').update(JSON.stringify(steps || [])).digest('hex');
+}
+
+// Record a workflow's step tree as a version, deduped by content hash: if this
+// exact state already exists for the workflow we reuse that row (so identical
+// states aren't stored twice and many runs can share one version). Returns the
+// version id, or null on failure.
+function ensureVersion(workflowId, userId, steps, meta, source) {
+  try {
+    const hash = hashSteps(steps);
+    const existing = db.prepare(
+      'SELECT id FROM workflow_versions WHERE workflow_id = ? AND hash = ?'
+    ).get(workflowId, hash);
+    if (existing) return existing.id;
+    const info = db.prepare(`
+      INSERT INTO workflow_versions (workflow_id, user_id, hash, steps_json, meta_json, source)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(workflowId, userId, hash, JSON.stringify(steps || []),
+           meta == null ? null : JSON.stringify(meta), source || null);
+    return info.lastInsertRowid;
+  } catch (_) { return null; }
+}
+
+function getVersionForUser(versionId, userId) {
+  if (!versionId) return null;
+  return db.prepare('SELECT * FROM workflow_versions WHERE id = ? AND user_id = ?').get(versionId, userId);
+}
+
+function listVersionsForWorkflow(workflowId, userId, { limit = 50 } = {}) {
+  return db.prepare(`
+    SELECT id, hash, source, created_at
+    FROM workflow_versions
+    WHERE workflow_id = ? AND user_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(workflowId, userId, limit);
 }
 
 // Persist a healed step tree back into the saved workflow (auto-adopt path).
@@ -279,6 +320,8 @@ module.exports = {
   recordRepair, markRepairVerified, listRepairsForRun,
   // self-healing helpers
   recentSuccessfulResults, updateWorkflowSteps,
+  // version history / rollback
+  ensureVersion, getVersionForUser, listVersionsForWorkflow,
   // schedules
   listSchedulesForUser, getScheduleByWorkflow, upsertSchedule,
   deleteSchedule, dueSchedules, bumpScheduleAfterRun, getScheduleById,
