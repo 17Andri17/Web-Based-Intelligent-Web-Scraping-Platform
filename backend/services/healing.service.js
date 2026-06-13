@@ -120,6 +120,8 @@ async function healList(args) {
     // ── Step 2: each item field, one by one ────────────────────────────────
     const keptFields    = [];   // resolved field specs (possibly remapped)
     const droppedFields = [];   // genuinely-disappeared fields we removed
+    const manualFields  = [];   // present-but-unverifiable: left as-is, flagged
+    let   verifiedCount = 0;     // fields we could actually confirm (kept or remapped)
     let   anyLowConfidence = false;
 
     // Which fields does the runtime say were empty across all rows? Those are
@@ -140,11 +142,11 @@ async function healList(args) {
       const judged = validators.assessFieldSamples(field, rec.samples);
       evidence.fields[field.name] = { selector: rec.selector ?? field.selector, quality: judged.quality, presence: judged.presence, reasons: judged.reasons, changed: false };
 
-      const containerChanged = evidence.container.changed;
       const stillWorks = judged.ok && (!brokenSet.has(field.name));
 
       if (stillWorks) {
         keptFields.push({ ...field, selector: rec.rescuedToSelf ? '' : rec.selector });
+        verifiedCount++;
         continue;
       }
 
@@ -159,17 +161,23 @@ async function healList(args) {
       if (repaired.outcome === 'remap') {
         keptFields.push({ ...field, selector: repaired.selector, kind: repaired.kind || field.kind, attribute: repaired.attribute ?? field.attribute });
         evidence.fields[field.name] = { selector: repaired.selector, quality: repaired.quality, presence: repaired.presence, reasons: [], changed: true };
+        verifiedCount++;
         if (repaired.quality < STRONG_VALID_RATE) anyLowConfidence = true;
       } else if (repaired.outcome === 'drop') {
         droppedFields.push(field.name);
         evidence.fields[field.name] = { selector: null, quality: 0, presence: 0, reasons: ['disappeared'], dropped: true };
         log(`  · field "${field.name}" appears to have disappeared — dropping it (keeping the rest).`);
       } else {
-        // ambiguous — data may exist but we can't verify a safe selector. Do
-        // NOT guess; the whole step goes to manual review.
-        return manual('field unrecoverable',
-          `Field "${field.name}" could not be safely re-mapped (its data may have moved or changed shape). Refusing to guess — manual review needed.`,
-          undefined, evidence);
+        // Ambiguous — data may still be present but we can't verify a safe
+        // selector. Do NOT guess and do NOT sink the whole step: keep the
+        // field's CURRENT selector (it returns empty, never the WRONG value)
+        // and flag it for the user to finish by hand. Everything we could
+        // verify is still healed and will capture data.
+        keptFields.push({ ...field });
+        manualFields.push(field.name);
+        evidence.fields[field.name] = { selector: field.selector, quality: 0, presence: 0, reasons: ['unverifiable'], manual: true };
+        anyLowConfidence = true;
+        log(`  · field "${field.name}" could not be safely re-mapped — left unchanged and flagged for manual review (the rest of the step is still healed).`);
       }
     }
 
@@ -177,16 +185,26 @@ async function healList(args) {
       return removeStepOutcome('all item fields disappeared',
         'Every field this list extracted has disappeared from the page; the step can no longer collect anything.');
     }
+    if (verifiedCount === 0) {
+      // The list was found again, but not a SINGLE field could be verified —
+      // capturing rows of empty values isn't useful and isn't safe to trust.
+      return manual('no fields verifiable',
+        'The list was located again but none of its item fields could be verified against the page. Manual review needed.',
+        undefined, evidence);
+    }
 
-    // Confidence: strong only when the container is intact (or cleanly
-    // re-found) AND every kept field validated well.
-    const confidence = (!anyLowConfidence && cont.count >= MIN_LIST_CONTAINERS) ? 'high' : 'medium';
-    const explanation = buildListExplanation({ evidence, droppedFields, confidence });
+    // Confidence is high only when the container is intact (or cleanly
+    // re-found), every kept field validated well, and nothing was left for
+    // manual review. Any unresolved field forces a proposal (medium) so the
+    // fix is never auto-written to the saved workflow.
+    const confidence = (manualFields.length === 0 && !anyLowConfidence && cont.count >= MIN_LIST_CONTAINERS) ? 'high' : 'medium';
+    const explanation = buildListExplanation({ evidence, droppedFields, manualFields, confidence });
 
     return {
       outcome: 'patch',
       newParams: buildListParams(args.step, shape, { containerSelector, containerType, keptFields, droppedFields }),
       droppedFields,
+      manualFields,
       confidence,
       explanation,
       evidence,
@@ -479,7 +497,7 @@ async function firstContainerHtml(page, containerSelector, type) {
   }, containerSelector, type).catch(() => '');
 }
 
-function buildListExplanation({ evidence, droppedFields, confidence }) {
+function buildListExplanation({ evidence, droppedFields, manualFields, confidence }) {
   const parts = [];
   if (evidence.container && evidence.container.changed) {
     parts.push(`Re-pointed the list selector to "${evidence.container.selector}" (${evidence.container.count} items).`);
@@ -488,7 +506,8 @@ function buildListExplanation({ evidence, droppedFields, confidence }) {
   }
   const remapped = Object.entries(evidence.fields).filter(([, v]) => v.changed && !v.dropped).map(([k]) => k);
   if (remapped.length) parts.push(`Re-mapped field(s): ${remapped.join(', ')}.`);
-  if (droppedFields.length) parts.push(`Dropped disappeared field(s): ${droppedFields.join(', ')}.`);
+  if (droppedFields && droppedFields.length) parts.push(`Dropped disappeared field(s): ${droppedFields.join(', ')}.`);
+  if (manualFields && manualFields.length) parts.push(`Left for manual review (couldn't verify a safe selector): ${manualFields.join(', ')}.`);
   parts.push(`Confidence: ${confidence} (verified against the live snapshot DOM).`);
   return parts.join(' ');
 }
