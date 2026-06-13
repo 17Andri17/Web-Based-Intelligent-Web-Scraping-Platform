@@ -70,7 +70,13 @@ async function executeAndPersist(arg) {
   const rootWorkflowId = arg.workflow.id || arg.workflowId || null;
 
   const t0 = nowMs();
-  const runId = runStore.createRun({ userId, workflowId, scheduleId, trigger });
+  // Record the workflow version this run executes (deduped by content) so run
+  // history doubles as a restorable version timeline.
+  const executedVersionId = safeCall(
+    () => runStore.ensureVersion(workflowId, userId, arg.workflow.steps || [], meta, 'run'),
+    null,
+  );
+  const runId = runStore.createRun({ userId, workflowId, scheduleId, trigger, versionId: executedVersionId });
   emit(callbacks, 'onStart', { runId });
 
   const log = (line, level = 'info') => {
@@ -337,6 +343,9 @@ async function executeAndPersist(arg) {
     if (changed) {
       adopted = true;
       log('🔒 high-confidence fix verified — applied to the saved workflow automatically.');
+      // Snapshot the healed state as a new restorable version so the user can
+      // roll back the auto-adopt if it ever turns out wrong.
+      safeCall(() => runStore.ensureVersion(workflowId, userId, currentSteps, meta, 'auto-heal'));
       for (const h of healLog) { if (h.repairId) safeCall(() => markAutoAdopted(h.repairId)); }
     }
   }

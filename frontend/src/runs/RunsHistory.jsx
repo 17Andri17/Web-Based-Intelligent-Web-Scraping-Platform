@@ -99,11 +99,24 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
 
   const adoptPatch = async () => {
     if (!detail) return;
-    if (!confirm("Replace your saved workflow's steps with the AI-repaired version? You can undo via the Workflows menu (re-open the original).")) return;
+    if (!confirm("Replace your saved workflow's steps with the AI-repaired version? You can roll back from any run in this history.")) return;
     try {
       const wf = await runsApi.applyPatch(detail.id);
       const full = await workflowsApi.get(wf.id);
       showToast?.(`✓ Workflow "${full.name}" updated with auto-fix`, "success");
+      onAppliedPatch?.(full);
+    } catch (err) {
+      showToast?.(`✗ ${err?.response?.data?.error || err.message}`, "error");
+    }
+  };
+
+  const restoreVersion = async () => {
+    if (!detail) return;
+    if (!confirm("Roll the workflow back to the exact version this run executed? Your current steps will be replaced (you can restore another run's version later).")) return;
+    try {
+      const wf = await runsApi.restore(detail.id);
+      const full = await workflowsApi.get(wf.id);
+      showToast?.(`✓ Workflow "${full.name}" rolled back to run #${detail.id}'s version`, "success");
       onAppliedPatch?.(full);
     } catch (err) {
       showToast?.(`✗ ${err?.response?.data?.error || err.message}`, "error");
@@ -148,7 +161,10 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                   <StatusBadge status={r.status} />
-                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{r.trigger}</span>
+                  <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                    {r.versionId != null && <span title="Workflow version this run executed" style={{ marginRight: 6, opacity: 0.8 }}>v{r.versionId}</span>}
+                    {r.trigger}
+                  </span>
                 </div>
                 <div style={{ fontSize: 12, marginTop: 4 }}>{formatDate(r.startedAt)}</div>
                 <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
@@ -177,7 +193,7 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
                 </div>
 
                 {tab === "summary" && (
-                  <Summary detail={detail} onDownloadJson={() => downloadBlob("json")} onDownloadCsv={() => downloadBlob("csv")} onAdopt={adoptPatch} />
+                  <Summary detail={detail} onDownloadJson={() => downloadBlob("json")} onDownloadCsv={() => downloadBlob("csv")} onAdopt={adoptPatch} onRestore={restoreVersion} />
                 )}
                 {tab === "data" && <ResultsView results={detail.results} />}
                 {tab === "repairs" && <RepairsView repairs={detail.repairs} />}
@@ -211,7 +227,7 @@ function DetailTab({ name, tab, setTab, disabled, children }) {
   );
 }
 
-function Summary({ detail, onDownloadJson, onDownloadCsv, onAdopt }) {
+function Summary({ detail, onDownloadJson, onDownloadCsv, onAdopt, onRestore }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
@@ -220,6 +236,7 @@ function Summary({ detail, onDownloadJson, onDownloadCsv, onAdopt }) {
         <Stat label="Started"   value={formatDate(detail.startedAt)} />
         <Stat label="Duration"  value={formatDuration(detail.durationMs)} />
         {detail.retryCount > 0 && <Stat label="Retries" value={detail.retryCount} />}
+        {detail.versionId != null && <Stat label="Version" value={`v${detail.versionId}`} />}
       </div>
 
       {detail.aiSummary && (
@@ -256,6 +273,13 @@ function Summary({ detail, onDownloadJson, onDownloadCsv, onAdopt }) {
                   onClick={onAdopt}
                   style={{ background: "var(--accent-primary, #4f9cf9)", color: "#fff" }}>
             Adopt AI-repaired workflow
+          </button>
+        )}
+        {detail.versionId != null && (
+          <button className="wf-save-btn"
+                  onClick={onRestore}
+                  title={`Roll the workflow back to the version run #${detail.id} executed (v${detail.versionId})`}>
+            ↩ Restore this version
           </button>
         )}
       </div>

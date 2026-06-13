@@ -127,6 +127,25 @@ db.exec(`
     FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_run_repairs_run ON run_repairs(run_id);
+
+  -- Content-addressed history of a workflow's step tree. A "version" is a
+  -- distinct steps_json (deduped by hash) so identical states aren't stored
+  -- twice; runs reference the version they executed, which turns run history
+  -- into a restorable version timeline.
+  CREATE TABLE IF NOT EXISTS workflow_versions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    hash        TEXT NOT NULL,
+    steps_json  TEXT NOT NULL,
+    meta_json   TEXT,
+    source      TEXT,                 -- 'run' | 'auto-heal' | 'adopt' | 'restore'
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id)     REFERENCES users(id)     ON DELETE CASCADE
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_wfver_unique ON workflow_versions(workflow_id, hash);
+  CREATE INDEX IF NOT EXISTS idx_wfver_workflow ON workflow_versions(workflow_id, id DESC);
 `);
 
 // Idempotent migrations for columns added after the initial schema. SQLite
@@ -149,5 +168,7 @@ addColumnIfMissing('schedules', 'anchor_at', 'TEXT');
 addColumnIfMissing('run_repairs', 'repair_kind',  'TEXT');     // 'selector' | 'field-drop' | 'remove-step' | 'manual'
 addColumnIfMissing('run_repairs', 'evidence_json', 'TEXT');    // deterministic verification evidence
 addColumnIfMissing('run_repairs', 'auto_adopted', 'INTEGER NOT NULL DEFAULT 0');
+// Links a run to the workflow version it executed (for one-click rollback).
+addColumnIfMissing('runs', 'version_id', 'INTEGER');
 
 module.exports = db;
