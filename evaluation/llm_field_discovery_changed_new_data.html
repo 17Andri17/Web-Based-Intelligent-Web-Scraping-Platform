@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Benchmark — Field Discovery · Changed + New Data</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<style>
+  /* ── Identical styles to llm_field_discovery_changed.html ─────── */
+  .shop-header { padding: 28px 40px; background: var(--bg2); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+  .shop-logo { font-family: var(--sans); font-size: 22px; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+  .shop-logo span { color: var(--accent); }
+  .shop-nav { display: flex; gap: 20px; font-size: 12px; color: var(--muted); }
+  .catalog-wrapper { max-width: 1100px; margin: 0 auto; padding: 40px; }
+  .catalog-title { font-family: var(--sans); font-size: 28px; font-weight: 800; color: #fff; margin-bottom: 6px; }
+  .catalog-subtitle { font-size: 12px; color: var(--muted); margin-bottom: 32px; }
+  .filter-bar { display: flex; gap: 10px; margin-bottom: 32px; flex-wrap: wrap; }
+  .filter-chip { padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border); background: var(--bg3); font-size: 11px; color: var(--muted); cursor: pointer; }
+  .filter-chip.active { border-color: var(--accent); color: var(--accent); background: rgba(74,240,180,0.08); }
+  .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
+
+  /*
+   * CHANGED + NEW DATA VARIANT
+   *
+   * HTML structure: identical to llm_field_discovery_changed.html
+   *   (article.vg-card, utility class names, changed tags, extra wrappers,
+   *    data-pid attribute, sibling order: social → brand+title → copy → prices)
+   *
+   * Data: completely different products, prices, ratings and review counts.
+   *   Some availability states and badge types also differ.
+   *   data-pid values start at 201 to distinguish from the changed variant.
+   *
+   * Purpose: test self-healing when BOTH the selector mapping AND the data
+   *   have changed — the LLM must find the correct element from structure
+   *   and content clues alone, without being able to match on known values.
+   */
+  .vg-card { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .vg-media { font-size: 56px; background: var(--surface); margin: 10px 14px; border-radius: 8px; padding: 24px; display: flex; align-items: center; justify-content: center; }
+  .vg-top { padding: 10px 14px 0; min-height: 26px; }
+  .vg-lbl { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 9px; border-radius: 10px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .lbl-s { background: rgba(240,96,96,0.15); color: var(--accent3); border: 1px solid rgba(240,96,96,0.35); }
+  .lbl-n { background: rgba(74,240,180,0.12); color: var(--accent);  border: 1px solid rgba(74,240,180,0.3); }
+  .lbl-h { background: rgba(240,160,64,0.12); color: var(--warn);    border: 1px solid rgba(240,160,64,0.3); }
+  .vg-inner { padding: 16px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .vg-vendor { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  .vg-hl { font-family: var(--sans); font-size: 15px; font-weight: 700; color: #fff; line-height: 1.3; }
+  .vg-copy { font-size: 11px; color: var(--muted); line-height: 1.6; }
+  .vg-prices { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+  .vg-cur { font-family: var(--sans); font-size: 18px; font-weight: 800; color: var(--accent); }
+  .vg-was { font-size: 12px; color: var(--muted); text-decoration: line-through; }
+  .vg-off { font-size: 10px; font-weight: 600; color: var(--accent3); }
+  .vg-social { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .vg-stars { color: var(--warn); font-weight: 600; }
+  .vg-votes { color: var(--muted); }
+  .vg-bot { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .vg-stock { font-size: 11px; font-weight: 600; }
+  .stk-ok  { color: var(--easy); }
+  .stk-low { color: var(--warn); }
+  .stk-no  { color: var(--accent3); }
+  .vg-dlv { font-size: 10px; color: var(--muted); }
+
+  .info-box { background: rgba(163,113,247,0.07); border: 1px solid rgba(163,113,247,0.25); border-radius: 8px; padding: 16px 20px; font-size: 12px; color: var(--muted); line-height: 1.7; margin-bottom: 32px; }
+  .info-box strong { color: var(--purple); }
+
+  .gt-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 40px; }
+  .gt-table th { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border2); color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; font-size: 10px; }
+  .gt-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .gt-table code { font-family: var(--mono); color: var(--accent); font-size: 10px; }
+  .gt-table .field-name { color: var(--purple); }
+  .section-label { font-family: var(--sans); font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin: 40px 0 12px; }
+  .changed { color: var(--warn); font-size: 10px; }
+  .same { color: var(--muted); font-size: 10px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<!-- ── Storefront chrome ─────────────────────────────────────────── -->
+<header class="shop-header">
+  <div class="shop-logo">Volt<span>Gear</span></div>
+  <nav class="shop-nav">
+    <span>Wearables</span>
+    <span>Audio</span>
+    <span>Photography</span>
+    <span>Smart Home</span>
+    <span>Peripherals</span>
+  </nav>
+</header>
+
+<!-- ── Catalog ──────────────────────────────────────────────────── -->
+<div class="catalog-wrapper">
+
+  <h1 class="catalog-title">Electronics Catalog</h1>
+  <p class="catalog-subtitle">6 products · Sorted by popularity</p>
+
+  <div class="info-box">
+    <strong>LLM Benchmark — CHANGED structure + NEW DATA variant.</strong><br>
+    The HTML structure is <em>identical</em> to <code>llm_field_discovery_changed.html</code>
+    (same utility classes, tags, nesting depth, and sibling order).
+    The product data is completely different — new products, new prices, new ratings, some different badge types and availability states.
+    <code>data-pid</code> values start at 201 to distinguish from the other changed variant.<br><br>
+    <strong>Purpose:</strong> test self-healing when both the selector mapping <em>and</em> the content have changed.
+    The LLM cannot rely on recognising known values (e.g. "$279", "Sony") and must locate fields purely from
+    structural position and element role.
+  </div>
+
+  <div class="filter-bar">
+    <span class="filter-chip active">All</span>
+    <span class="filter-chip">Wearables</span>
+    <span class="filter-chip">Audio</span>
+    <span class="filter-chip">Photography</span>
+    <span class="filter-chip">Smart Home</span>
+  </div>
+
+  <!--
+    DATA CHANGES vs llm_field_discovery_changed.html
+    ──────────────────────────────────────────────────────────────
+    Card 1: Sony Smartwatch $279  →  Apple Watch Ultra 2 $599   (badge: Sale→New, stk-ok→stk-low)
+    Card 2: Bose Headphones $199  →  Sennheiser HD 660S2 $330   (badge: New→Sale, stk-ok→stk-ok)
+    Card 3: Lumix Camera $599     →  GoPro Hero 12 $329          (no badge→Hot, stk-low→stk-ok, discount added)
+    Card 4: Keychron Keyboard $129→  Razer BlackWidow V4 $139    (badge: Hot→Sale, stk-ok→stk-ok)
+    Card 5: Logitech TrackPad $89 →  Elgato Stream Deck $149     (no badge→New, stk-ok→stk-ok, no discount→discount)
+    Card 6: Philips Hub $49       →  Nanoleaf Shapes $79         (badge: Sale→Hot, stk-no→stk-ok)
+    ──────────────────────────────────────────────────────────────
+    HTML structure: unchanged (vg-card, vg-top, vg-lbl, vg-media, vg-inner,
+    vg-social, vg-stars, vg-votes, vg-vendor, vg-hl, vg-copy, vg-prices,
+    vg-cur[data-value], vg-was, vg-off, vg-bot, vg-stock[stk-*], vg-dlv)
+  -->
+
+  <div class="product-grid" id="product-grid">
+
+    <!-- Card 1 — Apple Watch Ultra 2 -->
+    <article class="vg-card" data-pid="201">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-n">New</b>
+      </div>
+      <div class="vg-media">⌚</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.9</span>
+          <span class="vg-votes">(5,102 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Apple</small>
+          <h3 class="vg-hl">Watch Ultra 2</h3>
+        </div>
+        <blockquote class="vg-copy">Dual-frequency GPS, 36-hour battery, and 100m water resistance in a titanium case.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="599">$599</em>
+          <del class="vg-was">$799</del>
+          <b class="vg-off">−25%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-low">Only 5 left</span>
+        <small class="vg-dlv">Ships in 3 days</small>
+      </div>
+    </article>
+
+    <!-- Card 2 — Sennheiser HD 660S2 -->
+    <article class="vg-card" data-pid="202">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-s">Sale</b>
+      </div>
+      <div class="vg-media">🎧</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.7</span>
+          <span class="vg-votes">(789 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Sennheiser</small>
+          <h3 class="vg-hl">HD 660S2 Open-Back</h3>
+        </div>
+        <blockquote class="vg-copy">Reference-class open-back headphones with low-impedance 300Ω driver for home studio monitoring.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="330">$330</em>
+          <del class="vg-was">$420</del>
+          <b class="vg-off">−21%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-ok">In Stock</span>
+        <small class="vg-dlv">Free shipping</small>
+      </div>
+    </article>
+
+    <!-- Card 3 — GoPro Hero 12 -->
+    <article class="vg-card" data-pid="203">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-h">Hot</b>
+      </div>
+      <div class="vg-media">📷</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.5</span>
+          <span class="vg-votes">(3,441 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">GoPro</small>
+          <h3 class="vg-hl">Hero 12 Black</h3>
+        </div>
+        <blockquote class="vg-copy">5.3K60 video, HyperSmooth 6.0 stabilisation, and 27MP photos with a 177° ultra-wide lens.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="329">$329</em>
+          <del class="vg-was">$399</del>
+          <b class="vg-off">−18%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-ok">In Stock</span>
+        <small class="vg-dlv">Free shipping</small>
+      </div>
+    </article>
+
+    <!-- Card 4 — Razer BlackWidow V4 -->
+    <article class="vg-card" data-pid="204">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-s">Sale</b>
+      </div>
+      <div class="vg-media">⌨️</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.6</span>
+          <span class="vg-votes">(2,198 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Razer</small>
+          <h3 class="vg-hl">BlackWidow V4 Pro</h3>
+        </div>
+        <blockquote class="vg-copy">Full-size mechanical keyboard with Razer Yellow linear switches, per-key Chroma RGB, and USB passthrough.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="139">$139</em>
+          <del class="vg-was">$179</del>
+          <b class="vg-off">−22%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-ok">In Stock</span>
+        <small class="vg-dlv">Free shipping</small>
+      </div>
+    </article>
+
+    <!-- Card 5 — Elgato Stream Deck (new badge and discount vs original no-badge card) -->
+    <article class="vg-card" data-pid="205">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-n">New</b>
+      </div>
+      <div class="vg-media">🎮</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.8</span>
+          <span class="vg-votes">(4,670 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Elgato</small>
+          <h3 class="vg-hl">Stream Deck MK.2</h3>
+        </div>
+        <blockquote class="vg-copy">15 customisable LCD keys, plugin ecosystem, and one-tap scene switching for streaming and content creation.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="149">$149</em>
+          <del class="vg-was">$179</del>
+          <b class="vg-off">−17%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-ok">In Stock</span>
+        <small class="vg-dlv">Free shipping</small>
+      </div>
+    </article>
+
+    <!-- Card 6 — Nanoleaf Shapes (previously out-of-stock, now in stock) -->
+    <article class="vg-card" data-pid="206">
+      <div class="vg-top">
+        <b class="vg-lbl lbl-h">Hot</b>
+      </div>
+      <div class="vg-media">💡</div>
+      <div class="vg-inner">
+        <div class="vg-social">
+          <span class="vg-stars">★ 4.3</span>
+          <span class="vg-votes">(1,021 reviews)</span>
+        </div>
+        <div>
+          <small class="vg-vendor">Nanoleaf</small>
+          <h3 class="vg-hl">Shapes Hexagons Starter Kit</h3>
+        </div>
+        <blockquote class="vg-copy">9 modular RGB panels with 16M colours, touch control, music sync, and Matter compatibility.</blockquote>
+        <div class="vg-prices">
+          <em class="vg-cur" data-value="79">$79</em>
+          <del class="vg-was">$99</del>
+          <b class="vg-off">−20%</b>
+        </div>
+      </div>
+      <div class="vg-bot">
+        <span class="vg-stock stk-ok">In Stock</span>
+        <small class="vg-dlv">Free shipping</small>
+      </div>
+    </article>
+
+  </div><!-- /product-grid -->
+
+  <!-- ── Ground truth ────────────────────────────────────────────── -->
+  <div class="section-label">Ground Truth — Selectors (unchanged from changed variant)</div>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:16px;">
+    Selectors are relative to <code>article.vg-card</code> and are <strong>identical</strong> to those in
+    <code>llm_field_discovery_changed.html</code> — only the data values differ.
+    Use this table to verify self-healing repairs when content has also changed.
+  </p>
+  <table class="gt-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Field</th>
+        <th>Expected name</th>
+        <th>Selector (unchanged)</th>
+        <th>Sample value (this variant)</th>
+        <th>vs changed variant</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>Title</td><td class="field-name"><code>product_title</code></td><td><code>h3.vg-hl</code></td><td>Watch Ultra 2</td><td><span class="changed">Different</span></td></tr>
+      <tr><td>2</td><td>Brand</td><td class="field-name"><code>brand</code></td><td><code>small.vg-vendor</code></td><td>Apple</td><td><span class="changed">Different</span></td></tr>
+      <tr><td>3</td><td>Price</td><td class="field-name"><code>price</code></td><td><code>em.vg-cur</code></td><td>$599</td><td><span class="changed">Different</span></td></tr>
+      <tr><td>4</td><td>Original price</td><td class="field-name"><code>original_price</code></td><td><code>del.vg-was</code></td><td>$799</td><td><span class="changed">Different</span></td></tr>
+      <tr><td>5</td><td>Discount</td><td class="field-name"><code>discount</code></td><td><code>b.vg-off</code></td><td>−25%</td><td><span class="changed">Different</span></td></tr>
+      <tr><td>6</td><td>Rating</td><td class="field-name"><code>rating</code></td><td><code>.vg-stars</code></td><td>★ 4.9</td><td><span class="changed">Different</span></td></tr>
+      <tr><td>7</td><td>Review count</td><td class="field-name"><code>review_count</code></td><td><code>.vg-votes</code></td><td>(5,102 reviews)</td><td><span class="changed">Different</span></td></tr>
+      <tr><td>8</td><td>Availability</td><td class="field-name"><code>availability</code></td><td><code>.vg-stock</code></td><td>Only 5 left</td><td><span class="changed">Different</span></td></tr>
+      <tr><td>9</td><td>Description</td><td class="field-name"><code>description</code></td><td><code>blockquote.vg-copy</code></td><td>Dual-frequency GPS…</td><td><span class="changed">Different</span></td></tr>
+      <tr><td>10</td><td>Badge</td><td class="field-name"><code>badge</code></td><td><code>b.vg-lbl</code></td><td>New</td><td><span class="changed">Different (was Sale)</span></td></tr>
+    </tbody>
+  </table>
+
+  <!-- ── Self-healing reference ──────────────────────────────────── -->
+  <div class="section-label">Self-Healing Reference — Broken Base Selectors on This Variant</div>
+  <p style="font-size:11px;color:var(--muted);margin-bottom:16px;">
+    These are the same 8 broken base selectors as in the changed variant. They fail here for the same structural reasons.
+    The additional challenge is that the LLM cannot recognise values like "$279" or "Sony" as anchors —
+    all data is different, so repair must be driven entirely by element structure and role.
+  </p>
+  <table class="gt-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Step / field</th>
+        <th>Original (broken) selector</th>
+        <th>Error</th>
+        <th>Correct repair</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td>Extract title</td><td><code>.product-card__title</code></td><td>No elements found</td><td><code>h3.vg-hl</code></td></tr>
+      <tr><td>2</td><td>Extract brand</td><td><code>.product-card__brand</code></td><td>No elements found</td><td><code>small.vg-vendor</code></td></tr>
+      <tr><td>3</td><td>Extract price</td><td><code>.product-card__price</code></td><td>No elements found</td><td><code>em.vg-cur</code></td></tr>
+      <tr><td>4</td><td>Extract original price</td><td><code>.product-card__original-price</code></td><td>No elements found</td><td><code>del.vg-was</code></td></tr>
+      <tr><td>5</td><td>Extract discount</td><td><code>.product-card__discount</code></td><td>No elements found</td><td><code>b.vg-off</code></td></tr>
+      <tr><td>6</td><td>Extract rating</td><td><code>.product-card__rating</code></td><td>No elements found</td><td><code>.vg-stars</code></td></tr>
+      <tr><td>7</td><td>Extract review count</td><td><code>.product-card__review-count</code></td><td>No elements found</td><td><code>.vg-votes</code></td></tr>
+      <tr><td>8</td><td>Extract availability</td><td><code>.product-card__availability</code></td><td>No elements found</td><td><code>.vg-stock</code></td></tr>
+    </tbody>
+  </table>
+
+</div><!-- /catalog-wrapper -->
+</body>
+</html>
