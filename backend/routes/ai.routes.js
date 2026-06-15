@@ -37,6 +37,17 @@ const MIN_NAME_LEN  = 2;
 // ("The field name is: product_price"), so we keep the refusal list tight.
 const REFUSAL_RX = /\b(?:i (?:can(?:'|no)?t|cannot|won'?t|am sorry|'?m sorry)|as an? (?:ai|language model)|i (?:do(?:n'|n no)?t|cannot determine)|unknown|n\/a|none|null|undefined)\b/i;
 
+// Format-instruction artifacts the model parrots back from the prompt instead
+// of producing a real name. These are valid-looking snake_case tokens, so the
+// candidate extraction below would otherwise pick them up — most commonly the
+// literal "snake_case", which then becomes the step's name.
+const STOPWORDS = new Set([
+  'snake_case', 'snakecase', 'camel_case', 'camelcase', 'pascal_case',
+  'pascalcase', 'kebab_case', 'kebabcase', 'lower_case', 'lowercase',
+  'upper_case', 'uppercase', 'field_name', 'fieldname', 'step_name',
+  'stepname', 'field', 'name', 'value',
+]);
+
 function clip(s, n = MAX_FIELD_LEN) {
   if (typeof s !== 'string') return '';
   return s.length > n ? s.slice(0, n) + '…' : s;
@@ -144,7 +155,8 @@ function sanitiseName(raw) {
   //    typically where the model places its final answer.
   const candidates = (raw.match(/[a-zA-Z][a-zA-Z0-9_]*/g) || [])
     .map(t => t.toLowerCase())
-    .filter(isValidName);
+    .filter(isValidName)
+    .filter(t => !STOPWORDS.has(t));
 
   const withUnderscore = candidates.filter(t => t.includes('_'));
   if (withUnderscore.length) return withUnderscore[withUnderscore.length - 1];
@@ -157,7 +169,7 @@ function sanitiseName(raw) {
        .replace(/[\s-]+/g, '_')
        .replace(/_+/g, '_')
        .replace(/^_+|_+$/g, '');
-  if (isValidName(direct) && direct.length <= 20) return direct;
+  if (isValidName(direct) && direct.length <= 20 && !STOPWORDS.has(direct)) return direct;
 
   // 3) Last resort — pick the final simple token in the response (the
   //    model often ends a chain-of-thought with the answer word).
