@@ -97,35 +97,39 @@ function buildPrompt(payload) {
   lines.push('');
 
   // Naming guidance — keep it short and concrete. The biggest issue we hit
-  // was the model padding names with redundant modifiers ("popular_exam_link"
-  // when "exam_link" would do). Be explicit about that.
+  // was the model padding names with redundant modifiers ("popular_link" when
+  // "link" would do), and copying example words verbatim — so we keep the
+  // examples generic and tell the model never to reuse them.
   lines.push('Naming rules:');
-  lines.push('- Prefer SHORT, simple names: exam_link, exam_code, price, title.');
+  lines.push('- Base the name ONLY on the element, text, and context above. NEVER copy a word from the examples in these rules unless it genuinely matches the data.');
+  lines.push('- Prefer SHORT, simple names that describe the VALUE: price, title, image_url, link, rating.');
   lines.push('- Drop generic / promotional modifiers (popular, featured, latest, top, best, new, hot, trending) unless they are the entire point of the value.');
-  lines.push('- If the PARENT TEXT contains a clear label next to the value (e.g. "180 Cert Providers"), name the field after the LABEL, not the visible numeric value (→ cert_providers, not "180" or counter_number).');
+  lines.push('- If the PARENT TEXT contains a clear label next to the value (e.g. a number shown beside the word "Reviews"), name the field after the LABEL (→ reviews), not the visible numeric value.');
   lines.push('- Ignore styling-only class names (counter-number, plus, btn, item-1) — they describe how the element looks, not what it means.');
   lines.push('');
   lines.push(isLoop
-    ? 'Suggest a plural snake_case field name for the COLLECTION of items this loop iterates over (e.g. products, exams, results).'
-    : 'Suggest a singular snake_case field name describing the value being extracted.');
+    ? 'This step is a LOOP / table. Suggest a plural snake_case name for the COLLECTION of items it iterates over, describing what the items ARE on this page (e.g. products, articles, rows).'
+    : 'Suggest a singular snake_case name describing the value being extracted.');
   return lines.join('\n');
 }
 
 const SYSTEM_PROMPT = [
-  'You name data fields extracted by a web-scraping workflow.',
-  'Output ONLY the field name itself — no quotes, no punctuation, no explanation.',
+  'You name a single step (a field or a table) in a web-scraping workflow.',
+  'The name must describe the ACTUAL data on the page you are given — the page could be about anything (laptops, recipes, jobs, flights, …).',
+  'Output ONLY the name itself — no quotes, no punctuation, no explanation.',
   'Hard rules:',
-  '- snake_case, lowercase ASCII letters / digits / underscores only',
+  '- lowercase ASCII words joined by underscores (e.g. product_title), letters / digits / underscores only',
   `- ${MIN_NAME_LEN}–${MAX_NAME_LEN} characters`,
   '- must start with a letter',
-  '- singular for single values, plural for lists / loops over multiple items',
+  '- singular for single values, plural for tables / loops over multiple items',
   '- if you cannot determine a meaningful name, output exactly: unknown',
   '',
   'Style rules:',
-  '- Prefer the SHORTEST clear name. exam_link beats popular_exam_link; exams beats top_featured_exams.',
+  '- NEVER copy a word from these examples — they only show formatting and length. Derive every name from the data the user gives you.',
+  '- Prefer the SHORTEST clear name. A bare noun (link) beats a padded one (popular_link).',
   '- Drop adjectives that describe how something is presented on the page — popular, featured, latest, top, best, new, hot, trending, recommended — unless that adjective IS the data.',
   '- Drop visual / layout class names — counter-number, plus, btn, item-1, card-body. They describe how the element LOOKS, not what it MEANS.',
-  '- If a label sits next to the value (sibling text in the parent), name the field after the LABEL: "180" next to "Cert Providers" → cert_providers.',
+  '- If a label sits next to the value (sibling text in the parent), name the field after the LABEL: a value shown beside the word "Weight" → weight.',
   '- 1–3 words is the sweet spot. Avoid stacking more than 3 unless every word adds meaning.',
 ].join('\n');
 
