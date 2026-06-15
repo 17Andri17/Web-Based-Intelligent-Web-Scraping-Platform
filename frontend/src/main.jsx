@@ -611,6 +611,15 @@ function AppShell({ user, token, onLogout }) {
     if (step.label) { console.debug('[ai-name] step already labelled:', step.label); return; }
     if (!AUTO_NAME_TYPES.has(step.type)) { console.debug('[ai-name] type not eligible:', step.type); return; }
 
+    // An EXTRACT_LIST added via "configure later" has no fields yet, so the
+    // collection it represents is still unknown — naming it now would only be
+    // a guess. Skip until the user adds fields (they can rename from the table).
+    if (step.type === "EXTRACT_LIST") {
+      const f = step.params?.fields;
+      const hasFields = f && typeof f === "object" && Object.keys(f).length > 0;
+      if (!hasFields) { console.debug('[ai-name] EXTRACT_LIST has no fields yet — skipping'); return; }
+    }
+
     const el = selectedElementRef.current;
     // Pull a few meaningful ancestors out of the breadcrumb (last entry is
     // the target itself; skip <html>/<body> generics). This gives the LLM
