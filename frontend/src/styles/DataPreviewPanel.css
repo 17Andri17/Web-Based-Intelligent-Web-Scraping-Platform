@@ -179,6 +179,23 @@
   flex-shrink: 0; font-family: 'SFMono-Regular', Consolas, monospace;
 }
 
+/* Delete-field button in a column header — revealed on header hover. */
+.dp-col-remove {
+  flex-shrink: 0; margin-left: auto;
+  width: 18px; height: 18px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 4px;
+  background: transparent; color: var(--text-muted);
+  font-size: 15px; line-height: 1; cursor: pointer;
+  opacity: 0; transition: opacity .12s, background .12s, color .12s;
+}
+.dp-th:hover .dp-col-remove,
+.dp-col-remove:focus-visible { opacity: 1; }
+.dp-col-remove:hover {
+  background: color-mix(in srgb, var(--accent-danger, #e5484d) 18%, transparent);
+  color: var(--accent-danger, #e5484d);
+}
+
 .dp-td {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-muted);

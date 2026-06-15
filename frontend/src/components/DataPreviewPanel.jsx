@@ -312,9 +312,28 @@ function TableSection({ loopStep, columns, execResults, previewData, onUpdateLab
 // from execResults[step.label] (after a run) or previewData[step.id].previewRows
 // (live preview from the backend).
 
-function ListSection({ step, execResults, previewData, onUpdateLabel }) {
+function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdateParams }) {
   const fields = step.params?.fields && typeof step.params.fields === "object" ? step.params.fields : {};
   const columns = Object.keys(fields);
+  const editable = typeof onUpdateParams === "function";
+
+  // Rename a field/column straight from the table header. Preserves column
+  // order and refuses to overwrite an existing field. Rows keyed by the old
+  // name go blank until the next preview/run regenerates them — expected.
+  const renameField = (oldName, rawNew) => {
+    const newName = sanitiseFieldName(rawNew);
+    if (!newName || newName === oldName || fields[newName]) return;
+    const next = {};
+    for (const k of Object.keys(fields)) next[k === oldName ? newName : k] = fields[k];
+    onUpdateParams(step.id, { fields: next });
+  };
+
+  const removeField = (name) => {
+    if (!fields[name]) return;
+    const next = { ...fields };
+    delete next[name];
+    onUpdateParams(step.id, { fields: next });
+  };
 
   // Determine row source: execResults first (post-run), then live preview.
   let rows = [];
@@ -386,7 +405,24 @@ function ListSection({ step, execResults, previewData, onUpdateLabel }) {
                     <th key={c} className="dp-th">
                       <div className="dp-th-inner">
                         <span className="dp-type-chip" title={kind}>{kindIcon(kind)}</span>
-                        <span className="dp-col-label has-value">{c}</span>
+                        {editable ? (
+                          <EditableLabel
+                            value={c}
+                            placeholder="Name field…"
+                            className="dp-col-label"
+                            onCommit={v => renameField(c, v)}
+                          />
+                        ) : (
+                          <span className="dp-col-label has-value">{c}</span>
+                        )}
+                        {editable && (
+                          <button
+                            type="button"
+                            className="dp-col-remove"
+                            title={`Delete field "${c}"`}
+                            onClick={() => removeField(c)}
+                          >×</button>
+                        )}
                       </div>
                     </th>
                   );
@@ -429,6 +465,18 @@ function kindIcon(kind) {
   if (kind === "attr") return "@";
   if (kind === "html") return "</>";
   return "Aa";
+}
+
+// Mirrors sanitiseFieldName in ExtractListFieldsEditor — keeps header renames
+// producing the same snake_case keys the field editor and codegen expect.
+function sanitiseFieldName(raw) {
+  if (typeof raw !== "string") return "";
+  return raw.trim().toLowerCase()
+    .replace(/[^a-z0-9_\s-]/g, "")
+    .replace(/[\s-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
 }
 
 // ─── Table-extract section (EXTRACT_TABLE) ───────────────────────────────────
@@ -703,7 +751,7 @@ function FieldSection({ step, execResults, previewData, onUpdateLabel }) {
 
 // ─── Root ────────────────────────────────────────────────────────────────────
 
-export default function DataPreviewPanel({ steps, execResults, previewData = {}, onUpdateLabel }) {
+export default function DataPreviewPanel({ steps, execResults, previewData = {}, onUpdateLabel, onUpdateParams }) {
   const sections = useMemo(() => buildSections(steps), [steps]);
   const total    = useMemo(() => countAll(steps), [steps]);
   const named    = useMemo(() => countNamed(steps), [steps]);
@@ -769,6 +817,7 @@ export default function DataPreviewPanel({ steps, execResults, previewData = {},
                 execResults={execResults}
                 previewData={previewData}
                 onUpdateLabel={onUpdateLabel}
+                onUpdateParams={onUpdateParams}
               />
             );
           }

@@ -1416,6 +1416,7 @@ function AppShell({ user, token, onLogout }) {
             execResults={execResults}
             previewData={previewData}
             onUpdateLabel={updateLabelById}
+            onUpdateParams={updateParamsById}
           />
         )}
       </main>
