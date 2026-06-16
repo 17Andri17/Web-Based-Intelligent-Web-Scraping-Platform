@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
+import TransformPipelineEditor from "./TransformPipelineEditor";
+import { fieldColumnDescriptors, hasPipeline } from "../workflow/fieldTransforms";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -314,8 +316,13 @@ function TableSection({ loopStep, columns, execResults, previewData, onUpdateLab
 
 function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdateParams }) {
   const fields = step.params?.fields && typeof step.params.fields === "object" ? step.params.fields : {};
-  const columns = Object.keys(fields);
   const editable = typeof onUpdateParams === "function";
+  // Column descriptors expand split fields into their resulting columns while
+  // remembering which source field each column came from.
+  const colDescs = useMemo(() => fieldColumnDescriptors(fields), [fields]);
+
+  // Which field's clean/split editor is open in the modal.
+  const [cleanField, setCleanField] = useState(null);
 
   // Rename a field/column straight from the table header. Preserves column
   // order and refuses to overwrite an existing field. Rows keyed by the old
@@ -334,6 +341,19 @@ function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdatePa
     delete next[name];
     onUpdateParams(step.id, { fields: next });
   };
+
+  // Persist a field's clean/split pipeline from the modal editor.
+  const setPipeline = (name, { transforms, split }) => {
+    const raw = fields[name];
+    const base = typeof raw === "string"
+      ? { selector: raw, kind: "text", attribute: null }
+      : { ...(raw || {}) };
+    if (transforms && transforms.length) base.transforms = transforms; else delete base.transforms;
+    if (split) base.split = split; else delete base.split;
+    onUpdateParams(step.id, { fields: { ...fields, [name]: base } });
+  };
+
+  const cleanSpec = cleanField ? normaliseSpec(fields[cleanField]) : null;
 
   // Determine row source: execResults first (post-run), then live preview.
   let rows = [];
@@ -389,7 +409,7 @@ function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdatePa
       </div>
 
       <div className="dp-table-scroll">
-        {columns.length === 0 ? (
+        {colDescs.length === 0 ? (
           <div className="dp-table-tip">
             No fields defined yet — open this step and click <strong>✨ Auto-detect fields</strong> or add some manually.
           </div>
@@ -398,14 +418,20 @@ function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdatePa
             <thead className="dp-thead">
               <tr>
                 <th className="dp-th dp-th--num">#</th>
-                {columns.map(c => {
-                  const spec = fields[c];
+                {colDescs.map(desc => {
+                  const c = desc.key;
+                  const spec = fields[desc.fieldName];
                   const kind = typeof spec === "object" && spec ? (spec.kind || "text") : "text";
+                  const piped = hasPipeline(spec);
                   return (
                     <th key={c} className="dp-th">
                       <div className="dp-th-inner">
                         <span className="dp-type-chip" title={kind}>{kindIcon(kind)}</span>
-                        {editable ? (
+                        {desc.derived ? (
+                          <span className="dp-col-label has-value" title={`Split from "${desc.fieldName}"`}>
+                            {c}<span className="dp-col-derived">↳ {desc.fieldName}</span>
+                          </span>
+                        ) : editable ? (
                           <EditableLabel
                             value={c}
                             placeholder="Name field…"
@@ -416,6 +442,14 @@ function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdatePa
                           <span className="dp-col-label has-value">{c}</span>
                         )}
                         {editable && (
+                          <button
+                            type="button"
+                            className={`dp-col-clean ${piped ? "is-active" : ""}`}
+                            title={`Clean / split "${desc.fieldName}"`}
+                            onClick={() => setCleanField(desc.fieldName)}
+                          >✨</button>
+                        )}
+                        {editable && !desc.derived && (
                           <button
                             type="button"
                             className="dp-col-remove"
@@ -433,7 +467,8 @@ function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdatePa
               {rows.length > 0 ? rows.slice(0, 200).map((row, i) => (
                 <tr key={i} className={`dp-tr ${i % 2 === 1 ? "dp-tr--alt" : ""}`}>
                   <td className="dp-td dp-td--num">{i + 1}</td>
-                  {columns.map(c => {
+                  {colDescs.map(desc => {
+                    const c = desc.key;
                     const v = row && row[c];
                     if (v === null || v === undefined) {
                       return <td key={c} className="dp-td"><span className="dp-cell-empty">—</span></td>;
@@ -448,7 +483,7 @@ function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdatePa
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={columns.length + 1} className="dp-td--hint">
+                  <td colSpan={colDescs.length + 1} className="dp-td--hint">
                     No rows yet. Run the workflow, or make sure the container selector matches items on the live page.
                   </td>
                 </tr>
@@ -457,8 +492,43 @@ function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdatePa
           </table>
         )}
       </div>
+
+      {cleanField && cleanSpec && (
+        <div className="dp-clean-overlay" onClick={e => { if (e.target === e.currentTarget) setCleanField(null); }}>
+          <div className="dp-clean-modal">
+            <div className="dp-clean-head">
+              <span>Clean / split <code>{cleanField}</code></span>
+              <button type="button" className="dp-clean-close" onClick={() => setCleanField(null)} title="Close">✕</button>
+            </div>
+            <div className="dp-clean-body">
+              <TransformPipelineEditor
+                fieldName={cleanField}
+                transforms={cleanSpec.transforms}
+                split={cleanSpec.split}
+                sample={firstSample(rows, cleanField)}
+                onChange={pipeline => setPipeline(cleanField, pipeline)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+// Normalise a raw field spec (string or object) for the transform editor.
+function normaliseSpec(spec) {
+  if (typeof spec === "string") return { selector: spec, kind: "text", attribute: null };
+  return spec && typeof spec === "object" ? spec : {};
+}
+
+// Best-effort raw sample to seed the editor's live tester. After a field is
+// split its original key is gone from the rows, so this is only a hint.
+function firstSample(rows, fieldName) {
+  for (const r of rows || []) {
+    if (r && r[fieldName] != null) return String(r[fieldName]);
+  }
+  return "";
 }
 
 function kindIcon(kind) {

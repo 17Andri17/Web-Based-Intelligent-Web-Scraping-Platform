@@ -1,0 +1,152 @@
+/* ── Transform / Clean pipeline editor ───────────────────────────────── */
+
+.tpe-root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-primary, #e6e6e6);
+}
+
+.tpe-section {
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.02));
+}
+
+.tpe-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.tpe-section-title { font-weight: 600; font-size: 12px; }
+.tpe-section-sub   { font-size: 11px; color: var(--text-secondary, #9aa0a6); }
+
+.tpe-empty {
+  font-size: 11px;
+  color: var(--text-secondary, #9aa0a6);
+  padding: 6px 0;
+}
+
+.tpe-ops { display: flex; flex-direction: column; gap: 8px; }
+
+.tpe-op {
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--bg, #121212);
+}
+.tpe-op-head { display: flex; align-items: center; gap: 8px; }
+.tpe-op-idx {
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+  font-size: 10px; font-weight: 700;
+  flex: 0 0 auto;
+}
+.tpe-op-name { font-weight: 600; flex: 1 1 auto; }
+.tpe-op-actions { display: flex; gap: 4px; }
+.tpe-op-hint { font-size: 10.5px; color: var(--text-secondary, #9aa0a6); margin: 4px 0 0 26px; }
+
+.tpe-icon {
+  width: 22px; height: 22px;
+  border: 1px solid var(--border-soft, #2a2a2a);
+  background: transparent;
+  color: var(--text-secondary, #9aa0a6);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.tpe-icon:hover:not(:disabled) { color: var(--text-primary, #e6e6e6); border-color: #58a6ff; }
+.tpe-icon:disabled { opacity: 0.35; cursor: default; }
+.tpe-icon--danger:hover:not(:disabled) { color: #f85149; border-color: #f85149; }
+
+.tpe-op-fields,
+.tpe-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+.tpe-field { display: flex; flex-direction: column; gap: 3px; flex: 1 1 120px; min-width: 0; }
+.tpe-field-label { font-size: 10px; color: var(--text-secondary, #9aa0a6); }
+
+.tpe-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg, #0e0e0e);
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 4px;
+  color: var(--text-primary, #e6e6e6);
+  padding: 5px 7px;
+  font-size: 12px;
+}
+.tpe-input:focus { outline: none; border-color: #58a6ff; }
+.tpe-input--mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+
+.tpe-add-btn,
+.tpe-add-select {
+  margin-top: 8px;
+  width: 100%;
+  background: rgba(88, 166, 255, 0.08);
+  border: 1px dashed rgba(88, 166, 255, 0.4);
+  color: #58a6ff;
+  border-radius: 6px;
+  padding: 7px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.tpe-add-btn:hover { background: rgba(88, 166, 255, 0.15); }
+.tpe-add-select { border-style: solid; }
+
+/* Split */
+.tpe-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; }
+.tpe-split { display: flex; flex-direction: column; gap: 8px; }
+.tpe-split-modes { display: flex; gap: 8px; }
+.tpe-mode {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.tpe-mode.is-active { border-color: #58a6ff; color: #58a6ff; }
+.tpe-checkline { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer; }
+.tpe-cols { font-size: 11px; color: var(--text-secondary, #9aa0a6); display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.tpe-col-chip,
+.tpe-test-label code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(63, 185, 80, 0.12);
+  color: #3fb950;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+}
+
+/* Tester */
+.tpe-tester .tpe-test-out {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border-soft, #2a2a2a);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tpe-test-row { display: flex; gap: 8px; align-items: baseline; }
+.tpe-test-label {
+  flex: 0 0 90px;
+  font-size: 10.5px;
+  color: var(--text-secondary, #9aa0a6);
+  text-transform: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.tpe-test-val {
+  flex: 1 1 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  word-break: break-word;
+  color: #3fb950;
+}

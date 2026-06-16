@@ -345,3 +345,26 @@
   padding: 4px 8px;
   border-radius: 3px;
 }
+
+/* ── Per-field Clean / split toggle + panel ─────────────────────────── */
+.elfe-clean-toggle {
+  border: 1px solid var(--border-soft, #2a2a2a);
+  background: transparent;
+  color: var(--text-secondary, #9aa0a6);
+  border-radius: 4px;
+  padding: 3px 7px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.elfe-clean-toggle:hover { color: #58a6ff; border-color: #58a6ff; }
+.elfe-clean-toggle.is-active { color: #d29922; border-color: rgba(210,153,34,0.5); }
+.elfe-clean-toggle.is-open { background: rgba(88,166,255,0.1); color: #58a6ff; border-color: #58a6ff; }
+
+.elfe-clean-panel {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.015);
+}

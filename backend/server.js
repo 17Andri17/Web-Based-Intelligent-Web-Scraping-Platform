@@ -14,6 +14,7 @@ const scraperServiceFactory = require('./services/scraper.service');
 const browserManager     = require('./browser/BrowserManager');
 const { executeWorkflow } = require('./workflow/WorkflowExecutor');
 const { generateCode }    = require('./workflow/workflowCodegen');
+const { __ftMaterializeRow } = require('./workflow/fieldTransforms');
 const { verifyToken }    = require('./middleware/auth');
 const db                 = require('./db');
 const extractListAI      = require('./services/extractListAI.service');
@@ -1364,9 +1365,14 @@ io.on('connection', async (socket) => {
           });
           return { rows, totalMatched: containers.length };
         }, sel, fields).catch(() => ({ error: 'preview failed' }));
+        // Apply each field's clean/split pipeline so the live preview shows
+        // exactly what the executed workflow will produce (cleaned values and
+        // any columns a field was split into).
+        let previewRows = rows?.rows || [];
+        try { previewRows = previewRows.map(r => __ftMaterializeRow(r, fields)); } catch (_) {}
         socket.emit('previewResult', {
           stepId,
-          previewRows: rows?.rows || [],
+          previewRows,
           totalMatched: rows?.totalMatched || 0,
           previewError: rows?.error || null,
         });
