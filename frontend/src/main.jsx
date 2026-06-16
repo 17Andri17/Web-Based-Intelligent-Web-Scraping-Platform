@@ -1503,7 +1503,15 @@ function AppShell({ user, token, onLogout }) {
                   "  const items = document.querySelectorAll('li,article,[class*=\"item\"],[class*=\"card\"],[class*=\"result\"]');",
                   "  if (items.length) items[items.length-1].scrollIntoView({block:'end',behavior:'instant'});",
                   "  window.scrollTo(0, document.body.scrollHeight);",
-                  "  return (window.innerHeight + window.scrollY) < document.body.scrollHeight - 50;",
+                  // Enter on the first pass, then keep looping only while the page
+                  // keeps GROWING. Comparing the live scrollHeight to the height
+                  // from the previous pass is what detects "more content loaded";
+                  // checking whether we can still scroll right after jumping to the
+                  // bottom is always false, so the loop body never ran.
+                  "  const prev = window.__infScrollPrevH;",
+                  "  const h = document.body.scrollHeight;",
+                  "  window.__infScrollPrevH = h;",
+                  "  return prev === undefined || h > prev + 50;",
                   "})",
                 ].join("\n"),
                 maxIterations: 200,

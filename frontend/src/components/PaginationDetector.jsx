@@ -187,21 +187,31 @@ function generatePaginationSteps(suggestion) {
     }
 
     case "infinite_scroll": {
-      // WHILE scrollable → scroll to bottom + scrollIntoView last item → wait
-      // Both strategies ensure IntersectionObserver-based and scroll-event-based loaders fire
+      // WHILE more content keeps loading → scroll to bottom + scrollIntoView
+      // last item → wait. Both strategies ensure IntersectionObserver-based
+      // and scroll-event-based loaders fire.
       const scroll  = makeScroll();
       scroll.label  = "Scroll to bottom of page";
       const wait    = makeWait(2000);
       wait.label    = "Wait for new content to load";
       return makeWhile(
-        // Check if page can still scroll (both absolute bottom and last-element strategies)
+        // Enter on the first pass, then keep looping only while the page keeps
+        // GROWING. We compare the live scrollHeight to the height recorded on
+        // the previous pass (stored on the page's window) — that's what
+        // actually detects "more content loaded". The old check asked whether
+        // we could still scroll right after jumping to the bottom, which is
+        // always false the instant after scrollTo(…scrollHeight), so the loop
+        // body never ran.
         [
           `await page.evaluate(() => {`,
           `  const ITEM_SEL = 'li,article,[class*="item"],[class*="card"],[class*="result"],[class*="product"]';`,
           `  const items = document.querySelectorAll(ITEM_SEL);`,
           `  if (items.length) items[items.length-1].scrollIntoView({ block:'end', behavior:'instant' });`,
           `  window.scrollTo(0, document.body.scrollHeight);`,
-          `  return (window.innerHeight + window.scrollY) < document.body.scrollHeight - 50;`,
+          `  const prev = window.__infScrollPrevH;`,
+          `  const h = document.body.scrollHeight;`,
+          `  window.__infScrollPrevH = h;`,
+          `  return prev === undefined || h > prev + 50;`,
           `})`,
         ].join("\n"),
         200,
