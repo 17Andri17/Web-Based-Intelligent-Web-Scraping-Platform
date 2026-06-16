@@ -897,7 +897,18 @@ ${body}  }
         : num(params.count, 10);
       const idx   = params.indexVar || 'i';
       const body  = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
-      return `for (let ${idx} = 0; ${idx} < ${count}; ${idx}++) {\n${body}}\n`;
+      // Emit ITER_START/TICK/END markers like the other loops so the live
+      // "Flow" tab shows the running "N / M iterations" counter for REPEAT too.
+      const stepIdJson = JSON.stringify(step.id || '');
+      return `{
+  const _rep_total = ${count};
+  console.log('ITER_START:' + JSON.stringify({stepId: ${stepIdJson}, total: _rep_total}));
+  for (let ${idx} = 0; ${idx} < _rep_total; ${idx}++) {
+    console.log('ITER_TICK:' + JSON.stringify({stepId: ${stepIdJson}, index: ${idx}}));
+${body}  }
+  console.log('ITER_END:' + JSON.stringify({stepId: ${stepIdJson}}));
+}
+`.trim() + '\n';
     }
 
     case 'TRY_CATCH': {

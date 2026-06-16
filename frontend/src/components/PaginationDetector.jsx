@@ -42,6 +42,15 @@ const TYPE_INFO = {
     description: "Scrolls to the bottom repeatedly, collecting content as it loads.",
     loopLabel: "While more content loads",
   },
+  url_param: {
+    icon: "🔗",
+    label: "URL Pages (navigate)",
+    color: "#2dd4bf",
+    bg: "rgba(45,212,191,0.1)",
+    border: "rgba(45,212,191,0.28)",
+    description: "Each page is its own URL (…?page=2, /page/2). Navigates page-by-page — the most reliable strategy — for a set number of pages.",
+    loopLabel: "Repeat for N pages",
+  },
 };
 
 // ─── Confidence bar ───────────────────────────────────────────────────────────
@@ -62,6 +71,35 @@ function ConfidenceBar({ value, color }) {
 
 function generatePaginationSteps(suggestion) {
   const { type, selector, containerSelector, hasNextButton } = suggestion;
+
+  // URL-based pagination → a REPEAT loop that navigates page-by-page. The
+  // body extracts the CURRENT page (user drags their steps to the top), then
+  // builds the next page's URL from the loop index and navigates + waits.
+  if (type === "url_param") {
+    const before  = suggestion.urlBefore || "";
+    const after   = suggestion.urlAfter || "";
+    const nextPage = Number.isFinite(suggestion.nextPage) ? suggestion.nextPage : 2;
+    const pages   = 5; // default; user can change "Number of repetitions"
+
+    const loop = createControl(CONTROL_TYPES.REPEAT, { count: pages, indexVar: "i" });
+    loop.label = TYPE_INFO.url_param.loopLabel;
+    loop.meta  = { kind: "pagination", strategy: "url_param" };
+
+    const infra = (step) => { step.meta = { infrastructure: true }; return step; };
+    // _next_page_url = "<before>" + (nextPage + i) + "<after>"
+    const setUrl = infra(createAction(ACTION_TYPES.SET_VARIABLE, {
+      name: "_next_page_url",
+      value: `${JSON.stringify(before)} + (${nextPage} + i) + ${JSON.stringify(after)}`,
+    }));
+    setUrl.label = "Build next page URL";
+    const navigate = infra(createAction(ACTION_TYPES.NAVIGATE, { url: "{{_next_page_url}}" }));
+    navigate.label = "Go to next page";
+    const wait = infra(createAction(ACTION_TYPES.WAIT, { duration: 2000 }));
+    wait.label = "Wait for next page to load";
+
+    loop.body = [setUrl, navigate, wait];
+    return loop;
+  }
 
   // WHILE control wrapper — tagged with meta.kind = 'pagination' so the
   // Workflow tab can render it as a single "Pagination" block by default
@@ -287,7 +325,9 @@ function SuggestionCard({ suggestion, onAdd }) {
           <polyline points="17,1 21,5 17,9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
           <polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
         </svg>
-        Adds a <strong>While</strong> loop — drag your extraction steps to the <strong>top</strong> of the loop body, above the "Stop" check
+        {suggestion.type === "url_param"
+          ? <>Adds a <strong>Repeat N times</strong> loop that navigates page-by-page — drag your extraction steps to the <strong>top</strong> of the loop body, and set how many pages to visit.</>
+          : <>Adds a <strong>While</strong> loop — drag your extraction steps to the <strong>top</strong> of the loop body, above the "Stop" check</>}
       </div>
     </div>
   );
