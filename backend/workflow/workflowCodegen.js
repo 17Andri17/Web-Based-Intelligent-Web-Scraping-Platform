@@ -1,5 +1,7 @@
 'use strict';
 
+const { RUNTIME_SRC: FIELD_TRANSFORM_RUNTIME, __ftHasPipeline } = require('./fieldTransforms');
+
 // ─── Extraction action types (steps that produce named data) ──────────────
 const EXTRACTION_TYPES = new Set([
   'EXTRACT_TEXT', 'EXTRACT_ATTRIBUTE', 'EXTRACT_HTML',
@@ -414,28 +416,47 @@ ${store}`.trim() + '\n';
       // AI-friendly object form `{ title: { selector, kind, attribute } }`
       // produce identical runtime code.
       const rawFields = params.fields || {};
-      const normalised = {};
+      // `evalFields` carries only what the in-page extraction needs
+      // (selector/kind/attribute). `postFields` additionally carries the
+      // per-field clean/split pipelines, which run Node-side after the raw
+      // values come back (custom JS, regex split, …).
+      const evalFields = {};
+      const postFields = {};
+      let hasPipeline = false;
       for (const [name, v] of Object.entries(rawFields)) {
         if (v == null) continue;
+        let spec;
         if (typeof v === 'string') {
-          normalised[name] = { selector: v, kind: 'text', attribute: null };
+          spec = { selector: v, kind: 'text', attribute: null };
         } else if (typeof v === 'object') {
           const kind = v.kind === 'attr' || v.kind === 'attribute' ? 'attr'
                      : v.kind === 'html' ? 'html'
                      : 'text';
-          normalised[name] = {
+          spec = {
             selector: typeof v.selector === 'string' ? v.selector : '',
             kind,
             attribute: kind === 'attr' && typeof v.attribute === 'string' ? v.attribute : null,
           };
+          if (Array.isArray(v.transforms) && v.transforms.length) spec.transforms = v.transforms;
+          if (v.split && typeof v.split === 'object')             spec.split = v.split;
+        } else {
+          continue;
         }
+        evalFields[name] = { selector: spec.selector, kind: spec.kind, attribute: spec.attribute };
+        postFields[name] = spec;
+        if (__ftHasPipeline(spec)) hasPipeline = true;
       }
-      const fieldsJson = JSON.stringify(normalised);
+      const fieldsJson = JSON.stringify(evalFields);
       const sels = selList({
         selector: params.containerSelector,
         selectorType: params.selectorType || 'css',
         fallbackSelectors: params.fallbackSelectors || [],
       });
+      // Only emit the post-processing map when at least one field configures a
+      // transform or split — keeps the generated code minimal otherwise.
+      const postProcess = hasPipeline
+        ? `.then(_rows => _rows.map(_row => __ftMaterializeRow(_row, ${JSON.stringify(postFields)})))`
+        : '';
       return `
 const ${varName} = await (async () => {
   const _containers = await resolveElements(page, ${sels});
@@ -458,7 +479,7 @@ const ${varName} = await (async () => {
       }
       return item;
     }, container, ${fieldsJson})
-  ));
+  ))${postProcess};
 })();
 ${store}`.trim() + '\n';
     }
@@ -1155,6 +1176,11 @@ function __suspiciousStats(st, isCollection) {
   }
   return false;
 }
+
+// ─── Field transform runtime (clean / split per-field pipelines) ──────────
+// Inlined verbatim from backend/workflow/fieldTransforms.js so the generated
+// script can post-process EXTRACT_LIST rows without external deps.
+${FIELD_TRANSFORM_RUNTIME}
 
 function __safeUrl(page) { try { return page.url(); } catch (_) { return null; } }
 
