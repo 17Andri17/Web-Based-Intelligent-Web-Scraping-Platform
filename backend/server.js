@@ -1346,7 +1346,10 @@ io.on('connection', async (socket) => {
       const steps = data.steps || [];
       const customActions = resolveCustomActions(steps, socket.user.id);
       const subflows = resolveSubflows(steps, socket.user.id, data.workflowId || null);
-      const code = generateCode({ id: data.workflowId, steps, meta, customActions, subflows });
+      // clean: true → strip platform-only instrumentation (step/iteration
+      // log markers + self-healing snapshots) so the downloaded script is
+      // short and readable.
+      const code = generateCode({ id: data.workflowId, steps, meta, customActions, subflows }, { clean: true });
       socket.emit('codeReady', { code });
     } catch (err) {
       socket.emit('message', `❌ Code generation error: ${err.message}`);
