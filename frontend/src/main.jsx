@@ -363,7 +363,12 @@ function AppShell({ user, token, onLogout }) {
       if (name) setCurrentWorkflowName(prev => prev || name);
       showToast(`✓ Saved draft as "${name}"`, "success");
     });
-    socket.on("codeReady", ({ code }) => { downloadTextFile(code, "workflow.js", "text/javascript"); });
+    socket.on("codeReady", ({ code, readme }) => {
+      downloadTextFile(code, "workflow.js", "text/javascript");
+      // Bundle a how-to-run README. Stagger the second download slightly so
+      // browsers don't suppress it as a duplicate-download attempt.
+      if (readme) setTimeout(() => downloadTextFile(readme, "README.md", "text/markdown"), 300);
+    });
     socket.on("paginationDetected", ({ suggestions, error }) => {
       setPaginationDetecting(false);
       setPaginationSuggestions(suggestions || []);
