@@ -13,7 +13,7 @@ const app                = require('./app');
 const scraperServiceFactory = require('./services/scraper.service');
 const browserManager     = require('./browser/BrowserManager');
 const { executeWorkflow } = require('./workflow/WorkflowExecutor');
-const { generateCode }    = require('./workflow/workflowCodegen');
+const { generateCode, generateReadme } = require('./workflow/workflowCodegen');
 const { __ftMaterializeRow } = require('./workflow/fieldTransforms');
 const { verifyToken }    = require('./middleware/auth');
 const db                 = require('./db');
@@ -1349,8 +1349,13 @@ io.on('connection', async (socket) => {
       // clean: true → strip platform-only instrumentation (step/iteration
       // log markers + self-healing snapshots) so the downloaded script is
       // short and readable.
-      const code = generateCode({ id: data.workflowId, steps, meta, customActions, subflows }, { clean: true });
-      socket.emit('codeReady', { code });
+      const workflow = { id: data.workflowId, steps, meta, customActions, subflows };
+      const code = generateCode(workflow, { clean: true });
+      // Ship a tailored README alongside the script so a downloaded workflow
+      // is self-explanatory (how to run it, where to make changes).
+      let readme = null;
+      try { readme = generateReadme(workflow); } catch (_) {}
+      socket.emit('codeReady', { code, readme });
     } catch (err) {
       socket.emit('message', `❌ Code generation error: ${err.message}`);
     }
