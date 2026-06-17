@@ -751,12 +751,19 @@ io.on('connection', async (socket) => {
           }
         }
 
-        // 3b. URL-sequence detection: link to /path/N+1 or ?page=N+1.
-        //     Uses URL parser (not substring) and rejects excluded contexts.
-        if (!results.find(r => r.type === 'next_button')) {
-          const here       = new URL(location.href);
-          const pathMatch  = here.pathname.match(/\/(\d+)\/?$/);
+        // 3b. URL-based pagination → NAVIGATION strategy. When the next page
+        //     is just the current URL with a pagination number/param changed
+        //     (…?page=2, ?p=2, /page/2, …/2), navigating page-by-page is far
+        //     more reliable than chasing a "Next" button that may move or
+        //     re-render. We build a URL TEMPLATE (the next-page URL split
+        //     around the page number) and surface a dedicated `url_param`
+        //     suggestion. Runs independently of the next-button blocks so the
+        //     navigation option is offered even when a Next link also exists.
+        {
+          const here        = new URL(location.href);
+          const pathMatch   = here.pathname.match(/\/(\d+)\/?$/);
           const PAGE_PARAMS = ['page','paged','pg','pagenum','pageno','p'];
+          const TOKEN       = '__PAGE__';
 
           let currentNum    = 1;
           let pageParamUsed = null;
@@ -768,19 +775,22 @@ io.on('connection', async (socket) => {
           const nextNum  = currentNum + 1;
           const basePath = pathMatch ? here.pathname.slice(0, pathMatch.index) : here.pathname.replace(/\/$/, '');
 
-          const linkToNextPage = Array.from(document.querySelectorAll('a[href]')).find(el => {
+          // Build a { before, after, mode, param } template, or leave null.
+          let tmpl = null;
+
+          // (1) Strongest signal: an anchor pointing at page N+1. Learn the
+          //     param name / path style from it so the template is exact.
+          const anchor = Array.from(document.querySelectorAll('a[href]')).find(el => {
             if (!valid(el)) return false;
             let u;
             try { u = new URL(el.getAttribute('href'), location.href); } catch { return false; }
             if (u.origin !== here.origin) return false;
-            // Path-based: /…/N+1[/]
             if (u.pathname === `${basePath}/${nextNum}` || u.pathname === `${basePath}/${nextNum}/`) return true;
-            // Query-based: ?page=N+1 (or other known param)
             for (const name of PAGE_PARAMS) {
               const v = u.searchParams.get(name);
               if (v && parseInt(v, 10) === nextNum) {
-                // Bare `p=` is too generic — require a pagination-like text on the
-                // link unless the current URL is already using `p=` for paging.
+                // Bare `p=` is too generic — require pagination-like link text
+                // unless the current URL is already using `p=` for paging.
                 if (name === 'p' && pageParamUsed !== 'p') {
                   const t = txt(el);
                   if (!isNextLike(t) && !/^\d+$/.test(t)) return false;
@@ -790,13 +800,43 @@ io.on('connection', async (socket) => {
             }
             return false;
           });
+          if (anchor) {
+            const u = new URL(anchor.getAttribute('href'), location.href);
+            let pname = null;
+            for (const name of PAGE_PARAMS) {
+              const v = u.searchParams.get(name);
+              if (v && parseInt(v, 10) === nextNum) { pname = name; break; }
+            }
+            if (pname) {
+              u.searchParams.set(pname, TOKEN);
+              const parts = u.href.split(TOKEN);
+              tmpl = { before: parts[0], after: parts[1] || '', mode: 'query', param: pname };
+            } else {
+              tmpl = { before: here.origin + basePath + '/', after: (u.search || '') + (u.hash || ''), mode: 'path', param: null };
+            }
+          }
 
-          if (linkToNextPage) {
+          // (2) Fallback: the current URL itself already carries an explicit
+          //     page param (e.g. you're on ?page=1). Bare `p` only counts when
+          //     we're already past page 1, to avoid hijacking unrelated `?p=`.
+          if (!tmpl && pageParamUsed && (pageParamUsed !== 'p' || currentNum > 1)) {
+            const u = new URL(here.href);
+            u.searchParams.set(pageParamUsed, TOKEN);
+            const parts = u.href.split(TOKEN);
+            tmpl = { before: parts[0], after: parts[1] || '', mode: 'query', param: pageParamUsed };
+          }
+
+          if (tmpl) {
+            const sampleNextUrl = tmpl.before + nextNum + tmpl.after;
             results.push({
-              type: 'next_button', confidence: 0.86,
-              selector: stableSelector(linkToNextPage),
-              previewText: txt(linkToNextPage) || linkToNextPage.getAttribute('href'),
-              description: `Found a link to page ${nextNum} (URL sequence).`,
+              type: 'url_param', confidence: 0.96, selector: null,
+              urlBefore: tmpl.before, urlAfter: tmpl.after,
+              startPage: currentNum, nextPage: nextNum,
+              paramName: tmpl.param, urlMode: tmpl.mode,
+              previewText: sampleNextUrl,
+              description: tmpl.param
+                ? `Pages change "?${tmpl.param}=" in the URL — navigating ?${tmpl.param}=${nextNum}, ${nextNum + 1}, … is the most reliable strategy.`
+                : `Pages change the URL path (…/${nextNum}) — navigating page-by-page is the most reliable strategy.`,
             });
           }
         }

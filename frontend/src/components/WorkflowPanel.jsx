@@ -128,23 +128,25 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
       if (s.kind === "control" && (s.type === "FOR_EACH" || s.type === "FOR_EACH_ELEMENTS")) {
         const itemVar = s.params?.itemVar
           || (s.type === "FOR_EACH_ELEMENTS" ? "el" : "item");
+        const loopLabel = s.label?.trim() || "";
 
         // FOR_EACH_ELEMENTS iterates over DOM nodes — rows aren't from a
         // captured table; the columns are the labels of its own body's
         // extraction steps. Synthesize a "row" with those columns.
+        let itemEntry;
         if (s.type === "FOR_EACH_ELEMENTS") {
           const innerCols = (s.body || [])
             .filter(c => c && c.kind === "action" && EXTRACTION_TYPES.has(c.type))
             .map(c => (c.label || "").trim())
             .filter(Boolean);
-          here = [...ancestors, {
+          itemEntry = {
             name: itemVar,
-            source: s.label?.trim() || null,
+            source: loopLabel || null,
             itemKind: "row",
             columns: innerCols.length ? innerCols : null,
             loopType: "FOR_EACH_ELEMENTS",
-            loopLabel: s.label?.trim() || "",
-          }];
+            loopLabel,
+          };
         } else {
           // FOR_EACH iterates over whatever `params.source` evaluates to.
           // The shape of each item depends on the source expression:
@@ -156,17 +158,33 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
           //                            unknown
           const sourceRaw = s.params?.source || "";
           const info = analyseSourceExpr(sourceRaw, colsByName);
-          here = [...ancestors, {
+          itemEntry = {
             name: itemVar,
             source: info.rootName || null,
             sourceColumn: info.projectedColumn || null,
             itemKind: info.itemKind,
             columns: info.itemKind === "row" ? (colsByName[info.rootName] || null) : null,
             loopType: "FOR_EACH",
-            loopLabel: s.label?.trim() || "",
+            loopLabel,
             sourceRaw,
-          }];
+          };
         }
+        // Also expose the loop's index counter so it can be referenced
+        // (e.g. {{index}} / {{i}}) just like the item variable. Push index
+        // before item so the final reverse lists item first, index second.
+        const idxVar = s.params?.indexVar || (s.type === "FOR_EACH_ELEMENTS" ? "i" : "index");
+        here = [...ancestors, {
+          name: idxVar, itemKind: "scalar", role: "index",
+          loopType: s.type, loopLabel,
+        }, itemEntry];
+      } else if (s.kind === "control" && s.type === "REPEAT") {
+        // REPEAT exposes its 0-based index counter so steps inside can
+        // reference it (e.g. build a page URL from {{i}}).
+        const idxVar = s.params?.indexVar || "i";
+        here = [...ancestors, {
+          name: idxVar, itemKind: "scalar", role: "index",
+          loopType: "REPEAT", loopLabel: s.label?.trim() || "",
+        }];
       }
       for (const key of ["body", "then", "else", "try", "catch"]) {
         if (Array.isArray(s[key])) {
