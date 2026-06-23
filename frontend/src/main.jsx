@@ -128,6 +128,12 @@ function AppShell({ user, token, onLogout }) {
   // Sidebar: shared inspector + workflow panel
   const [showSidebar,     setShowSidebar]     = useState(false);
   const [sidebarTab,      setSidebarTab]      = useState("inspector");
+  // Drag-resizable width (all three sidebar tabs share it) + a maximize
+  // toggle for the HTML tab, which hides the canvas entirely since there's
+  // nothing useful to see on a frozen/offscreen stream at that point anyway.
+  const [sidebarWidth,    setSidebarWidth]    = useState(360);
+  const [htmlMaximized,   setHtmlMaximized]   = useState(false);
+  const isResizingSidebarRef = useRef(false);
   // Pagination detection
   const [paginationOpen,  setPaginationOpen]  = useState(false);
   const [paginationDetecting, setPaginationDetecting] = useState(false);
@@ -852,6 +858,35 @@ function AppShell({ user, token, onLogout }) {
 
   const handleSidebarExpandHandled = useCallback(() => setSidebarExpandStepId(null), []);
 
+  // ── Sidebar resize (drag handle) ─────────────────────────────────────────
+  // Shared by all three sidebar tabs — Inspector/Workflow/HTML all just lay
+  // out their existing flex/percentage-based content into whatever width
+  // this leaves them, so widening it doesn't need any of their own CSS to
+  // change.
+  const startSidebarResize = useCallback((e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    isResizingSidebarRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev) => {
+      const rowWidth = canvasContainerRef.current?.parentElement?.clientWidth || 1600;
+      const maxWidth = Math.max(320, rowWidth - 320); // keep the canvas usable
+      const next = Math.min(maxWidth, Math.max(300, startWidth + (startX - ev.clientX)));
+      setSidebarWidth(next);
+    };
+    const onUp = () => {
+      isResizingSidebarRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [sidebarWidth]);
+
   // Safety: if the user navigates away from the Live Browser tab while a pick
   // is in progress, stop it so the page isn't left intercepting clicks.
   useEffect(() => {
@@ -1258,7 +1293,11 @@ function AppShell({ user, token, onLogout }) {
 
           {/* Stream body: canvas + inspector sidebar side by side */}
           <div className="stream-body">
-            <div className="canvas-container" ref={canvasContainerRef}>
+            <div
+              className={`canvas-container${showSidebar ? " canvas-container--with-sidebar" : ""}`}
+              ref={canvasContainerRef}
+              style={htmlMaximized && sidebarTab === "html" ? { display: "none" } : undefined}
+            >
               <canvas ref={canvasRef} className="browser-canvas" tabIndex={0}
                 style={{ cursor: mode === "selection" ? "crosshair" : cursorType, outline: "none" }}
                 onContextMenu={e => e.preventDefault()}
@@ -1317,8 +1356,18 @@ function AppShell({ user, token, onLogout }) {
             </div>
 
             {/* Unified sidebar — always in flow next to canvas when on Live Browser */}
+            {showSidebar && !(htmlMaximized && sidebarTab === "html") && (
+              <div
+                className="sidebar-resize-handle"
+                onPointerDown={startSidebarResize}
+                title="Drag to resize"
+              />
+            )}
             {showSidebar && (
-              <div className="inspector-sidebar">
+              <div
+                className="inspector-sidebar"
+                style={htmlMaximized && sidebarTab === "html" ? { width: "100%" } : { width: sidebarWidth }}
+              >
                 {/* Tab bar */}
                 <div className="sidebar-tab-bar">
                   <button
@@ -1435,6 +1484,8 @@ function AppShell({ user, token, onLogout }) {
                     refreshKey={`${currentPageUrl}|${pageReadyTick}`}
                     selectedPath={!selectedElement?.isMultiSelection ? selectedElement?.path : null}
                     onBeforeSelect={() => { selectingFromHtmlTabRef.current = true; }}
+                    maximized={htmlMaximized}
+                    onToggleMaximize={() => setHtmlMaximized(v => !v)}
                   />
                 )}
               </div>

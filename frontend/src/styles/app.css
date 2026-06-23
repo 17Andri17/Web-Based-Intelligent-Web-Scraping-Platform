@@ -1131,16 +1131,40 @@ body {
 }
 
 
-/* Canvas loses right radius when inspector sidebar is open beside it */
+/* Canvas loses right radius when inspector sidebar is open beside it
+   (a resize handle now sits between them, so this can't rely on the
+   adjacent-sibling selector anymore — driven by a class instead). */
 
-.canvas-container+.inspector-sidebar {
-    border-left: none;
-}
-
-.inspector-sidebar~.canvas-container,
-.canvas-container:has(+ .inspector-sidebar) {
+.canvas-container--with-sidebar {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
+}
+
+/* Drag handle between the canvas and the inspector sidebar */
+
+.sidebar-resize-handle {
+    flex-shrink: 0;
+    width: 6px;
+    margin: 0 -3px;
+    position: relative;
+    z-index: 2;
+    cursor: col-resize;
+    background: transparent;
+    touch-action: none;
+}
+.sidebar-resize-handle::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 2px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--border-default);
+    transition: background 130ms;
+}
+.sidebar-resize-handle:hover::after {
+    background: var(--accent-primary);
 }
 
 
