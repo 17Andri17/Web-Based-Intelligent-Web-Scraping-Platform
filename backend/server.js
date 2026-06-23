@@ -220,6 +220,38 @@ io.on('connection', async (socket) => {
     } catch (_) {}
   });
 
+  // ── HTML tab: full-page source + click/hover-by-path selection ───────────
+  socket.on('getPageHtml', async () => {
+    const page = await getActivePage();
+    if (!page) { socket.emit('pageHtml', { html: '', error: 'No active page' }); return; }
+    try {
+      const html = await page.content();
+      socket.emit('pageHtml', { html });
+    } catch (err) {
+      socket.emit('pageHtml', { html: '', error: err.message });
+    }
+  });
+
+  socket.on('selectElementByPath', async ({ path }) => {
+    const page = await getActivePage();
+    if (!page || !Array.isArray(path)) return;
+    try {
+      await page.evaluate((p) => {
+        if (typeof window.__selectByPath__ === 'function') window.__selectByPath__(p);
+      }, path);
+    } catch (_) {}
+  });
+
+  socket.on('highlightElementByPath', async ({ path }) => {
+    const page = await getActivePage();
+    if (!page || !Array.isArray(path)) return;
+    try {
+      await page.evaluate((p) => {
+        if (typeof window.__highlightByPath__ === 'function') window.__highlightByPath__(p);
+      }, path);
+    } catch (_) {}
+  });
+
   // ── Reset selection ───────────────────────────────────────────────────────
   socket.on('resetSelection', async () => {
     try {

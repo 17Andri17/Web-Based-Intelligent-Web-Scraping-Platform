@@ -8,6 +8,7 @@ import ElementInspector, { ForEachContextBanner } from "./components/ElementInsp
 import ExecutionPanel from "./components/ExecutionPanel";
 import DataPreviewPanel from "./components/DataPreviewPanel";
 import CompactWorkflowSidebar from "./components/CompactWorkflowSidebar";
+import HtmlInspectorPanel from "./components/HtmlInspectorPanel";
 import PaginationDetector from "./components/PaginationDetector";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
@@ -19,6 +20,7 @@ import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
 import "./styles/DataPreviewPanel.css";
 import "./styles/CompactWorkflowSidebar.css";
+import "./styles/HtmlInspectorPanel.css";
 import "./styles/auth.css";
 
 const SERVER_URL = API_BASE;
@@ -1215,6 +1217,17 @@ function AppShell({ user, token, onLogout }) {
               </svg>
               {selectedElement?.isMultiSelection ? `${selectedElement.matchCount} elements` : "Sidebar"}
             </button>
+            {/* View page source — opens the sidebar straight to the HTML tab */}
+            <button
+              className={`inspector-toggle-btn ${showSidebar && sidebarTab === "html" ? "active" : ""}`}
+              onClick={() => { setShowSidebar(true); setSidebarTab("html"); }}
+              title="View HTML source"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+              </svg>
+              Source
+            </button>
             {/* Pagination detector */}
             <button
               className="inspector-toggle-btn"
@@ -1319,6 +1332,16 @@ function AppShell({ user, token, onLogout }) {
                     </svg>
                     Workflow
                   </button>
+                  <button
+                    className={`sidebar-tab-btn ${sidebarTab === "html" ? "active" : ""}`}
+                    onClick={() => setSidebarTab("html")}
+                    title="HTML Inspector"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+                    </svg>
+                    HTML
+                  </button>
                   <button className="sidebar-tab-close" onClick={() => setShowSidebar(false)} title="Hide sidebar">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -1392,6 +1415,15 @@ function AppShell({ user, token, onLogout }) {
                     insertTarget={insertTarget}
                     onSetInsertTarget={setInsertTarget}
                     onMoveStep={moveStepById}
+                  />
+                )}
+
+                {/* HTML tab — DevTools-style source tree */}
+                {sidebarTab === "html" && (
+                  <HtmlInspectorPanel
+                    socket={socket}
+                    active={sidebarTab === "html"}
+                    refreshKey={`${currentPageUrl}|${pageReadyTick}`}
                   />
                 )}
               </div>
