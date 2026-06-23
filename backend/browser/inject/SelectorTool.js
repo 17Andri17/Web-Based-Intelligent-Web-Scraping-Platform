@@ -1156,6 +1156,29 @@
     }
   };
 
+  // ── HTML-tree tab support ────────────────────────────────────────────────
+  // The HTML tab renders a DOMParser-built tree from the same markup the
+  // backend serialized via page.content(), and re-derives a child-index path
+  // for each node from <html> down. We just walk that path against the live
+  // DOM and reuse the existing click-selection pipeline. Stale paths (page
+  // mutated since the snapshot) simply find no element and no-op.
+  function resolvePath(path) {
+    let el = document.documentElement;
+    for (let i = 0; i < path.length && el; i++) el = el.children[path[i]];
+    return el || null;
+  }
+
+  window.__selectByPath__ = function(path) {
+    const el = resolvePath(path || []);
+    if (el) doFirstClick(el);
+  };
+
+  window.__highlightByPath__ = function(path) {
+    const el = resolvePath(path || []);
+    clearHoverHighlight();
+    if (el) applyHoverHighlight(el);
+  };
+
   /* =========================================================================
      SELECTION MODE WATCHER
      ========================================================================= */
