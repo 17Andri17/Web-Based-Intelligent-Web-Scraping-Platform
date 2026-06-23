@@ -149,7 +149,7 @@ function HtmlNode({ node, depth, collapsed, onToggle, onSelect, onHover, onUnhov
   );
 }
 
-export default function HtmlInspectorPanel({ socket, active, refreshKey }) {
+export default function HtmlInspectorPanel({ socket, active, refreshKey, selectedPath, onBeforeSelect }) {
   const [html, setHtml] = useState("");
   const [tree, setTree] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -195,17 +195,12 @@ export default function HtmlInspectorPanel({ socket, active, refreshKey }) {
       const doc = new DOMParser().parseFromString(html, "text/html");
       const root = buildTree(doc.documentElement, []);
       setTree(root);
-      // Collapse everything below depth 2 by default so the tree opens to
-      // something navigable instead of a huge unrolled dump.
+      // Fully collapsed by default — only <html> is visible until a
+      // selection (or search) reveals a specific path.
       const initialCollapsed = new Set();
-      const walk = (node, depth) => {
-        if (node.type === "element" && node.children?.length && depth >= 2) {
-          initialCollapsed.add(node.id);
-        } else if (node.children) {
-          node.children.forEach(c => walk(c, depth + 1));
-        }
-      };
-      walk(root, 0);
+      flatten(root, []).forEach(n => {
+        if (n.type === "element" && n.children?.length) initialCollapsed.add(n.id);
+      });
       setCollapsed(initialCollapsed);
     } catch (e) {
       setError("Failed to parse HTML: " + e.message);
@@ -250,6 +245,42 @@ export default function HtmlInspectorPanel({ socket, active, refreshKey }) {
     revealMatch(matches[0]);
   }, [matches, revealMatch]);
 
+  // Mirror the app-wide element selection: collapse everything except the
+  // ancestor chain leading to the selected element, so the tree always
+  // opens straight to "here's what's currently selected" instead of a
+  // wall of unrelated markup.
+  const selectedPathKey = selectedPath ? JSON.stringify(selectedPath) : null;
+  const lastSyncedPathKeyRef = useRef(null);
+  useEffect(() => {
+    // A fresh tree (new page / refresh) should re-apply the current
+    // selection's reveal even if the path string is unchanged; clearing the
+    // selection should let the same path re-sync if it's picked again.
+    lastSyncedPathKeyRef.current = null;
+  }, [tree]);
+  useEffect(() => {
+    if (!selectedPathKey) { lastSyncedPathKeyRef.current = null; return; }
+    if (!tree || lastSyncedPathKeyRef.current === selectedPathKey) return;
+    lastSyncedPathKeyRef.current = selectedPathKey;
+    const target = allNodes.find(n => n.type === "element" && JSON.stringify(n.path) === selectedPathKey);
+    if (!target) return;
+
+    const keepExpanded = new Set();
+    let p = parentOf.get(target.id);
+    while (p) { keepExpanded.add(p.id); p = parentOf.get(p.id); }
+
+    const nextCollapsed = new Set();
+    allNodes.forEach(n => {
+      if (n.type === "element" && n.children?.length && !keepExpanded.has(n.id)) {
+        nextCollapsed.add(n.id);
+      }
+    });
+    setCollapsed(nextCollapsed);
+    setActiveId(target.id);
+    requestAnimationFrame(() => {
+      containerRef.current?.querySelector(`[data-node-id="${target.id}"]`)?.scrollIntoView({ block: "center" });
+    });
+  }, [tree, selectedPathKey, allNodes, parentOf]);
+
   const goToMatch = (dir) => {
     if (matches.length === 0) return;
     const next = (matchIndex + dir + matches.length) % matches.length;
@@ -274,6 +305,7 @@ export default function HtmlInspectorPanel({ socket, active, refreshKey }) {
 
   const onSelect = (node) => {
     setActiveId(node.id);
+    onBeforeSelect?.();
     socket?.emit("selectElementByPath", { path: node.path });
   };
   const onHover = (node) => socket?.emit("highlightElementByPath", { path: node.path });
