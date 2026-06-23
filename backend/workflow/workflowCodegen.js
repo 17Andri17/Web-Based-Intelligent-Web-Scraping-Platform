@@ -1111,6 +1111,30 @@ function generateCode(workflow, options = {}) {
   const workflowResultsMarker = clean
     ? ''
     : `    console.log('\\nWORKFLOW_RESULTS:' + JSON.stringify(__results__));\n`;
+  // Commented-out save-to-file helpers, included only in a downloaded
+  // (clean) script so the user can switch on JSON or CSV export by
+  // uncommenting — no extra dependencies needed.
+  const saversSnippet = clean
+    ? `
+  // ─── Save results to a file (uncomment what you need) ──────────────────
+  // const fs = require('fs');
+  //
+  // // → JSON: write everything to one file
+  // fs.writeFileSync('results.json', JSON.stringify(__results__, null, 2));
+  //
+  // // → CSV: one .csv per result set that is a list of rows
+  // for (const [name, rows] of Object.entries(__results__)) {
+  //   if (!Array.isArray(rows) || rows.length === 0 || typeof rows[0] !== 'object') continue;
+  //   const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
+  //   const esc = (v) => {
+  //     const s = v === null || v === undefined ? '' : String(v);
+  //     return /[",\\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  //   };
+  //   const csv = [cols.join(','), ...rows.map(r => cols.map(c => esc(r[c])).join(','))].join('\\n');
+  //   fs.writeFileSync(name + '.csv', csv);
+  // }
+`
+    : '';
   const catchBody = clean
     ? `    console.error('❌ Workflow error:', err.message);
     process.exitCode = 1;`
@@ -1310,7 +1334,7 @@ ${catchBody}
       }
     }
 ${workflowResultsMarker}  }
-}
+${saversSnippet}}
 
 run().catch(err => {
   console.error('Fatal:', err);
@@ -1516,10 +1540,30 @@ function generateReadme(workflow) {
   L.push('- **Use your own Chrome** — set the ' + code('CHROME_PATH') + ' env var, or edit ' + code('executablePath') + ' in ' + code('puppeteer.launch') + '.');
   L.push('- **Window size** — ' + code('page.setViewport({ width, height })') + '.');
   L.push('- **Timeouts** — the ' + code('timeout:') + ' values on navigation / waits (milliseconds).');
-  L.push('- **Save results to a file** — at the end of ' + code('run()') + ' add:');
+  L.push('- **Save results to a file** — ' + code('workflow.js') + ' already includes a commented-out *"Save results to a file"* block at the end of ' + code('run()') + '. Uncomment the JSON and/or CSV part (copied below).');
+  L.push('');
+
+  L.push('### Save results as JSON or CSV');
+  L.push('');
+  L.push('Open ' + code('workflow.js') + ', find the ' + code('// ─── Save results to a file') + ' block near the end of ' + code('run()') + ', and uncomment what you want:');
   L.push('');
   L.push(FENCE + 'js');
-  L.push(`require('fs').writeFileSync('results.json', JSON.stringify(__results__, null, 2));`);
+  L.push(`const fs = require('fs');`);
+  L.push('');
+  L.push('// → JSON: write everything to one file');
+  L.push(`fs.writeFileSync('results.json', JSON.stringify(__results__, null, 2));`);
+  L.push('');
+  L.push('// → CSV: one .csv per result set that is a list of rows');
+  L.push(`for (const [name, rows] of Object.entries(__results__)) {`);
+  L.push(`  if (!Array.isArray(rows) || rows.length === 0 || typeof rows[0] !== 'object') continue;`);
+  L.push(`  const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];`);
+  L.push(`  const esc = (v) => {`);
+  L.push(`    const s = v === null || v === undefined ? '' : String(v);`);
+  L.push(`    return /[",\\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;`);
+  L.push(`  };`);
+  L.push(`  const csv = [cols.join(','), ...rows.map(r => cols.map(c => esc(r[c])).join(','))].join('\\n');`);
+  L.push(`  fs.writeFileSync(name + '.csv', csv);`);
+  L.push(`}`);
   L.push(FENCE);
   L.push('');
 
