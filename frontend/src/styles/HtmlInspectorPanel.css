@@ -64,6 +64,7 @@
   transition: background 130ms, color 130ms;
 }
 .hi-icon-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.hi-icon-btn--active { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 14%, transparent); }
 
 .hi-tree {
   flex: 1;

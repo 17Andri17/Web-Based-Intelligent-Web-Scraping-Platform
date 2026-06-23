@@ -149,7 +149,7 @@ function HtmlNode({ node, depth, collapsed, onToggle, onSelect, onHover, onUnhov
   );
 }
 
-export default function HtmlInspectorPanel({ socket, active, refreshKey, selectedPath, onBeforeSelect }) {
+export default function HtmlInspectorPanel({ socket, active, refreshKey, selectedPath, onBeforeSelect, maximized, onToggleMaximize }) {
   const [html, setHtml] = useState("");
   const [tree, setTree] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -342,6 +342,23 @@ export default function HtmlInspectorPanel({ socket, active, refreshKey, selecte
         <button className="hi-icon-btn" title="Collapse all" onClick={collapseAll}>⊟</button>
         <button className="hi-icon-btn" title="Expand all" onClick={expandAll}>⊞</button>
         <button className="hi-icon-btn" title="Refresh from page" onClick={fetchHtml}>⟳</button>
+        {onToggleMaximize && (
+          <button
+            className={`hi-icon-btn${maximized ? " hi-icon-btn--active" : ""}`}
+            title={maximized ? "Restore" : "Maximize (hide the page preview)"}
+            onClick={onToggleMaximize}
+          >
+            {maximized ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M9 3v4a1 1 0 0 1-1 1H4M15 3v4a1 1 0 0 0 1 1h4M9 21v-4a1 1 0 0 0-1-1H4M15 21v-4a1 1 0 0 1 1-1h4" />
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4" />
+              </svg>
+            )}
+          </button>
+        )}
       </div>
 
       <div className="hi-tree" ref={containerRef}>
