@@ -153,6 +153,11 @@ function AppShell({ user, token, onLogout }) {
   useEffect(() => { paginationManualWaitingRef.current  = paginationManualWaiting; }, [paginationManualWaiting]);
   const insertTargetRef = useRef(null);
   useEffect(() => { insertTargetRef.current = insertTarget; }, [insertTarget]);
+  // Set right before emitting selectElementByPath from the HTML tab, so the
+  // resulting elementSelected event updates selectedElement (to sync the
+  // tree's expand/highlight) without yanking focus away to the Inspector
+  // tab — the user is actively browsing the source tree.
+  const selectingFromHtmlTabRef = useRef(false);
   // Keep the latest inspector selection accessible from callbacks that the
   // auto-name helper runs from — handleAddStep clears the React state
   // immediately, but we still need the data for the AI request.
@@ -268,8 +273,12 @@ function AppShell({ user, token, onLogout }) {
         } else {
           setSelectedElement(data.element);
           setChildrenList(null);
-          setShowSidebar(true);
-          setSidebarTab("inspector");
+          if (selectingFromHtmlTabRef.current) {
+            selectingFromHtmlTabRef.current = false;
+          } else {
+            setShowSidebar(true);
+            setSidebarTab("inspector");
+          }
         }
       }
       if (data.type === "multiElementSelected") {
@@ -1424,6 +1433,8 @@ function AppShell({ user, token, onLogout }) {
                     socket={socket}
                     active={sidebarTab === "html"}
                     refreshKey={`${currentPageUrl}|${pageReadyTick}`}
+                    selectedPath={!selectedElement?.isMultiSelection ? selectedElement?.path : null}
+                    onBeforeSelect={() => { selectingFromHtmlTabRef.current = true; }}
                   />
                 )}
               </div>

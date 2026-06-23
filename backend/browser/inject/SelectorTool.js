@@ -439,6 +439,22 @@
      ELEMENT INFO
      ========================================================================= */
 
+  // Element-only child-index chain from <html> down to el — the same
+  // addressing the HTML tab's tree uses, so a selection made anywhere
+  // (canvas click, ancestor nav, child pick) can be mirrored back onto
+  // that tree without a CSS-selector round-trip.
+  function computePath(el) {
+    const path = [];
+    let cur = el;
+    while (cur && cur !== document.documentElement) {
+      const parent = cur.parentElement;
+      if (!parent) break;
+      path.unshift(Array.prototype.indexOf.call(parent.children, cur));
+      cur = parent;
+    }
+    return path;
+  }
+
   function buildElementInfo(el) {
     let primary           = null;
     let fallbackSelectors = [];
@@ -585,6 +601,7 @@
       parentTag:  parentTag,
       parentText: parentText,
       parentHtml: parentHtml,
+      path: computePath(el),
     };
   }
 
