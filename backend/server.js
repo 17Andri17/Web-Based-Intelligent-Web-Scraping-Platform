@@ -669,6 +669,9 @@ io.on('connection', async (socket) => {
           '[class~="page-numbers"]',
           '[class~="page-nav"]',
           '[class~="pagenav"]',
+          // PrimeFaces/JSF-style widgets (e.g. "ui-paginator") — "paginator"
+          // doesn't share the "pagination" substring so it needs its own rule.
+          '[class*="paginator" i]:not([class*="carousel" i]):not([class*="slider" i])',
           'ul.pagination, ol.pagination, div.pagination',
         ].join(',');
 
@@ -783,6 +786,30 @@ io.on('connection', async (socket) => {
           }
         }
 
+        // 3a. Class-name-only "next" indicator — covers icon-only buttons with
+        //     no text and no aria-label, e.g. PrimeFaces/JSF
+        //     `<a class="ui-paginator-next ...">` wrapping just a font-icon
+        //     `<span>`. Requires the class itself to carry a pagination-y
+        //     token ("pagin"/"pager"/"page-nav"), OR the element to sit
+        //     inside a verified pagination container — either way a bare
+        //     "next" class on its own (e.g. a carousel arrow) won't qualify.
+        if (!results.find(r => r.type === 'next_button')) {
+          const NEXT_CLASS_RE = /(?:^|[\s_-])next(?:[\s_-]|$)/i;
+          const PAGY_CLASS_RE = /pagin|pager|page-?nav/i;
+          const el = Array.from(document.querySelectorAll('a,button,[role="button"]')).find(e => {
+            const cls = e.className && e.className.toString();
+            if (!cls || !NEXT_CLASS_RE.test(cls)) return false;
+            if (!PAGY_CLASS_RE.test(cls) && !e.closest(PAGINATION_CONTAINER_SELECTOR)) return false;
+            return valid(e);
+          });
+          if (el) {
+            results.push({ type: 'next_button', confidence: 0.85,
+              selector: stableSelector(el),
+              previewText: txt(el) || 'Next',
+              description: 'Found a "next" pagination control identified by its class name.' });
+          }
+        }
+
         // 3b. URL-based pagination → NAVIGATION strategy. When the next page
         //     is just the current URL with a pagination number/param changed
         //     (…?page=2, ?p=2, /page/2, …/2), navigating page-by-page is far
@@ -794,14 +821,20 @@ io.on('connection', async (socket) => {
         {
           const here        = new URL(location.href);
           const pathMatch   = here.pathname.match(/\/(\d+)\/?$/);
-          const PAGE_PARAMS = ['page','paged','pg','pagenum','pageno','p'];
+          const PAGE_PARAMS = ['page','paged','pg','pagenum','pageno','pagenr','pageindex','p'];
+          // Compound/cased param names like "i_page", "cur_page", "page_no",
+          // "pageNum" — requires an explicit separator before "page" (or a
+          // known numeric suffix after it) so it won't match unrelated words
+          // like "homepage". Matched case-insensitively since URLSearchParams
+          // keys are case-sensitive but real-world param casing varies.
+          const COMPOUND_PAGE_PARAM_RE = /^[a-z0-9]+[-_]page(?:[-_]?(?:num|no|nr|index))?$|^page[-_]?(?:num|no|nr|index)$/i;
+          const isPageParamKey = (name) => PAGE_PARAMS.includes(name.toLowerCase()) || COMPOUND_PAGE_PARAM_RE.test(name);
           const TOKEN       = '__PAGE__';
 
           let currentNum    = 1;
           let pageParamUsed = null;
-          for (const name of PAGE_PARAMS) {
-            const v = here.searchParams.get(name);
-            if (v && /^\d+$/.test(v)) { currentNum = parseInt(v, 10); pageParamUsed = name; break; }
+          for (const [key, v] of here.searchParams.entries()) {
+            if (isPageParamKey(key) && /^\d+$/.test(v)) { currentNum = parseInt(v, 10); pageParamUsed = key; break; }
           }
           if (pathMatch) currentNum = Math.max(currentNum, parseInt(pathMatch[1], 10));
           const nextNum  = currentNum + 1;
@@ -818,26 +851,23 @@ io.on('connection', async (socket) => {
             try { u = new URL(el.getAttribute('href'), location.href); } catch { return false; }
             if (u.origin !== here.origin) return false;
             if (u.pathname === `${basePath}/${nextNum}` || u.pathname === `${basePath}/${nextNum}/`) return true;
-            for (const name of PAGE_PARAMS) {
-              const v = u.searchParams.get(name);
-              if (v && parseInt(v, 10) === nextNum) {
-                // Bare `p=` is too generic — require pagination-like link text
-                // unless the current URL is already using `p=` for paging.
-                if (name === 'p' && pageParamUsed !== 'p') {
-                  const t = txt(el);
-                  if (!isNextLike(t) && !/^\d+$/.test(t)) return false;
-                }
-                return true;
+            for (const [key, v] of u.searchParams.entries()) {
+              if (!isPageParamKey(key) || parseInt(v, 10) !== nextNum) continue;
+              // Bare `p=` is too generic — require pagination-like link text
+              // unless the current URL is already using `p=` for paging.
+              if (key.toLowerCase() === 'p' && (pageParamUsed || '').toLowerCase() !== 'p') {
+                const t = txt(el);
+                if (!isNextLike(t) && !/^\d+$/.test(t)) continue;
               }
+              return true;
             }
             return false;
           });
           if (anchor) {
             const u = new URL(anchor.getAttribute('href'), location.href);
             let pname = null;
-            for (const name of PAGE_PARAMS) {
-              const v = u.searchParams.get(name);
-              if (v && parseInt(v, 10) === nextNum) { pname = name; break; }
+            for (const [key, v] of u.searchParams.entries()) {
+              if (isPageParamKey(key) && parseInt(v, 10) === nextNum) { pname = key; break; }
             }
             if (pname) {
               u.searchParams.set(pname, TOKEN);
@@ -851,7 +881,7 @@ io.on('connection', async (socket) => {
           // (2) Fallback: the current URL itself already carries an explicit
           //     page param (e.g. you're on ?page=1). Bare `p` only counts when
           //     we're already past page 1, to avoid hijacking unrelated `?p=`.
-          if (!tmpl && pageParamUsed && (pageParamUsed !== 'p' || currentNum > 1)) {
+          if (!tmpl && pageParamUsed && (pageParamUsed.toLowerCase() !== 'p' || currentNum > 1)) {
             const u = new URL(here.href);
             u.searchParams.set(pageParamUsed, TOKEN);
             const parts = u.href.split(TOKEN);
