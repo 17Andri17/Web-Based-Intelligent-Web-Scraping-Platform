@@ -134,6 +134,12 @@ function AppShell({ user, token, onLogout }) {
   const [sidebarWidth,    setSidebarWidth]    = useState(360);
   const [htmlMaximized,   setHtmlMaximized]   = useState(false);
   const isResizingSidebarRef = useRef(false);
+  // Closing the sidebar always drops the maximize state too — reopening it
+  // (from any entry point) should start back in the normal split view
+  // rather than re-hiding the canvas from under the user.
+  useEffect(() => {
+    if (!showSidebar) setHtmlMaximized(false);
+  }, [showSidebar]);
   // Pagination detection
   const [paginationOpen,  setPaginationOpen]  = useState(false);
   const [paginationDetecting, setPaginationDetecting] = useState(false);
