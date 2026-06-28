@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import TransformPipelineEditor from "./TransformPipelineEditor";
 import { fieldColumnDescriptors, hasPipeline } from "../workflow/fieldTransforms";
+import { PAGINATION_CONTROL_TYPES } from "../workflow/controlDefinitions";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -27,17 +28,27 @@ const TYPE_ICON = {
 
 // ─── Tree walk → sections ────────────────────────────────────────────────────
 
-function buildSections(steps) {
+function buildSections(steps, inPagination = false) {
   const sections = [];
+  // Tag each pushed section with whether it lives inside a pagination loop,
+  // so the panel can show a "preview is the current page only" note. Steps
+  // that already carry the flag (nested deeper) keep it.
+  const tag = (section) => (inPagination ? { ...section, inPagination: true } : section);
   for (const step of steps || []) {
     if (typeof step !== "object" || !step) continue;
 
-    if (step.kind === "control" && step.type === "WHILE") {
-      // WHILE has no fixed iteration count — render its body inline so
-      // each extraction inside gets its own preview section (the first
-      // iteration's data, just like a top-level extraction).
+    const isPaginationLoop = step.kind === "control" && PAGINATION_CONTROL_TYPES.has(step.type);
+
+    if (step.kind === "control" && (step.type === "WHILE" || isPaginationLoop)) {
+      // WHILE / pagination loops have no fixed iteration count — render their
+      // body inline so each extraction inside gets its own preview section
+      // (the current page's data, just like a top-level extraction). For
+      // pagination loops we flag those sections so the user knows the preview
+      // reflects the current page only.
       for (const key of BRANCH_KEYS) {
-        if (Array.isArray(step[key])) sections.push(...buildSections(step[key]));
+        if (Array.isArray(step[key])) {
+          sections.push(...buildSections(step[key], inPagination || isPaginationLoop));
+        }
       }
     } else if (step.kind === "control" && LOOP_TYPES.has(step.type)) {
       // Collect direct extraction children from branch arrays only
@@ -50,30 +61,30 @@ function buildSections(steps) {
         }
       }
       if (columns.length > 0) {
-        sections.push({ kind: "table", loopStep: step, columns });
+        sections.push(tag({ kind: "table", loopStep: step, columns }));
       }
       // Recurse into nested loops
       for (const key of BRANCH_KEYS) {
         if (Array.isArray(step[key])) {
-          sections.push(...buildSections(step[key].filter(s => s.kind === "control")));
+          sections.push(...buildSections(step[key].filter(s => s.kind === "control"), inPagination));
         }
       }
     } else if (step.kind === "action" && step.type === "EXTRACT_LIST") {
       // EXTRACT_LIST renders as its own tabular section — columns come
       // from `params.fields` and rows from previewRows / execResults.
-      sections.push({ kind: "list", step });
+      sections.push(tag({ kind: "list", step }));
     } else if (step.kind === "action" && step.type === "EXTRACT_TABLE") {
       // EXTRACT_TABLE renders as a real grid — headers + rows from
       // previewTable (live) or execResults (post-run array of row objects).
-      sections.push({ kind: "tableExtract", step });
+      sections.push(tag({ kind: "tableExtract", step }));
     } else if (step.kind === "action" && step.type === "RUN_SUBFLOW") {
       // Subflow outputs can't be previewed live (they need a separate
       // page that we'd have to navigate during preview), but we DO know
       // they'll appear in the final results — surface that as a
       // placeholder card so users can see the shape of the output.
-      sections.push({ kind: "subflow", step });
+      sections.push(tag({ kind: "subflow", step }));
     } else if (step.kind === "action" && EXTRACTION_TYPES.has(step.type)) {
-      sections.push({ kind: "field", step });
+      sections.push(tag({ kind: "field", step }));
     }
   }
   return sections;
@@ -867,10 +878,11 @@ export default function DataPreviewPanel({ steps, execResults, previewData = {},
 
       <div className="dp-sections">
         {sections.map(section => {
+          const key = section.loopStep?.id || section.step?.id;
+          let node;
           if (section.kind === "table") {
-            return (
+            node = (
               <TableSection
-                key={section.loopStep.id}
                 loopStep={section.loopStep}
                 columns={section.columns}
                 execResults={execResults}
@@ -878,11 +890,9 @@ export default function DataPreviewPanel({ steps, execResults, previewData = {},
                 onUpdateLabel={onUpdateLabel}
               />
             );
-          }
-          if (section.kind === "list") {
-            return (
+          } else if (section.kind === "list") {
+            node = (
               <ListSection
-                key={section.step.id}
                 step={section.step}
                 execResults={execResults}
                 previewData={previewData}
@@ -890,11 +900,26 @@ export default function DataPreviewPanel({ steps, execResults, previewData = {},
                 onUpdateParams={onUpdateParams}
               />
             );
-          }
-          if (section.kind === "tableExtract") {
-            return (
+          } else if (section.kind === "tableExtract") {
+            node = (
               <TableExtractSection
-                key={section.step.id}
+                step={section.step}
+                execResults={execResults}
+                previewData={previewData}
+                onUpdateLabel={onUpdateLabel}
+              />
+            );
+          } else if (section.kind === "subflow") {
+            node = (
+              <SubflowSection
+                step={section.step}
+                execResults={execResults}
+                onUpdateLabel={onUpdateLabel}
+              />
+            );
+          } else {
+            node = (
+              <FieldSection
                 step={section.step}
                 execResults={execResults}
                 previewData={previewData}
@@ -902,25 +927,20 @@ export default function DataPreviewPanel({ steps, execResults, previewData = {},
               />
             );
           }
-          if (section.kind === "subflow") {
+          // Steps inside a pagination loop preview only the current page —
+          // surface that so the data isn't mistaken for the full crawl.
+          if (section.inPagination) {
             return (
-              <SubflowSection
-                key={section.step.id}
-                step={section.step}
-                execResults={execResults}
-                onUpdateLabel={onUpdateLabel}
-              />
+              <div key={key} className="dp-section-wrap dp-section-wrap--pagination">
+                <div className="dp-pagination-note" title="This step runs inside a pagination loop. The preview reflects the current page only; running the workflow collects every page.">
+                  <span className="dp-pagination-note-icon">↻</span>
+                  Inside a pagination loop — preview shows the current page only.
+                </div>
+                {node}
+              </div>
             );
           }
-          return (
-            <FieldSection
-              key={section.step.id}
-              step={section.step}
-              execResults={execResults}
-              previewData={previewData}
-              onUpdateLabel={onUpdateLabel}
-            />
-          );
+          return <div key={key}>{node}</div>;
         })}
       </div>
     </div>

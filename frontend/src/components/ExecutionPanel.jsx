@@ -319,7 +319,8 @@ function formatCell(val) {
    Children come from control blocks' branch arrays (body/then/else/etc).
    ===================================================================== */
 const FLOW_BRANCH_KEYS = ["body", "then", "else", "try", "catch"];
-const FLOW_LOOP_TYPES  = new Set(["FOR_EACH", "FOR_EACH_ELEMENTS", "WHILE", "REPEAT"]);
+const FLOW_LOOP_TYPES  = new Set(["FOR_EACH", "FOR_EACH_ELEMENTS", "WHILE", "REPEAT",
+  "PAGINATE_SCROLL", "PAGINATE_BUTTON", "PAGINATE_URL"]);
 
 function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
   if (!step || typeof step !== "object") return null;

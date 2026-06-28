@@ -373,9 +373,27 @@ function AppShell({ user, token, onLogout }) {
     socket.on("executionDone",    ({ success, results, status }) => {
       // `status` is the persisted run status ('success' | 'error' | 'needs_review' | 'cancelled').
       // We map it to the local 4-state for the panel: idle/running/done/error.
-      if (status === "success" || success) setExecStatus("done");
-      else setExecStatus("error");
+      const ok = status === "success" || success;
+      setExecStatus(ok ? "done" : "error");
       if (results && Object.keys(results).length > 0) setExecResults(results);
+      // No STEP_BEGIN follows the final step, so it would otherwise stay
+      // stuck in the "running" (spinner) state. Flip any step still marked
+      // running to its terminal state now that the run has ended.
+      setExecStepStates(prev => {
+        const next = { ...prev };
+        for (const k of Object.keys(next)) {
+          if (next[k] === "running") next[k] = ok ? "done" : "error";
+        }
+        return next;
+      });
+      // Likewise, stop any loop iteration counters still pulsing.
+      setExecIterations(prev => {
+        const next = { ...prev };
+        for (const k of Object.keys(next)) {
+          if (next[k]?.running) next[k] = { ...next[k], running: false };
+        }
+        return next;
+      });
     });
     // Server auto-creates a workflow row when none was passed; learn its id
     // so subsequent runs / history / schedule actions know which workflow

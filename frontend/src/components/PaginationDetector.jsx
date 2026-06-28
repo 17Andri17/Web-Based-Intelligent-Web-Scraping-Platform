@@ -82,7 +82,10 @@ function generatePaginationSteps(suggestion) {
   if (type === "url_param") {
     const before   = suggestion.urlBefore || "";
     const after    = suggestion.urlAfter || "";
-    const startPage = Number.isFinite(suggestion.nextPage) ? suggestion.nextPage : 1;
+    // startPage is the CURRENT page's number — the loop scrapes it first
+    // (no navigation) and only then advances to nextPage, nextPage+1, …. The
+    // detector reports the NEXT page it found, so the current page is one less.
+    const startPage = Number.isFinite(suggestion.nextPage) ? Math.max(1, suggestion.nextPage - 1) : 1;
     return createControl(CONTROL_TYPES.PAGINATE_URL, {
       urlPattern: `${before}{n}${after}`,
       contentSelector: containerSelector || selector || "",
