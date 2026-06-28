@@ -79,6 +79,29 @@
 .dp-sections::-webkit-scrollbar-track { background: transparent; }
 .dp-sections::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 3px; }
 
+/* ── Section wrapper (groups a section with optional notes) ─ */
+.dp-section-wrap {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Note shown above an extraction that lives inside a pagination loop —
+   its live preview reflects only the current page. */
+.dp-pagination-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  font-size: 11.5px;
+  color: #d29922;
+  background: rgba(210, 153, 34, 0.08);
+  border: 1px solid rgba(210, 153, 34, 0.26);
+  border-radius: 7px;
+}
+.dp-pagination-note-icon { font-size: 12px; line-height: 1; }
+
 /* ── Shared section card (never shrinks below content) ────── */
 .dp-section {
   flex-shrink: 0;       /* critical: cards must not shrink — sections scrolls */

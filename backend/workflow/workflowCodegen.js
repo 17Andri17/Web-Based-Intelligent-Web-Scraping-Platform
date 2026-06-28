@@ -1000,20 +1000,26 @@ ${body}    const _nextBtn = await resolveElement(page, ${sels});
         ? `    const _hasContent = await resolveElement(page, ${contentSels});\n` +
           `    if (!_hasContent) break;  // no desired elements → past the last page\n`
         : `    // (no content selector set — relying on the safety cap to stop)\n`;
+      // The body runs on the CURRENT page first (the start URL is page 1),
+      // THEN we navigate to the next page. So the original page is scraped
+      // without a redundant re-navigation, and navigation only ever advances
+      // to page 2, 3, …. The content check guards the freshly-loaded page so
+      // we break before extracting an empty page.
       return `{
-  // Pagination — URL Pages (while-loop; stops when a page has no content)
+  // Pagination — URL Pages (while-loop; scrapes the current page first, then
+  // advances page-by-page until a page has none of the desired elements)
   let _pageNo = ${startPage}, _urlGuard = 0;
   console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
   while (_urlGuard < ${max}) {
     console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _urlGuard}));
     _urlGuard++;
+${body}    _pageNo += ${stepInc};
     const _pageUrl = ${urlExpr};
     try {
       await page.goto(_pageUrl, { waitUntil: 'load', timeout: 30000 });
     } catch (_) { break; }
     await new Promise(r => setTimeout(r, ${delay}));
-${contentCheck}${body}    _pageNo += ${stepInc};
-  }
+${contentCheck}  }
   console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
 }
 `;
