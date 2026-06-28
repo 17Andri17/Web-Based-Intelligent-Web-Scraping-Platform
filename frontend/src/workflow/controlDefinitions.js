@@ -11,7 +11,39 @@ export const CONTROL_TYPES = {
   WHILE:             'WHILE',
   REPEAT:            'REPEAT',
   TRY_CATCH:         'TRY_CATCH',
+
+  // ── Pagination (high-level loop containers) ──────────────────────────
+  // These three replace the old "While + If/Break + click/wait" recipe with
+  // a single, self-contained step. Each owns one `body` branch whose steps
+  // run for every page the pagination visits. All the looping / stop logic
+  // lives in the code generator — the user only fills in simple parameters.
+  PAGINATE_SCROLL:   'PAGINATE_SCROLL',
+  PAGINATE_BUTTON:   'PAGINATE_BUTTON',
+  PAGINATE_URL:      'PAGINATE_URL',
 };
+
+// The high-level pagination containers, kept as a set so both the renderer
+// and the code generator can recognise them without string-matching prefixes.
+export const PAGINATION_CONTROL_TYPES = new Set([
+  CONTROL_TYPES.PAGINATE_SCROLL,
+  CONTROL_TYPES.PAGINATE_BUTTON,
+  CONTROL_TYPES.PAGINATE_URL,
+]);
+
+// Map each native pagination type → the `strategy` tag we stamp onto
+// step.meta. Keeps README detection + any analytics consistent with the
+// legacy (composed) pagination loops that already used meta.strategy.
+export const PAGINATION_STRATEGY = {
+  [CONTROL_TYPES.PAGINATE_SCROLL]: 'infinite_scroll',
+  [CONTROL_TYPES.PAGINATE_BUTTON]: 'next_button',
+  [CONTROL_TYPES.PAGINATE_URL]:    'url_param',
+};
+
+/** True for both the new native containers and legacy meta-tagged loops. */
+export function isPaginationStep(step) {
+  if (!step || typeof step !== 'object') return false;
+  return PAGINATION_CONTROL_TYPES.has(step.type) || step.meta?.kind === 'pagination';
+}
 
 export const controlDefinitions = {
 
@@ -137,6 +169,116 @@ export const controlDefinitions = {
         label: 'Index variable name',
         default: 'i',
         placeholder: 'i',
+      },
+    },
+  },
+
+  // ── Pagination: Infinite Scroll ──────────────────────────────────────
+  [CONTROL_TYPES.PAGINATE_SCROLL]: {
+    label:       'Pagination — Infinite Scroll',
+    description: 'Scroll to the bottom repeatedly until no new content loads, then run your steps on the fully-loaded page.',
+    color:       '#d29922',   // amber
+    bgColor:     'rgba(210, 153, 34, 0.08)',
+    icon:        '↕',
+    branches: [
+      { key: 'body', label: 'Run after all content loads',
+        emptyLabel: 'Add the steps that extract the fully-loaded list' },
+    ],
+    params: {
+      scrollDelay: {
+        type: 'number',
+        label: 'Delay after each scroll (ms)',
+        default: 1500,
+      },
+      maxNoChange: {
+        type: 'number',
+        label: 'Stop after this many scrolls with no new content',
+        default: 3,
+      },
+      maxIterations: {
+        type: 'number',
+        label: 'Max scrolls (safety cap)',
+        default: 100,
+      },
+    },
+  },
+
+  // ── Pagination: Click a button (Next / Load more) ────────────────────
+  [CONTROL_TYPES.PAGINATE_BUTTON]: {
+    label:       'Pagination — Click Button',
+    description: 'Run your steps on the current page, then click the Next / Load-more button. Repeats until the button can no longer be found.',
+    color:       '#58a6ff',   // blue
+    bgColor:     'rgba(88, 166, 255, 0.08)',
+    icon:        '→',
+    branches: [
+      { key: 'body', label: 'Run on each page',
+        emptyLabel: 'Add the steps that run on every page (before the next click)' },
+    ],
+    params: {
+      selector: {
+        type: 'string', required: true,
+        label: 'Button selector (main)',
+        placeholder: 'a.next, button[aria-label="Next"]',
+      },
+      fallbackSelectors: {
+        type: 'selectorList',
+        label: 'Fallback selectors (tried in order if the main one is missing)',
+        default: [],
+      },
+      delay: {
+        type: 'number',
+        label: 'Wait after each click (ms)',
+        default: 2000,
+      },
+      maxIterations: {
+        type: 'number',
+        label: 'Max pages (safety cap)',
+        default: 200,
+      },
+    },
+  },
+
+  // ── Pagination: URL pages (incrementing) ─────────────────────────────
+  [CONTROL_TYPES.PAGINATE_URL]: {
+    label:       'Pagination — URL Pages',
+    description: 'Navigate page-by-page using a URL pattern that increments. A while-loop keeps going until a page has none of the desired elements — so it adapts when the page count changes.',
+    color:       '#2dd4bf',   // teal
+    bgColor:     'rgba(45, 212, 191, 0.08)',
+    icon:        '🔗',
+    branches: [
+      { key: 'body', label: 'Run on each page',
+        emptyLabel: 'Add the steps that extract each page' },
+    ],
+    params: {
+      urlPattern: {
+        type: 'string', required: true,
+        label: 'URL pattern — put {n} where the page number goes',
+        placeholder: 'https://example.com/products?page={n}',
+      },
+      contentSelector: {
+        type: 'string', required: true,
+        label: 'Content selector — stop when a page has none of these',
+        placeholder: '.product-card',
+      },
+      startPage: {
+        type: 'number',
+        label: 'First page number',
+        default: 1,
+      },
+      step: {
+        type: 'number',
+        label: 'Increment per page',
+        default: 1,
+      },
+      delay: {
+        type: 'number',
+        label: 'Wait after each navigation (ms)',
+        default: 1500,
+      },
+      maxIterations: {
+        type: 'number',
+        label: 'Max pages (safety cap)',
+        default: 500,
       },
     },
   },

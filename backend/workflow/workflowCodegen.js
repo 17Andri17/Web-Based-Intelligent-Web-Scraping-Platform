@@ -911,6 +911,114 @@ ${body}  }
 `.trim() + '\n';
     }
 
+    // ── Pagination: Infinite Scroll ──────────────────────────────────────
+    // Scroll to the bottom repeatedly until the page stops growing for
+    // `maxNoChange` consecutive scrolls, THEN run the body once against the
+    // fully-loaded page. Body keeps the parent's inLoop semantics (it runs a
+    // single time here, so a top-level scroll extraction just overwrites).
+    case 'PAGINATE_SCROLL': {
+      const delay       = num(params.scrollDelay, 1500);
+      const maxNoChange = Math.max(1, num(params.maxNoChange, 3));
+      const max         = num(params.maxIterations, 100);
+      const body        = genStepList(step.body || [], ctx, depth + 1);
+      const idJson      = JSON.stringify(step.id || '');
+      return `{
+  // Pagination — Infinite Scroll
+  let _noChange = 0, _prevH = 0, _scrollGuard = 0;
+  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
+  while (_noChange < ${maxNoChange} && _scrollGuard < ${max}) {
+    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _scrollGuard}));
+    _scrollGuard++;
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await new Promise(r => setTimeout(r, ${delay}));
+    const _h = await page.evaluate(() => document.body.scrollHeight);
+    if (_h <= _prevH + 10) _noChange++; else _noChange = 0;
+    _prevH = _h;
+  }
+  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
+${body}}
+`;
+    }
+
+    // ── Pagination: Click a button (Next / Load more) ─────────────────────
+    // Run the body on the current page, then click the next button (trying
+    // the fallback selectors in order). Stops the moment no button resolves.
+    // Body accumulates per-page results (inLoop = true).
+    case 'PAGINATE_BUTTON': {
+      const sels   = selectorList({
+        selector: params.selector || '',
+        selectorType: params.selectorType || 'css',
+        fallbackSelectors: params.fallbackSelectors || [],
+      }, ctx.declaredVars);
+      const delay  = num(params.delay, 2000);
+      const max    = num(params.maxIterations, 200);
+      const body   = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
+      const idJson = JSON.stringify(step.id || '');
+      return `{
+  // Pagination — Click Button
+  let _pageGuard = 0;
+  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
+  while (_pageGuard < ${max}) {
+    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _pageGuard}));
+    _pageGuard++;
+${body}    const _nextBtn = await resolveElement(page, ${sels});
+    if (!_nextBtn) break;
+    try {
+      await _nextBtn.click();
+    } catch (_) { break; }
+    await new Promise(r => setTimeout(r, ${delay}));
+  }
+  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
+}
+`;
+    }
+
+    // ── Pagination: URL pages (incrementing) ──────────────────────────────
+    // A while-loop (NOT a fixed for-loop): build the next page's URL from the
+    // pattern, navigate, and stop as soon as the page has none of the desired
+    // elements — so it adapts automatically when the page count changes.
+    case 'PAGINATE_URL': {
+      const pattern   = params.urlPattern || '';
+      const startPage = num(params.startPage, 1);
+      const stepInc   = num(params.step, 1) || 1;
+      const delay     = num(params.delay, 1500);
+      const max       = num(params.maxIterations, 500);
+      const body      = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
+      const idJson    = JSON.stringify(step.id || '');
+      // Splice `{n}` placeholders with the live page number. Each literal
+      // chunk still supports {{variable}} interpolation via qStr.
+      const urlExpr = pattern.includes('{n}')
+        ? pattern.split('{n}').map(p => qStr(p)).join(' + _pageNo + ')
+        : qStr(pattern);
+      const hasContentSel = !!(params.contentSelector && String(params.contentSelector).trim());
+      const contentSels = selectorList({
+        selector: params.contentSelector || '',
+        selectorType: 'css',
+        fallbackSelectors: [],
+      }, ctx.declaredVars);
+      const contentCheck = hasContentSel
+        ? `    const _hasContent = await resolveElement(page, ${contentSels});\n` +
+          `    if (!_hasContent) break;  // no desired elements → past the last page\n`
+        : `    // (no content selector set — relying on the safety cap to stop)\n`;
+      return `{
+  // Pagination — URL Pages (while-loop; stops when a page has no content)
+  let _pageNo = ${startPage}, _urlGuard = 0;
+  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
+  while (_urlGuard < ${max}) {
+    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _urlGuard}));
+    _urlGuard++;
+    const _pageUrl = ${urlExpr};
+    try {
+      await page.goto(_pageUrl, { waitUntil: 'load', timeout: 30000 });
+    } catch (_) { break; }
+    await new Promise(r => setTimeout(r, ${delay}));
+${contentCheck}${body}    _pageNo += ${stepInc};
+  }
+  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
+}
+`;
+    }
+
     case 'TRY_CATCH': {
       const errVar = params.errorVar || 'error';
       const tryCode   = genStepList(step.try   || [], ctx, depth + 1);
@@ -1531,7 +1639,7 @@ function generateReadme(workflow) {
     L.push('- **Workflow variables** — if you add any, they appear as ' + code('let') + ' declarations at the top of ' + code('run()') + '.');
   }
   if (info.hasPageLoop || info.hasPagination) {
-    L.push('- **How many pages to scrape** — the ' + code('for (let i = 0; i < _rep_total; i++)') + ' loop; change the repeat count (or the page math) to visit more/fewer pages.');
+    L.push('- **How many pages to scrape** — look for the ' + code('// Pagination') + ' block(s); each loop stops on its own (no more content / button gone), but you can tighten the ' + code('Max pages') + ' safety cap or the page-number math.');
   }
   if (info.hasTransforms) {
     L.push('- **Field cleaning / splitting** — fields are post-processed in the ' + code('__ftMaterializeRow(...)') + ' call; tweak the ' + code('transforms') + ' / ' + code('split') + ' specs there.');

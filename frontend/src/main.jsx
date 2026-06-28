@@ -2,7 +2,8 @@ import React, { useRef, useEffect, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import io from "socket.io-client";
 import { useWorkflow, findStepLocation } from "./workflow/useWorkflow";
-import { createAction } from "./workflow/stepFactory";
+import { createAction, createControl } from "./workflow/stepFactory";
+import { CONTROL_TYPES } from "./workflow/controlDefinitions";
 import WorkflowPanel from "./components/WorkflowPanel";
 import ElementInspector, { ForEachContextBanner } from "./components/ElementInspector";
 import ExecutionPanel from "./components/ExecutionPanel";
@@ -1563,24 +1564,12 @@ function AppShell({ user, token, onLogout }) {
           onClose={() => { setPaginationOpen(false); setPaginationManualWaiting(false); socketRef.current?.emit("resetSelection"); }}
           onAdd={(step, pagType) => {
             addStep(step);
-            // Auto-set insert target based on pagination type:
-            //   next_button / page_numbers → inside the loop AT INDEX 0
-            //     so the user's extractions land BEFORE the pre-populated
-            //     "Stop"/click/wait do-while triplet — otherwise the
-            //     first iteration clicks before extracting and the first
-            //     page's data is lost.
-            //   load_more → inside at the end (existing behaviour): the
-            //     loop clicks first so newly-revealed items can be
-            //     extracted after.
-            //   infinite_scroll → after the loop: scrape once everything
-            //     has been loaded by scrolling.
-            if (pagType === 'infinite_scroll') {
-              setInsertTarget({ type: 'after', stepId: step.id });
-            } else if (pagType === 'next_button' || pagType === 'page_numbers') {
-              setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
-            } else {
-              setInsertTarget({ type: 'inside', stepId: step.id });
-            }
+            // Native pagination containers run their body once per page (or,
+            // for infinite scroll, once the page is fully loaded). Either way
+            // the user's extraction steps belong INSIDE the container, so we
+            // point the insert target there regardless of the detected type.
+            void pagType;
+            setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
             setPaginationOpen(false);
           }}
           onManualButton={() => {
@@ -1589,40 +1578,12 @@ function AppShell({ user, token, onLogout }) {
             socketRef.current?.emit("startElementSelection");
           }}
           onManualInfinite={() => {
-            const scrollStep = {
-              kind: "action", type: "SCROLL_PAGE", id: crypto.randomUUID(),
-              label: "Scroll to bottom",
-              params: { direction: "bottom" }, advanced: {},
-            };
-            const waitStep = {
-              kind: "action", type: "WAIT", id: crypto.randomUUID(),
-              label: "Wait for content to load",
-              params: { duration: 2000 }, advanced: {},
-            };
-            addStep({
-              kind: "control", type: "WHILE", id: crypto.randomUUID(),
-              label: "Infinite scroll loop",
-              params: {
-                expression: [
-                  "await page.evaluate(() => {",
-                  "  const items = document.querySelectorAll('li,article,[class*=\"item\"],[class*=\"card\"],[class*=\"result\"]');",
-                  "  if (items.length) items[items.length-1].scrollIntoView({block:'end',behavior:'instant'});",
-                  "  window.scrollTo(0, document.body.scrollHeight);",
-                  // Enter on the first pass, then keep looping only while the page
-                  // keeps GROWING. Comparing the live scrollHeight to the height
-                  // from the previous pass is what detects "more content loaded";
-                  // checking whether we can still scroll right after jumping to the
-                  // bottom is always false, so the loop body never ran.
-                  "  const prev = window.__infScrollPrevH;",
-                  "  const h = document.body.scrollHeight;",
-                  "  window.__infScrollPrevH = h;",
-                  "  return prev === undefined || h > prev + 50;",
-                  "})",
-                ].join("\n"),
-                maxIterations: 200,
-              },
-              body: [scrollStep, waitStep],
-            });
+            // Drop in a native Infinite Scroll container — the scroll/stop
+            // logic lives in codegen, so the user just adds their extraction
+            // steps inside it.
+            const step = createControl(CONTROL_TYPES.PAGINATE_SCROLL);
+            addStep(step);
+            setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
             setPaginationOpen(false);
           }}
         />

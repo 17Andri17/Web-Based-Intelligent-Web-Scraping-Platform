@@ -1,5 +1,9 @@
 import { actionDefinitions } from "../actions/actionDefinitions";
-import { controlDefinitions } from "./controlDefinitions";
+import {
+  controlDefinitions,
+  PAGINATION_CONTROL_TYPES,
+  PAGINATION_STRATEGY,
+} from "./controlDefinitions";
 
 /* =====================================================================
    createAction  –  leaf node (executable step)
@@ -48,12 +52,15 @@ export function createControl(type, params = {}) {
   const def = controlDefinitions[type];
   if (!def) throw new Error(`Unknown control type: ${type}`);
 
-  // Build params from definition schema
+  // Build params from definition schema. selectorList / array params seed
+  // to an empty array rather than the generic empty string so the editor's
+  // list renderer receives the right shape.
   const finalParams = {};
   for (const [key, paramDef] of Object.entries(def.params || {})) {
+    const emptyDefault = (paramDef.type === 'selectorList' || paramDef.type === 'array') ? [] : '';
     finalParams[key] = params[key] !== undefined
       ? params[key]
-      : paramDef.default !== undefined ? paramDef.default : '';
+      : paramDef.default !== undefined ? paramDef.default : emptyDefault;
   }
 
   // Initialise each declared branch as an empty array
@@ -62,11 +69,20 @@ export function createControl(type, params = {}) {
     branches[branch.key] = [];
   }
 
-  return {
+  const step = {
     id:     crypto.randomUUID(),
     kind:   'control',            // ← discriminant
     type,
     params: finalParams,
     ...branches,
   };
+
+  // Native pagination containers carry a meta tag so the renderer and the
+  // README/analytics walkers recognise them the same way they recognise
+  // the legacy composed pagination loops.
+  if (PAGINATION_CONTROL_TYPES.has(type)) {
+    step.meta = { kind: 'pagination', strategy: PAGINATION_STRATEGY[type], engine: 'native' };
+  }
+
+  return step;
 }
