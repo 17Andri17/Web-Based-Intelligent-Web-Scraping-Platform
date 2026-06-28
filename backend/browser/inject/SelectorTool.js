@@ -884,6 +884,14 @@
   }
 
   function onClick(e) {
+    // ── Cookie-consent auto-dismiss in progress ───────────────────────────
+    // The consent manager dispatches a synthetic click on the accept/reject
+    // button. Let it pass straight through to the real element instead of
+    // treating it as an element selection (which would preventDefault and
+    // emit a spurious selection). This is what keeps consent working while
+    // the user is in selection mode or switches modes mid-navigation.
+    if (window.__consentInProgress__) return;
+
     // ── List-field-pick mode (takes priority over selection mode) ──────────
     if (_listPickMode) {
       var tgt = e.target;
