@@ -1,6 +1,7 @@
 'use strict';
 
 const { RUNTIME_SRC: FIELD_TRANSFORM_RUNTIME, __ftHasPipeline } = require('./fieldTransforms');
+const { buildCodegenConsentHelper } = require('../browser/consent');
 
 // ─── Extraction action types (steps that produce named data) ──────────────
 const EXTRACTION_TYPES = new Set([
@@ -241,6 +242,7 @@ await page.goto(${q(params.url)}, {
   waitUntil: ${q(advanced.waitUntil || 'load')},
   timeout: ${num(advanced.timeout, 30000)},
 });
+await dismissConsent(page);
 `.trim() + '\n';
 
     case 'GO_BACK': return `await page.goBack({ waitUntil: ${q(advanced.waitUntil || 'load')} });\n`;
@@ -253,6 +255,7 @@ await page.goto(${q(params.url)}, {
   await applyStealthToPage(_newPage);
   await _newPage.goto(${q(params.url)}, { waitUntil: 'load' });
   page = _newPage;
+  await dismissConsent(page);
 }
 `.trim() + '\n';
 
@@ -675,6 +678,7 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `    try {`,
           `      await applyStealthToPage(_subPage);`,
           `      await _subPage.goto(String(${itemVar}), { waitUntil: 'load', timeout: ${timeoutMs} });`,
+          `      await dismissConsent(_subPage);`,
           `      const _subResults = await (async (page) => {`,
           `        const __results__ = {};`,
           `        let __currentStep__ = null;`,
@@ -715,6 +719,7 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         `  try {`,
         `    await applyStealthToPage(_subPage);`,
         `    await _subPage.goto(_subUrl, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+        `    await dismissConsent(_subPage);`,
         `    const _subResults = await (async (page) => {`,
         `      const __results__ = {};`,
         `      let __currentStep__ = null;`,
@@ -1018,6 +1023,7 @@ ${body}    _pageNo += ${stepInc};
     try {
       await page.goto(_pageUrl, { waitUntil: 'load', timeout: 30000 });
     } catch (_) { break; }
+    await dismissConsent(page);
     await new Promise(r => setTimeout(r, ${delay}));
 ${contentCheck}  }
   console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
@@ -1221,6 +1227,10 @@ function generateCode(workflow, options = {}) {
     ? `\n// ─── Field transform runtime (clean / split per-field pipelines) ──────────\n${FIELD_TRANSFORM_RUNTIME}\n`
     : '';
   const instrumentationSrc = clean ? '' : `\n${INSTRUMENTATION_HELPERS_SRC}\n`;
+  // Cookie-consent auto-dismiss helper — always included so every navigation
+  // (initial, pagination, subflow, new tab) clears CMP banners. Honours the
+  // SCRAPER_CONSENT env var ('accept' default | 'reject' | 'off').
+  const consentHelperSrc = buildCodegenConsentHelper();
   const currentStepDecl = clean ? '' : '  let __currentStep__ = null;\n';
   const workflowResultsMarker = clean
     ? ''
@@ -1389,7 +1399,7 @@ async function evalOnElements(page, selectors, fn) {
   if (!els.length) return [];
   return Promise.all(els.map(el => page.evaluate(fn, el)));
 }
-${fieldRuntimeSrc}${instrumentationSrc}
+${fieldRuntimeSrc}${instrumentationSrc}${consentHelperSrc}
 async function run() {
   const __results__ = {};
 ${currentStepDecl}${variablesCode}${capturedAliasesCode}

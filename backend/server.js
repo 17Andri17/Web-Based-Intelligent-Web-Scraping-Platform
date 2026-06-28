@@ -122,6 +122,11 @@ io.use((socket, next) => {
 
 const injectedScript   = fs.readFileSync(path.join(__dirname, './browser/inject/SelectorTool.js'), 'utf8');
 const injectedSelectors = fs.readFileSync(path.join(__dirname, './browser/selectors.js'), 'utf8');
+// CMP / cookie-consent auto-dismiss — injected alongside the selector tool so
+// banners are accepted automatically right after navigation, in every frame.
+const { buildInjectedConsentScript } = require('./browser/consent');
+const injectedConsent  = buildInjectedConsentScript();
+const CONSENT_PREF     = process.env.SCRAPER_CONSENT || 'accept';
 
 // Active CDP sessions per user
 const userSessions = new Map();
@@ -394,12 +399,16 @@ io.on('connection', async (socket) => {
       // This bypasses CSP entirely
       // ─────────────────────────────────────────────────────────────
       await page.evaluateOnNewDocument(
-        (selectorsCode, toolCode) => {
+        (selectorsCode, toolCode, consentCode, consentPref) => {
 
           // Prevent double injection on SPA navigations
           if (window.__SCRAPER_TOOL_ALREADY_INJECTED__) return;
 
           window.__SCRAPER_TOOL_ALREADY_INJECTED__ = true;
+
+          // Set the consent preference BEFORE the runner installs so it picks
+          // it up. ('accept' | 'reject' | 'off')
+          window.__CONSENT_PREF__ = consentPref;
 
           try {
             eval(selectorsCode);
@@ -407,13 +416,19 @@ io.on('connection', async (socket) => {
 
             window.__SELECTION_MODE__ = false;
 
+            // Cookie-consent auto-dismiss. Wrapped separately so a failure
+            // here can never block the selector tool from working.
+            try { eval(consentCode); } catch (e) { console.error('Consent inject failed:', e); }
+
             console.log('✅ Injection successful');
           } catch (err) {
             console.error('❌ Injection failed:', err);
           }
         },
         injectedSelectors,
-        injectedScript
+        injectedScript,
+        injectedConsent,
+        CONSENT_PREF
       );
 
       // ─────────────────────────────────────────────────────────────
