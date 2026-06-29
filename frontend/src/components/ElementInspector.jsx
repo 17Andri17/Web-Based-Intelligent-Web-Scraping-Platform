@@ -116,7 +116,7 @@ export default function ElementInspector({
   onSelectAncestor, onGetChildren, onSelectChild,
   onHoverPickerChild, onHoverAncestor, onUnhoverPickerChild,
   onClearForEachCtx,
-  socket, onUpdateParams,
+  socket, onUpdateParams, onUpdateLabel,
 }) {
   if (!element) return null;
 
@@ -131,6 +131,7 @@ export default function ElementInspector({
         onClearForEachCtx={onClearForEachCtx}
         socket={socket}
         onUpdateParams={onUpdateParams}
+        onUpdateLabel={onUpdateLabel}
       />
     );
   }
@@ -337,7 +338,7 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
 
 // ─── Multi-element inspector ───────────────────────────────────────────────
 
-function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForEachCtx, socket, onUpdateParams }) {
+function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForEachCtx, socket, onUpdateParams, onUpdateLabel }) {
   // For multi-selection only two actions make sense:
   //   1. Add a ForEach loop that iterates over the matched elements
   //   2. Add an Extract List step that pulls structured fields out of each
@@ -395,6 +396,11 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
       }
 
       onUpdateParams?.(pending.stepId, { fields: fieldsObj });
+      // Auto-name the whole Extract List step with the AI's Title Case table
+      // name ("Product Listings"). Mirrors the editor's auto-detect path so
+      // both entry points behave the same. (The step was just created here,
+      // so it has no user-typed label to clobber.)
+      if (payload.name) onUpdateLabel?.(pending.stepId, payload.name);
       setAiError(null);
       setAiHint("");
       setAiMode(false);
@@ -411,7 +417,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
     };
     socket.on("aiExtractListFieldsResult", onResult);
     return () => socket.off("aiExtractListFieldsResult", onResult);
-  }, [socket, onUpdateParams]);
+  }, [socket, onUpdateParams, onUpdateLabel]);
 
   const handleAddForEach = () => {
     const control = createControl(CONTROL_TYPES.FOR_EACH_ELEMENTS, {
