@@ -32,7 +32,12 @@ const DEFAULT_MODEL    = 'llama-3.1-8b-instant';
 // Ordered fallback chain (best → worst), all free on Groq's tier. The smarter
 // 70b model is tried first; when it hits its rate limit we drop to the small,
 // high-throughput model that almost always has quota left.
-const DEFAULT_MODELS   = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+const DEFAULT_MODELS = [
+  'qwen/qwen3-32b',
+  'deepseek-r1-distill-llama-70b',
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant'
+];
 const DEFAULT_TIMEOUT  = 15000;
 
 // HTTP_429 = rate limit reached; HTTP_5xx = provider unavailable. Both mean
