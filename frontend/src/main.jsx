@@ -1495,6 +1495,7 @@ function AppShell({ user, token, onLogout }) {
                       onClearForEachCtx={handleClearForEachCtx}
                       socket={socket}
                       onUpdateParams={updateParamsById}
+                      onUpdateLabel={updateLabelById}
                     />
                   ) : (
                     <div className="sidebar-no-element">
