@@ -104,6 +104,14 @@ function AppShell({ user, token, onLogout }) {
   const isStreamingRef       = useRef(false);
   const latestFrameRef       = useRef(null);
   const isRenderingRef       = useRef(false);
+  // While a page is loading AND the cookie-consent auto-dismiss is analysing
+  // it, we pause forwarding the user's clicks to the backend so a stray click
+  // can't land on a half-loaded page or fight the consent handler. Released
+  // shortly after `pageReady`, with a hard safety timeout so it can never stay
+  // stuck if the load/ready signal never arrives.
+  const interactionLockedRef = useRef(false);
+  const unlockTimerRef       = useRef(null);
+  const maxLockTimerRef      = useRef(null);
 
   const [status,          setStatus]          = useState("");
   const [urlInput,        setUrlInput]        = useState("");
@@ -242,12 +250,17 @@ function AppShell({ user, token, onLogout }) {
     socket.on("frame",      data => { latestFrameRef.current = data; });
     socket.on("cursorType", data => setCursorType(data.cursor));
     // Page navigated inside puppeteer (link click, redirect, history nav)
-    socket.on("pageUrlChanged", ({ url }) => { if (typeof url === "string") setCurrentPageUrl(url); });
+    socket.on("pageUrlChanged", ({ url }) => {
+      if (typeof url === "string") setCurrentPageUrl(url);
+      // A navigation just started (e.g. the user clicked a link in nav mode):
+      // pause clicks again until this new page loads + consent settles.
+      lockInteraction();
+    });
     // DOM is parsed and ready — re-fire all step previews so the Data tab
     // populates against the freshly loaded page (especially needed right
     // after opening a saved workflow, where the navigate is still in
     // flight when the steps-changed effect first ran).
-    socket.on("pageReady", () => { setPageReadyTick(t => t + 1); });
+    socket.on("pageReady", () => { setPageReadyTick(t => t + 1); releaseInteractionSoon(); });
     socket.on("actionResult", res => setStatus(res.success ? "Action executed." : "Action failed: " + (res.error || "")));
     socket.on("viewportUpdated", (data) => {
       sessionMetaRef.current.viewportWidth  = data.width;
@@ -601,10 +614,30 @@ function AppShell({ user, token, onLogout }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [steps]);
 
+  // Pause click forwarding for the loading + consent-analysis window.
+  const lockInteraction = useCallback(() => {
+    interactionLockedRef.current = true;
+    clearTimeout(unlockTimerRef.current);
+    // Safety net: never stay locked more than 8s, even if pageReady never
+    // fires (e.g. a hash navigation that doesn't trigger a load event).
+    clearTimeout(maxLockTimerRef.current);
+    maxLockTimerRef.current = setTimeout(() => { interactionLockedRef.current = false; }, 8000);
+  }, []);
+  // Release shortly after the page is ready, giving the first consent passes
+  // (which run on a ~600ms cadence) a moment to dismiss any banner first.
+  const releaseInteractionSoon = useCallback((delay = 1500) => {
+    clearTimeout(unlockTimerRef.current);
+    unlockTimerRef.current = setTimeout(() => {
+      interactionLockedRef.current = false;
+      clearTimeout(maxLockTimerRef.current);
+    }, delay);
+  }, []);
+
   // Low-level: tell the backend to navigate and start streaming the new URL.
   const performNavigate = useCallback((url) => {
     if (!socketRef.current || !url) return;
     setStatus("Navigating...");
+    lockInteraction();   // pause clicks until the page loads + consent settles
     const rect = canvasContainerRef.current?.getBoundingClientRect();
     const vpW = Math.floor(rect?.width) || 1280;
     const vpH = Math.floor(rect?.height) || 720;
@@ -616,7 +649,7 @@ function AppShell({ user, token, onLogout }) {
     const consent = pinned?.advanced?.consent || "accept";
     socketRef.current.emit("navigate", { url, mode, consent, viewportWidth: vpW, viewportHeight: vpH });
     isStreamingRef.current = true;
-  }, [mode, steps]);
+  }, [mode, steps, lockInteraction]);
 
   // ── Navigate ──────────────────────────────────────────────────────────────
   // Three paths:
@@ -985,6 +1018,13 @@ function AppShell({ user, token, onLogout }) {
     // page — e.g. after "New workflow" before the next navigate. Otherwise
     // hover events race against a torn-down execution context.
     if (!isStreamingRef.current) return;
+    // While the page is loading and the consent banner is being analysed,
+    // swallow click events (mouse button down/up) so a stray click can't hit a
+    // half-loaded page or race the auto-dismiss. Hover/scroll/keys still flow.
+    if (interactionLockedRef.current && (type === "mousedown" || type === "mouseup")) {
+      setStatus("Loading… clicks paused");
+      return;
+    }
     socketRef.current?.emit("userAction", { type, ...extra });
   };
 
