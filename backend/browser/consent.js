@@ -183,11 +183,27 @@ function __consentApplyOnce(preference, registryOnly) {
     try { s = s.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_) {}
     return s;
   }
+  // Token-prefix matching. Splitting into word tokens and testing
+  // startsWith(phrase) tolerates inflection ('akceptuj' matches 'akceptuję'
+  // → 'akceptuje') WITHOUT the substring false-positives that plagued plain
+  // includes() — e.g. 'ok' is NOT found inside 'cookie', and 'agree' is NOT
+  // found inside 'disagree'. Multi-word phrases are matched as a substring
+  // anchored on a word boundary.
   function matchesWordList(text, words) {
     if (!text) return false;
-    if (words.indexOf(text) !== -1) return true;       // exact
-    if (text.length <= 40) {                            // short → allow includes
-      for (var i = 0; i < words.length; i++) { if (text.indexOf(words[i]) !== -1) return true; }
+    var toks = text.split(/[^a-z0-9]+/).filter(Boolean);
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i];
+      if (text === w) return true;
+      if (w.indexOf(' ') !== -1) {
+        var idx = text.indexOf(w);
+        if (idx !== -1) {
+          var before = idx === 0 ? ' ' : text.charAt(idx - 1);
+          if (!/[a-z0-9]/.test(before)) return true;
+        }
+      } else {
+        for (var j = 0; j < toks.length; j++) { if (toks[j].indexOf(w) === 0) return true; }
+      }
     }
     return false;
   }
@@ -207,7 +223,11 @@ function __consentApplyOnce(preference, registryOnly) {
     }
     return false;
   }
-  function scanForButton(root, words) {
+  // want = words that should be clicked; avoid = words that must NOT be
+  // clicked (the block-list PLUS the opposite intent). avoid is authoritative
+  // — a "Cookie settings" or "Nie zgadzam się / Disagree" button is skipped
+  // even if it also brushes a want word.
+  function scanForButton(root, want, avoid) {
     var candidates;
     try { candidates = root.querySelectorAll('button, a[role="button"], [role="button"], input[type="button"], input[type="submit"], a[href="#"]'); }
     catch (_) { return null; }
@@ -216,20 +236,22 @@ function __consentApplyOnce(preference, registryOnly) {
       if (!isVisible(el)) continue;
       var txt = norm(el.innerText || el.textContent || el.value || el.getAttribute('aria-label'));
       if (!txt) continue;
-      if (matchesWordList(txt, BLOCK_WORDS) && !matchesWordList(txt, words)) continue;
-      if (matchesWordList(txt, words) && looksLikeConsentRegion(el)) return el;
+      if (matchesWordList(txt, avoid)) continue;
+      if (matchesWordList(txt, want) && looksLikeConsentRegion(el)) return el;
     }
     var hosts;
     try { hosts = root.querySelectorAll('*'); } catch (_) { hosts = []; }
     for (var h = 0; h < hosts.length; h++) {
-      if (hosts[h].shadowRoot) { var f = scanForButton(hosts[h].shadowRoot, words); if (f) return f; }
+      if (hosts[h].shadowRoot) { var f = scanForButton(hosts[h].shadowRoot, want, avoid); if (f) return f; }
     }
     return null;
   }
 
-  var words = preference === 'reject' ? REJECT_WORDS : ACCEPT_WORDS;
-  var hit = scanForButton(document, words);
-  if (!hit && preference === 'reject') hit = scanForButton(document, ACCEPT_WORDS);
+  var want  = preference === 'reject' ? REJECT_WORDS : ACCEPT_WORDS;
+  var avoid = BLOCK_WORDS.concat(preference === 'reject' ? ACCEPT_WORDS : REJECT_WORDS);
+  var hit = scanForButton(document, want, avoid);
+  // reject preference with no reject control → fall back to accept.
+  if (!hit && preference === 'reject') hit = scanForButton(document, ACCEPT_WORDS, BLOCK_WORDS.concat(REJECT_WORDS));
   if (hit) { if (clickEl(hit)) return 'heuristic'; }
 
   return null;
@@ -253,8 +275,13 @@ function buildInjectedConsentScript() {
   var _isTop = false;
   try { _isTop = (window.top === window); } catch (_) { _isTop = false; }
 
+  // Run the FULL cascade (registry + heuristic) in every frame — many CMPs
+  // (Sourcepoint, TrustArc, Google Funding Choices, …) render their banner
+  // inside a cross-origin iframe with a non-registry button, so a
+  // registry-only pass there would miss them. The heuristic's consent-region
+  // + block-word guards keep it from mis-clicking unrelated iframe buttons.
   window.__dismissConsent__ = function (pref) {
-    try { return __consentApplyOnce(pref || window.__CONSENT_PREF__ || 'accept', !_isTop); }
+    try { return __consentApplyOnce(pref || window.__CONSENT_PREF__ || 'accept', false); }
     catch (e) { return null; }
   };
 
@@ -311,16 +338,15 @@ async function dismissConsent(targetPage) {
     let _hit = false;
     let _frames = [];
     try { _frames = pg.frames(); } catch (_) { try { _frames = [pg.mainFrame()]; } catch (_2) { _frames = []; } }
-    let _main = null; try { _main = pg.mainFrame(); } catch (_) {}
     for (const _frame of _frames) {
       try {
-        const _name = await _frame.evaluate((src, pref, registryOnly) => {
+        const _name = await _frame.evaluate((src, pref) => {
           try {
             // eslint-disable-next-line no-new-func
-            const fn = new Function('preference', 'registryOnly', src + '\\n;return __consentApplyOnce(preference, registryOnly);');
-            return fn(pref, registryOnly);
+            const fn = new Function('preference', src + '\\n;return __consentApplyOnce(preference, false);');
+            return fn(pref);
           } catch (_) { return null; }
-        }, __CONSENT_SRC, __CONSENT_PREF, _frame !== _main);
+        }, __CONSENT_SRC, __CONSENT_PREF);
         if (_name) { _hit = true; try { console.log('🍪 Consent handled: ' + _name); } catch (_) {} }
       } catch (_) {}
     }
