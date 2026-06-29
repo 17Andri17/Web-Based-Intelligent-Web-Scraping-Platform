@@ -206,6 +206,7 @@ function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onRes
             pickActive={cws.listPickStepId === step.id}
             onStartPick={() => cws.onStartListPick && cws.onStartListPick(step.id, step.params?.containerSelector || "")}
             onStopPick={() => cws.onStopListPick && cws.onStopListPick()}
+            onName={(n) => { if (!(step.label && step.label.trim())) onUpdateLabel(step.id, n); }}
           />
         </div>
       )}
