@@ -331,9 +331,12 @@ function buildCodegenConsentHelper() {
 // ─── Cookie-consent auto-dismiss (CMP banners) ─────────────────────────────
 const __CONSENT_SRC = ${JSON.stringify(CONSENT_CASCADE_SRC)};
 const __CONSENT_PREF = process.env.SCRAPER_CONSENT || 'accept';
-async function dismissConsent(targetPage) {
+async function dismissConsent(targetPage, preference) {
   const pg = targetPage || (typeof page !== 'undefined' ? page : null);
-  if (!pg || __CONSENT_PREF === 'off') return;
+  // Per-call preference (from the step) wins; otherwise fall back to the env
+  // default. 'off' = leave the banner alone.
+  const __pref = preference || __CONSENT_PREF;
+  if (!pg || __pref === 'off') return;
   for (let _a = 0; _a < 6; _a++) {
     let _hit = false;
     let _frames = [];
@@ -346,7 +349,7 @@ async function dismissConsent(targetPage) {
             const fn = new Function('preference', src + '\\n;return __consentApplyOnce(preference, false);');
             return fn(pref);
           } catch (_) { return null; }
-        }, __CONSENT_SRC, __CONSENT_PREF);
+        }, __CONSENT_SRC, __pref);
         if (_name) { _hit = true; try { console.log('🍪 Consent handled: ' + _name); } catch (_) {} }
       } catch (_) {}
     }

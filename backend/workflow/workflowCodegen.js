@@ -236,14 +236,20 @@ function genAction(step, ctx) {
   switch (type) {
 
     // ── Navigation ───────────────────────────────────────────────────────
-    case 'NAVIGATE': return `
+    case 'NAVIGATE': {
+      // Per-step cookie-consent preference: 'accept' (default) | 'reject' | 'off'.
+      const consentPref = advanced.consent || 'accept';
+      const consentCall = consentPref === 'off'
+        ? ''
+        : `\nawait dismissConsent(page, ${JSON.stringify(consentPref)});`;
+      return `
 // Navigate
 await page.goto(${q(params.url)}, {
   waitUntil: ${q(advanced.waitUntil || 'load')},
   timeout: ${num(advanced.timeout, 30000)},
-});
-await dismissConsent(page);
+});${consentCall}
 `.trim() + '\n';
+    }
 
     case 'GO_BACK': return `await page.goBack({ waitUntil: ${q(advanced.waitUntil || 'load')} });\n`;
 

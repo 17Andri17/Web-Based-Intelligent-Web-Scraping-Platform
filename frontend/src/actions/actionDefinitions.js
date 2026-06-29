@@ -47,6 +47,16 @@ export const actionDefinitions = {
           { label: "Ignore and continue", value: "ignore" }
         ],
         default: "fail"
+      },
+      consent: {
+        type: "select",
+        label: "Cookie consent banner",
+        options: [
+          { label: "Accept automatically (default)", value: "accept" },
+          { label: "Reject automatically", value: "reject" },
+          { label: "Leave popup visible (do nothing)", value: "off" }
+        ],
+        default: "accept"
       }
     },
     outputs: {
