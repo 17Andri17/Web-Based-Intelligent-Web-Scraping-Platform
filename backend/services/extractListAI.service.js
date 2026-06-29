@@ -32,7 +32,7 @@ const llm = require('./llm.service');
 // from the long-form version is moved into the user prompt so each request
 // surfaces exactly the constraints the model needs for THIS sample.
 const SYSTEM_PROMPT = [
-  'You are a web-scraping helper. Given a sample HTML snippet of ONE item from a repeating list, you propose extraction fields for every sibling item.',
+  'You are a web-scraping helper. Given sample HTML of one or two items from a repeating list, you propose extraction fields that apply to EVERY sibling item.',
   '',
   'YOUR ENTIRE REPLY MUST BE A SINGLE JSON OBJECT.',
   '- Start your reply with the character "{".',
@@ -44,15 +44,36 @@ const SYSTEM_PROMPT = [
   '{"name":"<Title Case name for the whole list>","fields":[{"name":"<snake_case>","selector":"<CSS relative to container>","kind":"text"|"attr"|"html","attribute":"<only when kind=attr>"}],"explanation":"<one short sentence>"}',
 ].join('\n');
 
-function buildUserPrompt({ sampleHtml, userHint, existingFields }) {
+function buildUserPrompt({ sampleHtml, sampleHtmls, userHint, existingFields }) {
   const lines = [];
-  lines.push('Sample HTML of ONE list item (the rest of the items have the same structure):');
-  lines.push('```html');
-  lines.push(truncate(sampleHtml || '[no html captured]', 18000));
-  lines.push('```');
-  lines.push('');
-  lines.push('Rules:');
-  lines.push('- "selector" is CSS, relative to the container above. Never start with html / body.');
+  // Prefer showing TWO consecutive items so the model can see what repeats.
+  const samples = (Array.isArray(sampleHtmls) && sampleHtmls.length)
+    ? sampleHtmls.filter(h => typeof h === 'string' && h.trim())
+    : (sampleHtml ? [sampleHtml] : []);
+
+  if (samples.length >= 2) {
+    // Budget ~18k across the two items.
+    const each = Math.floor(18000 / samples.length);
+    lines.push(`Sample HTML of ${samples.length} CONSECUTIVE items from the repeating list. They share the SAME structure — compare them to tell the repeating per-item CONTENT apart from the fixed template, and to spot which parts vary per item:`);
+    lines.push('```html');
+    samples.slice(0, 2).forEach((h, i) => {
+      lines.push(`<!-- ITEM ${i + 1} -->`);
+      lines.push(truncate(h, each));
+    });
+    lines.push('```');
+    lines.push('');
+    lines.push('Rules:');
+    lines.push('- All items have IDENTICAL structure. Propose ONE set of fields whose selectors work for EVERY item.');
+    lines.push('- Each "selector" is CSS RELATIVE TO A SINGLE item container (one of the items above). Never include the "<!-- ITEM n -->" markers, and never start with html / body.');
+  } else {
+    lines.push('Sample HTML of ONE list item (the rest of the items have the same structure):');
+    lines.push('```html');
+    lines.push(truncate(samples[0] || '[no html captured]', 18000));
+    lines.push('```');
+    lines.push('');
+    lines.push('Rules:');
+    lines.push('- "selector" is CSS, relative to the container above. Never start with html / body.');
+  }
   lines.push('- If the value lives ON THE CONTAINER ITSELF (e.g. the container is an <a> and you want its href, or it carries data-* attributes), set "selector" to "" (empty string) and read from the container directly.');
   lines.push('- Otherwise the selector targets a DESCENDANT of the container.');
   lines.push('- Use stable anchors when possible: data-* attributes, aria-label, role, semantic tags.');
@@ -86,10 +107,14 @@ function buildUserPrompt({ sampleHtml, userHint, existingFields }) {
   return lines.join('\n');
 }
 
-async function proposeFields({ sampleHtml, userHint, existingFields, maxFields = 12, requestId = '?' }) {
+async function proposeFields({ sampleHtml, sampleHtmls, userHint, existingFields, maxFields = 12, requestId = '?' }) {
   const tag = `[extractListAI ${requestId}]`;
 
-  if (!sampleHtml || typeof sampleHtml !== 'string') {
+  // Accept either a single sample (sampleHtml) or several (sampleHtmls). We
+  // send up to two items to the model so the repeating structure is obvious.
+  const samples = (Array.isArray(sampleHtmls) ? sampleHtmls : [sampleHtml])
+    .filter(h => typeof h === 'string' && h.trim());
+  if (!samples.length) {
     console.warn(`${tag} no sampleHtml supplied`);
     return { ok: false, error: 'sampleHtml is required', code: 'NO_HTML' };
   }
@@ -98,8 +123,9 @@ async function proposeFields({ sampleHtml, userHint, existingFields, maxFields =
     return { ok: false, error: 'LLM not configured', code: 'NO_API_KEY' };
   }
 
-  const userPrompt = buildUserPrompt({ sampleHtml, userHint, existingFields });
-  console.log(`${tag} prompting LLM — sampleHtml=${sampleHtml.length}b, hint=${(userHint || '').length}b, existing=${Object.keys(existingFields || {}).length}`);
+  const userPrompt = buildUserPrompt({ sampleHtmls: samples, userHint, existingFields });
+  const sampleBytes = samples.reduce((n, h) => n + h.length, 0);
+  console.log(`${tag} prompting LLM — ${samples.length} sample item(s), ${sampleBytes}b, hint=${(userHint || '').length}b, existing=${Object.keys(existingFields || {}).length}`);
   // Truncated visible prompts so the dev can see what we sent without
   // flooding the terminal on big pages. Full prompt is reconstructible from
   // the sample HTML + hint anyway.

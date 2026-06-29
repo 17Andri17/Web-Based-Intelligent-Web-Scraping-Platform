@@ -1156,39 +1156,44 @@ io.on('connection', async (socket) => {
 
     console.log(`${tag} container="${containerSelector}" type=${selectorType || 'css'} hint=${(hint || '').length}b existing=${Object.keys(existingFields || {}).length}`);
 
-    // 1. Capture cleaned sample HTML for the FIRST container.
+    // 1. Capture cleaned sample HTML for the first TWO containers. Showing the
+    //    model two consecutive items makes the repeating structure obvious —
+    //    it can tell which parts vary per item from the fixed template.
     let sample;
     try {
       sample = await page.evaluate((sel, type) => {
         const isXPath = type === 'xpath' || sel.startsWith('/') || sel.startsWith('(');
-        let first = null;
-        if (isXPath) {
-          const r = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-          first = r.singleNodeValue;
-        } else {
-          first = document.querySelector(sel);
-        }
-        if (!first) return { error: 'No element matched the container selector', count: 0 };
+        const nodes = [];
         let count = 0;
-        try {
-          if (isXPath) {
-            const all = document.evaluate(sel, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-            count = all.snapshotLength;
-          } else {
-            count = document.querySelectorAll(sel).length;
-          }
-        } catch (_) {}
-        const clone = first.cloneNode(true);
-        clone.querySelectorAll('script, style, noscript, link, meta, template, svg').forEach(n => n.remove());
-        clone.querySelectorAll('*').forEach(el => {
-          for (const a of Array.from(el.attributes || [])) {
-            if (a.name.startsWith('on')) el.removeAttribute(a.name);
-            if (a.name === 'src' && /^data:/i.test(a.value)) el.setAttribute('src', '[data-uri-removed]');
-          }
-        });
-        let html = clone.outerHTML || '';
-        if (html.length > 30000) html = html.slice(0, 30000) + '...[truncated]';
-        return { html, count };
+        if (isXPath) {
+          const all = document.evaluate(sel, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          count = all.snapshotLength;
+          for (let i = 0; i < all.snapshotLength && nodes.length < 2; i++) nodes.push(all.snapshotItem(i));
+        } else {
+          const all = document.querySelectorAll(sel);
+          count = all.length;
+          for (let i = 0; i < all.length && nodes.length < 2; i++) nodes.push(all[i]);
+        }
+        if (!nodes.length) return { error: 'No element matched the container selector', count: 0 };
+
+        const cleanOuter = (node) => {
+          const clone = node.cloneNode(true);
+          clone.querySelectorAll('script, style, noscript, link, meta, template, svg').forEach(n => n.remove());
+          clone.querySelectorAll('*').forEach(el => {
+            for (const a of Array.from(el.attributes || [])) {
+              if (a.name.startsWith('on')) el.removeAttribute(a.name);
+              if (a.name === 'src' && /^data:/i.test(a.value)) el.setAttribute('src', '[data-uri-removed]');
+            }
+          });
+          let html = clone.outerHTML || '';
+          // Cap each item so two of them still fit comfortably in the prompt.
+          if (html.length > 15000) html = html.slice(0, 15000) + '...[truncated]';
+          return html;
+        };
+
+        const htmls = nodes.map(cleanOuter);
+        // Keep `html` (first item) for backward-compatible callers / logging.
+        return { html: htmls[0], htmls, count };
       }, containerSelector, selectorType || 'css');
     } catch (err) {
       console.warn(`${tag} failed to capture sample HTML: ${err.message}`);
@@ -1198,7 +1203,8 @@ io.on('connection', async (socket) => {
     if (!sample || sample.error) {
       return reply({ ok: false, error: sample?.error || 'No sample captured', code: 'NO_SAMPLE' });
     }
-    console.log(`${tag} captured sample (${sample.html.length}b, ${sample.count} sibling container(s))`);
+    const sampleBytes = (sample.htmls || [sample.html]).reduce((n, h) => n + (h ? h.length : 0), 0);
+    console.log(`${tag} captured ${(sample.htmls || [sample.html]).length} sample item(s) (${sampleBytes}b total, ${sample.count} sibling container(s))`);
 
     // ── Helper: verify a list of proposed fields against the live DOM,
     //    returning surviving ones with sample values + a hitCount across
@@ -1276,6 +1282,7 @@ io.on('connection', async (socket) => {
     // 2. Call the LLM.
     const aiResult = await extractListAI.proposeFields({
       sampleHtml: sample.html,
+      sampleHtmls: Array.isArray(sample.htmls) ? sample.htmls : undefined,
       userHint: typeof hint === 'string' ? hint : '',
       existingFields: existingFields && typeof existingFields === 'object' ? existingFields : null,
       requestId: requestId || '?',
