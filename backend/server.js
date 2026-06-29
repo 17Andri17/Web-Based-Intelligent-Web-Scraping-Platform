@@ -1433,6 +1433,9 @@ io.on('connection', async (socket) => {
       fields: combined,
       rejected: aiRejected,
       explanation,
+      // Title Case name for the whole list/table — the frontend applies it as
+      // the step label automatically so the user doesn't have to name it.
+      name: (aiResult && aiResult.ok && aiResult.name) ? aiResult.name : '',
       sampleCount: sample.count,
       source: aiCount > 0 && heuCount > 0 ? 'mixed' : (heuCount > 0 ? 'heuristic' : 'ai'),
       aiOk: aiResult.ok,

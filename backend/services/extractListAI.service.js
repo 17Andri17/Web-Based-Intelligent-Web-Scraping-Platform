@@ -41,7 +41,7 @@ const SYSTEM_PROMPT = [
   '- The text BEFORE { and AFTER } must be empty.',
   '',
   'Shape:',
-  '{"fields":[{"name":"<snake_case>","selector":"<CSS relative to container>","kind":"text"|"attr"|"html","attribute":"<only when kind=attr>"}],"explanation":"<one short sentence>"}',
+  '{"name":"<Title Case name for the whole list>","fields":[{"name":"<snake_case>","selector":"<CSS relative to container>","kind":"text"|"attr"|"html","attribute":"<only when kind=attr>"}],"explanation":"<one short sentence>"}',
 ].join('\n');
 
 function buildUserPrompt({ sampleHtml, userHint, existingFields }) {
@@ -60,7 +60,8 @@ function buildUserPrompt({ sampleHtml, userHint, existingFields }) {
   lines.push('- "kind":"text" → extract textContent (default for visible text).');
   lines.push('- "kind":"attr" → extract an attribute, and you MUST include "attribute" (e.g. "href" for links, "src" for images).');
   lines.push('- "kind":"html" → innerHTML (rarely needed).');
-  lines.push('- Names: snake_case, short, descriptive of the VALUE (price, title, image_url, product_link). No layout / style names.');
+  lines.push('- Field "name"s: snake_case, short, descriptive of the VALUE (price, title, image_url, product_link). No layout / style names.');
+  lines.push('- Top-level "name": a short, human-friendly TITLE CASE title for the WHOLE list/table, describing what the rows ARE (e.g. "Product Listings", "Job Postings", "Search Results", "Cert Providers"). 1-4 words, each capitalised, spaces between words — NOT snake_case. Make it specific; never a generic "Items" / "Rows" / "List".');
   lines.push('- Aim for 3-10 fields. Always include a "link" / "url" field with kind=attr+attribute=href if the item has an anchor tag.');
   lines.push('- Always include an "image" / "image_url" field with kind=attr+attribute=src if the item has an <img>.');
   lines.push('- Skip obvious noise: decorative spans, icons, action buttons like "Add to cart".');
@@ -134,7 +135,7 @@ async function proposeFields({ sampleHtml, userHint, existingFields, maxFields =
   }
   console.log(`${tag} validation kept ${validated.fields.length} field(s): ${validated.fields.map(f => f.name).join(', ')}`);
 
-  return { ok: true, fields: validated.fields, explanation: validated.explanation, raw: truncate(result.text, 600) };
+  return { ok: true, fields: validated.fields, explanation: validated.explanation, name: validated.name, raw: truncate(result.text, 600) };
 }
 
 /* ── helpers ─────────────────────────────────────────────────────────────── */
@@ -305,7 +306,23 @@ function validateFields(obj, maxFields, tag = '') {
   }
 
   const explanation = typeof obj.explanation === 'string' ? obj.explanation.slice(0, 600) : '';
-  return { ok: true, fields, explanation };
+  return { ok: true, fields, explanation, name: normaliseListName(obj.name) };
+}
+
+// Normalise the LLM's proposed table title to "Aaaa Bbbb Cccc" Title Case,
+// tolerating snake_case / camelCase / quoted input. Returns '' if unusable so
+// the caller can fall back to its own naming.
+function normaliseListName(raw) {
+  if (typeof raw !== 'string') return '';
+  let s = raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2');   // camelCase → spaced
+  s = s.replace(/[^A-Za-z0-9\s_-]/g, ' ');               // drop quotes/punct
+  const words = s.split(/[_\s-]+/).filter(Boolean);
+  if (!words.length) return '';
+  const titled = words
+    .slice(0, 4)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+  return titled.length >= 2 ? titled.slice(0, 48) : '';
 }
 
 // When kind=attr but the model forgot to name the attribute, try to infer

@@ -39,6 +39,7 @@ export default function ExtractListFieldsEditor({
   pickActive = false,
   onStartPick,
   onStopPick,
+  onName,            // (titleCaseName) → set the step label (no-op if already named)
 }) {
   // ── Normalise the incoming value once so the rest of the component sees
   // a single uniform shape. We never persist this normalised form back
@@ -102,6 +103,10 @@ export default function ExtractListFieldsEditor({
       }
       onChange(next);
       setAiSamples(samples);
+      // Auto-name the whole Extract List step with the AI's Title Case table
+      // name ("Product Listings"), so the user doesn't have to. The parent
+      // only applies it when the step isn't already named.
+      if (payload.name && typeof onName === "function") onName(payload.name);
       // Count where each field came from (ai vs heuristic vs rescued AI)
       // so the user can tell when the LLM failed, when a fallback kicked
       // in, and when the AI's intent was salvaged with the heuristic's
@@ -124,7 +129,7 @@ export default function ExtractListFieldsEditor({
     socket.on("aiExtractListFieldsResult", onResult);
     return () => socket.off("aiExtractListFieldsResult", onResult);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, normalised]);
+  }, [socket, normalised, onName]);
 
   // Listen for field picks from the browser (list-field-pick mode).
   useEffect(() => {

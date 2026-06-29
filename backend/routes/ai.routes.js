@@ -64,9 +64,26 @@ function describeSample(v) {
   try { return clip(JSON.stringify(v), 300); } catch { return ''; }
 }
 
+// Steps that produce a TABLE / collection of repeating rows. These get a
+// human-friendly Title Case name (e.g. "Product Listings"); single-value
+// extractions keep a snake_case identifier.
+const TABLE_STEP_TYPES = new Set(['FOR_EACH_ELEMENTS', 'EXTRACT_LIST', 'EXTRACT_TABLE']);
+
+// "product_listings" → "Product Listings". The model is still asked for a
+// reliable snake_case token (which sanitiseName extracts robustly); we only
+// present it as a title.
+function snakeToTitle(s) {
+  if (typeof s !== 'string') return '';
+  return s
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
 function buildPrompt(payload) {
   const lines = [];
-  const isLoop = payload.stepType === 'FOR_EACH_ELEMENTS';
+  const isLoop = TABLE_STEP_TYPES.has(payload.stepType);
   lines.push(`Action: ${payload.stepType || 'unknown'}`);
   if (payload.tag)       lines.push(`Element tag: <${payload.tag}>`);
   if (payload.classes)   lines.push(`Element classes: ${clip(payload.classes, 200)}`);
@@ -108,7 +125,7 @@ function buildPrompt(payload) {
   lines.push('- Ignore styling-only class names (counter-number, plus, btn, item-1) — they describe how the element looks, not what it means.');
   lines.push('');
   lines.push(isLoop
-    ? 'This step is a LOOP / table. Suggest a plural snake_case name for the COLLECTION of items it iterates over, describing what the items ARE on this page (e.g. products, articles, rows).'
+    ? 'This step extracts a TABLE / collection of repeating items (one row per item). Suggest a PLURAL snake_case name for the WHOLE collection that describes what the items ARE on this page (e.g. products, articles, job_postings, search_results, cert_providers). Make it specific and meaningful — never a generic "items"/"rows"/"list".'
     : 'Suggest a singular snake_case name describing the value being extracted.');
   return lines.join('\n');
 }
@@ -209,7 +226,11 @@ router.post('/suggest-step-name', async (req, res) => {
     return res.json({ name: '' });
   }
 
-  res.json({ name: sanitiseName(result.text) });
+  // The model returns a reliable snake_case token; for tables/collections we
+  // present it as a human-friendly Title Case name ("Product Listings").
+  const snake = sanitiseName(result.text);
+  const name = (snake && TABLE_STEP_TYPES.has(payload.stepType)) ? snakeToTitle(snake) : snake;
+  res.json({ name });
 });
 
 module.exports = router;

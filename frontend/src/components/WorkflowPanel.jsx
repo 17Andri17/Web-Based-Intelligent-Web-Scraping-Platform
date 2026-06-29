@@ -1209,6 +1209,10 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
               // on this step and the parent step id to fetch live preview.
               step={local}
               fieldKey={k}
+              // EXTRACT_LIST auto-detect proposes a Title Case table name;
+              // apply it as the step label, but never clobber a name the user
+              // already typed.
+              onName={(n) => setLocal(s => (s.label && s.label.trim()) ? s : { ...s, label: n })}
             />
           ))}
           {isCustom && Object.keys(inputs).length === 0 && (
@@ -1437,7 +1441,7 @@ function expectedKindForField(stepType, fieldKey) {
 }
 
 /* ── Field Renderer ── */
-function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey }) {
+function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey, onName }) {
   // hidden fields are stored in params but not shown in UI
   if (type === "hidden") return null;
 
@@ -1465,6 +1469,7 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
           pickActive={pickActive}
           onStartPick={() => onStartListPick && onStartListPick(step.id, containerSelector)}
           onStopPick={() => onStopListPick && onStopListPick()}
+          onName={onName}
         />
       </div>
     );
