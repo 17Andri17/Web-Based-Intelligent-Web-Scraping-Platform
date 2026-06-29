@@ -418,17 +418,25 @@ io.on('connection', async (socket) => {
       // Inject BEFORE page scripts run
       // This bypasses CSP entirely
       // ─────────────────────────────────────────────────────────────
+      // Per-navigation cookie-consent preference (from the workflow's start
+      // NAVIGATE step), so the live editor matches what the workflow will do.
+      const navConsentPref = ['accept', 'reject', 'off'].includes(data.consent)
+        ? data.consent
+        : CONSENT_PREF;
+
       await page.evaluateOnNewDocument(
         (selectorsCode, toolCode, consentCode, consentPref) => {
+
+          // Always refresh the consent preference (latest navigation wins),
+          // even when the heavy injection below is skipped on a stacked run —
+          // this is what lets the user change "Accept / Reject / Leave visible"
+          // and have it take effect on the next navigation.
+          window.__CONSENT_PREF__ = consentPref;
 
           // Prevent double injection on SPA navigations
           if (window.__SCRAPER_TOOL_ALREADY_INJECTED__) return;
 
           window.__SCRAPER_TOOL_ALREADY_INJECTED__ = true;
-
-          // Set the consent preference BEFORE the runner installs so it picks
-          // it up. ('accept' | 'reject' | 'off')
-          window.__CONSENT_PREF__ = consentPref;
 
           try {
             eval(selectorsCode);
@@ -448,7 +456,7 @@ io.on('connection', async (socket) => {
         injectedSelectors,
         injectedScript,
         injectedConsent,
-        CONSENT_PREF
+        navConsentPref
       );
 
       // ─────────────────────────────────────────────────────────────

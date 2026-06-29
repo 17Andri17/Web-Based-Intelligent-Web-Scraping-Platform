@@ -609,9 +609,14 @@ function AppShell({ user, token, onLogout }) {
     const vpW = Math.floor(rect?.width) || 1280;
     const vpH = Math.floor(rect?.height) || 720;
     sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: url, viewportWidth: vpW, viewportHeight: vpH };
-    socketRef.current.emit("navigate", { url, mode, viewportWidth: vpW, viewportHeight: vpH });
+    // Honour the start step's cookie-consent preference in the live editor too
+    // (e.g. "Leave popup visible"), so what you see while building matches what
+    // the workflow will do. Falls back to accept.
+    const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
+    const consent = pinned?.advanced?.consent || "accept";
+    socketRef.current.emit("navigate", { url, mode, consent, viewportWidth: vpW, viewportHeight: vpH });
     isStreamingRef.current = true;
-  }, [mode]);
+  }, [mode, steps]);
 
   // ── Navigate ──────────────────────────────────────────────────────────────
   // Three paths:
