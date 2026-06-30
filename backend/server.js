@@ -122,6 +122,10 @@ io.use((socket, next) => {
 
 const injectedScript   = fs.readFileSync(path.join(__dirname, './browser/inject/SelectorTool.js'), 'utf8');
 const injectedSelectors = fs.readFileSync(path.join(__dirname, './browser/selectors.js'), 'utf8');
+// Keep link/window.open navigation inside the single streamed tab — the CDP
+// screencast follows only one page, so target="_blank" / window.open() would
+// open an invisible new tab and look like a dead click (see ForceSameTab.js).
+const injectedForceSameTab = fs.readFileSync(path.join(__dirname, './browser/inject/ForceSameTab.js'), 'utf8');
 // CMP / cookie-consent auto-dismiss — injected alongside the selector tool so
 // banners are accepted automatically right after navigation, in every frame.
 const { buildInjectedConsentScript } = require('./browser/consent');
@@ -425,7 +429,7 @@ io.on('connection', async (socket) => {
         : CONSENT_PREF;
 
       await page.evaluateOnNewDocument(
-        (selectorsCode, toolCode, consentCode, consentPref) => {
+        (selectorsCode, toolCode, consentCode, forceSameTabCode, consentPref) => {
 
           // Always refresh the consent preference (latest navigation wins),
           // even when the heavy injection below is skipped on a stacked run —
@@ -444,6 +448,11 @@ io.on('connection', async (socket) => {
 
             window.__SELECTION_MODE__ = false;
 
+            // Keep navigation inside the single streamed tab (rewrites
+            // target="_blank" / overrides window.open). Wrapped separately so a
+            // failure here can never block the selector tool.
+            try { eval(forceSameTabCode); } catch (e) { console.error('ForceSameTab inject failed:', e); }
+
             // Cookie-consent auto-dismiss. Wrapped separately so a failure
             // here can never block the selector tool from working.
             try { eval(consentCode); } catch (e) { console.error('Consent inject failed:', e); }
@@ -456,6 +465,7 @@ io.on('connection', async (socket) => {
         injectedSelectors,
         injectedScript,
         injectedConsent,
+        injectedForceSameTab,
         navConsentPref
       );
 
