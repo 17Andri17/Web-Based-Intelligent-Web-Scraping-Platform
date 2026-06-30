@@ -111,9 +111,10 @@ We are **not** doing a big-bang rewrite. Instead:
    commit. When the last slice lands, `db/index.js` is deleted and `schema.js`
    becomes the single source of truth.
 
-> ⚠️ Until every slice is migrated, `DB_CLIENT=postgres` is **not** fully
-> functional (unmigrated code still talks to SQLite). Keep the default
-> (`sqlite`) until the checklist below is complete.
+> ✅ **Migration complete.** All data access now goes through the async client;
+> legacy `db/index.js` has been deleted and `schema.js` is the single source of
+> truth. `DB_CLIENT=postgres` is functional end-to-end. SQLite remains the
+> zero-setup default for local dev / single-instance deploys.
 
 ### The async contract (`db/client.js`)
 
@@ -142,14 +143,40 @@ Conventions that keep SQL portable across both engines:
 - [x] `pg` dependency (lazy-loaded; only required in Postgres mode)
 - [x] `.env.example`: `DB_CLIENT`, `DATABASE_URL`
 - [x] **Slice 1 — auth/users** (`routes/auth.routes.js` → `repositories/users.repo.js`)
-- [ ] Slice 2 — workflows (`routes/workflows.routes.js`)
-- [ ] Slice 3 — custom actions (`routes/customActions.routes.js`)
-- [ ] Slice 4 — `runStore.service.js` (runs, logs, repairs, versions, schedules) — the hub; move `logCounters` into the DB here (habit #1)
-- [ ] Slice 5 — runs/schedules routes (`routes/runs.routes.js`, `routes/schedules.routes.js`)
-- [ ] Slice 6 — `executionPipeline` + `scheduler` await the now-async `runStore`; make schedule dispatch claim atomically (habit #1)
-- [ ] Slice 7 — `server.js` DB calls (custom-action resolution, subflow resolution)
-- [ ] Retire legacy `db/index.js`; `schema.js` becomes the single source of truth
-- [ ] Add a Postgres path to CI / a compose file for local Postgres
+- [x] **Slice 2 — workflows** (`routes/workflows.routes.js` → `repositories/workflows.repo.js`)
+- [x] **Slice 3 — custom actions** (`routes/customActions.routes.js` → `repositories/customActions.repo.js`)
+- [x] **Slice 4 — `runStore.service.js` + its forced callers.** Making the hub
+      async is inseparable from updating everything that calls it, so this slice
+      necessarily included: `executionPipeline` and `scheduler` (now `await`),
+      and the runs/schedules routes (now async + via `workflows.repo`).
+      `logCounters` is gone — log `seq` is now derived from the DB atomically
+      (`INSERT … SELECT MAX(seq)+1`), with a per-run, process-local write queue
+      + `flushLogs()` replacing `clearLogCounter()` (habit #1). `markAutoAdopted`
+      / `lastRepairId` moved out of `executionPipeline` (the latter dropped in
+      favour of `recordRepair`'s returned id); `executionPipeline` no longer
+      `require`s the legacy `db`.
+- [x] **Slice 5 — `scheduler`: atomic schedule claim.** Dispatch is now gated
+      by `runStore.claimDueSchedule` — a conditional `UPDATE … WHERE id = ? AND
+      is_active = 1 AND next_run_at <= now` that pushes `next_run_at` forward in
+      the same statement, so only the one winner dispatches (safe across
+      processes). The in-memory `inflight` Set / `running` counter are no longer
+      load-bearing for correctness — they're now just per-process resource
+      controls (concurrency cap + best-effort same-process overlap guard).
+      Completes habit #1 for the scheduler. (Strict cross-process non-overlap
+      for runs that outlive their interval would need a lease column — noted as
+      a future refinement.)
+- [x] **Slice 6 — last legacy `db` users.** The custom-action & subflow
+      codegen resolution (duplicated verbatim in `server.js` and `scheduler`)
+      is unified into one async `workflow/dependencyResolver.js` backed by the
+      repos; `server.js`'s ad-hoc-run workflow create/update/ownership now go
+      through `workflows.repo` (added `getManyByIds`, `updateStepsAndMeta`,
+      and `collectSubflowIds`). Neither `server.js` nor `scheduler` imports the
+      legacy `db` anymore.
+- [x] **Retire legacy `db/index.js`** — deleted; `schema.js` (via the migration
+      runner) is the single source of truth. Verified a fresh DB is provisioned
+      by `client.init()` alone.
+- [ ] Add a Postgres path to CI / a compose file for local Postgres (the only
+      remaining item; everything above works against either engine today).
 
 ### Running against Postgres (once migration completes)
 

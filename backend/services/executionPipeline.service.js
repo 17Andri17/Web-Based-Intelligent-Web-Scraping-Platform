@@ -1,6 +1,5 @@
 'use strict';
 
-const db                = require('../db');
 const runner            = require('./runner.service');
 const runStore          = require('./runStore.service');
 const errorClassifier   = require('./errorClassifier.service');
@@ -72,11 +71,11 @@ async function executeAndPersist(arg) {
   const t0 = nowMs();
   // Record the workflow version this run executes (deduped by content) so run
   // history doubles as a restorable version timeline.
-  const executedVersionId = safeCall(
+  const executedVersionId = await safeCall(
     () => runStore.ensureVersion(workflowId, userId, arg.workflow.steps || [], meta, 'run'),
     null,
   );
-  const runId = runStore.createRun({ userId, workflowId, scheduleId, trigger, versionId: executedVersionId });
+  const runId = await runStore.createRun({ userId, workflowId, scheduleId, trigger, versionId: executedVersionId });
   emit(callbacks, 'onStart', { runId });
 
   const log = (line, level = 'info') => {
@@ -87,7 +86,7 @@ async function executeAndPersist(arg) {
   log(`▶ Run #${runId} started (trigger: ${trigger})`);
 
   // Prior successful results — baselines + "what a field used to contain".
-  const priorResults = safeCall(() => runStore.recentSuccessfulResults(workflowId, 5), []);
+  const priorResults = await safeCall(() => runStore.recentSuccessfulResults(workflowId, 5), []);
 
   let lastStep = null;
   const onRunnerEvents = (events) => {
@@ -288,7 +287,7 @@ async function executeAndPersist(arg) {
 
     if (!proposal.ok) {
       log(`• LLM repair failed: ${proposal.code} — ${truncate(proposal.error, 200)}`, 'error');
-      runStore.recordRepair({
+      await runStore.recordRepair({
         runId, workflowId, stepId: failedStep.id, stepType: failedStep.type, attempt: repairAttempts,
         errorMessage: errMsg, originalParams, suggestedParams: null, explanation: null, confidence: null,
         applied: false, verified: false, llmError: `${proposal.code}: ${proposal.error || ''}`.slice(0, 500),
@@ -300,7 +299,7 @@ async function executeAndPersist(arg) {
 
     log(`✎ proposed patch (confidence: ${proposal.confidence}): ${truncate(JSON.stringify(proposal.patch), 300)}`);
     if (proposal.explanation) log(`  rationale: ${truncate(proposal.explanation, 300)}`);
-    runStore.recordRepair({
+    await runStore.recordRepair({
       runId, workflowId, stepId: failedStep.id, stepType: failedStep.type, attempt: repairAttempts,
       errorMessage: errMsg, originalParams, suggestedParams: proposal.patch,
       explanation: proposal.explanation, confidence: proposal.confidence,
@@ -318,11 +317,11 @@ async function executeAndPersist(arg) {
   // Mark every applied heal/repair verified when the final run produced data
   // and that step didn't end up flagged for manual review.
   if (appliedAnyPatch) {
-    const repairs = runStore.listRepairsForRun(runId);
+    const repairs = await runStore.listRepairsForRun(runId);
     for (const r of repairs) {
       if (!r.applied) continue;
       if (stepDisposition.get(r.step_id) === 'manual') continue;
-      if (finalResults) runStore.markRepairVerified(r.id, true);
+      if (finalResults) await runStore.markRepairVerified(r.id, true);
     }
   }
 
@@ -339,14 +338,14 @@ async function executeAndPersist(arg) {
   // can still adopt the verified fix manually, rather than losing it.
   let adopted = false;
   if (wantAutoAdopt) {
-    const changed = safeCall(() => runStore.updateWorkflowSteps(workflowId, userId, currentSteps), 0);
+    const changed = await safeCall(() => runStore.updateWorkflowSteps(workflowId, userId, currentSteps), 0);
     if (changed) {
       adopted = true;
       log('🔒 high-confidence fix verified — applied to the saved workflow automatically.');
       // Snapshot the healed state as a new restorable version so the user can
       // roll back the auto-adopt if it ever turns out wrong.
-      safeCall(() => runStore.ensureVersion(workflowId, userId, currentSteps, meta, 'auto-heal'));
-      for (const h of healLog) { if (h.repairId) safeCall(() => markAutoAdopted(h.repairId)); }
+      await safeCall(() => runStore.ensureVersion(workflowId, userId, currentSteps, meta, 'auto-heal'));
+      for (const h of healLog) { if (h.repairId) await safeCall(() => runStore.markAutoAdopted(h.repairId)); }
     }
   }
   if (healedOk && !adopted) {
@@ -408,7 +407,7 @@ async function executeAndPersist(arg) {
     failedStepInfo = stepInfoFrom(lastError.step);
   }
 
-  runStore.finishRun(runId, {
+  await runStore.finishRun(runId, {
     status,
     finished_at: new Date().toISOString(),
     duration_ms: duration,
@@ -426,9 +425,9 @@ async function executeAndPersist(arg) {
     // auto-write still leaves a manual-adopt fallback instead of losing it.
     patched_steps_json: (appliedAnyPatch && !adopted) ? JSON.stringify(currentSteps) : null,
   });
-  runStore.clearLogCounter(runId);
+  await runStore.flushLogs(runId);
 
-  const finalRow = runStore.getRun(runId);
+  const finalRow = await runStore.getRun(runId);
   emit(callbacks, 'onDone', { run: finalRow });
   return finalRow;
 }
@@ -489,7 +488,7 @@ async function healAndApply(ctx) {
 
   if (outcome.outcome === 'manual') {
     log(`• cannot safely heal "${step.label || step.type}": ${outcome.explanation}`, 'error');
-    runStore.recordRepair({ ...baseRepair, suggestedParams: null, explanation: outcome.explanation,
+    await runStore.recordRepair({ ...baseRepair, suggestedParams: null, explanation: outcome.explanation,
       confidence: 'low', applied: false, verified: false, repairKind: 'manual',
       llmError: outcome.code || null, evidence: outcome.evidence });
     return { outcome: 'manual', explanation: outcome.explanation };
@@ -500,9 +499,8 @@ async function healAndApply(ctx) {
   if (outcome.outcome === 'remove-step') {
     next = removeStepById(currentSteps, step.id);
     log(`• "${step.label || step.type}" target disappeared — removing the step. ${outcome.explanation}`);
-    runStore.recordRepair({ ...baseRepair, suggestedParams: { removed: true }, explanation: outcome.explanation,
+    const repairId = await runStore.recordRepair({ ...baseRepair, suggestedParams: { removed: true }, explanation: outcome.explanation,
       confidence: 'high', applied: true, verified: false, repairKind: 'remove-step', evidence: outcome.evidence });
-    const repairId = lastRepairId(runId);
     if (!compilesOk({ steps: next.steps, meta, customActions, subflows, rootWorkflowId }, log)) {
       return { outcome: 'manual', explanation: 'Removing the step produced invalid generated code — escalating.' };
     }
@@ -515,19 +513,19 @@ async function healAndApply(ctx) {
   // outcome === 'patch'
   const applied = applyPatch(currentSteps, step, outcome);
   if (!applied.ok) {
-    runStore.recordRepair({ ...baseRepair, suggestedParams: outcome.newParams, explanation: 'Could not apply the proposed patch to the workflow tree.',
+    await runStore.recordRepair({ ...baseRepair, suggestedParams: outcome.newParams, explanation: 'Could not apply the proposed patch to the workflow tree.',
       confidence: 'low', applied: false, verified: false, repairKind: 'selector', evidence: outcome.evidence });
     return { outcome: 'manual', explanation: 'The proposed fix could not be applied to the workflow.' };
   }
 
   if (!compilesOk({ steps: applied.steps, meta, customActions, subflows, rootWorkflowId }, log)) {
-    runStore.recordRepair({ ...baseRepair, suggestedParams: outcome.newParams, explanation: 'The patched workflow failed to compile — refusing to run an invalid fix.',
+    await runStore.recordRepair({ ...baseRepair, suggestedParams: outcome.newParams, explanation: 'The patched workflow failed to compile — refusing to run an invalid fix.',
       confidence: 'low', applied: false, verified: false, repairKind: 'selector', evidence: outcome.evidence });
     return { outcome: 'manual', explanation: 'The proposed fix produced invalid generated code — manual review needed.' };
   }
 
   log(`✎ verified fix for "${step.label || step.type}" (confidence ${outcome.confidence}): ${truncate(outcome.explanation, 240)}`);
-  runStore.recordRepair({
+  const repairId = await runStore.recordRepair({
     ...baseRepair,
     suggestedParams: outcome.newParams,
     explanation: outcome.explanation,
@@ -536,7 +534,6 @@ async function healAndApply(ctx) {
     repairKind: outcome.droppedFields && outcome.droppedFields.length ? 'field-drop' : 'selector',
     evidence: outcome.evidence,
   });
-  const repairId = lastRepairId(runId);
   return {
     outcome: 'patch', steps: applied.steps,
     confidence: outcome.confidence, kind: 'selector',
@@ -661,14 +658,6 @@ function emptyResultError(target, explanation) {
   };
 }
 
-function markAutoAdopted(repairId) {
-  db.prepare('UPDATE run_repairs SET auto_adopted = 1, verified = 1 WHERE id = ?').run(repairId);
-}
-function lastRepairId(runId) {
-  const row = db.prepare('SELECT id FROM run_repairs WHERE run_id = ? ORDER BY id DESC LIMIT 1').get(runId);
-  return row ? row.id : null;
-}
-
 /* ── misc helpers ─────────────────────────────────────────────────────────── */
 
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -684,7 +673,7 @@ function stepInfoFrom(step) {
   return { id: step.id || null, type: step.type || null, label: step.label || null };
 }
 
-function safeCall(fn, fallback) { try { return fn(); } catch (_) { return fallback; } }
+async function safeCall(fn, fallback) { try { return await fn(); } catch (_) { return fallback; } }
 
 const CHILD_KEYS = ['body', 'then', 'else', 'try', 'catch'];
 function findStep(steps, id) {

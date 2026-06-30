@@ -1,9 +1,9 @@
 'use strict';
 
 const express = require('express');
-const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const runStore = require('../services/runStore.service');
+const workflows = require('../db/repositories/workflows.repo');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -38,25 +38,24 @@ function serialize(row) {
 }
 
 // List runs (optionally filtered by workflow)
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const workflowId = req.query.workflowId ? Number(req.query.workflowId) : null;
   if (workflowId) {
-    const owns = db.prepare('SELECT id FROM workflows WHERE id = ? AND user_id = ?')
-                    .get(workflowId, req.user.id);
+    const owns = await workflows.existsForUser(workflowId, req.user.id);
     if (!owns) return res.status(404).json({ error: 'Workflow not found' });
   }
-  const rows = runStore.listRunsForUser(req.user.id, { limit, workflowId });
+  const rows = await runStore.listRunsForUser(req.user.id, { limit, workflowId });
   res.json({ runs: rows.map(serialize) });
 });
 
 // Full run detail (results, repairs, logs summary)
-router.get('/:id', (req, res) => {
-  const row = runStore.getRunForUser(Number(req.params.id), req.user.id);
+router.get('/:id', async (req, res) => {
+  const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
   if (!row) return res.status(404).json({ error: 'Run not found' });
   const out = serialize(row);
   out.results = row.results_json ? safeJson(row.results_json) : null;
-  const repairs = runStore.listRepairsForRun(row.id);
+  const repairs = await runStore.listRepairsForRun(row.id);
   out.repairs = repairs.map(r => ({
     id: r.id,
     stepId:          r.step_id,
@@ -83,15 +82,15 @@ router.get('/:id', (req, res) => {
 });
 
 // Run logs
-router.get('/:id/logs', (req, res) => {
-  const row = runStore.getRunForUser(Number(req.params.id), req.user.id);
+router.get('/:id/logs', async (req, res) => {
+  const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
   if (!row) return res.status(404).json({ error: 'Run not found' });
-  res.json({ logs: runStore.getLogs(row.id) });
+  res.json({ logs: await runStore.getLogs(row.id) });
 });
 
 // Download results as JSON
-router.get('/:id/data.json', (req, res) => {
-  const row = runStore.getRunForUser(Number(req.params.id), req.user.id);
+router.get('/:id/data.json', async (req, res) => {
+  const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
   if (!row) return res.status(404).json({ error: 'Run not found' });
   if (!row.results_json) return res.status(404).json({ error: 'No results for this run' });
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -100,8 +99,8 @@ router.get('/:id/data.json', (req, res) => {
 });
 
 // Download results as CSV (concatenated sections, one per result key)
-router.get('/:id/data.csv', (req, res) => {
-  const row = runStore.getRunForUser(Number(req.params.id), req.user.id);
+router.get('/:id/data.csv', async (req, res) => {
+  const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
   if (!row) return res.status(404).json({ error: 'Run not found' });
   const results = safeJson(row.results_json);
   if (!results) return res.status(404).json({ error: 'No results for this run' });
@@ -113,23 +112,19 @@ router.get('/:id/data.csv', (req, res) => {
 
 // One-click adopt: replace the workflow's steps with the auto-patched version
 // produced by the LLM repair pass for this run.
-router.post('/:id/apply-patch', (req, res) => {
-  const row = runStore.getRunForUser(Number(req.params.id), req.user.id);
+router.post('/:id/apply-patch', async (req, res) => {
+  const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
   if (!row) return res.status(404).json({ error: 'Run not found' });
   if (!row.patched_steps_json) return res.status(400).json({ error: 'No patched workflow available for this run' });
-  const owns = db.prepare('SELECT id, name FROM workflows WHERE id = ? AND user_id = ?')
-                  .get(row.workflow_id, req.user.id);
+  const owns = await workflows.existsForUser(row.workflow_id, req.user.id);
   if (!owns) return res.status(404).json({ error: 'Workflow no longer exists' });
 
-  db.prepare(`
-    UPDATE workflows
-    SET steps_json = ?, updated_at = datetime('now')
-    WHERE id = ? AND user_id = ?
-  `).run(row.patched_steps_json, row.workflow_id, req.user.id);
+  const stepsArr = safeJson(row.patched_steps_json) || [];
+  await runStore.updateWorkflowSteps(row.workflow_id, req.user.id, stepsArr);
 
   // Record the adopted state as a restorable version.
-  const updated = db.prepare('SELECT * FROM workflows WHERE id = ?').get(row.workflow_id);
-  runStore.ensureVersion(row.workflow_id, req.user.id, safeJson(row.patched_steps_json) || [],
+  const updated = await workflows.getForUser(row.workflow_id, req.user.id);
+  await runStore.ensureVersion(row.workflow_id, req.user.id, stepsArr,
     updated.meta_json ? safeJson(updated.meta_json) : null, 'adopt');
   res.json({ workflow: serializeWorkflow(updated) });
 });
@@ -137,26 +132,22 @@ router.post('/:id/apply-patch', (req, res) => {
 // One-click rollback: restore the workflow to the exact version this run
 // executed. Run history is the version timeline, so this is "roll back to how
 // the workflow was for that run".
-router.post('/:id/restore', (req, res) => {
-  const row = runStore.getRunForUser(Number(req.params.id), req.user.id);
+router.post('/:id/restore', async (req, res) => {
+  const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
   if (!row) return res.status(404).json({ error: 'Run not found' });
   if (!row.version_id) return res.status(400).json({ error: 'This run has no recorded version to restore' });
-  const version = runStore.getVersionForUser(row.version_id, req.user.id);
+  const version = await runStore.getVersionForUser(row.version_id, req.user.id);
   if (!version) return res.status(404).json({ error: 'Version not found' });
-  const owns = db.prepare('SELECT id FROM workflows WHERE id = ? AND user_id = ?')
-                  .get(row.workflow_id, req.user.id);
+  const owns = await workflows.existsForUser(row.workflow_id, req.user.id);
   if (!owns) return res.status(404).json({ error: 'Workflow no longer exists' });
 
   // Restore steps (and meta if the version captured it). The restored state is
   // already a version row, so no new version is created — the next run will
   // simply reference it again.
-  db.prepare(`
-    UPDATE workflows
-    SET steps_json = ?, meta_json = COALESCE(?, meta_json), updated_at = datetime('now')
-    WHERE id = ? AND user_id = ?
-  `).run(version.steps_json, version.meta_json, row.workflow_id, req.user.id);
-
-  const updated = db.prepare('SELECT * FROM workflows WHERE id = ?').get(row.workflow_id);
+  const updated = await workflows.restore({
+    id: row.workflow_id, userId: req.user.id,
+    stepsJson: version.steps_json, metaJson: version.meta_json,
+  });
   res.json({ workflow: serializeWorkflow(updated), restoredVersionId: version.id });
 });
 
