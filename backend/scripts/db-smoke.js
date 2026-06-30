@@ -25,8 +25,9 @@ if (!usingPg) {
   process.env.DB_PATH = tmpFile;
 }
 
-const db    = require('../db/client');
-const users = require('../db/repositories/users.repo');
+const db        = require('../db/client');
+const users     = require('../db/repositories/users.repo');
+const workflows = require('../db/repositories/workflows.repo');
 
 function assert(cond, msg) {
   if (!cond) throw new Error('ASSERT FAILED: ' + msg);
@@ -78,6 +79,31 @@ async function main() {
   } catch (_) { /* expected */ }
   const afterRollback = await users.findByUsername(uname);
   assert(afterRollback.password_hash === 'txhash', 'tx() rolls back on error');
+
+  // ── workflows repo (slice 2) ──────────────────────────────────────────────
+  const wf = await workflows.create({
+    userId: id, name: 'WF one', stepsJson: '[{"kind":"action"}]', metaJson: '{"v":1}',
+  });
+  assert(wf && typeof wf.id === 'number' && wf.id > 0, `workflows.create returns row with id (${wf.id})`);
+  assert(wf.steps_json === '[{"kind":"action"}]', 'workflow steps_json round-trips');
+
+  assert(await workflows.existsForUser(wf.id, id) === true, 'existsForUser true for owner');
+  assert(await workflows.existsForUser(wf.id, id + 9999) === false, 'existsForUser false for non-owner');
+
+  const got = await workflows.getForUser(wf.id, id);
+  assert(got && got.name === 'WF one', 'getForUser returns the workflow');
+
+  const list = await workflows.listSummariesForUser(id);
+  assert(list.some(r => r.id === wf.id), 'listSummariesForUser includes the workflow');
+
+  const wfUpd = await workflows.update({
+    id: wf.id, userId: id, name: 'WF renamed', stepsJson: '[]', metaJson: null,
+  });
+  assert(wfUpd && wfUpd.name === 'WF renamed' && wfUpd.steps_json === '[]', 'update returns updated row');
+
+  const delChanges = await workflows.remove(wf.id, id);
+  assert(delChanges === 1, 'remove reports 1 change');
+  assert(await workflows.getForUser(wf.id, id) === undefined, 'workflow gone after remove');
 
   // cleanup
   await db.run('DELETE FROM users WHERE id = ?', [id]);

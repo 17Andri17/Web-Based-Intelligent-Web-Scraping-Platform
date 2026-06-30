@@ -142,7 +142,7 @@ Conventions that keep SQL portable across both engines:
 - [x] `pg` dependency (lazy-loaded; only required in Postgres mode)
 - [x] `.env.example`: `DB_CLIENT`, `DATABASE_URL`
 - [x] **Slice 1 — auth/users** (`routes/auth.routes.js` → `repositories/users.repo.js`)
-- [ ] Slice 2 — workflows (`routes/workflows.routes.js`)
+- [x] **Slice 2 — workflows** (`routes/workflows.routes.js` → `repositories/workflows.repo.js`)
 - [ ] Slice 3 — custom actions (`routes/customActions.routes.js`)
 - [ ] Slice 4 — `runStore.service.js` (runs, logs, repairs, versions, schedules) — the hub; move `logCounters` into the DB here (habit #1)
 - [ ] Slice 5 — runs/schedules routes (`routes/runs.routes.js`, `routes/schedules.routes.js`)
