@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const db = require('../db');
+const customActions = require('../db/repositories/customActions.repo');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -65,51 +65,44 @@ function serialize(row) {
   };
 }
 
-router.get('/', (req, res) => {
-  const rows = db.prepare(
-    'SELECT * FROM custom_actions WHERE user_id = ? ORDER BY updated_at DESC'
-  ).all(req.user.id);
+router.get('/', async (req, res) => {
+  const rows = await customActions.listForUser(req.user.id);
   res.json({ customActions: rows.map(serialize) });
 });
 
-router.get('/:id', (req, res) => {
-  const row = db.prepare(
-    'SELECT * FROM custom_actions WHERE id = ? AND user_id = ?'
-  ).get(req.params.id, req.user.id);
+router.get('/:id', async (req, res) => {
+  const row = await customActions.getForUser(req.params.id, req.user.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
   res.json({ customAction: serialize(row) });
 });
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const v = validate(req.body);
   if (typeof v === 'string') return res.status(400).json({ error: v });
-  const info = db.prepare(`
-    INSERT INTO custom_actions (user_id, name, description, inputs_json, outputs_json, code)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(req.user.id, v.name, v.description, v.inputsJson, v.outputsJson, v.code);
-  const row = db.prepare('SELECT * FROM custom_actions WHERE id = ?').get(info.lastInsertRowid);
+  const row = await customActions.create({
+    userId: req.user.id,
+    name: v.name, description: v.description,
+    inputsJson: v.inputsJson, outputsJson: v.outputsJson, code: v.code,
+  });
   res.status(201).json({ customAction: serialize(row) });
 });
 
-router.put('/:id', (req, res) => {
-  const owned = db.prepare('SELECT id FROM custom_actions WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.user.id);
+router.put('/:id', async (req, res) => {
+  const owned = await customActions.existsForUser(req.params.id, req.user.id);
   if (!owned) return res.status(404).json({ error: 'Not found' });
   const v = validate(req.body);
   if (typeof v === 'string') return res.status(400).json({ error: v });
-  db.prepare(`
-    UPDATE custom_actions
-    SET name = ?, description = ?, inputs_json = ?, outputs_json = ?, code = ?, updated_at = datetime('now')
-    WHERE id = ? AND user_id = ?
-  `).run(v.name, v.description, v.inputsJson, v.outputsJson, v.code, req.params.id, req.user.id);
-  const row = db.prepare('SELECT * FROM custom_actions WHERE id = ?').get(req.params.id);
+  const row = await customActions.update({
+    id: req.params.id, userId: req.user.id,
+    name: v.name, description: v.description,
+    inputsJson: v.inputsJson, outputsJson: v.outputsJson, code: v.code,
+  });
   res.json({ customAction: serialize(row) });
 });
 
-router.delete('/:id', (req, res) => {
-  const info = db.prepare('DELETE FROM custom_actions WHERE id = ? AND user_id = ?')
-    .run(req.params.id, req.user.id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Not found' });
+router.delete('/:id', async (req, res) => {
+  const changes = await customActions.remove(req.params.id, req.user.id);
+  if (changes === 0) return res.status(404).json({ error: 'Not found' });
   res.json({ ok: true });
 });
 

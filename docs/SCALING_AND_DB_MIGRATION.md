@@ -143,7 +143,7 @@ Conventions that keep SQL portable across both engines:
 - [x] `.env.example`: `DB_CLIENT`, `DATABASE_URL`
 - [x] **Slice 1 — auth/users** (`routes/auth.routes.js` → `repositories/users.repo.js`)
 - [x] **Slice 2 — workflows** (`routes/workflows.routes.js` → `repositories/workflows.repo.js`)
-- [ ] Slice 3 — custom actions (`routes/customActions.routes.js`)
+- [x] **Slice 3 — custom actions** (`routes/customActions.routes.js` → `repositories/customActions.repo.js`)
 - [ ] Slice 4 — `runStore.service.js` (runs, logs, repairs, versions, schedules) — the hub; move `logCounters` into the DB here (habit #1)
 - [ ] Slice 5 — runs/schedules routes (`routes/runs.routes.js`, `routes/schedules.routes.js`)
 - [ ] Slice 6 — `executionPipeline` + `scheduler` await the now-async `runStore`; make schedule dispatch claim atomically (habit #1)

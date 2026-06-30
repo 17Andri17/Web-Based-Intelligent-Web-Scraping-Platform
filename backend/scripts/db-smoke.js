@@ -25,9 +25,10 @@ if (!usingPg) {
   process.env.DB_PATH = tmpFile;
 }
 
-const db        = require('../db/client');
-const users     = require('../db/repositories/users.repo');
-const workflows = require('../db/repositories/workflows.repo');
+const db            = require('../db/client');
+const users         = require('../db/repositories/users.repo');
+const workflows     = require('../db/repositories/workflows.repo');
+const customActions = require('../db/repositories/customActions.repo');
 
 function assert(cond, msg) {
   if (!cond) throw new Error('ASSERT FAILED: ' + msg);
@@ -104,6 +105,33 @@ async function main() {
   const delChanges = await workflows.remove(wf.id, id);
   assert(delChanges === 1, 'remove reports 1 change');
   assert(await workflows.getForUser(wf.id, id) === undefined, 'workflow gone after remove');
+
+  // ── custom actions repo (slice 3) ─────────────────────────────────────────
+  const ca = await customActions.create({
+    userId: id, name: 'doThing', description: 'd',
+    inputsJson: '[{"name":"x","type":"string"}]', outputsJson: '[]', code: 'return 1;',
+  });
+  assert(ca && typeof ca.id === 'number' && ca.id > 0, `customActions.create returns row with id (${ca.id})`);
+  assert(ca.code === 'return 1;' && ca.inputs_json === '[{"name":"x","type":"string"}]', 'custom action fields round-trip');
+
+  assert(await customActions.existsForUser(ca.id, id) === true, 'CA existsForUser true for owner');
+  assert(await customActions.existsForUser(ca.id, id + 9999) === false, 'CA existsForUser false for non-owner');
+
+  const caGot = await customActions.getForUser(ca.id, id);
+  assert(caGot && caGot.name === 'doThing', 'CA getForUser returns the row');
+
+  const caList = await customActions.listForUser(id);
+  assert(caList.some(r => r.id === ca.id), 'CA listForUser includes the row');
+
+  const caUpd = await customActions.update({
+    id: ca.id, userId: id, name: 'doThing2', description: 'd2',
+    inputsJson: '[]', outputsJson: '[]', code: 'return 2;',
+  });
+  assert(caUpd && caUpd.name === 'doThing2' && caUpd.code === 'return 2;', 'CA update returns updated row');
+
+  const caDel = await customActions.remove(ca.id, id);
+  assert(caDel === 1, 'CA remove reports 1 change');
+  assert(await customActions.getForUser(ca.id, id) === undefined, 'custom action gone after remove');
 
   // cleanup
   await db.run('DELETE FROM users WHERE id = ?', [id]);
