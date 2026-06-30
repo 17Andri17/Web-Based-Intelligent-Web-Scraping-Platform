@@ -46,7 +46,7 @@ function stop() {
 async function tick() {
   let due;
   try {
-    due = runStore.dueSchedules();
+    due = await runStore.dueSchedules();
   } catch (err) {
     console.error('[scheduler] tick query failed:', err.message);
     return;
@@ -61,7 +61,7 @@ async function tick() {
 
     // Bump next_run_at NOW so a long-running execution doesn't stack up
     // multiple due ticks on the same schedule.
-    try { runStore.bumpScheduleAfterRun(sch.id, sch.interval_minutes); } catch (_) {}
+    try { await runStore.bumpScheduleAfterRun(sch.id, sch.interval_minutes); } catch (_) {}
 
     runOne(sch).catch(err => {
       console.error(`[scheduler] schedule #${sch.id} crashed:`, err.message);

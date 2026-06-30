@@ -55,6 +55,17 @@ async function remove(id, userId) {
   return info.changes;
 }
 
+// Restore an owned workflow to a prior version's steps (and meta, if the
+// version captured it). Returns the updated row, or undefined if not owned.
+async function restore({ id, userId, stepsJson, metaJson }) {
+  return db.get(`
+    UPDATE workflows
+    SET steps_json = ?, meta_json = COALESCE(?, meta_json), updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND user_id = ?
+    RETURNING *
+  `, [stepsJson, metaJson, id, userId]);
+}
+
 module.exports = {
-  listSummariesForUser, getForUser, existsForUser, create, update, remove,
+  listSummariesForUser, getForUser, existsForUser, create, update, remove, restore,
 };

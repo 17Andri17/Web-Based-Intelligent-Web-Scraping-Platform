@@ -1,9 +1,9 @@
 'use strict';
 
 const express = require('express');
-const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const runStore = require('../services/runStore.service');
+const workflows = require('../db/repositories/workflows.repo');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -27,23 +27,21 @@ function serialize(s) {
   };
 }
 
-router.get('/', (req, res) => {
-  const list = runStore.listSchedulesForUser(req.user.id);
+router.get('/', async (req, res) => {
+  const list = await runStore.listSchedulesForUser(req.user.id);
   res.json({ schedules: list.map(serialize) });
 });
 
-router.get('/workflow/:workflowId', (req, res) => {
-  const wf = db.prepare('SELECT id, name FROM workflows WHERE id = ? AND user_id = ?')
-              .get(req.params.workflowId, req.user.id);
+router.get('/workflow/:workflowId', async (req, res) => {
+  const wf = await workflows.getForUser(req.params.workflowId, req.user.id);
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
-  const s = runStore.getScheduleByWorkflow(req.user.id, req.params.workflowId);
+  const s = await runStore.getScheduleByWorkflow(req.user.id, req.params.workflowId);
   res.json({ schedule: s ? serialize({ ...s, workflow_name: wf.name }) : null });
 });
 
-router.put('/workflow/:workflowId', (req, res) => {
+router.put('/workflow/:workflowId', async (req, res) => {
   const workflowId = Number(req.params.workflowId);
-  const wf = db.prepare('SELECT id, name FROM workflows WHERE id = ? AND user_id = ?')
-              .get(workflowId, req.user.id);
+  const wf = await workflows.getForUser(workflowId, req.user.id);
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
 
   const { intervalMinutes, isActive, startAtIso } = req.body || {};
@@ -61,7 +59,7 @@ router.put('/workflow/:workflowId', (req, res) => {
     anchorAtIso = new Date(t).toISOString();
   }
 
-  const saved = runStore.upsertSchedule({
+  const saved = await runStore.upsertSchedule({
     userId: req.user.id,
     workflowId,
     intervalMinutes: im,
@@ -71,8 +69,8 @@ router.put('/workflow/:workflowId', (req, res) => {
   res.json({ schedule: serialize({ ...saved, workflow_name: wf.name }) });
 });
 
-router.delete('/workflow/:workflowId', (req, res) => {
-  const changes = runStore.deleteSchedule(req.user.id, Number(req.params.workflowId));
+router.delete('/workflow/:workflowId', async (req, res) => {
+  const changes = await runStore.deleteSchedule(req.user.id, Number(req.params.workflowId));
   if (!changes) return res.status(404).json({ error: 'No schedule for this workflow' });
   res.json({ ok: true });
 });

@@ -144,12 +144,23 @@ Conventions that keep SQL portable across both engines:
 - [x] **Slice 1 — auth/users** (`routes/auth.routes.js` → `repositories/users.repo.js`)
 - [x] **Slice 2 — workflows** (`routes/workflows.routes.js` → `repositories/workflows.repo.js`)
 - [x] **Slice 3 — custom actions** (`routes/customActions.routes.js` → `repositories/customActions.repo.js`)
-- [ ] Slice 4 — `runStore.service.js` (runs, logs, repairs, versions, schedules) — the hub; move `logCounters` into the DB here (habit #1)
-- [ ] Slice 5 — runs/schedules routes (`routes/runs.routes.js`, `routes/schedules.routes.js`)
-- [ ] Slice 6 — `executionPipeline` + `scheduler` await the now-async `runStore`; make schedule dispatch claim atomically (habit #1)
-- [ ] Slice 7 — `server.js` DB calls (custom-action resolution, subflow resolution)
-- [ ] Retire legacy `db/index.js`; `schema.js` becomes the single source of truth
-- [ ] Add a Postgres path to CI / a compose file for local Postgres
+- [x] **Slice 4 — `runStore.service.js` + its forced callers.** Making the hub
+      async is inseparable from updating everything that calls it, so this slice
+      necessarily included: `executionPipeline` and `scheduler` (now `await`),
+      and the runs/schedules routes (now async + via `workflows.repo`).
+      `logCounters` is gone — log `seq` is now derived from the DB atomically
+      (`INSERT … SELECT MAX(seq)+1`), with a per-run, process-local write queue
+      + `flushLogs()` replacing `clearLogCounter()` (habit #1). `markAutoAdopted`
+      / `lastRepairId` moved out of `executionPipeline` (the latter dropped in
+      favour of `recordRepair`'s returned id); `executionPipeline` no longer
+      `require`s the legacy `db`.
+- [ ] Slice 5 — `scheduler`: claim due schedules atomically (replace the
+      in-memory `inflight` Set / `running` counter so two processes can't
+      double-dispatch) — completes habit #1.
+- [ ] Slice 6 — `server.js` + `scheduler` raw `db` reads (custom-action &
+      subflow resolution for codegen) onto the client — the last legacy users.
+- [ ] Retire legacy `db/index.js`; `schema.js` becomes the single source of truth.
+- [ ] Add a Postgres path to CI / a compose file for local Postgres.
 
 ### Running against Postgres (once migration completes)
 

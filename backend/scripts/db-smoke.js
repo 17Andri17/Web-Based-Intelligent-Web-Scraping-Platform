@@ -29,6 +29,7 @@ const db            = require('../db/client');
 const users         = require('../db/repositories/users.repo');
 const workflows     = require('../db/repositories/workflows.repo');
 const customActions = require('../db/repositories/customActions.repo');
+const runStore      = require('../services/runStore.service');
 
 function assert(cond, msg) {
   if (!cond) throw new Error('ASSERT FAILED: ' + msg);
@@ -132,6 +133,62 @@ async function main() {
   const caDel = await customActions.remove(ca.id, id);
   assert(caDel === 1, 'CA remove reports 1 change');
   assert(await customActions.getForUser(ca.id, id) === undefined, 'custom action gone after remove');
+
+  // ── runStore (slice 4): runs, logs, repairs, versions, schedules ──────────
+  const rwf = await workflows.create({ userId: id, name: 'RunWF', stepsJson: '[]', metaJson: null });
+
+  const verId = await runStore.ensureVersion(rwf.id, id, [{ a: 1 }], { m: 1 }, 'run');
+  assert(typeof verId === 'number' && verId > 0, 'ensureVersion returns id');
+  assert(await runStore.ensureVersion(rwf.id, id, [{ a: 1 }], { m: 1 }, 'run') === verId, 'ensureVersion dedupes by content hash');
+
+  const runId = await runStore.createRun({ userId: id, workflowId: rwf.id, trigger: 'manual', versionId: verId });
+  assert(typeof runId === 'number' && runId > 0, 'createRun returns id');
+
+  // DB-backed log sequence (no in-memory counter).
+  runStore.appendLog(runId, 'info', 'line one');
+  runStore.appendLog(runId, 'error', 'line two');
+  await runStore.flushLogs(runId);
+  const logs = await runStore.getLogs(runId);
+  assert(logs.length === 2 && logs[0].seq === 1 && logs[1].seq === 2, 'log seq is sequential from the DB');
+  assert(logs[0].line === 'line one' && logs[1].level === 'error', 'log rows round-trip in order');
+
+  const repId = await runStore.recordRepair({
+    runId, workflowId: rwf.id, stepId: 's1', stepType: 'EXTRACT_TEXT', attempt: 1,
+    errorMessage: 'e', originalParams: { a: 1 }, suggestedParams: { a: 2 },
+    explanation: 'x', confidence: 'high', applied: true,
+  });
+  assert(typeof repId === 'number' && repId > 0, 'recordRepair returns id');
+  await runStore.markRepairVerified(repId, true);
+  await runStore.markAutoAdopted(repId);
+  const reps = await runStore.listRepairsForRun(runId);
+  assert(reps.length === 1 && reps[0].verified === 1 && reps[0].auto_adopted === 1, 'repair verified + auto_adopted persisted');
+
+  await runStore.finishRun(runId, {
+    status: 'success', finished_at: new Date().toISOString(), duration_ms: 5,
+    results_json: JSON.stringify({ items: [1, 2] }),
+  });
+  assert((await runStore.getRun(runId)).status === 'success', 'finishRun updates status');
+  const recent = await runStore.recentSuccessfulResults(rwf.id, 5);
+  assert(recent.length === 1 && recent[0].items.length === 2, 'recentSuccessfulResults parses results_json');
+  assert((await runStore.listRunsForUser(id, { workflowId: rwf.id })).some(r => r.id === runId), 'listRunsForUser includes the run');
+
+  // schedules
+  const sch = await runStore.upsertSchedule({ userId: id, workflowId: rwf.id, intervalMinutes: 10, isActive: true });
+  assert(sch && sch.workflow_id === rwf.id && sch.is_active === 1, 'upsertSchedule creates an active schedule');
+  const sch2 = await runStore.upsertSchedule({ userId: id, workflowId: rwf.id, intervalMinutes: 20, isActive: false });
+  assert(sch2.id === sch.id && sch2.interval_minutes === 20 && sch2.is_active === 0, 'upsertSchedule updates the existing row');
+  assert((await runStore.getScheduleByWorkflow(id, rwf.id)).id === sch.id, 'getScheduleByWorkflow returns it');
+  assert((await runStore.listSchedulesForUser(id)).some(s => s.id === sch.id && s.workflow_name === 'RunWF'), 'listSchedulesForUser joins workflow name');
+  await runStore.bumpScheduleAfterRun(sch.id, 20);
+  assert((await runStore.getScheduleById(sch.id)).last_run_at != null, 'bumpScheduleAfterRun sets last_run_at');
+  await runStore.upsertSchedule({ userId: id, workflowId: rwf.id, intervalMinutes: 10, isActive: true });
+  const due = await runStore.dueSchedules(new Date(Date.now() + 24 * 3600 * 1000));
+  assert(due.some(s => s.workflow_id === rwf.id), 'dueSchedules returns the active, past-due schedule');
+  assert(await runStore.deleteSchedule(id, rwf.id) === 1, 'deleteSchedule removes it');
+
+  // FK cascade: removing the workflow clears its runs/logs/repairs/versions.
+  await workflows.remove(rwf.id, id);
+  assert((await runStore.getRun(runId)) === undefined, 'run cascade-deleted with its workflow');
 
   // cleanup
   await db.run('DELETE FROM users WHERE id = ?', [id]);
