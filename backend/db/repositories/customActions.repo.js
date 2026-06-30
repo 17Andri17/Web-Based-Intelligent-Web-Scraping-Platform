@@ -22,6 +22,18 @@ async function getForUser(id, userId) {
   return db.get('SELECT * FROM custom_actions WHERE id = ? AND user_id = ?', [id, userId]);
 }
 
+// Fetch several owned custom actions by id (used for codegen-time resolution).
+async function getManyByIds(userId, ids) {
+  if (!ids || ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  return db.all(
+    `SELECT id, name, inputs_json, outputs_json, code
+     FROM custom_actions
+     WHERE user_id = ? AND id IN (${placeholders})`,
+    [userId, ...ids]
+  );
+}
+
 async function existsForUser(id, userId) {
   const row = await db.get('SELECT id FROM custom_actions WHERE id = ? AND user_id = ?', [id, userId]);
   return !!row;
@@ -50,4 +62,4 @@ async function remove(id, userId) {
   return info.changes;
 }
 
-module.exports = { listForUser, getForUser, existsForUser, create, update, remove };
+module.exports = { listForUser, getForUser, getManyByIds, existsForUser, create, update, remove };

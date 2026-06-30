@@ -1,9 +1,8 @@
 'use strict';
 
-const db                = require('../db');
 const runStore          = require('./runStore.service');
 const executionPipeline = require('./executionPipeline.service');
-const { collectCustomActionIds } = require('../workflow/workflowUtils');
+const { resolveCustomActions, resolveSubflows } = require('../workflow/dependencyResolver');
 
 /* ===========================================================================
    scheduler.service
@@ -89,8 +88,8 @@ async function runOne(sch) {
   console.log(`[scheduler] dispatching workflow #${sch.workflow_id} (schedule #${sch.id})`);
   const steps = safeJson(sch.steps_json) || [];
   const meta  = safeJson(sch.meta_json)  || {};
-  const customActions = resolveCustomActionsForUser(steps, sch.user_id);
-  const subflows      = resolveSubflowsForUser(steps, sch.user_id, sch.workflow_id);
+  const customActions = await resolveCustomActions(steps, sch.user_id);
+  const subflows      = await resolveSubflows(steps, sch.user_id, sch.workflow_id);
 
   try {
     await executionPipeline.executeAndPersist({
@@ -105,62 +104,6 @@ async function runOne(sch) {
   }
 }
 
-// Walk RUN_SUBFLOW references (recursively) and load the target
-// workflows from the DB for codegen-time inlining. Mirrors server.js's
-// resolveSubflows so the scheduler doesn't depend on a socket session.
-function resolveSubflowsForUser(steps, userId, rootWorkflowId) {
-  const CHILD_KEYS = ['body', 'then', 'else', 'try', 'catch'];
-  function collect(arr, out) {
-    for (const s of arr || []) {
-      if (s && s.kind === 'action' && s.type === 'RUN_SUBFLOW') {
-        const id = s.params && Number(s.params.workflowId);
-        if (Number.isFinite(id) && id > 0) out.add(id);
-      }
-      CHILD_KEYS.forEach(k => { if (Array.isArray(s?.[k])) collect(s[k], out); });
-    }
-    return out;
-  }
-
-  const visited = new Set(rootWorkflowId ? [Number(rootWorkflowId)] : []);
-  const out = {};
-  const queue = Array.from(collect(steps, new Set())).filter(id => !visited.has(id));
-  while (queue.length) {
-    const id = queue.shift();
-    if (visited.has(id)) continue;
-    visited.add(id);
-    const row = db.prepare(
-      'SELECT id, name, steps_json, meta_json FROM workflows WHERE id = ? AND user_id = ?'
-    ).get(id, userId);
-    if (!row) continue;
-    const subSteps = safeJson(row.steps_json) || [];
-    const subMeta  = row.meta_json ? safeJson(row.meta_json) : {};
-    out[id] = { id: row.id, name: row.name, steps: subSteps, meta: subMeta };
-    collect(subSteps, new Set()).forEach(child => { if (!visited.has(child)) queue.push(child); });
-  }
-  return out;
-}
-
 function safeJson(s) { try { return JSON.parse(s); } catch (_) { return null; } }
-
-function resolveCustomActionsForUser(steps, userId) {
-  const ids = collectCustomActionIds(steps);
-  if (ids.length === 0) return {};
-  const placeholders = ids.map(() => '?').join(',');
-  const rows = db.prepare(
-    `SELECT id, name, inputs_json, outputs_json, code
-     FROM custom_actions
-     WHERE user_id = ? AND id IN (${placeholders})`
-  ).all(userId, ...ids);
-  const out = {};
-  for (const r of rows) {
-    out[r.id] = {
-      name: r.name,
-      inputs:  safeJson(r.inputs_json)  || [],
-      outputs: safeJson(r.outputs_json) || [],
-      code: r.code || '',
-    };
-  }
-  return out;
-}
 
 module.exports = { start, stop, tick };

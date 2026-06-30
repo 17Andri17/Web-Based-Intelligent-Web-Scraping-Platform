@@ -30,6 +30,7 @@ const users         = require('../db/repositories/users.repo');
 const workflows     = require('../db/repositories/workflows.repo');
 const customActions = require('../db/repositories/customActions.repo');
 const runStore      = require('../services/runStore.service');
+const { resolveCustomActions, resolveSubflows } = require('../workflow/dependencyResolver');
 
 function assert(cond, msg) {
   if (!cond) throw new Error('ASSERT FAILED: ' + msg);
@@ -194,6 +195,38 @@ async function main() {
   assert(await runStore.claimDueSchedule(sch.id, 10) === false, 'duplicate claim of the same slot fails (atomic dedup)');
 
   assert(await runStore.deleteSchedule(id, rwf.id) === 1, 'deleteSchedule removes it');
+
+  // ── dependency resolver (slice 6) ─────────────────────────────────────────
+  // Custom action resolution.
+  const caForRes = await customActions.create({
+    userId: id, name: 'helper', description: '',
+    inputsJson: '[{"name":"a","type":"string"}]', outputsJson: '[{"name":"b"}]', code: 'return a;',
+  });
+  const stepsWithCA = [{ kind: 'action', type: 'CUSTOM_ACTION', params: { actionId: caForRes.id } }];
+  const resolvedCA = await resolveCustomActions(stepsWithCA, id);
+  assert(resolvedCA[caForRes.id] && resolvedCA[caForRes.id].name === 'helper', 'resolveCustomActions resolves the action');
+  assert(resolvedCA[caForRes.id].inputs.length === 1 && resolvedCA[caForRes.id].code === 'return a;', 'resolved custom action carries inputs + code');
+  assert(Object.keys(await resolveCustomActions([], id)).length === 0, 'resolveCustomActions returns {} for no refs');
+
+  // Transitive subflow resolution: parent → child → grandchild.
+  const grandchild = await workflows.create({ userId: id, name: 'GC', stepsJson: '[]', metaJson: null });
+  const child = await workflows.create({
+    userId: id, name: 'Child',
+    stepsJson: JSON.stringify([{ kind: 'action', type: 'RUN_SUBFLOW', params: { workflowId: grandchild.id } }]),
+    metaJson: null,
+  });
+  const parentSteps = [{ kind: 'action', type: 'RUN_SUBFLOW', params: { workflowId: child.id } }];
+  const resolvedSub = await resolveSubflows(parentSteps, id, /* root */ 999999);
+  assert(resolvedSub[child.id] && resolvedSub[child.id].name === 'Child', 'resolveSubflows resolves the direct subflow');
+  assert(resolvedSub[grandchild.id] && resolvedSub[grandchild.id].name === 'GC', 'resolveSubflows resolves transitively');
+  await workflows.remove(child.id, id);
+  await workflows.remove(grandchild.id, id);
+  await customActions.remove(caForRes.id, id);
+
+  // updateStepsAndMeta leaves the name untouched.
+  const beforeName = (await workflows.getForUser(rwf.id, id)).name;
+  const afterSM = await workflows.updateStepsAndMeta({ id: rwf.id, userId: id, stepsJson: '[{"k":1}]', metaJson: '{"x":2}' });
+  assert(afterSM.steps_json === '[{"k":1}]' && afterSM.meta_json === '{"x":2}' && afterSM.name === beforeName, 'updateStepsAndMeta updates steps+meta, keeps name');
 
   // FK cascade: removing the workflow clears its runs/logs/repairs/versions.
   await workflows.remove(rwf.id, id);

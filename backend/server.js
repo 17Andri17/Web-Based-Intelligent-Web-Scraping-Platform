@@ -16,89 +16,13 @@ const { executeWorkflow } = require('./workflow/WorkflowExecutor');
 const { generateCode, generateReadme } = require('./workflow/workflowCodegen');
 const { __ftMaterializeRow } = require('./workflow/fieldTransforms');
 const { verifyToken }    = require('./middleware/auth');
-const db                 = require('./db');
+const workflows          = require('./db/repositories/workflows.repo');
+const { resolveCustomActions, resolveSubflows } = require('./workflow/dependencyResolver');
 const extractListAI      = require('./services/extractListAI.service');
 const extractListHeuristics = require('./services/extractListHeuristics.service');
 
-// Walk a workflow's step tree and collect referenced custom action ids,
-// then fetch the user-owned definitions from the DB and return them as a
-// { [id]: { name, inputs, outputs, code } } map for codegen.
-function resolveCustomActions(steps, userId) {
-  const ids = new Set();
-  (function walk(arr) {
-    for (const s of arr || []) {
-      if (s && s.kind === 'action' && s.type === 'CUSTOM_ACTION') {
-        const id = s.params && s.params.actionId;
-        if (id != null) ids.add(id);
-      }
-      ['body', 'then', 'else', 'try', 'catch'].forEach(k => {
-        if (Array.isArray(s?.[k])) walk(s[k]);
-      });
-    }
-  })(steps);
-
-  if (ids.size === 0) return {};
-  const placeholders = Array.from(ids).map(() => '?').join(',');
-  const rows = db.prepare(
-    `SELECT id, name, inputs_json, outputs_json, code
-     FROM custom_actions
-     WHERE user_id = ? AND id IN (${placeholders})`
-  ).all(userId, ...ids);
-  const out = {};
-  for (const r of rows) {
-    out[r.id] = {
-      name: r.name,
-      inputs:  JSON.parse(r.inputs_json  || '[]'),
-      outputs: JSON.parse(r.outputs_json || '[]'),
-      code: r.code || '',
-    };
-  }
-  return out;
-}
-
-// Collect every workflow id referenced (directly OR transitively) by a
-// RUN_SUBFLOW step. Returns a map { id → { name, steps, meta } } that the
-// codegen inlines. We follow subflows recursively so a subflow that
-// itself runs another subflow also gets resolved; cycle protection
-// happens at codegen time (visitedSubflows in ctx).
-function resolveSubflows(steps, userId, rootWorkflowId = null) {
-  function collectIds(arr, out) {
-    for (const s of arr || []) {
-      if (s && s.kind === 'action' && s.type === 'RUN_SUBFLOW') {
-        const id = s.params && Number(s.params.workflowId);
-        if (Number.isFinite(id) && id > 0) out.add(id);
-      }
-      ['body', 'then', 'else', 'try', 'catch'].forEach(k => {
-        if (Array.isArray(s?.[k])) collectIds(s[k], out);
-      });
-    }
-    return out;
-  }
-
-  const visited = new Set(rootWorkflowId ? [Number(rootWorkflowId)] : []);
-  const out = {};
-  const queue = Array.from(collectIds(steps, new Set()))
-    .filter(id => !visited.has(id));
-
-  while (queue.length) {
-    const id = queue.shift();
-    if (visited.has(id)) continue;
-    visited.add(id);
-    const row = db.prepare(
-      'SELECT id, name, steps_json, meta_json FROM workflows WHERE id = ? AND user_id = ?'
-    ).get(id, userId);
-    if (!row) continue;
-    let steps_, meta_;
-    try { steps_ = JSON.parse(row.steps_json); } catch (_) { steps_ = []; }
-    try { meta_  = row.meta_json ? JSON.parse(row.meta_json) : {}; } catch (_) { meta_ = {}; }
-    out[id] = { id: row.id, name: row.name, steps: steps_, meta: meta_ };
-    // Recurse: any RUN_SUBFLOW inside this subflow we just fetched.
-    collectIds(steps_, new Set()).forEach(childId => {
-      if (!visited.has(childId)) queue.push(childId);
-    });
-  }
-  return out;
-}
+// Codegen-time dependency resolution (custom actions + subflows) lives in
+// workflow/dependencyResolver.js and is shared with the scheduler.
 
 const PORT = process.env.PORT || 3001;
 
@@ -618,37 +542,36 @@ io.on('connection', async (socket) => {
     */
     const meta = data.meta || userSessionMeta.get(userId) || {};
     const steps = data.steps || [];
-    const customActions = resolveCustomActions(steps, socket.user.id);
+    const customActions = await resolveCustomActions(steps, socket.user.id);
 
     // Resolve or create the persisted workflow this run belongs to. We
     // intentionally never run ephemerally — every execution gets a run row
     // so the history feature works for ad-hoc tests too.
     let workflowId = data.workflowId || null;
     if (workflowId) {
-      const owned = db.prepare(
-        'SELECT id FROM workflows WHERE id = ? AND user_id = ?'
-      ).get(workflowId, socket.user.id);
+      const owned = await workflows.existsForUser(workflowId, socket.user.id);
       if (!owned) workflowId = null;
     }
     if (!workflowId) {
       const name = (data.workflowName && String(data.workflowName).trim()) || 'Untitled draft';
-      const info = db.prepare(`
-        INSERT INTO workflows (user_id, name, steps_json, meta_json)
-        VALUES (?, ?, ?, ?)
-      `).run(socket.user.id, name, JSON.stringify(steps), meta ? JSON.stringify(meta) : null);
-      workflowId = info.lastInsertRowid;
+      const created = await workflows.create({
+        userId: socket.user.id, name,
+        stepsJson: JSON.stringify(steps),
+        metaJson: meta ? JSON.stringify(meta) : null,
+      });
+      workflowId = created.id;
       socket.emit('workflowAutoCreated', { id: workflowId, name });
     } else {
       // Persist the latest steps so re-runs of the same workflow id use
       // the user's most-recent edits even if they didn't hit Save.
-      db.prepare(`
-        UPDATE workflows
-        SET steps_json = ?, meta_json = ?, updated_at = datetime('now')
-        WHERE id = ? AND user_id = ?
-      `).run(JSON.stringify(steps), meta ? JSON.stringify(meta) : null, workflowId, socket.user.id);
+      await workflows.updateStepsAndMeta({
+        id: workflowId, userId: socket.user.id,
+        stepsJson: JSON.stringify(steps),
+        metaJson: meta ? JSON.stringify(meta) : null,
+      });
     }
 
-    const subflows = resolveSubflows(steps, socket.user.id, workflowId);
+    const subflows = await resolveSubflows(steps, socket.user.id, workflowId);
     const workflow = { id: workflowId, steps, meta, customActions, subflows };
     try {
       await executeWorkflow(workflow, socket, { userId: socket.user.id, workflowId });

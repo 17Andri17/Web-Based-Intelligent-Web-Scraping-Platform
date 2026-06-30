@@ -112,8 +112,21 @@ function collectCustomActionIds(steps) {
   return Array.from(ids);
 }
 
+// Collect the workflow ids referenced by RUN_SUBFLOW steps (one level — the
+// caller recurses into fetched subflows). Mirrors collectCustomActionIds.
+function collectSubflowIds(steps) {
+  const ids = new Set();
+  walk(steps, (s) => {
+    if (s.kind === 'action' && s.type === 'RUN_SUBFLOW') {
+      const id = s.params && Number(s.params.workflowId);
+      if (Number.isFinite(id) && id > 0) ids.add(id);
+    }
+  });
+  return Array.from(ids);
+}
+
 module.exports = {
   clone, walk, findStepById, patchStepParams,
   removeStepById, removeListField, setStepParams,
-  collectCustomActionIds, CHILD_KEYS,
+  collectCustomActionIds, collectSubflowIds, CHILD_KEYS,
 };

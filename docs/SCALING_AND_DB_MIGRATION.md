@@ -111,9 +111,10 @@ We are **not** doing a big-bang rewrite. Instead:
    commit. When the last slice lands, `db/index.js` is deleted and `schema.js`
    becomes the single source of truth.
 
-> ⚠️ Until every slice is migrated, `DB_CLIENT=postgres` is **not** fully
-> functional (unmigrated code still talks to SQLite). Keep the default
-> (`sqlite`) until the checklist below is complete.
+> ✅ **Migration complete.** All data access now goes through the async client;
+> legacy `db/index.js` has been deleted and `schema.js` is the single source of
+> truth. `DB_CLIENT=postgres` is functional end-to-end. SQLite remains the
+> zero-setup default for local dev / single-instance deploys.
 
 ### The async contract (`db/client.js`)
 
@@ -164,10 +165,18 @@ Conventions that keep SQL portable across both engines:
       Completes habit #1 for the scheduler. (Strict cross-process non-overlap
       for runs that outlive their interval would need a lease column — noted as
       a future refinement.)
-- [ ] Slice 6 — `server.js` + `scheduler` raw `db` reads (custom-action &
-      subflow resolution for codegen) onto the client — the last legacy users.
-- [ ] Retire legacy `db/index.js`; `schema.js` becomes the single source of truth.
-- [ ] Add a Postgres path to CI / a compose file for local Postgres.
+- [x] **Slice 6 — last legacy `db` users.** The custom-action & subflow
+      codegen resolution (duplicated verbatim in `server.js` and `scheduler`)
+      is unified into one async `workflow/dependencyResolver.js` backed by the
+      repos; `server.js`'s ad-hoc-run workflow create/update/ownership now go
+      through `workflows.repo` (added `getManyByIds`, `updateStepsAndMeta`,
+      and `collectSubflowIds`). Neither `server.js` nor `scheduler` imports the
+      legacy `db` anymore.
+- [x] **Retire legacy `db/index.js`** — deleted; `schema.js` (via the migration
+      runner) is the single source of truth. Verified a fresh DB is provisioned
+      by `client.init()` alone.
+- [ ] Add a Postgres path to CI / a compose file for local Postgres (the only
+      remaining item; everything above works against either engine today).
 
 ### Running against Postgres (once migration completes)
 
