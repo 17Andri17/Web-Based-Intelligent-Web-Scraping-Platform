@@ -184,6 +184,15 @@ async function main() {
   await runStore.upsertSchedule({ userId: id, workflowId: rwf.id, intervalMinutes: 10, isActive: true });
   const due = await runStore.dueSchedules(new Date(Date.now() + 24 * 3600 * 1000));
   assert(due.some(s => s.workflow_id === rwf.id), 'dueSchedules returns the active, past-due schedule');
+
+  // Atomic claim (slice 5): force the slot past-due, then claim twice. The
+  // first claim wins; the second must fail because the first pushed
+  // next_run_at into the future within the same conditional UPDATE.
+  await db.run('UPDATE schedules SET next_run_at = ? WHERE id = ?',
+    [new Date(Date.now() - 1000).toISOString(), sch.id]);
+  assert(await runStore.claimDueSchedule(sch.id, 10) === true, 'claimDueSchedule claims a past-due slot');
+  assert(await runStore.claimDueSchedule(sch.id, 10) === false, 'duplicate claim of the same slot fails (atomic dedup)');
+
   assert(await runStore.deleteSchedule(id, rwf.id) === 1, 'deleteSchedule removes it');
 
   // FK cascade: removing the workflow clears its runs/logs/repairs/versions.

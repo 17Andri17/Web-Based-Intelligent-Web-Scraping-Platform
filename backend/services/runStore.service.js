@@ -312,6 +312,29 @@ async function bumpScheduleAfterRun(scheduleId, intervalMinutes) {
   `, [next, scheduleId]);
 }
 
+/**
+ * Atomically claim a due schedule for dispatch. The conditional UPDATE only
+ * succeeds for the ONE caller that wins the race: it requires the schedule to
+ * still be active and past-due (`next_run_at <= now`), and pushes next_run_at
+ * into the future as part of the same statement. A losing/duplicate caller —
+ * including one in another backend process — sees `changes === 0` and must not
+ * dispatch. This is what lets the scheduler be stateless across processes
+ * (habit #1) instead of relying on an in-memory Set.
+ *
+ * Returns true iff this caller claimed the slot.
+ */
+async function claimDueSchedule(scheduleId, intervalMinutes, now = new Date()) {
+  const row = await db.get('SELECT anchor_at FROM schedules WHERE id = ?', [scheduleId]);
+  if (!row) return false;
+  const next = computeNextRun(row.anchor_at, intervalMinutes).toISOString();
+  const info = await db.run(`
+    UPDATE schedules
+    SET last_run_at = CURRENT_TIMESTAMP, next_run_at = ?
+    WHERE id = ? AND is_active = 1 AND next_run_at <= ?
+  `, [next, scheduleId, now.toISOString()]);
+  return info.changes === 1;
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────
 function truncate(s, n) {
   if (s == null) return null;
@@ -332,5 +355,5 @@ module.exports = {
   ensureVersion, getVersionForUser, listVersionsForWorkflow,
   // schedules
   listSchedulesForUser, getScheduleByWorkflow, upsertSchedule,
-  deleteSchedule, dueSchedules, bumpScheduleAfterRun, getScheduleById,
+  deleteSchedule, dueSchedules, bumpScheduleAfterRun, claimDueSchedule, getScheduleById,
 };

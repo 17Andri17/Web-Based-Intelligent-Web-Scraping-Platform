@@ -154,9 +154,16 @@ Conventions that keep SQL portable across both engines:
       / `lastRepairId` moved out of `executionPipeline` (the latter dropped in
       favour of `recordRepair`'s returned id); `executionPipeline` no longer
       `require`s the legacy `db`.
-- [ ] Slice 5 — `scheduler`: claim due schedules atomically (replace the
-      in-memory `inflight` Set / `running` counter so two processes can't
-      double-dispatch) — completes habit #1.
+- [x] **Slice 5 — `scheduler`: atomic schedule claim.** Dispatch is now gated
+      by `runStore.claimDueSchedule` — a conditional `UPDATE … WHERE id = ? AND
+      is_active = 1 AND next_run_at <= now` that pushes `next_run_at` forward in
+      the same statement, so only the one winner dispatches (safe across
+      processes). The in-memory `inflight` Set / `running` counter are no longer
+      load-bearing for correctness — they're now just per-process resource
+      controls (concurrency cap + best-effort same-process overlap guard).
+      Completes habit #1 for the scheduler. (Strict cross-process non-overlap
+      for runs that outlive their interval would need a lease column — noted as
+      a future refinement.)
 - [ ] Slice 6 — `server.js` + `scheduler` raw `db` reads (custom-action &
       subflow resolution for codegen) onto the client — the last legacy users.
 - [ ] Retire legacy `db/index.js`; `schema.js` becomes the single source of truth.

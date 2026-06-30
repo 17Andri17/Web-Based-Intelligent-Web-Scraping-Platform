@@ -9,23 +9,29 @@ const { collectCustomActionIds } = require('../workflow/workflowUtils');
    scheduler.service
    ---------------------------------------------------------------------------
    In-process schedule dispatcher. Once every TICK_MS we ask the DB for any
-   schedules whose `next_run_at` has passed, and we fire one execution per
-   schedule. Concurrency is limited per process: at most CONCURRENCY
-   workflows run at once; the rest wait for the next tick.
+   schedules whose `next_run_at` has passed and try to dispatch each one.
 
-   We deliberately don't use node-cron / agenda / Bull here — the
-   requirements are modest, all data is in SQLite, and an in-process
-   poller is a few dozen lines and easy to reason about. Multiple backend
-   processes would race on dispatch, but this project is single-instance
-   for now.
+   Dispatch is gated by an ATOMIC DB CLAIM (runStore.claimDueSchedule): the
+   claim's conditional UPDATE only succeeds for the single caller that wins the
+   race and pushes next_run_at into the future in the same statement. This is
+   what makes the dispatcher safe to run in more than one backend process —
+   two processes polling the same DB can no longer double-dispatch a slot — so
+   the scheduler no longer depends on in-memory state for correctness (habit
+   #1, stateless backend).
+
+   The remaining in-memory bits are per-process resource controls, NOT
+   correctness: `running` caps how many executions THIS process runs at once,
+   and `inflight` is a best-effort guard so a single process doesn't overlap a
+   schedule whose run outlives its interval. (Strict cross-process
+   non-overlap for long runs would need a lease column — a future refinement.)
    ========================================================================= */
 
 const TICK_MS = 30 * 1000;
 const CONCURRENCY = 3;
 
 let timer = null;
-let running = 0;
-const inflight = new Set();    // schedule ids currently being executed
+let running = 0;                // per-process concurrency cap (resource limit)
+const inflight = new Set();     // best-effort same-process overlap guard
 
 function start() {
   if (timer) return;
@@ -55,14 +61,21 @@ async function tick() {
 
   for (const sch of due) {
     if (running >= CONCURRENCY) break;
-    if (inflight.has(sch.id)) continue;          // already running this one
+    if (inflight.has(sch.id)) continue;          // this process already runs it
+
+    // Atomically claim the slot. The claim pushes next_run_at into the future
+    // as part of its conditional UPDATE, so only the one winner dispatches —
+    // even across processes. A loser (changes === 0) skips silently.
+    let claimed = false;
+    try {
+      claimed = await runStore.claimDueSchedule(sch.id, sch.interval_minutes);
+    } catch (err) {
+      console.error(`[scheduler] claim failed for schedule #${sch.id}:`, err.message);
+    }
+    if (!claimed) continue;
+
     inflight.add(sch.id);
     running++;
-
-    // Bump next_run_at NOW so a long-running execution doesn't stack up
-    // multiple due ticks on the same schedule.
-    try { await runStore.bumpScheduleAfterRun(sch.id, sch.interval_minutes); } catch (_) {}
-
     runOne(sch).catch(err => {
       console.error(`[scheduler] schedule #${sch.id} crashed:`, err.message);
     }).finally(() => {
