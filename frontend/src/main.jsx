@@ -757,6 +757,30 @@ function AppShell({ user, token, onLogout }) {
     });
   }, [updateLabelById]);
 
+  // Params updater that also auto-names an Extract List the moment it gains its
+  // first fields. We deferred naming when the list was added "configure later"
+  // (no fields = unknown collection); once fields arrive we know what it holds.
+  // Only fires on the empty → non-empty transition and only when the list is
+  // still unnamed, so editing/deleting fields later — or a list the user
+  // already named — is left untouched.
+  const handleUpdateParams = useCallback((id, patch) => {
+    updateParamsById(id, patch);
+    if (!patch || !patch.fields) return;
+
+    const loc = findStepLocation(stepsRef.current, id);
+    if (!loc) return;
+    let cur = stepsRef.current;
+    for (let i = 0; i < loc.containerPath.length; i += 2) cur = cur[loc.containerPath[i]][loc.containerPath[i + 1]];
+    const prev = cur?.[loc.index];
+    if (!prev || prev.type !== "EXTRACT_LIST" || prev.label) return;
+
+    const hadFields = prev.params?.fields && Object.keys(prev.params.fields).length > 0;
+    const hasFields = Object.keys(patch.fields).length > 0;
+    if (!hadFields && hasFields) {
+      maybeAutoNameStep({ ...prev, params: { ...prev.params, ...patch } });
+    }
+  }, [updateParamsById, maybeAutoNameStep]);
+
   // ── Add step from inspector ───────────────────────────────────────────────
   const handleAddStep = useCallback((step, opts = {}) => {
     const { isForEach = false } = opts;
@@ -1530,8 +1554,7 @@ function AppShell({ user, token, onLogout }) {
                       onUnhoverPickerChild={handleUnhoverPickerChild}
                       onClearForEachCtx={handleClearForEachCtx}
                       socket={socket}
-                      onUpdateParams={updateParamsById}
-                      onUpdateLabel={updateLabelById}
+                      onUpdateParams={handleUpdateParams}
                     />
                   ) : (
                     <div className="sidebar-no-element">
@@ -1575,7 +1598,7 @@ function AppShell({ user, token, onLogout }) {
                     onCancelReselect={() => { setReselectStepId(null); socketRef.current?.emit("resetSelection"); }}
                     onHighlight={(sel) => socketRef.current?.emit("highlightSelector", { selector: sel })}
                     onClearHighlight={() => socketRef.current?.emit("clearHighlight")}
-                    onUpdateParams={updateParamsById}
+                    onUpdateParams={handleUpdateParams}
                     onUpdateLabel={updateLabelById}
                     insertTarget={insertTarget}
                     onSetInsertTarget={setInsertTarget}
@@ -1631,7 +1654,7 @@ function AppShell({ user, token, onLogout }) {
             execResults={execResults}
             previewData={previewData}
             onUpdateLabel={updateLabelById}
-            onUpdateParams={updateParamsById}
+            onUpdateParams={handleUpdateParams}
           />
         )}
       </main>
