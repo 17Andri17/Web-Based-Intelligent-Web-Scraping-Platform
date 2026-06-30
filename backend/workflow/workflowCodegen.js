@@ -650,10 +650,14 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         && rawSubSteps[0].kind === 'action'
         && rawSubSteps[0].type === 'NAVIGATE'
       ) ? rawSubSteps.slice(1) : rawSubSteps;
-      const subCode  = genStepList(subSteps, subCtx, params.mode === 'iterate' ? 5 : 4);
+      // iterate + enrich both nest the subflow one extra level deep (inside a
+      // `for` loop), so they share the deeper indentation; single mode is one
+      // level shallower.
+      const subNested = params.mode === 'iterate' || params.mode === 'enrich';
+      const subCode  = genStepList(subSteps, subCtx, subNested ? 5 : 4);
       const subAliasDecls = subCtx.capturedAliases.size === 0 ? '' :
         Array.from(subCtx.capturedAliases).map(a =>
-          (params.mode === 'iterate' ? '        ' : '      ') + `let ${a};`
+          (subNested ? '        ' : '      ') + `let ${a};`
         ).join('\n');
 
       const safeSubName = (sub.name || 'unnamed').replace(/\*\//g, '*\\/');
@@ -705,6 +709,78 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `    }`,
           `  }`,
           `  console.log('ITER_END:' + JSON.stringify({stepId: ${subIdJson}}));`,
+          `}`,
+          ``,
+        ].join('\n');
+      }
+
+      // ── enrich mode: walk a TABLE's rows, open each row's link, and ──
+      //    merge the per-page subflow results back into that same row ────
+      // This is the "scrape a list, then drill into each item's detail
+      // page and fold the details back into the list" pattern. Unlike
+      // iterate mode (which produces a parallel array you'd have to join
+      // by URL yourself), enrich emits ONE table whose rows are the source
+      // rows augmented with the detail fields.
+      if (params.mode === 'enrich') {
+        // The source table. Use jsExpr (like a FOR_EACH source) so BOTH the
+        // `{{products}}` reference form and a bare `products` variable name
+        // resolve to the JS variable — not a string literal.
+        const rowsExpr  = jsExpr(params.sourceList || '', '[]');
+        const urlFieldJson = JSON.stringify((params.urlField && String(params.urlField).trim()) || 'link');
+        const baseUrlExpr  = qStr(params.baseUrl || '');   // '' when unset
+        const optsJson = JSON.stringify({
+          strategy:     params.mergeStrategy || 'flat',
+          detailField:  (params.detailField  && String(params.detailField).trim())  || 'detail',
+          prefix:       (params.detailPrefix && String(params.detailPrefix))         || 'detail_',
+          explodeField: (params.explodeField && String(params.explodeField).trim()) || '',
+        });
+        const subIdJson = JSON.stringify(step.id || '');
+        return [
+          `// Subflow (enrich rows): ${safeSubName} (id ${subflowId})`,
+          `{`,
+          `  const _srcRows = ${rowsExpr};`,
+          `  const _rows = Array.isArray(_srcRows) ? _srcRows : [];`,
+          `  const _enrichBase = ${baseUrlExpr};`,
+          `  const _out = [];`,
+          `  console.log('ITER_START:' + JSON.stringify({stepId: ${subIdJson}, total: _rows.length}));`,
+          `  for (let _i = 0; _i < _rows.length; _i++) {`,
+          `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${subIdJson}, index: _i}));`,
+          `    const _row = (_rows[_i] && typeof _rows[_i] === 'object' && !Array.isArray(_rows[_i])) ? _rows[_i] : { value: _rows[_i] };`,
+          `    let _href = _row[${urlFieldJson}];`,
+          `    // No link on this row → keep the row as-is (don't drop data).`,
+          `    if (_href == null || _href === '') { _out.push(Object.assign({}, _row)); continue; }`,
+          `    _href = String(_href);`,
+          `    // Resolve relative links against the configured base URL.`,
+          `    if (_enrichBase && !/^https?:\\/\\//i.test(_href)) { try { _href = new URL(_href, _enrichBase).href; } catch (_) {} }`,
+          `    const _subPage = await browser.newPage();`,
+          `    let _subResults = {};`,
+          `    try {`,
+          `      await applyStealthToPage(_subPage);`,
+          `      await _subPage.goto(_href, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+          `      await dismissConsent(_subPage);`,
+          `      _subResults = await (async (page) => {`,
+          `        const __results__ = {};`,
+          `        let __currentStep__ = null;`,
+          subAliasDecls,
+          `        try {`,
+          subCode,
+          `        } catch (err) {`,
+          `          console.error(${JSON.stringify(`Subflow ${outKey} enrich error:`)}, err && err.message);`,
+          `        }`,
+          `        return __results__;`,
+          `      })(_subPage);`,
+          `      _subResults._sourceUrl = _href;`,
+          `    } catch (err) {`,
+          `      console.error(${JSON.stringify(`Subflow ${outKey} failed on URL`)}, _href, '—', err && err.message);`,
+          `    } finally {`,
+          `      try { await _subPage.close(); } catch (_) {}`,
+          `    }`,
+          `    // Merge the detail results back into this row (one or more output`,
+          `    // rows, depending on the chosen strategy — see __enrichRows).`,
+          `    for (const _er of __enrichRows(_row, _subResults, ${optsJson})) _out.push(_er);`,
+          `  }`,
+          `  console.log('ITER_END:' + JSON.stringify({stepId: ${subIdJson}}));`,
+          `  __results__[${JSON.stringify(outKey)}] = _out;`,
           `}`,
           ``,
         ].join('\n');
@@ -1161,6 +1237,73 @@ async function __emitStepStats(page, info, value) {
   } catch (_) {}
 }`;
 
+/* =========================================================================
+   ENRICH RUNTIME — merge a subflow's per-page results back into a source row
+   -------------------------------------------------------------------------
+   Used by RUN_SUBFLOW "enrich" mode. Lives in BOTH platform and downloaded
+   scripts (it's behaviour, not instrumentation), so it is included on demand
+   — only when the generated code actually references __enrichRows.
+
+   Returns an ARRAY of output rows. Every strategy yields exactly one row
+   except "explode", which denormalises a one-to-many: it emits one output
+   row per item of a chosen list field (parent columns copied down). This is
+   the answer to "what do I do when the detail page itself has a list?":
+     • flat   → list stays as a nested array in one column (default)
+     • nest   → the whole detail object goes under one column
+     • prefix → detail columns added with a prefix (avoids name clashes)
+     • explode→ list becomes multiple flat rows
+   ========================================================================= */
+const ENRICH_RUNTIME_SRC = `/**
+ * Merge a subflow's collected results (\`sub\`) into a source table row
+ * (\`row\`) and return the resulting output row(s). See codegen header for the
+ * strategy semantics.
+ */
+function __enrichRows(row, sub, opts) {
+  opts = opts || {};
+  const strategy = opts.strategy || 'flat';
+  const base = (row && typeof row === 'object' && !Array.isArray(row)) ? row : {};
+  // The subflow attaches bookkeeping keys to its own __results__; don't leak
+  // them into the merged row as data columns (keep _sourceUrl though — it's
+  // useful provenance and callers can drop it if they want).
+  const detail = {};
+  for (const k of Object.keys(sub || {})) {
+    if (k === '_index') continue;
+    detail[k] = sub[k];
+  }
+  if (strategy === 'nest') {
+    const out = Object.assign({}, base);
+    out[opts.detailField || 'detail'] = detail;
+    return [out];
+  }
+  if (strategy === 'prefix') {
+    const out = Object.assign({}, base);
+    const p = opts.prefix || 'detail_';
+    for (const k of Object.keys(detail)) out[p + k] = detail[k];
+    return [out];
+  }
+  if (strategy === 'explode') {
+    // Pick the list to explode: the named field, else the first array value.
+    let listKey = opts.explodeField || '';
+    if (!listKey || !Array.isArray(detail[listKey])) {
+      for (const k of Object.keys(detail)) { if (Array.isArray(detail[k])) { listKey = k; break; } }
+    }
+    const list = listKey ? detail[listKey] : null;
+    // Everything that ISN'T the exploded list rides along on every output row.
+    const rest = Object.assign({}, base);
+    for (const k of Object.keys(detail)) { if (k !== listKey) rest[k] = detail[k]; }
+    // Empty / missing list → keep a single row so the source row isn't lost.
+    if (!Array.isArray(list) || list.length === 0) return [rest];
+    return list.map(item =>
+      (item && typeof item === 'object' && !Array.isArray(item))
+        ? Object.assign({}, rest, item)                       // object item → its keys become columns
+        : Object.assign({}, rest, { [listKey || 'item']: item }) // scalar item → single column
+    );
+  }
+  // flat (default): detail keys become columns on the row; any list value
+  // simply stays a nested array in its column.
+  return [Object.assign({}, base, detail)];
+}`;
+
 // Remove the per-step / per-iteration marker lines and the stats calls from
 // generated step code. Every such marker is emitted as its own standalone
 // line, so a line-level filter is exact and safe.
@@ -1231,6 +1374,13 @@ function generateCode(workflow, options = {}) {
   const usesFieldRuntime = /__ftMaterializeRow\(/.test(stepCode);
   const fieldRuntimeSrc = usesFieldRuntime
     ? `\n// ─── Field transform runtime (clean / split per-field pipelines) ──────────\n${FIELD_TRANSFORM_RUNTIME}\n`
+    : '';
+  // Enrich runtime is behaviour (not instrumentation): include it in BOTH
+  // platform + downloaded scripts, but only when a RUN_SUBFLOW "enrich" step
+  // actually emitted a call to it.
+  const usesEnrichRuntime = /__enrichRows\(/.test(stepCode);
+  const enrichRuntimeSrc = usesEnrichRuntime
+    ? `\n// ─── Enrich runtime (merge subflow detail results back into list rows) ────\n${ENRICH_RUNTIME_SRC}\n`
     : '';
   const instrumentationSrc = clean ? '' : `\n${INSTRUMENTATION_HELPERS_SRC}\n`;
   // Cookie-consent auto-dismiss helper — always included so every navigation
@@ -1405,7 +1555,7 @@ async function evalOnElements(page, selectors, fn) {
   if (!els.length) return [];
   return Promise.all(els.map(el => page.evaluate(fn, el)));
 }
-${fieldRuntimeSrc}${instrumentationSrc}${consentHelperSrc}
+${fieldRuntimeSrc}${enrichRuntimeSrc}${instrumentationSrc}${consentHelperSrc}
 async function run() {
   const __results__ = {};
 ${currentStepDecl}${variablesCode}${capturedAliasesCode}
