@@ -66,7 +66,10 @@ function describeSample(v) {
 
 function buildPrompt(payload) {
   const lines = [];
-  const isLoop = payload.stepType === 'FOR_EACH_ELEMENTS';
+  // Collection steps iterate over / extract MANY items, so they want a plural
+  // name (products, laptops, rows). A loop and a list/table are all collections.
+  const COLLECTION_TYPES = new Set(['FOR_EACH_ELEMENTS', 'EXTRACT_LIST', 'EXTRACT_TABLE']);
+  const isCollection = COLLECTION_TYPES.has(payload.stepType);
   lines.push(`Action: ${payload.stepType || 'unknown'}`);
   if (payload.tag)       lines.push(`Element tag: <${payload.tag}>`);
   if (payload.classes)   lines.push(`Element classes: ${clip(payload.classes, 200)}`);
@@ -107,8 +110,8 @@ function buildPrompt(payload) {
   lines.push('- If the PARENT TEXT contains a clear label next to the value (e.g. a number shown beside the word "Reviews"), name the field after the LABEL (→ reviews), not the visible numeric value.');
   lines.push('- Ignore styling-only class names (counter-number, plus, btn, item-1) — they describe how the element looks, not what it means.');
   lines.push('');
-  lines.push(isLoop
-    ? 'This step is a LOOP / table. Suggest a plural snake_case name for the COLLECTION of items it iterates over, describing what the items ARE on this page (e.g. products, articles, rows).'
+  lines.push(isCollection
+    ? 'This step is a LOOP / list / table — it produces MANY items. Suggest a PLURAL snake_case name for the COLLECTION, describing what the items ARE on this page (e.g. products, laptops, articles, rows). Never a singular noun.'
     : 'Suggest a singular snake_case name describing the value being extracted.');
   return lines.join('\n');
 }
