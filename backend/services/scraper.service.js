@@ -1,6 +1,44 @@
 const browserManager = require('../browser/BrowserManager');
 const userModes = new Map();
 
+// Modifier keys we currently believe are held down per user. Puppeteer's Mouse
+// stamps every click with the Keyboard's live modifier bitmask, so if a keyup
+// is ever lost — Alt+Tab away, focus leaving the canvas, or a keyup swallowed
+// during a navigation — the modifier stays "down" and turns every plain
+// left-click into Alt/Ctrl/Shift+click. An Alt+click in particular makes Chrome
+// download the link ("Save page as", named after the URL) instead of navigating.
+const userHeldModifiers = new Map();
+const MODIFIER_KEYS = new Set(['Alt', 'AltGraph', 'Control', 'Shift', 'Meta']);
+
+function heldModifiers(userId) {
+  let set = userHeldModifiers.get(userId);
+  if (!set) { set = new Set(); userHeldModifiers.set(userId, set); }
+  return set;
+}
+
+// Before a click, drop any modifier we think is held but the click says is NOT
+// pressed — reconciling the remote keyboard state to the real one and so
+// guaranteeing a stuck modifier can never leak into a click. Missing flags
+// (older clients) are treated as "no modifier", which is the correct default
+// for this tool's plain left-clicks.
+async function reconcileModifiers(userId, page, action) {
+  const held = userHeldModifiers.get(userId);
+  if (!held || held.size === 0) return;
+  const stillDown = {
+    Alt:      !!action.altKey,
+    AltGraph: !!action.altKey,
+    Control:  !!action.ctrlKey,
+    Shift:    !!action.shiftKey,
+    Meta:     !!action.metaKey,
+  };
+  for (const key of Array.from(held)) {
+    if (stillDown[key] === false) {
+      try { await page.keyboard.up(key); } catch (_) {}
+      held.delete(key);
+    }
+  }
+}
+
 module.exports = (io) => {
   return {
     async navigate(userId, url) {
@@ -64,6 +102,10 @@ module.exports = (io) => {
           socket.emit("cursorType", { cursor });
           
         } else if (action.type === "mousedown") {
+          // Clear any stuck modifier first so a plain click can't arrive as
+          // Alt/Ctrl/Shift+click (which would download the link or open a new
+          // tab instead of navigating).
+          await reconcileModifiers(userId, page, action);
           await page.mouse.down(action.x, action.y);
         } else if (action.type === "mouseup") {
           await page.mouse.up(action.x, action.y);
@@ -81,8 +123,11 @@ module.exports = (io) => {
             deltaY: action.deltaY || 0,
           });
         } else if (action.type === "keydown") {
+          if (MODIFIER_KEYS.has(action.key)) heldModifiers(userId).add(action.key);
           await page.keyboard.down(action.key);
         } else if (action.type === "keyup") {
+          const held = userHeldModifiers.get(userId);
+          if (held) held.delete(action.key);
           await page.keyboard.up(action.key);
         }
         // Add support for other types such as keypress, input, etc as needed
@@ -115,6 +160,7 @@ module.exports = (io) => {
 
     clearUser(userId) {
       userModes.delete(userId);
+      userHeldModifiers.delete(userId);
     }
   };
 };

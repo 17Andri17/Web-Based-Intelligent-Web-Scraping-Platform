@@ -1001,6 +1001,35 @@ function AppShell({ user, token, onLogout }) {
   // ref is what lets us suppress the `leave` reset during a drag.
   const isDraggingRef = useRef(false);
 
+  // Keys we've forwarded a keydown for but not yet a keyup. The remote browser
+  // keeps a key "down" until it sees the matching keyup, but the canvas only
+  // receives keyup while it's focused — so Alt+Tab, switching tabs, or clicking
+  // elsewhere in the app drops the keyup and leaves the key stuck down. A stuck
+  // modifier then poisons every click (Alt+click downloads the link, Ctrl+click
+  // opens a hidden tab). We track held keys here and flush keyups on focus loss.
+  const heldKeysRef = useRef(new Set());
+  const releaseHeldKeys = useCallback(() => {
+    if (!heldKeysRef.current.size) return;
+    for (const key of heldKeysRef.current) {
+      socketRef.current?.emit("userAction", { type: "keyup", key });
+    }
+    heldKeysRef.current.clear();
+  }, []);
+
+  // Flush held keys whenever the canvas can no longer observe their release:
+  // window blur (Alt+Tab / app switch) and the tab becoming hidden. The canvas
+  // also calls releaseHeldKeys on its own onBlur (focus moving to other UI).
+  useEffect(() => {
+    const onWinBlur = () => releaseHeldKeys();
+    const onVisibility = () => { if (document.hidden) releaseHeldKeys(); };
+    window.addEventListener("blur", onWinBlur);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("blur", onWinBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [releaseHeldKeys]);
+
   // Convert a browser pointer/mouse event to puppeteer-page coordinates
   // (the canvas backing-store size, not its CSS size). Clamps to the
   // canvas extent so drag positions outside the canvas don't go negative
@@ -1383,7 +1412,11 @@ function AppShell({ user, token, onLogout }) {
                   e.currentTarget.focus();
                   isDraggingRef.current = true;
                   const {x, y} = scaled(e);
-                  emit("mousedown", { x, y });
+                  // Forward the live modifier state so the backend can drop any
+                  // stuck modifier (e.g. an Alt whose keyup was lost to Alt+Tab)
+                  // before the click — otherwise a plain click can land as
+                  // Alt+click and download the link instead of navigating.
+                  emit("mousedown", { x, y, altKey: e.altKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey });
                   setStatus(`Clicked: x=${x}, y=${y}`);
                 }}
                 onPointerMove={e => {
@@ -1408,14 +1441,17 @@ function AppShell({ user, token, onLogout }) {
                   if (!isStreamingRef.current) return;
                   if (isPassthroughKey(e)) return;
                   e.preventDefault();
+                  heldKeysRef.current.add(e.key);
                   emit("keydown", { key: e.key, code: e.code });
                 }}
                 onKeyUp={e => {
                   if (!isStreamingRef.current) return;
                   if (isPassthroughKey(e)) return;
                   e.preventDefault();
+                  heldKeysRef.current.delete(e.key);
                   emit("keyup", { key: e.key, code: e.code });
                 }}
+                onBlur={releaseHeldKeys}
               />
               <div className={`mode-indicator ${mode}`}>
                 {mode === "selection"
