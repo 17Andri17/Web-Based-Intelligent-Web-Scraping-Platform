@@ -268,6 +268,24 @@ function buildDefaultAdvanced(def) {
   for (const [k, v] of Object.entries(def.advanced || {})) if (v.default !== undefined) a[k] = v.default;
   return a;
 }
+// Declarative field visibility: a field def may carry `showIf: { otherField:
+// [allowedValues] }`. The field renders only when EVERY listed sibling param
+// matches one of its allowed values. A missing/empty value falls back to that
+// sibling's declared default, so newly-added fields behave sensibly for steps
+// saved before the field existed. Used to keep RUN_SUBFLOW's mode-specific
+// fields (single / iterate / enrich) from all showing at once.
+function fieldVisible(spec, inputs, step) {
+  const cond = spec && spec.showIf;
+  if (!cond) return true;
+  const params = step?.params || {};
+  return Object.entries(cond).every(([field, allowed]) => {
+    const def = inputs?.[field];
+    let val = params[field];
+    if (val === undefined || val === "") val = def?.default ?? "";
+    const list = Array.isArray(allowed) ? allowed : [allowed];
+    return list.includes(val);
+  });
+}
 function summariseParams(step, ctx = {}) {
   // RUN_SUBFLOW: resolve the workflowId to a name from the available
   // workflows list (when we have it) so the card reads as
@@ -284,6 +302,10 @@ function summariseParams(step, ctx = {}) {
     if (mode === "iterate") {
       out.push(["mode", "iterate"]);
       if (step.params?.urlList) out.push(["url list", String(step.params.urlList)]);
+    } else if (mode === "enrich") {
+      out.push(["mode", "enrich"]);
+      if (step.params?.sourceList) out.push(["enrich", String(step.params.sourceList)]);
+      if (step.params?.mergeStrategy) out.push(["merge", String(step.params.mergeStrategy)]);
     } else if (step.params?.url) {
       out.push(["url", String(step.params.url)]);
     }
@@ -1195,7 +1217,7 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
               Returns: {customDef.outputs.map(o => <code key={o.name} style={{ marginRight: 8 }}>{o.name}</code>)}
             </div>
           )}
-          {Object.entries(inputs).map(([k, s]) => (
+          {Object.entries(inputs).filter(([, s]) => fieldVisible(s, inputs, local)).map(([k, s]) => (
             <FieldRenderer
               key={k}
               label={s.label || k}
@@ -1426,8 +1448,9 @@ const FIELD_EXPECTED_KIND = {
   variableName:       "scalar",
   scriptSelector:     "scalar",
   jsonPath:           "scalar",
-  // RUN_SUBFLOW: single URL vs a list of URLs
+  // RUN_SUBFLOW: single URL vs a list of URLs vs a source table to enrich
   urlList:            "list",
+  sourceList:         "list",
   // Variables you set / append into are arrays
   listName:           "list",
   // For-each / loop sources are lists

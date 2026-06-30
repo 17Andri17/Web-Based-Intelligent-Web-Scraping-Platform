@@ -1383,7 +1383,11 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
   [ACTION_TYPES.RUN_SUBFLOW]: {
     label: "Run Subflow",
     category: "Composition",
-    description: "Open another saved workflow ('subflow') on one URL or iterate it over a list of URLs. Pick 'URL list' to point at a column of links from a previous Extract List step (e.g. {{products[*].link}}) and the subflow runs once per row, accumulating results.",
+    description:
+      "Open another saved workflow ('subflow') to capture details from a page. Three modes: " +
+      "Single URL; iterate over a list of URLs (e.g. {{products[*].link}}); or — the powerful one — " +
+      "Enrich a table: point at a previous Extract List (e.g. products), say which field holds the link, " +
+      "and the subflow runs on each row's page and folds the details back INTO that same row.",
     inputs: {
       workflowId: {
         // Custom renderer in WorkflowPanel that pulls the user's saved
@@ -1398,28 +1402,88 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
         label: "Run on",
         default: "single",
         options: [
-          { label: "Single URL",                              value: "single"   },
-          { label: "List of URLs (iterate over each)",        value: "iterate"  },
+          { label: "Single URL",                                   value: "single"   },
+          { label: "List of URLs (iterate over each)",             value: "iterate"  },
+          { label: "Enrich a table's rows (open each link, merge back)", value: "enrich"   },
         ],
       },
+
+      // ── single mode ────────────────────────────────────────────────
       url: {
         type: "string",
         label: "URL  (single mode)",
         placeholder: "https://example.com/{{product.link}}  — supports {{variables}}",
-        // Only meaningful in single mode but always shown so users see
-        // both fields. Backend ignores the unused one based on `mode`.
+        showIf: { mode: ["single", ""] },
       },
+
+      // ── iterate mode ───────────────────────────────────────────────
       urlList: {
         type: "string",
         label: "URL list  (iterate mode)",
         placeholder: "{{products[*].link}}  — dot-walk to pull a column out of a table variable",
+        showIf: { mode: ["iterate"] },
       },
       itemVar: {
         type: "string",
         label: "Loop variable name  (iterate mode, optional)",
         placeholder: "url",
         default: "_url",
+        showIf: { mode: ["iterate"] },
       },
+
+      // ── enrich mode ────────────────────────────────────────────────
+      sourceList: {
+        type: "string",
+        label: "Source table  (enrich mode)",
+        placeholder: "{{products}}  — the Extract List whose rows you want to enrich",
+        showIf: { mode: ["enrich"] },
+      },
+      urlField: {
+        type: "string",
+        label: "Link field  (which column in each row holds the URL)",
+        placeholder: "link",
+        default: "link",
+        showIf: { mode: ["enrich"] },
+      },
+      baseUrl: {
+        type: "string",
+        label: "Base URL for relative links  (optional)",
+        placeholder: "https://example.com  — prepended when the link isn't absolute",
+        showIf: { mode: ["enrich"] },
+      },
+      mergeStrategy: {
+        type: "select",
+        label: "How to merge the detail page's results into the row",
+        default: "flat",
+        options: [
+          { label: "Flat — add detail fields as new columns (lists kept as a nested array)", value: "flat" },
+          { label: "Prefix — like Flat but prefix the new column names", value: "prefix" },
+          { label: "Nest — put the whole detail object under one column", value: "nest" },
+          { label: "Explode — one output row per item of a detail list (denormalise)", value: "explode" },
+        ],
+        showIf: { mode: ["enrich"] },
+      },
+      detailPrefix: {
+        type: "string",
+        label: "Column prefix",
+        placeholder: "detail_",
+        default: "detail_",
+        showIf: { mode: ["enrich"], mergeStrategy: ["prefix"] },
+      },
+      detailField: {
+        type: "string",
+        label: "Nested column name",
+        placeholder: "detail",
+        default: "detail",
+        showIf: { mode: ["enrich"], mergeStrategy: ["nest"] },
+      },
+      explodeField: {
+        type: "string",
+        label: "List field to explode  (leave blank to auto-pick the first list)",
+        placeholder: "reviews",
+        showIf: { mode: ["enrich"], mergeStrategy: ["explode"] },
+      },
+
       outputVar: {
         type: "string",
         label: "Save results under (optional)",
@@ -1434,16 +1498,19 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
       },
     },
     outputs: {
-      result: { type: "object", description: "The subflow's collected results (or an array when iterating)" },
+      result: { type: "object", description: "The subflow's collected results (object in single mode; an array of rows when iterating or enriching)" },
     },
     // The real code generation lives on the backend (so it can reach the
     // DB and inline the subflow's full step tree). For the "Download
     // code" path we emit a small placeholder comment — the backend's
     // workflowCodegen.js handles RUN_SUBFLOW with the inlined version.
-    generateCode: ({ params }) =>
-      params.mode === "iterate"
-        ? `// Subflow #${params.workflowId} iterating over ${JSON.stringify(params.urlList || "")}\n`
-        : `// Subflow #${params.workflowId} on ${JSON.stringify(params.url || "")}\n`,
+    generateCode: ({ params }) => {
+      if (params.mode === "iterate")
+        return `// Subflow #${params.workflowId} iterating over ${JSON.stringify(params.urlList || "")}\n`;
+      if (params.mode === "enrich")
+        return `// Subflow #${params.workflowId} enriching ${JSON.stringify(params.sourceList || "")} via field ${JSON.stringify(params.urlField || "link")}\n`;
+      return `// Subflow #${params.workflowId} on ${JSON.stringify(params.url || "")}\n`;
+    },
   },
 
 };
