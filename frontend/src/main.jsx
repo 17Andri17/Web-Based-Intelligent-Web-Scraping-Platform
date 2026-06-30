@@ -2,12 +2,14 @@ import React, { useRef, useEffect, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import io from "socket.io-client";
 import { useWorkflow, findStepLocation } from "./workflow/useWorkflow";
-import { createAction } from "./workflow/stepFactory";
+import { createAction, createControl } from "./workflow/stepFactory";
+import { CONTROL_TYPES } from "./workflow/controlDefinitions";
 import WorkflowPanel from "./components/WorkflowPanel";
 import ElementInspector, { ForEachContextBanner } from "./components/ElementInspector";
 import ExecutionPanel from "./components/ExecutionPanel";
 import DataPreviewPanel from "./components/DataPreviewPanel";
 import CompactWorkflowSidebar from "./components/CompactWorkflowSidebar";
+import HtmlInspectorPanel from "./components/HtmlInspectorPanel";
 import PaginationDetector from "./components/PaginationDetector";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
@@ -19,6 +21,7 @@ import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
 import "./styles/DataPreviewPanel.css";
 import "./styles/CompactWorkflowSidebar.css";
+import "./styles/HtmlInspectorPanel.css";
 import "./styles/auth.css";
 
 const SERVER_URL = API_BASE;
@@ -101,6 +104,14 @@ function AppShell({ user, token, onLogout }) {
   const isStreamingRef       = useRef(false);
   const latestFrameRef       = useRef(null);
   const isRenderingRef       = useRef(false);
+  // While a page is loading AND the cookie-consent auto-dismiss is analysing
+  // it, we pause forwarding the user's clicks to the backend so a stray click
+  // can't land on a half-loaded page or fight the consent handler. Released
+  // shortly after `pageReady`, with a hard safety timeout so it can never stay
+  // stuck if the load/ready signal never arrives.
+  const interactionLockedRef = useRef(false);
+  const unlockTimerRef       = useRef(null);
+  const maxLockTimerRef      = useRef(null);
 
   const [status,          setStatus]          = useState("");
   const [urlInput,        setUrlInput]        = useState("");
@@ -126,6 +137,18 @@ function AppShell({ user, token, onLogout }) {
   // Sidebar: shared inspector + workflow panel
   const [showSidebar,     setShowSidebar]     = useState(false);
   const [sidebarTab,      setSidebarTab]      = useState("inspector");
+  // Drag-resizable width (all three sidebar tabs share it) + a maximize
+  // toggle for the HTML tab, which hides the canvas entirely since there's
+  // nothing useful to see on a frozen/offscreen stream at that point anyway.
+  const [sidebarWidth,    setSidebarWidth]    = useState(360);
+  const [htmlMaximized,   setHtmlMaximized]   = useState(false);
+  const isResizingSidebarRef = useRef(false);
+  // Closing the sidebar always drops the maximize state too — reopening it
+  // (from any entry point) should start back in the normal split view
+  // rather than re-hiding the canvas from under the user.
+  useEffect(() => {
+    if (!showSidebar) setHtmlMaximized(false);
+  }, [showSidebar]);
   // Pagination detection
   const [paginationOpen,  setPaginationOpen]  = useState(false);
   const [paginationDetecting, setPaginationDetecting] = useState(false);
@@ -151,6 +174,11 @@ function AppShell({ user, token, onLogout }) {
   useEffect(() => { paginationManualWaitingRef.current  = paginationManualWaiting; }, [paginationManualWaiting]);
   const insertTargetRef = useRef(null);
   useEffect(() => { insertTargetRef.current = insertTarget; }, [insertTarget]);
+  // Set right before emitting selectElementByPath from the HTML tab, so the
+  // resulting elementSelected event updates selectedElement (to sync the
+  // tree's expand/highlight) without yanking focus away to the Inspector
+  // tab — the user is actively browsing the source tree.
+  const selectingFromHtmlTabRef = useRef(false);
   // Keep the latest inspector selection accessible from callbacks that the
   // auto-name helper runs from — handleAddStep clears the React state
   // immediately, but we still need the data for the AI request.
@@ -222,12 +250,17 @@ function AppShell({ user, token, onLogout }) {
     socket.on("frame",      data => { latestFrameRef.current = data; });
     socket.on("cursorType", data => setCursorType(data.cursor));
     // Page navigated inside puppeteer (link click, redirect, history nav)
-    socket.on("pageUrlChanged", ({ url }) => { if (typeof url === "string") setCurrentPageUrl(url); });
+    socket.on("pageUrlChanged", ({ url }) => {
+      if (typeof url === "string") setCurrentPageUrl(url);
+      // A navigation just started (e.g. the user clicked a link in nav mode):
+      // pause clicks again until this new page loads + consent settles.
+      lockInteraction();
+    });
     // DOM is parsed and ready — re-fire all step previews so the Data tab
     // populates against the freshly loaded page (especially needed right
     // after opening a saved workflow, where the navigate is still in
     // flight when the steps-changed effect first ran).
-    socket.on("pageReady", () => { setPageReadyTick(t => t + 1); });
+    socket.on("pageReady", () => { setPageReadyTick(t => t + 1); releaseInteractionSoon(); });
     socket.on("actionResult", res => setStatus(res.success ? "Action executed." : "Action failed: " + (res.error || "")));
     socket.on("viewportUpdated", (data) => {
       sessionMetaRef.current.viewportWidth  = data.width;
@@ -266,8 +299,12 @@ function AppShell({ user, token, onLogout }) {
         } else {
           setSelectedElement(data.element);
           setChildrenList(null);
-          setShowSidebar(true);
-          setSidebarTab("inspector");
+          if (selectingFromHtmlTabRef.current) {
+            selectingFromHtmlTabRef.current = false;
+          } else {
+            setShowSidebar(true);
+            setSidebarTab("inspector");
+          }
         }
       }
       if (data.type === "multiElementSelected") {
@@ -349,9 +386,27 @@ function AppShell({ user, token, onLogout }) {
     socket.on("executionDone",    ({ success, results, status }) => {
       // `status` is the persisted run status ('success' | 'error' | 'needs_review' | 'cancelled').
       // We map it to the local 4-state for the panel: idle/running/done/error.
-      if (status === "success" || success) setExecStatus("done");
-      else setExecStatus("error");
+      const ok = status === "success" || success;
+      setExecStatus(ok ? "done" : "error");
       if (results && Object.keys(results).length > 0) setExecResults(results);
+      // No STEP_BEGIN follows the final step, so it would otherwise stay
+      // stuck in the "running" (spinner) state. Flip any step still marked
+      // running to its terminal state now that the run has ended.
+      setExecStepStates(prev => {
+        const next = { ...prev };
+        for (const k of Object.keys(next)) {
+          if (next[k] === "running") next[k] = ok ? "done" : "error";
+        }
+        return next;
+      });
+      // Likewise, stop any loop iteration counters still pulsing.
+      setExecIterations(prev => {
+        const next = { ...prev };
+        for (const k of Object.keys(next)) {
+          if (next[k]?.running) next[k] = { ...next[k], running: false };
+        }
+        return next;
+      });
     });
     // Server auto-creates a workflow row when none was passed; learn its id
     // so subsequent runs / history / schedule actions know which workflow
@@ -363,7 +418,12 @@ function AppShell({ user, token, onLogout }) {
       if (name) setCurrentWorkflowName(prev => prev || name);
       showToast(`✓ Saved draft as "${name}"`, "success");
     });
-    socket.on("codeReady", ({ code }) => { downloadTextFile(code, "workflow.js", "text/javascript"); });
+    socket.on("codeReady", ({ code, readme }) => {
+      downloadTextFile(code, "workflow.js", "text/javascript");
+      // Bundle a how-to-run README. Stagger the second download slightly so
+      // browsers don't suppress it as a duplicate-download attempt.
+      if (readme) setTimeout(() => downloadTextFile(readme, "README.md", "text/markdown"), 300);
+    });
     socket.on("paginationDetected", ({ suggestions, error }) => {
       setPaginationDetecting(false);
       setPaginationSuggestions(suggestions || []);
@@ -554,17 +614,42 @@ function AppShell({ user, token, onLogout }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [steps]);
 
+  // Pause click forwarding for the loading + consent-analysis window.
+  const lockInteraction = useCallback(() => {
+    interactionLockedRef.current = true;
+    clearTimeout(unlockTimerRef.current);
+    // Safety net: never stay locked more than 8s, even if pageReady never
+    // fires (e.g. a hash navigation that doesn't trigger a load event).
+    clearTimeout(maxLockTimerRef.current);
+    maxLockTimerRef.current = setTimeout(() => { interactionLockedRef.current = false; }, 8000);
+  }, []);
+  // Release shortly after the page is ready, giving the first consent passes
+  // (which run on a ~600ms cadence) a moment to dismiss any banner first.
+  const releaseInteractionSoon = useCallback((delay = 1500) => {
+    clearTimeout(unlockTimerRef.current);
+    unlockTimerRef.current = setTimeout(() => {
+      interactionLockedRef.current = false;
+      clearTimeout(maxLockTimerRef.current);
+    }, delay);
+  }, []);
+
   // Low-level: tell the backend to navigate and start streaming the new URL.
   const performNavigate = useCallback((url) => {
     if (!socketRef.current || !url) return;
     setStatus("Navigating...");
+    lockInteraction();   // pause clicks until the page loads + consent settles
     const rect = canvasContainerRef.current?.getBoundingClientRect();
     const vpW = Math.floor(rect?.width) || 1280;
     const vpH = Math.floor(rect?.height) || 720;
     sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: url, viewportWidth: vpW, viewportHeight: vpH };
-    socketRef.current.emit("navigate", { url, mode, viewportWidth: vpW, viewportHeight: vpH });
+    // Honour the start step's cookie-consent preference in the live editor too
+    // (e.g. "Leave popup visible"), so what you see while building matches what
+    // the workflow will do. Falls back to accept.
+    const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
+    const consent = pinned?.advanced?.consent || "accept";
+    socketRef.current.emit("navigate", { url, mode, consent, viewportWidth: vpW, viewportHeight: vpH });
     isStreamingRef.current = true;
-  }, [mode]);
+  }, [mode, steps, lockInteraction]);
 
   // ── Navigate ──────────────────────────────────────────────────────────────
   // Three paths:
@@ -860,6 +945,35 @@ function AppShell({ user, token, onLogout }) {
 
   const handleSidebarExpandHandled = useCallback(() => setSidebarExpandStepId(null), []);
 
+  // ── Sidebar resize (drag handle) ─────────────────────────────────────────
+  // Shared by all three sidebar tabs — Inspector/Workflow/HTML all just lay
+  // out their existing flex/percentage-based content into whatever width
+  // this leaves them, so widening it doesn't need any of their own CSS to
+  // change.
+  const startSidebarResize = useCallback((e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    isResizingSidebarRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev) => {
+      const rowWidth = canvasContainerRef.current?.parentElement?.clientWidth || 1600;
+      const maxWidth = Math.max(320, rowWidth - 320); // keep the canvas usable
+      const next = Math.min(maxWidth, Math.max(300, startWidth + (startX - ev.clientX)));
+      setSidebarWidth(next);
+    };
+    const onUp = () => {
+      isResizingSidebarRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [sidebarWidth]);
+
   // Safety: if the user navigates away from the Live Browser tab while a pick
   // is in progress, stop it so the page isn't left intercepting clicks.
   useEffect(() => {
@@ -911,6 +1025,35 @@ function AppShell({ user, token, onLogout }) {
   // ref is what lets us suppress the `leave` reset during a drag.
   const isDraggingRef = useRef(false);
 
+  // Keys we've forwarded a keydown for but not yet a keyup. The remote browser
+  // keeps a key "down" until it sees the matching keyup, but the canvas only
+  // receives keyup while it's focused — so Alt+Tab, switching tabs, or clicking
+  // elsewhere in the app drops the keyup and leaves the key stuck down. A stuck
+  // modifier then poisons every click (Alt+click downloads the link, Ctrl+click
+  // opens a hidden tab). We track held keys here and flush keyups on focus loss.
+  const heldKeysRef = useRef(new Set());
+  const releaseHeldKeys = useCallback(() => {
+    if (!heldKeysRef.current.size) return;
+    for (const key of heldKeysRef.current) {
+      socketRef.current?.emit("userAction", { type: "keyup", key });
+    }
+    heldKeysRef.current.clear();
+  }, []);
+
+  // Flush held keys whenever the canvas can no longer observe their release:
+  // window blur (Alt+Tab / app switch) and the tab becoming hidden. The canvas
+  // also calls releaseHeldKeys on its own onBlur (focus moving to other UI).
+  useEffect(() => {
+    const onWinBlur = () => releaseHeldKeys();
+    const onVisibility = () => { if (document.hidden) releaseHeldKeys(); };
+    window.addEventListener("blur", onWinBlur);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("blur", onWinBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [releaseHeldKeys]);
+
   // Convert a browser pointer/mouse event to puppeteer-page coordinates
   // (the canvas backing-store size, not its CSS size). Clamps to the
   // canvas extent so drag positions outside the canvas don't go negative
@@ -928,6 +1071,13 @@ function AppShell({ user, token, onLogout }) {
     // page — e.g. after "New workflow" before the next navigate. Otherwise
     // hover events race against a torn-down execution context.
     if (!isStreamingRef.current) return;
+    // While the page is loading and the consent banner is being analysed,
+    // swallow click events (mouse button down/up) so a stray click can't hit a
+    // half-loaded page or race the auto-dismiss. Hover/scroll/keys still flow.
+    if (interactionLockedRef.current && (type === "mousedown" || type === "mouseup")) {
+      setStatus("Loading… clicks paused");
+      return;
+    }
     socketRef.current?.emit("userAction", { type, ...extra });
   };
 
@@ -1234,6 +1384,17 @@ function AppShell({ user, token, onLogout }) {
               </svg>
               {selectedElement?.isMultiSelection ? `${selectedElement.matchCount} elements` : "Sidebar"}
             </button>
+            {/* View page source — opens the sidebar straight to the HTML tab */}
+            <button
+              className={`inspector-toggle-btn ${showSidebar && sidebarTab === "html" ? "active" : ""}`}
+              onClick={() => { setShowSidebar(true); setSidebarTab("html"); }}
+              title="View HTML source"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+              </svg>
+              Source
+            </button>
             {/* Pagination detector */}
             <button
               className="inspector-toggle-btn"
@@ -1255,7 +1416,11 @@ function AppShell({ user, token, onLogout }) {
 
           {/* Stream body: canvas + inspector sidebar side by side */}
           <div className="stream-body">
-            <div className="canvas-container" ref={canvasContainerRef}>
+            <div
+              className={`canvas-container${showSidebar ? " canvas-container--with-sidebar" : ""}`}
+              ref={canvasContainerRef}
+              style={htmlMaximized && sidebarTab === "html" ? { display: "none" } : undefined}
+            >
               <canvas ref={canvasRef} className="browser-canvas" tabIndex={0}
                 style={{ cursor: mode === "selection" ? "crosshair" : cursorType, outline: "none" }}
                 onContextMenu={e => e.preventDefault()}
@@ -1271,7 +1436,11 @@ function AppShell({ user, token, onLogout }) {
                   e.currentTarget.focus();
                   isDraggingRef.current = true;
                   const {x, y} = scaled(e);
-                  emit("mousedown", { x, y });
+                  // Forward the live modifier state so the backend can drop any
+                  // stuck modifier (e.g. an Alt whose keyup was lost to Alt+Tab)
+                  // before the click — otherwise a plain click can land as
+                  // Alt+click and download the link instead of navigating.
+                  emit("mousedown", { x, y, altKey: e.altKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey });
                   setStatus(`Clicked: x=${x}, y=${y}`);
                 }}
                 onPointerMove={e => {
@@ -1296,14 +1465,17 @@ function AppShell({ user, token, onLogout }) {
                   if (!isStreamingRef.current) return;
                   if (isPassthroughKey(e)) return;
                   e.preventDefault();
+                  heldKeysRef.current.add(e.key);
                   emit("keydown", { key: e.key, code: e.code });
                 }}
                 onKeyUp={e => {
                   if (!isStreamingRef.current) return;
                   if (isPassthroughKey(e)) return;
                   e.preventDefault();
+                  heldKeysRef.current.delete(e.key);
                   emit("keyup", { key: e.key, code: e.code });
                 }}
+                onBlur={releaseHeldKeys}
               />
               <div className={`mode-indicator ${mode}`}>
                 {mode === "selection"
@@ -1314,8 +1486,18 @@ function AppShell({ user, token, onLogout }) {
             </div>
 
             {/* Unified sidebar — always in flow next to canvas when on Live Browser */}
+            {showSidebar && !(htmlMaximized && sidebarTab === "html") && (
+              <div
+                className="sidebar-resize-handle"
+                onPointerDown={startSidebarResize}
+                title="Drag to resize"
+              />
+            )}
             {showSidebar && (
-              <div className="inspector-sidebar">
+              <div
+                className="inspector-sidebar"
+                style={htmlMaximized && sidebarTab === "html" ? { width: "100%" } : { width: sidebarWidth }}
+              >
                 {/* Tab bar */}
                 <div className="sidebar-tab-bar">
                   <button
@@ -1337,6 +1519,16 @@ function AppShell({ user, token, onLogout }) {
                       <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
                     </svg>
                     Workflow
+                  </button>
+                  <button
+                    className={`sidebar-tab-btn ${sidebarTab === "html" ? "active" : ""}`}
+                    onClick={() => setSidebarTab("html")}
+                    title="HTML Inspector"
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+                    </svg>
+                    HTML
                   </button>
                   <button className="sidebar-tab-close" onClick={() => setShowSidebar(false)} title="Hide sidebar">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -1413,6 +1605,19 @@ function AppShell({ user, token, onLogout }) {
                     onMoveStep={moveStepById}
                   />
                 )}
+
+                {/* HTML tab — DevTools-style source tree */}
+                {sidebarTab === "html" && (
+                  <HtmlInspectorPanel
+                    socket={socket}
+                    active={sidebarTab === "html"}
+                    refreshKey={`${currentPageUrl}|${pageReadyTick}`}
+                    selectedPath={!selectedElement?.isMultiSelection ? selectedElement?.path : null}
+                    onBeforeSelect={() => { selectingFromHtmlTabRef.current = true; }}
+                    maximized={htmlMaximized}
+                    onToggleMaximize={() => setHtmlMaximized(v => !v)}
+                  />
+                )}
               </div>
             )}
           </div>
@@ -1482,24 +1687,12 @@ function AppShell({ user, token, onLogout }) {
           onClose={() => { setPaginationOpen(false); setPaginationManualWaiting(false); socketRef.current?.emit("resetSelection"); }}
           onAdd={(step, pagType) => {
             addStep(step);
-            // Auto-set insert target based on pagination type:
-            //   next_button / page_numbers → inside the loop AT INDEX 0
-            //     so the user's extractions land BEFORE the pre-populated
-            //     "Stop"/click/wait do-while triplet — otherwise the
-            //     first iteration clicks before extracting and the first
-            //     page's data is lost.
-            //   load_more → inside at the end (existing behaviour): the
-            //     loop clicks first so newly-revealed items can be
-            //     extracted after.
-            //   infinite_scroll → after the loop: scrape once everything
-            //     has been loaded by scrolling.
-            if (pagType === 'infinite_scroll') {
-              setInsertTarget({ type: 'after', stepId: step.id });
-            } else if (pagType === 'next_button' || pagType === 'page_numbers') {
-              setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
-            } else {
-              setInsertTarget({ type: 'inside', stepId: step.id });
-            }
+            // Native pagination containers run their body once per page (or,
+            // for infinite scroll, once the page is fully loaded). Either way
+            // the user's extraction steps belong INSIDE the container, so we
+            // point the insert target there regardless of the detected type.
+            void pagType;
+            setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
             setPaginationOpen(false);
           }}
           onManualButton={() => {
@@ -1508,32 +1701,12 @@ function AppShell({ user, token, onLogout }) {
             socketRef.current?.emit("startElementSelection");
           }}
           onManualInfinite={() => {
-            const scrollStep = {
-              kind: "action", type: "SCROLL_PAGE", id: crypto.randomUUID(),
-              label: "Scroll to bottom",
-              params: { direction: "bottom" }, advanced: {},
-            };
-            const waitStep = {
-              kind: "action", type: "WAIT", id: crypto.randomUUID(),
-              label: "Wait for content to load",
-              params: { duration: 2000 }, advanced: {},
-            };
-            addStep({
-              kind: "control", type: "WHILE", id: crypto.randomUUID(),
-              label: "Infinite scroll loop",
-              params: {
-                expression: [
-                  "await page.evaluate(() => {",
-                  "  const items = document.querySelectorAll('li,article,[class*=\"item\"],[class*=\"card\"],[class*=\"result\"]');",
-                  "  if (items.length) items[items.length-1].scrollIntoView({block:'end',behavior:'instant'});",
-                  "  window.scrollTo(0, document.body.scrollHeight);",
-                  "  return (window.innerHeight + window.scrollY) < document.body.scrollHeight - 50;",
-                  "})",
-                ].join("\n"),
-                maxIterations: 200,
-              },
-              body: [scrollStep, waitStep],
-            });
+            // Drop in a native Infinite Scroll container — the scroll/stop
+            // logic lives in codegen, so the user just adds their extraction
+            // steps inside it.
+            const step = createControl(CONTROL_TYPES.PAGINATE_SCROLL);
+            addStep(step);
+            setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
             setPaginationOpen(false);
           }}
         />

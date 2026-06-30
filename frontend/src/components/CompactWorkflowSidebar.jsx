@@ -40,6 +40,9 @@ const TYPE_META = {
   CONDITION:           { cat:"Flow",        short:"IF"  },
   REPEAT:              { cat:"Flow",        short:"RPT" },
   WHILE:               { cat:"Flow",        short:"WHL" },
+  PAGINATE_SCROLL:     { cat:"Flow",        short:"PG↕" },
+  PAGINATE_BUTTON:     { cat:"Flow",        short:"PG→" },
+  PAGINATE_URL:        { cat:"Flow",        short:"PG🔗" },
 };
 
 const HAS_SELECTOR = new Set([
@@ -47,7 +50,8 @@ const HAS_SELECTOR = new Set([
   "EXTRACT_TEXT","EXTRACT_ATTRIBUTE","EXTRACT_HTML","EXTRACT_TABLE","EXTRACT_LIST","EXTRACT_JSON",
   "FOR_EACH_ELEMENTS","FOR_EACH","IF_ELEMENT_EXISTS","CLEAR_INPUT","TYPE_TEXT",
 ]);
-const LOOP_TYPES = new Set(["FOR_EACH_ELEMENTS","FOR_EACH","REPEAT","WHILE","CONDITION","IF_ELEMENT_EXISTS"]);
+const LOOP_TYPES = new Set(["FOR_EACH_ELEMENTS","FOR_EACH","REPEAT","WHILE","CONDITION","IF_ELEMENT_EXISTS",
+  "PAGINATE_SCROLL","PAGINATE_BUTTON","PAGINATE_URL"]);
 const BRANCH_KEYS = ["body","then","else","try","catch"];
 
 function getMeta(type) {
@@ -202,6 +206,7 @@ function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onRes
             pickActive={cws.listPickStepId === step.id}
             onStartPick={() => cws.onStartListPick && cws.onStartListPick(step.id, step.params?.containerSelector || "")}
             onStopPick={() => cws.onStopListPick && cws.onStopListPick()}
+            onName={(n) => { if (!(step.label && step.label.trim())) onUpdateLabel(step.id, n); }}
           />
         </div>
       )}

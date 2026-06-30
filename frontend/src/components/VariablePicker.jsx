@@ -339,7 +339,8 @@ function buildCapturedNode(v) {
 }
 
 function buildIterVarNode(iv) {
-  // iv: { name, source?, itemKind, columns?, sourceColumn?, loopType?, loopLabel? }
+  // iv: { name, source?, itemKind, columns?, sourceColumn?, loopType?, loopLabel?, role? }
+  const isIndex   = iv.role === "index";
   const itemKind  = iv.itemKind || "unknown";
   const refKind   = itemKind === "row" ? "object"
                   : itemKind === "scalar" ? "scalar"
@@ -349,7 +350,9 @@ function buildIterVarNode(iv) {
   // Always include "in loop: <label or type>" when we have it, so a step
   // nested in multiple loops can be visually disambiguated.
   let baseLabel;
-  if (itemKind === "scalar") {
+  if (isIndex) {
+    baseLabel = "loop counter (0-based number)";
+  } else if (itemKind === "scalar") {
     baseLabel = iv.sourceColumn && iv.source
       ? `${iv.sourceColumn} from each ${iv.source}`
       : "loop value";
@@ -361,14 +364,16 @@ function buildIterVarNode(iv) {
   const loopTag = iv.loopLabel
     ? `from "${iv.loopLabel}"`
     : iv.loopType === "FOR_EACH_ELEMENTS" ? "from for-each-elements"
+    : iv.loopType === "REPEAT" ? "from repeat"
+    : iv.loopType === "WHILE" ? "from while"
     : "from for-each";
   const typeLabel = `${baseLabel} · ${loopTag}`;
 
   const node = {
     id: `it:${iv.name}`,
     name: iv.name,
-    icon: "→",
-    iconClass: "iter",
+    icon: isIndex ? "#" : "→",
+    iconClass: isIndex ? "number" : "iter",
     typeLabel,
     kind: refKind,
     ref: `{{${iv.name}}}`,

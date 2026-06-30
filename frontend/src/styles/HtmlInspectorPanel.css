@@ -1,0 +1,127 @@
+/* ============================================================
+   HTML INSPECTOR TAB — DevTools-style source tree
+   ============================================================ */
+
+.hi-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+.hi-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.hi-search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--text-muted);
+  min-width: 0;
+}
+.hi-search input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.hi-match-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.hi-icon-btn {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 130ms, color 130ms;
+}
+.hi-icon-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.hi-icon-btn--active { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 14%, transparent); }
+
+.hi-tree {
+  flex: 1;
+  overflow: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 18px;
+  padding: 6px 0 20px;
+  white-space: pre;
+}
+
+.hi-empty {
+  padding: 24px;
+  color: var(--text-muted);
+  font-family: inherit;
+  white-space: normal;
+}
+.hi-error { color: #f85149; }
+
+.hi-line {
+  display: flex;
+  align-items: baseline;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.hi-line:hover { background: color-mix(in srgb, var(--accent-primary) 10%, transparent); }
+.hi-line.hi-active { background: color-mix(in srgb, var(--accent-primary) 22%, transparent); }
+.hi-line.hi-match { outline: 1px solid color-mix(in srgb, #d29922 70%, transparent); }
+
+.hi-text-line, .hi-comment-line { cursor: default; color: var(--text-secondary); }
+.hi-text-line:hover, .hi-comment-line:hover { background: none; }
+.hi-comment-line { color: #6e7681; font-style: italic; }
+
+.hi-toggle {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 9px;
+  cursor: pointer;
+  transform: rotate(0deg);
+  transition: transform 100ms;
+}
+.hi-toggle.hi-collapsed { transform: rotate(-90deg); }
+.hi-toggle-spacer { flex-shrink: 0; width: 18px; display: inline-block; }
+
+.hi-tag-name { color: #7ee787; }
+.hi-attr-name { color: #d2a8ff; }
+.hi-attr-value { color: #a5d6ff; }
+.hi-tag { color: var(--text-secondary); }
+.hi-collapsed-close { color: var(--text-muted); }
+
+.hi-close-line { color: var(--text-secondary); cursor: default; }
+.hi-close-line:hover { background: none; }

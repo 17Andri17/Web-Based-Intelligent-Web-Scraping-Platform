@@ -1,7 +1,7 @@
 import { useState, useCallback, useContext, useRef, useMemo } from "react";
 import React from "react";
 import { actionDefinitions } from "../actions/actionDefinitions";
-import { controlDefinitions, isControlStep } from "../workflow/controlDefinitions";
+import { controlDefinitions, isControlStep, isPaginationStep, PAGINATION_CONTROL_TYPES } from "../workflow/controlDefinitions";
 import { createAction, createControl } from "../workflow/stepFactory";
 import { DndContext, DragOverlay, useDroppable, useDraggable, closestCenter } from "@dnd-kit/core";
 import { findStepLocation } from "../workflow/useWorkflow";
@@ -128,23 +128,25 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
       if (s.kind === "control" && (s.type === "FOR_EACH" || s.type === "FOR_EACH_ELEMENTS")) {
         const itemVar = s.params?.itemVar
           || (s.type === "FOR_EACH_ELEMENTS" ? "el" : "item");
+        const loopLabel = s.label?.trim() || "";
 
         // FOR_EACH_ELEMENTS iterates over DOM nodes — rows aren't from a
         // captured table; the columns are the labels of its own body's
         // extraction steps. Synthesize a "row" with those columns.
+        let itemEntry;
         if (s.type === "FOR_EACH_ELEMENTS") {
           const innerCols = (s.body || [])
             .filter(c => c && c.kind === "action" && EXTRACTION_TYPES.has(c.type))
             .map(c => (c.label || "").trim())
             .filter(Boolean);
-          here = [...ancestors, {
+          itemEntry = {
             name: itemVar,
-            source: s.label?.trim() || null,
+            source: loopLabel || null,
             itemKind: "row",
             columns: innerCols.length ? innerCols : null,
             loopType: "FOR_EACH_ELEMENTS",
-            loopLabel: s.label?.trim() || "",
-          }];
+            loopLabel,
+          };
         } else {
           // FOR_EACH iterates over whatever `params.source` evaluates to.
           // The shape of each item depends on the source expression:
@@ -156,17 +158,33 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
           //                            unknown
           const sourceRaw = s.params?.source || "";
           const info = analyseSourceExpr(sourceRaw, colsByName);
-          here = [...ancestors, {
+          itemEntry = {
             name: itemVar,
             source: info.rootName || null,
             sourceColumn: info.projectedColumn || null,
             itemKind: info.itemKind,
             columns: info.itemKind === "row" ? (colsByName[info.rootName] || null) : null,
             loopType: "FOR_EACH",
-            loopLabel: s.label?.trim() || "",
+            loopLabel,
             sourceRaw,
-          }];
+          };
         }
+        // Also expose the loop's index counter so it can be referenced
+        // (e.g. {{index}} / {{i}}) just like the item variable. Push index
+        // before item so the final reverse lists item first, index second.
+        const idxVar = s.params?.indexVar || (s.type === "FOR_EACH_ELEMENTS" ? "i" : "index");
+        here = [...ancestors, {
+          name: idxVar, itemKind: "scalar", role: "index",
+          loopType: s.type, loopLabel,
+        }, itemEntry];
+      } else if (s.kind === "control" && s.type === "REPEAT") {
+        // REPEAT exposes its 0-based index counter so steps inside can
+        // reference it (e.g. build a page URL from {{i}}).
+        const idxVar = s.params?.indexVar || "i";
+        here = [...ancestors, {
+          name: idxVar, itemKind: "scalar", role: "index",
+          loopType: "REPEAT", loopLabel: s.label?.trim() || "",
+        }];
       }
       for (const key of ["body", "then", "else", "try", "catch"]) {
         if (Array.isArray(s[key])) {
@@ -300,6 +318,27 @@ function buildControlSummary(step, def) {
   if (!val && val !== 0) return null;
   const s = String(val);
   return s.slice(0, 56) + (s.length > 56 ? "…" : "");
+}
+
+// Human-readable one-liner describing how a native pagination container is
+// configured — shown under its header so the loop reads as a single
+// semantic step instead of a raw selector / number dump.
+function paginationConfigSummary(step) {
+  const p = step.params || {};
+  switch (step.type) {
+    case "PAGINATE_SCROLL":
+      return `scrolls until ${p.maxNoChange ?? 3} scrolls add nothing new`;
+    case "PAGINATE_BUTTON":
+      return p.selector
+        ? `clicks “${String(p.selector).slice(0, 40)}” until it disappears`
+        : "clicks the next button until it disappears";
+    case "PAGINATE_URL":
+      return p.urlPattern
+        ? `opens ${String(p.urlPattern).slice(0, 44)} until a page has no “${String(p.contentSelector || "…").slice(0, 24)}”`
+        : "opens pages by URL until one has no content";
+    default:
+      return null;
+  }
 }
 
 /* Build a CUSTOM_ACTION workflow step from a user's custom action definition.
@@ -496,7 +535,8 @@ export default function WorkflowPanel({
             onAdd(step, pickerCtx.containerPath, pickerCtx.index);
             setPickerCtx(null);
             // Auto-point insert target inside any newly added loop
-            const LOOP_TYPES = new Set(['FOR_EACH','FOR_EACH_ELEMENTS','WHILE','REPEAT']);
+            const LOOP_TYPES = new Set(['FOR_EACH','FOR_EACH_ELEMENTS','WHILE','REPEAT',
+              'PAGINATE_SCROLL','PAGINATE_BUTTON','PAGINATE_URL']);
             if (kind === "control" && LOOP_TYPES.has(type)) {
               onSetInsertTarget && onSetInsertTarget({ type: 'inside', stepId: step.id });
             }
@@ -593,6 +633,23 @@ function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, o
             <DraggableActionCard step={step} index={index} containerPath={containerPath} depth={depth}
               onEdit={() => onEditOpen({ containerPath, index, step })}
               onDelete={() => onDelete(containerPath, index)} />
+          )}
+          {/* Warning: any step placed AFTER a pagination loop runs only once
+              pagination has finished — i.e. on whatever page it stopped on,
+              not on every page. Surfaced whenever a pagination block has at
+              least one following sibling (covers both "added after" and
+              "reordered behind"). */}
+          {!isDragging && isPaginationStep(step) && index < steps.length - 1 && (
+            <div className="wf-after-pagination-note" role="note">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              </svg>
+              <span>
+                Steps below run <strong>after pagination finishes</strong> — on the last page it
+                visited, not on every page. To collect data from each page, drag those steps
+                <strong> inside</strong> the pagination block.
+              </span>
+            </div>
           )}
           {/* Drop zone AFTER each step — hidden for the two positions adjacent to the dragged item */}
           {!isNoOp(index + 1) && (
@@ -711,7 +768,12 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
   // auto-generated IF/BREAK/click/wait machinery behind an "Advanced
   // controls" toggle. The underlying tree is unchanged, only what's
   // rendered.
-  const isPagination = step.meta?.kind === 'pagination';
+  // Native pagination = one of the dedicated PAGINATE_* containers (no
+  // hidden infrastructure steps — the loop logic lives in codegen).
+  // Legacy pagination = the older While+If/Break recipe tagged via meta.
+  const isNativePagination = PAGINATION_CONTROL_TYPES.has(step.type);
+  const isLegacyPagination = !isNativePagination && step.meta?.kind === 'pagination';
+  const isPagination = isNativePagination || isLegacyPagination;
   const [advanced, setAdvanced] = useState(false);
   const def = controlDefinitions[step.type];
   const wp  = useContext(WPCtx) || {};
@@ -729,15 +791,21 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
     page_numbers: 'Pagination — Page numbers',
     load_more:    'Pagination — Load more',
   };
-  const headerLabel = isPagination
+  // Native containers already carry a descriptive label/icon/colour in their
+  // definition, so we use those directly. Legacy loops get the strategy-based
+  // substitution that hides the underlying While/If machinery.
+  const headerLabel = isLegacyPagination
     ? (PAGINATION_STRATEGY_LABEL[step.meta?.strategy] || 'Pagination loop')
     : `${def.label}${step.label ? ` — ${step.label}` : ''}`;
-  const headerIcon  = isPagination ? '↻' : def.icon;
-  const headerColor = isPagination ? '#58a6ff' : def.color;
-  const headerBg    = isPagination ? 'rgba(88,166,255,0.08)' : def.bgColor;
+  const headerIcon  = isLegacyPagination ? '↻' : def.icon;
+  const headerColor = isLegacyPagination ? '#58a6ff' : def.color;
+  const headerBg    = isLegacyPagination ? 'rgba(88,166,255,0.08)' : def.bgColor;
+  const paginationSubtitle = isNativePagination
+    ? paginationConfigSummary(step)
+    : 'clicks the next-page link until none remains';
 
   return (
-    <div className={`control-block ${isPagination ? 'control-block--pagination' : ''} ${isAfterTarget ? 'control-block--insert-target' : ''}`}
+    <div className={`control-block ${isPagination ? 'control-block--pagination' : ''} ${isNativePagination ? 'control-block--native-pagination' : ''} ${isAfterTarget ? 'control-block--insert-target' : ''}`}
          style={{ "--ctrl-color": headerColor, "--ctrl-bg": headerBg }}>
       <div className="control-block-header">
         <div className="step-drag-handle" {...(dragHandleProps || {})}><DragDotsIcon /></div>
@@ -745,14 +813,17 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
         <div className="control-info">
           <span className="control-label">{headerLabel}</span>
           {!isPagination && summary && <code className="control-expr">{summary}</code>}
-          {isPagination && (
-            <code className="control-expr" title="Click ⚙ to view the underlying While/If steps">
-              clicks the next-page link until none remains
+          {isPagination && paginationSubtitle && (
+            <code
+              className="control-expr"
+              title={isLegacyPagination ? "Click ⚙ to view the underlying While/If steps" : undefined}
+            >
+              {paginationSubtitle}
             </code>
           )}
         </div>
         <div className="step-actions">
-          {isPagination && (
+          {isLegacyPagination && (
             <button
               className={`step-action-btn ${advanced ? 'active' : ''}`}
               title={advanced ? 'Hide loop control steps' : 'Show advanced loop control steps'}
@@ -823,7 +894,7 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
 
             return (
               <div key={branch.key} className="control-branch">
-                {!isPagination && (
+                {!isLegacyPagination && (
                   <div className="branch-label-row">
                     <div className="branch-label" style={{ color: def.color }}>{branch.label}</div>
                     <div className="branch-line" style={{ background: def.color }} />
@@ -832,7 +903,7 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
                 <div className="branch-body">
                   {userSteps.length === 0 ? (
                     <div className="branch-empty">
-                      <span>{isPagination ? 'Drop your extraction steps here — they run once per page' : branch.emptyLabel}</span>
+                      <span>{isLegacyPagination ? 'Drop your extraction steps here — they run once per page' : branch.emptyLabel}</span>
                       <InsertRow containerPath={branchPath} index={0} onPickerOpen={onPickerOpen} isEnd />
                     </div>
                   ) : (
@@ -1138,6 +1209,10 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
               // on this step and the parent step id to fetch live preview.
               step={local}
               fieldKey={k}
+              // EXTRACT_LIST auto-detect proposes a Title Case table name;
+              // apply it as the step label, but never clobber a name the user
+              // already typed.
+              onName={(n) => setLocal(s => (s.label && s.label.trim()) ? s : { ...s, label: n })}
             />
           ))}
           {isCustom && Object.keys(inputs).length === 0 && (
@@ -1366,7 +1441,7 @@ function expectedKindForField(stepType, fieldKey) {
 }
 
 /* ── Field Renderer ── */
-function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey }) {
+function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey, onName }) {
   // hidden fields are stored in params but not shown in UI
   if (type === "hidden") return null;
 
@@ -1394,6 +1469,7 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
           pickActive={pickActive}
           onStartPick={() => onStartListPick && onStartListPick(step.id, containerSelector)}
           onStopPick={() => onStopListPick && onStopListPick()}
+          onName={onName}
         />
       </div>
     );

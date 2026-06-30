@@ -506,6 +506,28 @@ body {
 }
 .wf-offstart-btn:hover { background: rgba(210, 153, 34, 0.30); }
 
+/* Inline note shown between a pagination block and the sibling steps that
+   follow it — those steps run only after pagination has finished. */
+.wf-after-pagination-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 6px 4px;
+    padding: 8px 11px;
+    background: rgba(210, 153, 34, 0.07);
+    border: 1px solid rgba(210, 153, 34, 0.28);
+    border-radius: var(--radius-sm, 6px);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+}
+.wf-after-pagination-note > svg {
+    color: var(--accent-warning, #d29922);
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+.wf-after-pagination-note strong { color: var(--accent-warning, #d29922); font-weight: 600; }
+
 .workflow-title h2 {
     font-size: 18px;
     font-weight: 600;
@@ -1131,16 +1153,40 @@ body {
 }
 
 
-/* Canvas loses right radius when inspector sidebar is open beside it */
+/* Canvas loses right radius when inspector sidebar is open beside it
+   (a resize handle now sits between them, so this can't rely on the
+   adjacent-sibling selector anymore — driven by a class instead). */
 
-.canvas-container+.inspector-sidebar {
-    border-left: none;
-}
-
-.inspector-sidebar~.canvas-container,
-.canvas-container:has(+ .inspector-sidebar) {
+.canvas-container--with-sidebar {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
+}
+
+/* Drag handle between the canvas and the inspector sidebar */
+
+.sidebar-resize-handle {
+    flex-shrink: 0;
+    width: 6px;
+    margin: 0 -3px;
+    position: relative;
+    z-index: 2;
+    cursor: col-resize;
+    background: transparent;
+    touch-action: none;
+}
+.sidebar-resize-handle::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 2px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--border-default);
+    transition: background 130ms;
+}
+.sidebar-resize-handle:hover::after {
+    background: var(--accent-primary);
 }
 
 
@@ -2781,6 +2827,15 @@ body {
 .control-block--pagination .control-type-badge {
     background: rgba(88, 166, 255, 0.18);
     color: #58a6ff;
+    font-size: 15px;
+}
+
+/* Native pagination containers carry their own per-type colour (amber /
+   blue / teal) via --ctrl-color, so let the badge follow it rather than the
+   legacy blue used by the older composed loops. */
+.control-block--native-pagination .control-type-badge {
+    background: color-mix(in srgb, var(--ctrl-color) 18%, transparent);
+    color: var(--ctrl-color);
     font-size: 15px;
 }
 

@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import TransformPipelineEditor from "./TransformPipelineEditor";
+import { hasPipeline } from "../workflow/fieldTransforms";
 
 /* =====================================================================
    ExtractListFieldsEditor
@@ -37,6 +39,7 @@ export default function ExtractListFieldsEditor({
   pickActive = false,
   onStartPick,
   onStopPick,
+  onName,            // (titleCaseName) → set the step label (no-op if already named)
 }) {
   // ── Normalise the incoming value once so the rest of the component sees
   // a single uniform shape. We never persist this normalised form back
@@ -63,6 +66,8 @@ export default function ExtractListFieldsEditor({
   // transient pending-pick + name here.
   const [pendingPick, setPendingPick] = useState(null); // field info from browser
   const [pickName, setPickName]       = useState("");
+  // Which field's clean/split pipeline editor is expanded.
+  const [openClean, setOpenClean]     = useState(null);
   const pickNameRef                   = useRef(null);
   const pickActiveRef                 = useRef(pickActive);
   useEffect(() => { pickActiveRef.current = pickActive; }, [pickActive]);
@@ -98,6 +103,10 @@ export default function ExtractListFieldsEditor({
       }
       onChange(next);
       setAiSamples(samples);
+      // Auto-name the whole Extract List step with the AI's Title Case table
+      // name ("Product Listings"), so the user doesn't have to. The parent
+      // only applies it when the step isn't already named.
+      if (payload.name && typeof onName === "function") onName(payload.name);
       // Count where each field came from (ai vs heuristic vs rescued AI)
       // so the user can tell when the LLM failed, when a fallback kicked
       // in, and when the AI's intent was salvaged with the heuristic's
@@ -120,7 +129,7 @@ export default function ExtractListFieldsEditor({
     socket.on("aiExtractListFieldsResult", onResult);
     return () => socket.off("aiExtractListFieldsResult", onResult);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, normalised]);
+  }, [socket, normalised, onName]);
 
   // Listen for field picks from the browser (list-field-pick mode).
   useEffect(() => {
@@ -184,6 +193,15 @@ export default function ExtractListFieldsEditor({
     // Switching away from "attr" clears the attribute name.
     if (patch.kind && patch.kind !== "attr") next[name].attribute = null;
     onChange(next);
+  };
+
+  // Persist a field's clean/split pipeline. Undefined values are dropped so a
+  // field with no transforms stays a plain { selector, kind, attribute }.
+  const setPipeline = (name, { transforms, split }) => {
+    const spec = { ...normalised[name] };
+    if (transforms && transforms.length) spec.transforms = transforms; else delete spec.transforms;
+    if (split) spec.split = split; else delete spec.split;
+    onChange({ ...normalised, [name]: spec });
   };
 
   const renameField = (oldName, newNameRaw) => {
@@ -408,6 +426,14 @@ export default function ExtractListFieldsEditor({
                     )}
                     <button
                       type="button"
+                      className={`elfe-clean-toggle ${hasPipeline(f) ? "is-active" : ""} ${openClean === name ? "is-open" : ""}`}
+                      onClick={() => setOpenClean(openClean === name ? null : name)}
+                      title="Clean / split this field"
+                    >
+                      ✨ Clean{hasPipeline(f) ? " ●" : ""}
+                    </button>
+                    <button
+                      type="button"
                       className="elfe-row-remove"
                       onClick={() => removeField(name)}
                       title="Remove"
@@ -419,6 +445,17 @@ export default function ExtractListFieldsEditor({
                     placeholder="CSS selector relative to the container, e.g. .price"
                     onChange={e => updateField(name, { selector: e.target.value })}
                   />
+                  {openClean === name && (
+                    <div className="elfe-clean-panel">
+                      <TransformPipelineEditor
+                        fieldName={name}
+                        transforms={f.transforms}
+                        split={f.split}
+                        sample={sample}
+                        onChange={(pipeline) => setPipeline(name, pipeline)}
+                      />
+                    </div>
+                  )}
                   {sample !== undefined && (
                     <div className="elfe-sample" title={sample == null ? "no value" : String(sample)}>
                       <span className="elfe-sample-label">sample:</span>
@@ -473,6 +510,9 @@ function normaliseFields(value) {
         kind,
         attribute: kind === "attr" && typeof v.attribute === "string" ? v.attribute : null,
       };
+      // Preserve the per-field clean/split pipeline so it survives edits.
+      if (Array.isArray(v.transforms) && v.transforms.length) out[k].transforms = v.transforms;
+      if (v.split && typeof v.split === "object")             out[k].split = v.split;
     }
   }
   return out;

@@ -1,5 +1,8 @@
 'use strict';
 
+const { RUNTIME_SRC: FIELD_TRANSFORM_RUNTIME, __ftHasPipeline } = require('./fieldTransforms');
+const { buildCodegenConsentHelper } = require('../browser/consent');
+
 // ─── Extraction action types (steps that produce named data) ──────────────
 const EXTRACTION_TYPES = new Set([
   'EXTRACT_TEXT', 'EXTRACT_ATTRIBUTE', 'EXTRACT_HTML',
@@ -233,13 +236,20 @@ function genAction(step, ctx) {
   switch (type) {
 
     // ── Navigation ───────────────────────────────────────────────────────
-    case 'NAVIGATE': return `
+    case 'NAVIGATE': {
+      // Per-step cookie-consent preference: 'accept' (default) | 'reject' | 'off'.
+      const consentPref = advanced.consent || 'accept';
+      const consentCall = consentPref === 'off'
+        ? ''
+        : `\nawait dismissConsent(page, ${JSON.stringify(consentPref)});`;
+      return `
 // Navigate
 await page.goto(${q(params.url)}, {
   waitUntil: ${q(advanced.waitUntil || 'load')},
   timeout: ${num(advanced.timeout, 30000)},
-});
+});${consentCall}
 `.trim() + '\n';
+    }
 
     case 'GO_BACK': return `await page.goBack({ waitUntil: ${q(advanced.waitUntil || 'load')} });\n`;
 
@@ -251,6 +261,7 @@ await page.goto(${q(params.url)}, {
   await applyStealthToPage(_newPage);
   await _newPage.goto(${q(params.url)}, { waitUntil: 'load' });
   page = _newPage;
+  await dismissConsent(page);
 }
 `.trim() + '\n';
 
@@ -414,28 +425,47 @@ ${store}`.trim() + '\n';
       // AI-friendly object form `{ title: { selector, kind, attribute } }`
       // produce identical runtime code.
       const rawFields = params.fields || {};
-      const normalised = {};
+      // `evalFields` carries only what the in-page extraction needs
+      // (selector/kind/attribute). `postFields` additionally carries the
+      // per-field clean/split pipelines, which run Node-side after the raw
+      // values come back (custom JS, regex split, …).
+      const evalFields = {};
+      const postFields = {};
+      let hasPipeline = false;
       for (const [name, v] of Object.entries(rawFields)) {
         if (v == null) continue;
+        let spec;
         if (typeof v === 'string') {
-          normalised[name] = { selector: v, kind: 'text', attribute: null };
+          spec = { selector: v, kind: 'text', attribute: null };
         } else if (typeof v === 'object') {
           const kind = v.kind === 'attr' || v.kind === 'attribute' ? 'attr'
                      : v.kind === 'html' ? 'html'
                      : 'text';
-          normalised[name] = {
+          spec = {
             selector: typeof v.selector === 'string' ? v.selector : '',
             kind,
             attribute: kind === 'attr' && typeof v.attribute === 'string' ? v.attribute : null,
           };
+          if (Array.isArray(v.transforms) && v.transforms.length) spec.transforms = v.transforms;
+          if (v.split && typeof v.split === 'object')             spec.split = v.split;
+        } else {
+          continue;
         }
+        evalFields[name] = { selector: spec.selector, kind: spec.kind, attribute: spec.attribute };
+        postFields[name] = spec;
+        if (__ftHasPipeline(spec)) hasPipeline = true;
       }
-      const fieldsJson = JSON.stringify(normalised);
+      const fieldsJson = JSON.stringify(evalFields);
       const sels = selList({
         selector: params.containerSelector,
         selectorType: params.selectorType || 'css',
         fallbackSelectors: params.fallbackSelectors || [],
       });
+      // Only emit the post-processing map when at least one field configures a
+      // transform or split — keeps the generated code minimal otherwise.
+      const postProcess = hasPipeline
+        ? `.then(_rows => _rows.map(_row => __ftMaterializeRow(_row, ${JSON.stringify(postFields)})))`
+        : '';
       return `
 const ${varName} = await (async () => {
   const _containers = await resolveElements(page, ${sels});
@@ -458,7 +488,7 @@ const ${varName} = await (async () => {
       }
       return item;
     }, container, ${fieldsJson})
-  ));
+  ))${postProcess};
 })();
 ${store}`.trim() + '\n';
     }
@@ -654,6 +684,7 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `    try {`,
           `      await applyStealthToPage(_subPage);`,
           `      await _subPage.goto(String(${itemVar}), { waitUntil: 'load', timeout: ${timeoutMs} });`,
+          `      await dismissConsent(_subPage);`,
           `      const _subResults = await (async (page) => {`,
           `        const __results__ = {};`,
           `        let __currentStep__ = null;`,
@@ -694,6 +725,7 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         `  try {`,
         `    await applyStealthToPage(_subPage);`,
         `    await _subPage.goto(_subUrl, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+        `    await dismissConsent(_subPage);`,
         `    const _subResults = await (async (page) => {`,
         `      const __results__ = {};`,
         `      let __currentStep__ = null;`,
@@ -876,7 +908,133 @@ ${body}  }
         : num(params.count, 10);
       const idx   = params.indexVar || 'i';
       const body  = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
-      return `for (let ${idx} = 0; ${idx} < ${count}; ${idx}++) {\n${body}}\n`;
+      // Emit ITER_START/TICK/END markers like the other loops so the live
+      // "Flow" tab shows the running "N / M iterations" counter for REPEAT too.
+      const stepIdJson = JSON.stringify(step.id || '');
+      return `{
+  const _rep_total = ${count};
+  console.log('ITER_START:' + JSON.stringify({stepId: ${stepIdJson}, total: _rep_total}));
+  for (let ${idx} = 0; ${idx} < _rep_total; ${idx}++) {
+    console.log('ITER_TICK:' + JSON.stringify({stepId: ${stepIdJson}, index: ${idx}}));
+${body}  }
+  console.log('ITER_END:' + JSON.stringify({stepId: ${stepIdJson}}));
+}
+`.trim() + '\n';
+    }
+
+    // ── Pagination: Infinite Scroll ──────────────────────────────────────
+    // Scroll to the bottom repeatedly until the page stops growing for
+    // `maxNoChange` consecutive scrolls, THEN run the body once against the
+    // fully-loaded page. Body keeps the parent's inLoop semantics (it runs a
+    // single time here, so a top-level scroll extraction just overwrites).
+    case 'PAGINATE_SCROLL': {
+      const delay       = num(params.scrollDelay, 1500);
+      const maxNoChange = Math.max(1, num(params.maxNoChange, 3));
+      const max         = num(params.maxIterations, 100);
+      const body        = genStepList(step.body || [], ctx, depth + 1);
+      const idJson      = JSON.stringify(step.id || '');
+      return `{
+  // Pagination — Infinite Scroll
+  let _noChange = 0, _prevH = 0, _scrollGuard = 0;
+  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
+  while (_noChange < ${maxNoChange} && _scrollGuard < ${max}) {
+    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _scrollGuard}));
+    _scrollGuard++;
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await new Promise(r => setTimeout(r, ${delay}));
+    const _h = await page.evaluate(() => document.body.scrollHeight);
+    if (_h <= _prevH + 10) _noChange++; else _noChange = 0;
+    _prevH = _h;
+  }
+  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
+${body}}
+`;
+    }
+
+    // ── Pagination: Click a button (Next / Load more) ─────────────────────
+    // Run the body on the current page, then click the next button (trying
+    // the fallback selectors in order). Stops the moment no button resolves.
+    // Body accumulates per-page results (inLoop = true).
+    case 'PAGINATE_BUTTON': {
+      const sels   = selectorList({
+        selector: params.selector || '',
+        selectorType: params.selectorType || 'css',
+        fallbackSelectors: params.fallbackSelectors || [],
+      }, ctx.declaredVars);
+      const delay  = num(params.delay, 2000);
+      const max    = num(params.maxIterations, 200);
+      const body   = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
+      const idJson = JSON.stringify(step.id || '');
+      return `{
+  // Pagination — Click Button
+  let _pageGuard = 0;
+  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
+  while (_pageGuard < ${max}) {
+    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _pageGuard}));
+    _pageGuard++;
+${body}    const _nextBtn = await resolveElement(page, ${sels});
+    if (!_nextBtn) break;
+    try {
+      await _nextBtn.click();
+    } catch (_) { break; }
+    await new Promise(r => setTimeout(r, ${delay}));
+  }
+  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
+}
+`;
+    }
+
+    // ── Pagination: URL pages (incrementing) ──────────────────────────────
+    // A while-loop (NOT a fixed for-loop): build the next page's URL from the
+    // pattern, navigate, and stop as soon as the page has none of the desired
+    // elements — so it adapts automatically when the page count changes.
+    case 'PAGINATE_URL': {
+      const pattern   = params.urlPattern || '';
+      const startPage = num(params.startPage, 1);
+      const stepInc   = num(params.step, 1) || 1;
+      const delay     = num(params.delay, 1500);
+      const max       = num(params.maxIterations, 500);
+      const body      = genStepList(step.body || [], { ...ctx, inLoop: true }, depth + 1);
+      const idJson    = JSON.stringify(step.id || '');
+      // Splice `{n}` placeholders with the live page number. Each literal
+      // chunk still supports {{variable}} interpolation via qStr.
+      const urlExpr = pattern.includes('{n}')
+        ? pattern.split('{n}').map(p => qStr(p)).join(' + _pageNo + ')
+        : qStr(pattern);
+      const hasContentSel = !!(params.contentSelector && String(params.contentSelector).trim());
+      const contentSels = selectorList({
+        selector: params.contentSelector || '',
+        selectorType: 'css',
+        fallbackSelectors: [],
+      }, ctx.declaredVars);
+      const contentCheck = hasContentSel
+        ? `    const _hasContent = await resolveElement(page, ${contentSels});\n` +
+          `    if (!_hasContent) break;  // no desired elements → past the last page\n`
+        : `    // (no content selector set — relying on the safety cap to stop)\n`;
+      // The body runs on the CURRENT page first (the start URL is page 1),
+      // THEN we navigate to the next page. So the original page is scraped
+      // without a redundant re-navigation, and navigation only ever advances
+      // to page 2, 3, …. The content check guards the freshly-loaded page so
+      // we break before extracting an empty page.
+      return `{
+  // Pagination — URL Pages (while-loop; scrapes the current page first, then
+  // advances page-by-page until a page has none of the desired elements)
+  let _pageNo = ${startPage}, _urlGuard = 0;
+  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
+  while (_urlGuard < ${max}) {
+    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _urlGuard}));
+    _urlGuard++;
+${body}    _pageNo += ${stepInc};
+    const _pageUrl = ${urlExpr};
+    try {
+      await page.goto(_pageUrl, { waitUntil: 'load', timeout: 30000 });
+    } catch (_) { break; }
+    await dismissConsent(page);
+    await new Promise(r => setTimeout(r, ${delay}));
+${contentCheck}  }
+  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
+}
+`;
     }
 
     case 'TRY_CATCH': {
@@ -925,10 +1083,106 @@ function genStepList(steps, ctx, depth = 0) {
 }
 
 /* =========================================================================
+   DOWNLOAD (CLEAN) MODE HELPERS
+   When a user downloads the workflow as a standalone script we strip the
+   platform-only instrumentation — per-step / per-iteration log markers and
+   the self-healing snapshot machinery — so the file is short and readable.
+   The in-platform run path keeps everything (it needs the markers for the
+   live Flow tab and the snapshots for self-healing).
+   ========================================================================= */
+
+// Self-healing / progress helpers — included ONLY for in-platform runs.
+const INSTRUMENTATION_HELPERS_SRC = `/**
+ * Snapshot a cleaned version of the page's HTML, useful as context to an
+ * LLM-based workflow repair step.
+ */
+async function __snapshotPageHtml(page) {
+  if (!page) return null;
+  try {
+    return await page.evaluate(() => {
+      try {
+        const root = document.documentElement.cloneNode(true);
+        root.querySelectorAll('head, script, style, noscript, link, meta, template, svg').forEach(n => n.remove());
+        root.querySelectorAll('*').forEach(el => {
+          for (const a of Array.from(el.attributes || [])) {
+            if (a.name.startsWith('on')) el.removeAttribute(a.name);
+            if (a.name === 'src' && /^data:/i.test(a.value)) el.setAttribute('src', '[data-uri-removed]');
+          }
+        });
+        let html = root.outerHTML || '';
+        const LIMIT = 60000;
+        if (html.length > LIMIT) html = html.slice(0, LIMIT) + '...[truncated]';
+        return html;
+      } catch (_) { return null; }
+    });
+  } catch (_) { return null; }
+}
+
+function __extractionStats(v) {
+  if (Array.isArray(v)) {
+    const fields = {};
+    for (const row of v) {
+      if (row && typeof row === 'object' && !Array.isArray(row)) {
+        for (const k of Object.keys(row)) {
+          if (k === '_index') continue;
+          const val = row[k];
+          if (!fields[k]) fields[k] = { nonEmpty: 0, total: 0 };
+          fields[k].total++;
+          if (val != null && String(val).trim() !== '') fields[k].nonEmpty++;
+        }
+      }
+    }
+    return { count: v.length, fields };
+  }
+  return { count: (v == null || (typeof v === 'string' && v.trim() === '')) ? 0 : 1, fields: {} };
+}
+
+function __suspiciousStats(st, isCollection) {
+  if (!st) return false;
+  const c = st.count || 0;
+  if (isCollection ? c <= 1 : c === 0) return true;
+  for (const k of Object.keys(st.fields || {})) {
+    const f = st.fields[k];
+    if (f && f.total > 0 && f.nonEmpty === 0) return true;
+  }
+  return false;
+}
+
+function __safeUrl(page) { try { return page.url(); } catch (_) { return null; } }
+
+async function __emitStepStats(page, info, value) {
+  try {
+    const st = __extractionStats(value);
+    if (__suspiciousStats(st, Array.isArray(value))) {
+      const html = await __snapshotPageHtml(page);
+      console.log('STEP_SNAPSHOT:' + JSON.stringify({ stepId: info.stepId, url: __safeUrl(page), html: html }));
+    }
+    console.log('STEP_RESULT:' + JSON.stringify(Object.assign({}, info, { count: st.count, fields: st.fields })));
+  } catch (_) {}
+}`;
+
+// Remove the per-step / per-iteration marker lines and the stats calls from
+// generated step code. Every such marker is emitted as its own standalone
+// line, so a line-level filter is exact and safe.
+function stripDownloadInstrumentation(code) {
+  const DROP = [
+    /^\s*console\.log\('STEP_BEGIN:/,
+    /^\s*console\.log\('ITER_(?:START|TICK|END):/,
+    /^\s*__currentStep__\s*=/,
+    /^\s*let __currentStep__\s*=\s*null;\s*$/,
+    /^\s*await __emitStepStats\(/,
+  ];
+  return code.split('\n').filter(l => !DROP.some(rx => rx.test(l))).join('\n');
+}
+
+/* =========================================================================
    MAIN EXPORT: generateCode(workflow) → string
    workflow = { steps: [...], meta: { startUrl, viewport } }
    ========================================================================= */
-function generateCode(workflow) {
+function generateCode(workflow, options = {}) {
+  // clean = "download" mode: strip platform-only instrumentation so the
+  // standalone script is short and readable.
+  const clean    = !!options.clean;
   const steps    = workflow.steps   || [];
   const startUrl = workflow.meta?.startUrl || null;
   const vpW      = workflow.meta?.viewportWidth  || 1280;
@@ -968,7 +1222,76 @@ function generateCode(workflow) {
     capturedAliases: new Set(),
   };
 
-  const stepCode = genStepList(steps, ctx, 2);
+  let stepCode = genStepList(steps, ctx, 2);
+  if (clean) stepCode = stripDownloadInstrumentation(stepCode);
+
+  // ── Conditional prelude / wrapper pieces ────────────────────────────────
+  // Only inline the field-transform runtime when a step actually uses it,
+  // and the self-healing instrumentation only for in-platform runs.
+  const usesFieldRuntime = /__ftMaterializeRow\(/.test(stepCode);
+  const fieldRuntimeSrc = usesFieldRuntime
+    ? `\n// ─── Field transform runtime (clean / split per-field pipelines) ──────────\n${FIELD_TRANSFORM_RUNTIME}\n`
+    : '';
+  const instrumentationSrc = clean ? '' : `\n${INSTRUMENTATION_HELPERS_SRC}\n`;
+  // Cookie-consent auto-dismiss helper — always included so every navigation
+  // (initial, pagination, subflow, new tab) clears CMP banners. Honours the
+  // SCRAPER_CONSENT env var ('accept' default | 'reject' | 'off').
+  const consentHelperSrc = buildCodegenConsentHelper();
+  const currentStepDecl = clean ? '' : '  let __currentStep__ = null;\n';
+  const workflowResultsMarker = clean
+    ? ''
+    : `    console.log('\\nWORKFLOW_RESULTS:' + JSON.stringify(__results__));\n`;
+  // Commented-out save-to-file helpers, included only in a downloaded
+  // (clean) script so the user can switch on JSON or CSV export by
+  // uncommenting — no extra dependencies needed.
+  const saversSnippet = clean
+    ? `
+  // ─── Save results to a file (uncomment what you need) ──────────────────
+  // const fs = require('fs');
+  //
+  // // → JSON: write everything to one file
+  // fs.writeFileSync('results.json', JSON.stringify(__results__, null, 2));
+  //
+  // // → CSV: one .csv per result set that is a list of rows
+  // for (const [name, rows] of Object.entries(__results__)) {
+  //   if (!Array.isArray(rows) || rows.length === 0 || typeof rows[0] !== 'object') continue;
+  //   const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
+  //   const esc = (v) => {
+  //     const s = v === null || v === undefined ? '' : String(v);
+  //     return /[",\\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  //   };
+  //   const csv = [cols.join(','), ...rows.map(r => cols.map(c => esc(r[c])).join(','))].join('\\n');
+  //   fs.writeFileSync(name + '.csv', csv);
+  // }
+`
+    : '';
+  const catchBody = clean
+    ? `    console.error('❌ Workflow error:', err.message);
+    process.exitCode = 1;`
+    : `    console.error('❌ Workflow error:', err.message);
+    try {
+      const __html__ = await __snapshotPageHtml(page);
+      const __payload__ = {
+        step: __currentStep__,
+        message: err && err.message ? String(err.message) : String(err),
+        stack: err && err.stack ? String(err.stack).split('\\n').slice(0, 8).join('\\n') : '',
+        url: (() => { try { return page.url(); } catch (_) { return null; } })(),
+        html: __html__,
+      };
+      console.log('STEP_ERROR:' + JSON.stringify(__payload__));
+    } catch (_) {}
+    process.exitCode = 1;`;
+  const headerDoc = clean
+    ? `/**
+ * Web-scraping script generated by WebScraper.
+ *
+ * Setup:  npm i puppeteer-extra puppeteer-extra-plugin-stealth puppeteer
+ * Run:    node workflow.js
+ */`
+    : `/**
+ * Generated by WebScraper — ${new Date().toISOString()}
+ * Run:  node workflow.js
+ */`;
 
   // Now that step codegen is done, ctx.capturedAliases holds every alias
   // we need to declare. Render them as `let <name>;` lines at the top of
@@ -982,10 +1305,7 @@ function generateCode(workflow) {
   return `#!/usr/bin/env node
 'use strict';
 
-/**
- * Generated by WebScraper — ${new Date().toISOString()}
- * Run:  node workflow.js
- */
+${headerDoc}
 
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -1085,97 +1405,10 @@ async function evalOnElements(page, selectors, fn) {
   if (!els.length) return [];
   return Promise.all(els.map(el => page.evaluate(fn, el)));
 }
-
-/**
- * Snapshot a cleaned version of the page's HTML, useful as context to an
- * LLM-based workflow repair step. We strip head, scripts and styles to
- * keep the snippet focused on visible structure (which is what selectors
- * usually target). Truncated to keep the payload small for the LLM.
- */
-async function __snapshotPageHtml(page) {
-  if (!page) return null;
-  try {
-    return await page.evaluate(() => {
-      try {
-        const root = document.documentElement.cloneNode(true);
-        root.querySelectorAll('head, script, style, noscript, link, meta, template, svg').forEach(n => n.remove());
-        // Drop inline event handlers + base64 data: srcs which aren't useful here
-        root.querySelectorAll('*').forEach(el => {
-          for (const a of Array.from(el.attributes || [])) {
-            if (a.name.startsWith('on')) el.removeAttribute(a.name);
-            if (a.name === 'src' && /^data:/i.test(a.value)) el.setAttribute('src', '[data-uri-removed]');
-          }
-        });
-        let html = root.outerHTML || '';
-        const LIMIT = 60000;
-        if (html.length > LIMIT) html = html.slice(0, LIMIT) + '...[truncated]';
-        return html;
-      } catch (_) { return null; }
-    });
-  } catch (_) { return null; }
-}
-
-/**
- * Compute record-count + per-field fill statistics for an extraction result.
- * A list/multiple result is an array (count = length; fields tallied from the
- * row objects). A scalar is 0 (nothing) or 1. This is what lets the platform
- * notice a step that "succeeded" but captured nothing — the silent failure a
- * broken selector produces.
- */
-function __extractionStats(v) {
-  if (Array.isArray(v)) {
-    const fields = {};
-    for (const row of v) {
-      if (row && typeof row === 'object' && !Array.isArray(row)) {
-        for (const k of Object.keys(row)) {
-          if (k === '_index') continue;
-          const val = row[k];
-          if (!fields[k]) fields[k] = { nonEmpty: 0, total: 0 };
-          fields[k].total++;
-          if (val != null && String(val).trim() !== '') fields[k].nonEmpty++;
-        }
-      }
-    }
-    return { count: v.length, fields };
-  }
-  return { count: (v == null || (typeof v === 'string' && v.trim() === '')) ? 0 : 1, fields: {} };
-}
-
-// A result worth snapshotting for possible self-healing. For a COLLECTION
-// (list/loop) that means ≤1 record or a field empty in every record; for a
-// SCALAR single value it means nothing came back (count 1 is the healthy
-// state for a single extraction, so it must NOT trigger a snapshot).
-function __suspiciousStats(st, isCollection) {
-  if (!st) return false;
-  const c = st.count || 0;
-  if (isCollection ? c <= 1 : c === 0) return true;
-  for (const k of Object.keys(st.fields || {})) {
-    const f = st.fields[k];
-    if (f && f.total > 0 && f.nonEmpty === 0) return true;
-  }
-  return false;
-}
-
-function __safeUrl(page) { try { return page.url(); } catch (_) { return null; } }
-
-// Emit a STEP_RESULT marker (record counts / field fill) for an extraction,
-// plus a STEP_SNAPSHOT of the page when the result looks broken — the runner
-// forwards both to the execution pipeline, which decides whether to self-heal.
-async function __emitStepStats(page, info, value) {
-  try {
-    const st = __extractionStats(value);
-    if (__suspiciousStats(st, Array.isArray(value))) {
-      const html = await __snapshotPageHtml(page);
-      console.log('STEP_SNAPSHOT:' + JSON.stringify({ stepId: info.stepId, url: __safeUrl(page), html: html }));
-    }
-    console.log('STEP_RESULT:' + JSON.stringify(Object.assign({}, info, { count: st.count, fields: st.fields })));
-  } catch (_) {}
-}
-
+${fieldRuntimeSrc}${instrumentationSrc}${consentHelperSrc}
 async function run() {
   const __results__ = {};
-  let __currentStep__ = null;
-${variablesCode}${capturedAliasesCode}
+${currentStepDecl}${variablesCode}${capturedAliasesCode}
   const browser = await puppeteer.launch({
     // Honour CHROME_PATH when set (Linux servers / CI / containers); fall back
     // to the local Chrome install used during development.
@@ -1203,19 +1436,7 @@ ${variablesCode}${capturedAliasesCode}
   try {
 ${stepCode}
   } catch (err) {
-    console.error('❌ Workflow error:', err.message);
-    try {
-      const __html__ = await __snapshotPageHtml(page);
-      const __payload__ = {
-        step: __currentStep__,
-        message: err && err.message ? String(err.message) : String(err),
-        stack: err && err.stack ? String(err.stack).split('\\n').slice(0, 8).join('\\n') : '',
-        url: (() => { try { return page.url(); } catch (_) { return null; } })(),
-        html: __html__,
-      };
-      console.log('STEP_ERROR:' + JSON.stringify(__payload__));
-    } catch (_) {}
-    process.exitCode = 1;
+${catchBody}
   } finally {
     try { await browser.close(); } catch (_) {}
   }
@@ -1242,9 +1463,8 @@ ${stepCode}
         console.log(JSON.stringify(value, null, 2));
       }
     }
-    console.log('\\nWORKFLOW_RESULTS:' + JSON.stringify(__results__));
-  }
-}
+${workflowResultsMarker}  }
+${saversSnippet}}
 
 run().catch(err => {
   console.error('Fatal:', err);
@@ -1309,4 +1529,201 @@ function renderVariableLiteral(v) {
   }
 }
 
-module.exports = { generateCode };
+/* =========================================================================
+   README GENERATOR
+   Produces a Markdown README tailored to a workflow's generated script —
+   how to install + run it, and exactly where to make common edits. Shipped
+   alongside the downloaded workflow.js.
+   ========================================================================= */
+
+// Walk the step tree once to pull the facts the README references: the start
+// URL, declared variables, the named outputs the script collects, and which
+// optional features are in play (pagination, field cleaning, subflows).
+function collectReadmeInfo(workflow) {
+  const steps = workflow.steps || [];
+  const variables = Array.isArray(workflow.meta?.variables) ? workflow.meta.variables : [];
+  const outputs = [];
+  let startUrl = workflow.meta?.startUrl || null;
+  let hasPagination = false, hasTransforms = false, hasSubflow = false, hasPageLoop = false;
+
+  function walk(arr) {
+    for (const s of arr || []) {
+      if (!s || typeof s !== 'object') continue;
+      if (s.kind === 'action') {
+        if (s.type === 'NAVIGATE' && !startUrl && s.params?.url) startUrl = s.params.url;
+        if (EXTRACTION_TYPES.has(s.type) && s.label && s.label.trim()) outputs.push(s.label.trim());
+        if (s.type === 'RUN_SUBFLOW') {
+          hasSubflow = true;
+          const k = (s.params?.outputVar && String(s.params.outputVar).trim()) || (s.label && s.label.trim());
+          if (k) outputs.push(k);
+        }
+        if (s.type === 'EXTRACT_LIST') {
+          const f = s.params?.fields || {};
+          for (const spec of Object.values(f)) if (__ftHasPipeline(spec)) hasTransforms = true;
+        }
+      } else if (s.kind === 'control') {
+        if (s.meta?.kind === 'pagination') hasPagination = true;
+        if (s.type === 'REPEAT' || s.meta?.strategy === 'url_param') hasPageLoop = true;
+      }
+      for (const key of ['body', 'then', 'else', 'try', 'catch']) {
+        if (Array.isArray(s[key])) walk(s[key]);
+      }
+    }
+  }
+  walk(steps);
+
+  return {
+    name: (workflow.meta?.name && String(workflow.meta.name).trim()) || '',
+    startUrl,
+    variables,
+    outputs: [...new Set(outputs)],
+    hasPagination, hasTransforms, hasSubflow, hasPageLoop,
+  };
+}
+
+function generateReadme(workflow) {
+  const info = collectReadmeInfo(workflow);
+  const BT = String.fromCharCode(96);          // backtick
+  const FENCE = BT + BT + BT;
+  const code = (s) => BT + String(s) + BT;
+  const title = info.name ? `${info.name} — Web Scraper` : 'Web Scraper — Generated Script';
+
+  const L = [];
+  L.push(`# ${title}`);
+  L.push('');
+  L.push('This folder contains a standalone web-scraping script generated by **WebScraper**.');
+  L.push('It drives a real Chrome browser with [Puppeteer](https://pptr.dev/) and prints the data it collects.');
+  L.push('');
+
+  L.push('## Requirements');
+  L.push('');
+  L.push('- **Node.js 18+** — check with ' + code('node -v'));
+  L.push('- **Google Chrome** (or let the install step below download a bundled Chromium)');
+  L.push('');
+
+  L.push('## 1. Install dependencies');
+  L.push('');
+  L.push('From this folder, run:');
+  L.push('');
+  L.push(FENCE + 'bash');
+  L.push('npm init -y');
+  L.push('npm install puppeteer-extra puppeteer-extra-plugin-stealth puppeteer');
+  L.push(FENCE);
+  L.push('');
+  L.push('> ' + code('puppeteer') + ' downloads its own Chromium. To use a Chrome you already have, skip it and set ' + code('CHROME_PATH') + ' (see below).');
+  L.push('');
+
+  L.push('## 2. Run it');
+  L.push('');
+  L.push(FENCE + 'bash');
+  L.push('node workflow.js');
+  L.push(FENCE);
+  L.push('');
+  if (info.startUrl) {
+    L.push('The script starts at ' + code(info.startUrl) + ', runs each step, then prints the results.');
+  } else {
+    L.push('The script opens the browser, runs each step, then prints the results.');
+  }
+  L.push('');
+
+  L.push('## Output');
+  L.push('');
+  if (info.outputs.length) {
+    L.push('Collected data is printed to the terminal, grouped under: ' + info.outputs.map(code).join(', ') + '.');
+  } else {
+    L.push('Collected data is printed to the terminal when the run finishes.');
+  }
+  L.push('');
+  L.push('To save it to a file, either redirect the console output:');
+  L.push('');
+  L.push(FENCE + 'bash');
+  L.push('node workflow.js > results.txt');
+  L.push(FENCE);
+  L.push('');
+  L.push('…or write JSON directly — see *Save results to a file* below.');
+  L.push('');
+
+  L.push('## Where to make changes');
+  L.push('');
+  L.push('All edits are in ' + code('workflow.js') + ':');
+  L.push('');
+  L.push('- **Start URL / target page** — the first ' + code('await page.goto("…")') + ' inside ' + code('run()') + '.');
+  L.push('- **What gets extracted (CSS selectors)** — look for ' + code('{ value: "<selector>", type: "css" }') + ' in the extraction steps and edit the selector strings.');
+  if (info.variables.length) {
+    L.push('- **Workflow variables** — the ' + code('// Workflow Variables') + ' block at the top of ' + code('run()') + '. This script declares:');
+    for (const v of info.variables) {
+      const id = toJsIdent(v && v.name);
+      if (!id) continue;
+      const desc = v.description ? ` — ${String(v.description).replace(/\s+/g, ' ').trim()}` : '';
+      L.push('  - ' + code(id) + ` (${(v.type || 'string')})` + desc);
+    }
+  } else {
+    L.push('- **Workflow variables** — if you add any, they appear as ' + code('let') + ' declarations at the top of ' + code('run()') + '.');
+  }
+  if (info.hasPageLoop || info.hasPagination) {
+    L.push('- **How many pages to scrape** — look for the ' + code('// Pagination') + ' block(s); each loop stops on its own (no more content / button gone), but you can tighten the ' + code('Max pages') + ' safety cap or the page-number math.');
+  }
+  if (info.hasTransforms) {
+    L.push('- **Field cleaning / splitting** — fields are post-processed in the ' + code('__ftMaterializeRow(...)') + ' call; tweak the ' + code('transforms') + ' / ' + code('split') + ' specs there.');
+  }
+  L.push('- **Show the browser window** — set ' + code('headless: true') + ' to ' + code('false') + ' in ' + code('puppeteer.launch({ … })') + '.');
+  L.push('- **Use your own Chrome** — set the ' + code('CHROME_PATH') + ' env var, or edit ' + code('executablePath') + ' in ' + code('puppeteer.launch') + '.');
+  L.push('- **Window size** — ' + code('page.setViewport({ width, height })') + '.');
+  L.push('- **Timeouts** — the ' + code('timeout:') + ' values on navigation / waits (milliseconds).');
+  L.push('- **Save results to a file** — ' + code('workflow.js') + ' already includes a commented-out *"Save results to a file"* block at the end of ' + code('run()') + '. Uncomment the JSON and/or CSV part (copied below).');
+  L.push('');
+
+  L.push('### Save results as JSON or CSV');
+  L.push('');
+  L.push('Open ' + code('workflow.js') + ', find the ' + code('// ─── Save results to a file') + ' block near the end of ' + code('run()') + ', and uncomment what you want:');
+  L.push('');
+  L.push(FENCE + 'js');
+  L.push(`const fs = require('fs');`);
+  L.push('');
+  L.push('// → JSON: write everything to one file');
+  L.push(`fs.writeFileSync('results.json', JSON.stringify(__results__, null, 2));`);
+  L.push('');
+  L.push('// → CSV: one .csv per result set that is a list of rows');
+  L.push(`for (const [name, rows] of Object.entries(__results__)) {`);
+  L.push(`  if (!Array.isArray(rows) || rows.length === 0 || typeof rows[0] !== 'object') continue;`);
+  L.push(`  const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];`);
+  L.push(`  const esc = (v) => {`);
+  L.push(`    const s = v === null || v === undefined ? '' : String(v);`);
+  L.push(`    return /[",\\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;`);
+  L.push(`  };`);
+  L.push(`  const csv = [cols.join(','), ...rows.map(r => cols.map(c => esc(r[c])).join(','))].join('\\n');`);
+  L.push(`  fs.writeFileSync(name + '.csv', csv);`);
+  L.push(`}`);
+  L.push(FENCE);
+  L.push('');
+
+  L.push('### Use your own Chrome (optional)');
+  L.push('');
+  L.push(FENCE + 'bash');
+  L.push('# macOS');
+  L.push(`CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" node workflow.js`);
+  L.push('# Linux');
+  L.push('CHROME_PATH="/usr/bin/google-chrome" node workflow.js');
+  L.push(FENCE);
+  L.push('');
+
+  if (info.hasSubflow) {
+    L.push('> **Note:** this workflow calls one or more sub-workflows; their steps are inlined into ' + code('workflow.js') + '.');
+    L.push('');
+  }
+
+  L.push('## Troubleshooting');
+  L.push('');
+  L.push('- **"Could not find Chrome" / launch fails** — install Chrome and set ' + code('CHROME_PATH') + ', or run ' + code('npx puppeteer browsers install chrome') + '.');
+  L.push('- **Empty results** — the site\'s markup probably changed; update the CSS selectors.');
+  L.push('- **Timeouts / slow pages** — increase the ' + code('timeout:') + ' values, or add a ' + code('Wait') + ' after navigation.');
+  L.push('- **Blocked / bot detection** — try running non-headless, slow the script down, and respect the site\'s ' + code('robots.txt') + ' and terms of service.');
+  L.push('');
+  L.push('---');
+  L.push('_Generated by WebScraper. Scrape responsibly and only data you\'re allowed to access._');
+  L.push('');
+
+  return L.join('\n');
+}
+
+module.exports = { generateCode, generateReadme };

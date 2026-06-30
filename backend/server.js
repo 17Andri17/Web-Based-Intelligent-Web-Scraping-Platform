@@ -13,91 +13,16 @@ const app                = require('./app');
 const scraperServiceFactory = require('./services/scraper.service');
 const browserManager     = require('./browser/BrowserManager');
 const { executeWorkflow } = require('./workflow/WorkflowExecutor');
-const { generateCode }    = require('./workflow/workflowCodegen');
+const { generateCode, generateReadme } = require('./workflow/workflowCodegen');
+const { __ftMaterializeRow } = require('./workflow/fieldTransforms');
 const { verifyToken }    = require('./middleware/auth');
-const db                 = require('./db');
+const workflows          = require('./db/repositories/workflows.repo');
+const { resolveCustomActions, resolveSubflows } = require('./workflow/dependencyResolver');
 const extractListAI      = require('./services/extractListAI.service');
 const extractListHeuristics = require('./services/extractListHeuristics.service');
 
-// Walk a workflow's step tree and collect referenced custom action ids,
-// then fetch the user-owned definitions from the DB and return them as a
-// { [id]: { name, inputs, outputs, code } } map for codegen.
-function resolveCustomActions(steps, userId) {
-  const ids = new Set();
-  (function walk(arr) {
-    for (const s of arr || []) {
-      if (s && s.kind === 'action' && s.type === 'CUSTOM_ACTION') {
-        const id = s.params && s.params.actionId;
-        if (id != null) ids.add(id);
-      }
-      ['body', 'then', 'else', 'try', 'catch'].forEach(k => {
-        if (Array.isArray(s?.[k])) walk(s[k]);
-      });
-    }
-  })(steps);
-
-  if (ids.size === 0) return {};
-  const placeholders = Array.from(ids).map(() => '?').join(',');
-  const rows = db.prepare(
-    `SELECT id, name, inputs_json, outputs_json, code
-     FROM custom_actions
-     WHERE user_id = ? AND id IN (${placeholders})`
-  ).all(userId, ...ids);
-  const out = {};
-  for (const r of rows) {
-    out[r.id] = {
-      name: r.name,
-      inputs:  JSON.parse(r.inputs_json  || '[]'),
-      outputs: JSON.parse(r.outputs_json || '[]'),
-      code: r.code || '',
-    };
-  }
-  return out;
-}
-
-// Collect every workflow id referenced (directly OR transitively) by a
-// RUN_SUBFLOW step. Returns a map { id → { name, steps, meta } } that the
-// codegen inlines. We follow subflows recursively so a subflow that
-// itself runs another subflow also gets resolved; cycle protection
-// happens at codegen time (visitedSubflows in ctx).
-function resolveSubflows(steps, userId, rootWorkflowId = null) {
-  function collectIds(arr, out) {
-    for (const s of arr || []) {
-      if (s && s.kind === 'action' && s.type === 'RUN_SUBFLOW') {
-        const id = s.params && Number(s.params.workflowId);
-        if (Number.isFinite(id) && id > 0) out.add(id);
-      }
-      ['body', 'then', 'else', 'try', 'catch'].forEach(k => {
-        if (Array.isArray(s?.[k])) collectIds(s[k], out);
-      });
-    }
-    return out;
-  }
-
-  const visited = new Set(rootWorkflowId ? [Number(rootWorkflowId)] : []);
-  const out = {};
-  const queue = Array.from(collectIds(steps, new Set()))
-    .filter(id => !visited.has(id));
-
-  while (queue.length) {
-    const id = queue.shift();
-    if (visited.has(id)) continue;
-    visited.add(id);
-    const row = db.prepare(
-      'SELECT id, name, steps_json, meta_json FROM workflows WHERE id = ? AND user_id = ?'
-    ).get(id, userId);
-    if (!row) continue;
-    let steps_, meta_;
-    try { steps_ = JSON.parse(row.steps_json); } catch (_) { steps_ = []; }
-    try { meta_  = row.meta_json ? JSON.parse(row.meta_json) : {}; } catch (_) { meta_ = {}; }
-    out[id] = { id: row.id, name: row.name, steps: steps_, meta: meta_ };
-    // Recurse: any RUN_SUBFLOW inside this subflow we just fetched.
-    collectIds(steps_, new Set()).forEach(childId => {
-      if (!visited.has(childId)) queue.push(childId);
-    });
-  }
-  return out;
-}
+// Codegen-time dependency resolution (custom actions + subflows) lives in
+// workflow/dependencyResolver.js and is shared with the scheduler.
 
 const PORT = process.env.PORT || 3001;
 
@@ -121,6 +46,15 @@ io.use((socket, next) => {
 
 const injectedScript   = fs.readFileSync(path.join(__dirname, './browser/inject/SelectorTool.js'), 'utf8');
 const injectedSelectors = fs.readFileSync(path.join(__dirname, './browser/selectors.js'), 'utf8');
+// Keep link/window.open navigation inside the single streamed tab — the CDP
+// screencast follows only one page, so target="_blank" / window.open() would
+// open an invisible new tab and look like a dead click (see ForceSameTab.js).
+const injectedForceSameTab = fs.readFileSync(path.join(__dirname, './browser/inject/ForceSameTab.js'), 'utf8');
+// CMP / cookie-consent auto-dismiss — injected alongside the selector tool so
+// banners are accepted automatically right after navigation, in every frame.
+const { buildInjectedConsentScript } = require('./browser/consent');
+const injectedConsent  = buildInjectedConsentScript();
+const CONSENT_PREF     = process.env.SCRAPER_CONSENT || 'accept';
 
 // Active CDP sessions per user
 const userSessions = new Map();
@@ -137,6 +71,11 @@ const modeReapplyListeners = new Map();
 // frontend that the DOM has finished loading so it can re-fire its preview
 // queries against a settled page (e.g. after opening a saved workflow).
 const pageLoadListeners = new Map();
+
+// Per-user console forwarder used to surface cookie-consent auto-dismiss
+// activity (the in-page runner logs "🍪 Consent handled: <CMP>") back to the
+// client as a status message, so the user can see it actually firing.
+const consentLogListeners = new Map();
 
 io.on('connection', async (socket) => {
   const userId = `u${socket.user.id}`;
@@ -216,6 +155,38 @@ io.on('connection', async (socket) => {
       if (page) await page.evaluate(() => {
         if (typeof window.__stopListFieldPick__ === 'function') window.__stopListFieldPick__();
       });
+    } catch (_) {}
+  });
+
+  // ── HTML tab: full-page source + click/hover-by-path selection ───────────
+  socket.on('getPageHtml', async () => {
+    const page = await getActivePage();
+    if (!page) { socket.emit('pageHtml', { html: '', error: 'No active page' }); return; }
+    try {
+      const html = await page.content();
+      socket.emit('pageHtml', { html });
+    } catch (err) {
+      socket.emit('pageHtml', { html: '', error: err.message });
+    }
+  });
+
+  socket.on('selectElementByPath', async ({ path }) => {
+    const page = await getActivePage();
+    if (!page || !Array.isArray(path)) return;
+    try {
+      await page.evaluate((p) => {
+        if (typeof window.__selectByPath__ === 'function') window.__selectByPath__(p);
+      }, path);
+    } catch (_) {}
+  });
+
+  socket.on('highlightElementByPath', async ({ path }) => {
+    const page = await getActivePage();
+    if (!page || !Array.isArray(path)) return;
+    try {
+      await page.evaluate((p) => {
+        if (typeof window.__highlightByPath__ === 'function') window.__highlightByPath__(p);
+      }, path);
     } catch (_) {}
   });
 
@@ -329,6 +300,21 @@ io.on('connection', async (socket) => {
       pageLoadListeners.set(userId, loadHook);
       page.on('load', loadHook);
 
+      // Surface cookie-consent auto-dismiss activity to the client. The
+      // in-page runner logs "🍪 Consent handled: <CMP>" from whichever frame
+      // dismissed the banner; forward those lines as a status message so the
+      // user gets visible confirmation it ran.
+      const prevConsentHook = consentLogListeners.get(userId);
+      if (prevConsentHook) { try { page.off('console', prevConsentHook); } catch (_) {} }
+      const consentHook = (msg) => {
+        try {
+          const text = typeof msg.text === 'function' ? msg.text() : String(msg);
+          if (text && text.indexOf('🍪') !== -1) socket.emit('message', text);
+        } catch (_) {}
+      };
+      consentLogListeners.set(userId, consentHook);
+      page.on('console', consentHook);
+
       // ─────────────────────────────────────────────────────────────
       // BYPASS CSP (must happen BEFORE goto)
       // ─────────────────────────────────────────────────────────────
@@ -360,8 +346,20 @@ io.on('connection', async (socket) => {
       // Inject BEFORE page scripts run
       // This bypasses CSP entirely
       // ─────────────────────────────────────────────────────────────
+      // Per-navigation cookie-consent preference (from the workflow's start
+      // NAVIGATE step), so the live editor matches what the workflow will do.
+      const navConsentPref = ['accept', 'reject', 'off'].includes(data.consent)
+        ? data.consent
+        : CONSENT_PREF;
+
       await page.evaluateOnNewDocument(
-        (selectorsCode, toolCode) => {
+        (selectorsCode, toolCode, consentCode, forceSameTabCode, consentPref) => {
+
+          // Always refresh the consent preference (latest navigation wins),
+          // even when the heavy injection below is skipped on a stacked run —
+          // this is what lets the user change "Accept / Reject / Leave visible"
+          // and have it take effect on the next navigation.
+          window.__CONSENT_PREF__ = consentPref;
 
           // Prevent double injection on SPA navigations
           if (window.__SCRAPER_TOOL_ALREADY_INJECTED__) return;
@@ -374,13 +372,25 @@ io.on('connection', async (socket) => {
 
             window.__SELECTION_MODE__ = false;
 
+            // Keep navigation inside the single streamed tab (rewrites
+            // target="_blank" / overrides window.open). Wrapped separately so a
+            // failure here can never block the selector tool.
+            try { eval(forceSameTabCode); } catch (e) { console.error('ForceSameTab inject failed:', e); }
+
+            // Cookie-consent auto-dismiss. Wrapped separately so a failure
+            // here can never block the selector tool from working.
+            try { eval(consentCode); } catch (e) { console.error('Consent inject failed:', e); }
+
             console.log('✅ Injection successful');
           } catch (err) {
             console.error('❌ Injection failed:', err);
           }
         },
         injectedSelectors,
-        injectedScript
+        injectedScript,
+        injectedConsent,
+        injectedForceSameTab,
+        navConsentPref
       );
 
       // ─────────────────────────────────────────────────────────────
@@ -542,37 +552,36 @@ io.on('connection', async (socket) => {
     */
     const meta = data.meta || userSessionMeta.get(userId) || {};
     const steps = data.steps || [];
-    const customActions = resolveCustomActions(steps, socket.user.id);
+    const customActions = await resolveCustomActions(steps, socket.user.id);
 
     // Resolve or create the persisted workflow this run belongs to. We
     // intentionally never run ephemerally — every execution gets a run row
     // so the history feature works for ad-hoc tests too.
     let workflowId = data.workflowId || null;
     if (workflowId) {
-      const owned = db.prepare(
-        'SELECT id FROM workflows WHERE id = ? AND user_id = ?'
-      ).get(workflowId, socket.user.id);
+      const owned = await workflows.existsForUser(workflowId, socket.user.id);
       if (!owned) workflowId = null;
     }
     if (!workflowId) {
       const name = (data.workflowName && String(data.workflowName).trim()) || 'Untitled draft';
-      const info = db.prepare(`
-        INSERT INTO workflows (user_id, name, steps_json, meta_json)
-        VALUES (?, ?, ?, ?)
-      `).run(socket.user.id, name, JSON.stringify(steps), meta ? JSON.stringify(meta) : null);
-      workflowId = info.lastInsertRowid;
+      const created = await workflows.create({
+        userId: socket.user.id, name,
+        stepsJson: JSON.stringify(steps),
+        metaJson: meta ? JSON.stringify(meta) : null,
+      });
+      workflowId = created.id;
       socket.emit('workflowAutoCreated', { id: workflowId, name });
     } else {
       // Persist the latest steps so re-runs of the same workflow id use
       // the user's most-recent edits even if they didn't hit Save.
-      db.prepare(`
-        UPDATE workflows
-        SET steps_json = ?, meta_json = ?, updated_at = datetime('now')
-        WHERE id = ? AND user_id = ?
-      `).run(JSON.stringify(steps), meta ? JSON.stringify(meta) : null, workflowId, socket.user.id);
+      await workflows.updateStepsAndMeta({
+        id: workflowId, userId: socket.user.id,
+        stepsJson: JSON.stringify(steps),
+        metaJson: meta ? JSON.stringify(meta) : null,
+      });
     }
 
-    const subflows = resolveSubflows(steps, socket.user.id, workflowId);
+    const subflows = await resolveSubflows(steps, socket.user.id, workflowId);
     const workflow = { id: workflowId, steps, meta, customActions, subflows };
     try {
       await executeWorkflow(workflow, socket, { userId: socket.user.id, workflowId });
@@ -636,6 +645,9 @@ io.on('connection', async (socket) => {
           '[class~="page-numbers"]',
           '[class~="page-nav"]',
           '[class~="pagenav"]',
+          // PrimeFaces/JSF-style widgets (e.g. "ui-paginator") — "paginator"
+          // doesn't share the "pagination" substring so it needs its own rule.
+          '[class*="paginator" i]:not([class*="carousel" i]):not([class*="slider" i])',
           'ul.pagination, ol.pagination, div.pagination',
         ].join(',');
 
@@ -750,52 +762,119 @@ io.on('connection', async (socket) => {
           }
         }
 
-        // 3b. URL-sequence detection: link to /path/N+1 or ?page=N+1.
-        //     Uses URL parser (not substring) and rejects excluded contexts.
+        // 3a. Class-name-only "next" indicator — covers icon-only buttons with
+        //     no text and no aria-label, e.g. PrimeFaces/JSF
+        //     `<a class="ui-paginator-next ...">` wrapping just a font-icon
+        //     `<span>`. Requires the class itself to carry a pagination-y
+        //     token ("pagin"/"pager"/"page-nav"), OR the element to sit
+        //     inside a verified pagination container — either way a bare
+        //     "next" class on its own (e.g. a carousel arrow) won't qualify.
         if (!results.find(r => r.type === 'next_button')) {
-          const here       = new URL(location.href);
-          const pathMatch  = here.pathname.match(/\/(\d+)\/?$/);
-          const PAGE_PARAMS = ['page','paged','pg','pagenum','pageno','p'];
+          const NEXT_CLASS_RE = /(?:^|[\s_-])next(?:[\s_-]|$)/i;
+          const PAGY_CLASS_RE = /pagin|pager|page-?nav/i;
+          const el = Array.from(document.querySelectorAll('a,button,[role="button"]')).find(e => {
+            const cls = e.className && e.className.toString();
+            if (!cls || !NEXT_CLASS_RE.test(cls)) return false;
+            if (!PAGY_CLASS_RE.test(cls) && !e.closest(PAGINATION_CONTAINER_SELECTOR)) return false;
+            return valid(e);
+          });
+          if (el) {
+            results.push({ type: 'next_button', confidence: 0.85,
+              selector: stableSelector(el),
+              previewText: txt(el) || 'Next',
+              description: 'Found a "next" pagination control identified by its class name.' });
+          }
+        }
+
+        // 3b. URL-based pagination → NAVIGATION strategy. When the next page
+        //     is just the current URL with a pagination number/param changed
+        //     (…?page=2, ?p=2, /page/2, …/2), navigating page-by-page is far
+        //     more reliable than chasing a "Next" button that may move or
+        //     re-render. We build a URL TEMPLATE (the next-page URL split
+        //     around the page number) and surface a dedicated `url_param`
+        //     suggestion. Runs independently of the next-button blocks so the
+        //     navigation option is offered even when a Next link also exists.
+        {
+          const here        = new URL(location.href);
+          const pathMatch   = here.pathname.match(/\/(\d+)\/?$/);
+          const PAGE_PARAMS = ['page','paged','pg','pagenum','pageno','pagenr','pageindex','p'];
+          // Compound/cased param names like "i_page", "cur_page", "page_no",
+          // "pageNum" — requires an explicit separator before "page" (or a
+          // known numeric suffix after it) so it won't match unrelated words
+          // like "homepage". Matched case-insensitively since URLSearchParams
+          // keys are case-sensitive but real-world param casing varies.
+          const COMPOUND_PAGE_PARAM_RE = /^[a-z0-9]+[-_]page(?:[-_]?(?:num|no|nr|index))?$|^page[-_]?(?:num|no|nr|index)$/i;
+          const isPageParamKey = (name) => PAGE_PARAMS.includes(name.toLowerCase()) || COMPOUND_PAGE_PARAM_RE.test(name);
+          const TOKEN       = '__PAGE__';
 
           let currentNum    = 1;
           let pageParamUsed = null;
-          for (const name of PAGE_PARAMS) {
-            const v = here.searchParams.get(name);
-            if (v && /^\d+$/.test(v)) { currentNum = parseInt(v, 10); pageParamUsed = name; break; }
+          for (const [key, v] of here.searchParams.entries()) {
+            if (isPageParamKey(key) && /^\d+$/.test(v)) { currentNum = parseInt(v, 10); pageParamUsed = key; break; }
           }
           if (pathMatch) currentNum = Math.max(currentNum, parseInt(pathMatch[1], 10));
           const nextNum  = currentNum + 1;
           const basePath = pathMatch ? here.pathname.slice(0, pathMatch.index) : here.pathname.replace(/\/$/, '');
 
-          const linkToNextPage = Array.from(document.querySelectorAll('a[href]')).find(el => {
+          // Build a { before, after, mode, param } template, or leave null.
+          let tmpl = null;
+
+          // (1) Strongest signal: an anchor pointing at page N+1. Learn the
+          //     param name / path style from it so the template is exact.
+          const anchor = Array.from(document.querySelectorAll('a[href]')).find(el => {
             if (!valid(el)) return false;
             let u;
             try { u = new URL(el.getAttribute('href'), location.href); } catch { return false; }
             if (u.origin !== here.origin) return false;
-            // Path-based: /…/N+1[/]
             if (u.pathname === `${basePath}/${nextNum}` || u.pathname === `${basePath}/${nextNum}/`) return true;
-            // Query-based: ?page=N+1 (or other known param)
-            for (const name of PAGE_PARAMS) {
-              const v = u.searchParams.get(name);
-              if (v && parseInt(v, 10) === nextNum) {
-                // Bare `p=` is too generic — require a pagination-like text on the
-                // link unless the current URL is already using `p=` for paging.
-                if (name === 'p' && pageParamUsed !== 'p') {
-                  const t = txt(el);
-                  if (!isNextLike(t) && !/^\d+$/.test(t)) return false;
-                }
-                return true;
+            for (const [key, v] of u.searchParams.entries()) {
+              if (!isPageParamKey(key) || parseInt(v, 10) !== nextNum) continue;
+              // Bare `p=` is too generic — require pagination-like link text
+              // unless the current URL is already using `p=` for paging.
+              if (key.toLowerCase() === 'p' && (pageParamUsed || '').toLowerCase() !== 'p') {
+                const t = txt(el);
+                if (!isNextLike(t) && !/^\d+$/.test(t)) continue;
               }
+              return true;
             }
             return false;
           });
+          if (anchor) {
+            const u = new URL(anchor.getAttribute('href'), location.href);
+            let pname = null;
+            for (const [key, v] of u.searchParams.entries()) {
+              if (isPageParamKey(key) && parseInt(v, 10) === nextNum) { pname = key; break; }
+            }
+            if (pname) {
+              u.searchParams.set(pname, TOKEN);
+              const parts = u.href.split(TOKEN);
+              tmpl = { before: parts[0], after: parts[1] || '', mode: 'query', param: pname };
+            } else {
+              tmpl = { before: here.origin + basePath + '/', after: (u.search || '') + (u.hash || ''), mode: 'path', param: null };
+            }
+          }
 
-          if (linkToNextPage) {
+          // (2) Fallback: the current URL itself already carries an explicit
+          //     page param (e.g. you're on ?page=1). Bare `p` only counts when
+          //     we're already past page 1, to avoid hijacking unrelated `?p=`.
+          if (!tmpl && pageParamUsed && (pageParamUsed.toLowerCase() !== 'p' || currentNum > 1)) {
+            const u = new URL(here.href);
+            u.searchParams.set(pageParamUsed, TOKEN);
+            const parts = u.href.split(TOKEN);
+            tmpl = { before: parts[0], after: parts[1] || '', mode: 'query', param: pageParamUsed };
+          }
+
+          if (tmpl) {
+            const sampleNextUrl = tmpl.before + nextNum + tmpl.after;
             results.push({
-              type: 'next_button', confidence: 0.86,
-              selector: stableSelector(linkToNextPage),
-              previewText: txt(linkToNextPage) || linkToNextPage.getAttribute('href'),
-              description: `Found a link to page ${nextNum} (URL sequence).`,
+              type: 'url_param', confidence: 0.96, selector: null,
+              urlBefore: tmpl.before, urlAfter: tmpl.after,
+              startPage: currentNum, nextPage: nextNum,
+              paramName: tmpl.param, urlMode: tmpl.mode,
+              previewText: sampleNextUrl,
+              description: tmpl.param
+                ? `Pages change "?${tmpl.param}=" in the URL — navigating ?${tmpl.param}=${nextNum}, ${nextNum + 1}, … is the most reliable strategy.`
+                : `Pages change the URL path (…/${nextNum}) — navigating page-by-page is the most reliable strategy.`,
             });
           }
         }
@@ -1010,39 +1089,44 @@ io.on('connection', async (socket) => {
 
     console.log(`${tag} container="${containerSelector}" type=${selectorType || 'css'} hint=${(hint || '').length}b existing=${Object.keys(existingFields || {}).length}`);
 
-    // 1. Capture cleaned sample HTML for the FIRST container.
+    // 1. Capture cleaned sample HTML for the first TWO containers. Showing the
+    //    model two consecutive items makes the repeating structure obvious —
+    //    it can tell which parts vary per item from the fixed template.
     let sample;
     try {
       sample = await page.evaluate((sel, type) => {
         const isXPath = type === 'xpath' || sel.startsWith('/') || sel.startsWith('(');
-        let first = null;
-        if (isXPath) {
-          const r = document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-          first = r.singleNodeValue;
-        } else {
-          first = document.querySelector(sel);
-        }
-        if (!first) return { error: 'No element matched the container selector', count: 0 };
+        const nodes = [];
         let count = 0;
-        try {
-          if (isXPath) {
-            const all = document.evaluate(sel, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-            count = all.snapshotLength;
-          } else {
-            count = document.querySelectorAll(sel).length;
-          }
-        } catch (_) {}
-        const clone = first.cloneNode(true);
-        clone.querySelectorAll('script, style, noscript, link, meta, template, svg').forEach(n => n.remove());
-        clone.querySelectorAll('*').forEach(el => {
-          for (const a of Array.from(el.attributes || [])) {
-            if (a.name.startsWith('on')) el.removeAttribute(a.name);
-            if (a.name === 'src' && /^data:/i.test(a.value)) el.setAttribute('src', '[data-uri-removed]');
-          }
-        });
-        let html = clone.outerHTML || '';
-        if (html.length > 30000) html = html.slice(0, 30000) + '...[truncated]';
-        return { html, count };
+        if (isXPath) {
+          const all = document.evaluate(sel, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          count = all.snapshotLength;
+          for (let i = 0; i < all.snapshotLength && nodes.length < 2; i++) nodes.push(all.snapshotItem(i));
+        } else {
+          const all = document.querySelectorAll(sel);
+          count = all.length;
+          for (let i = 0; i < all.length && nodes.length < 2; i++) nodes.push(all[i]);
+        }
+        if (!nodes.length) return { error: 'No element matched the container selector', count: 0 };
+
+        const cleanOuter = (node) => {
+          const clone = node.cloneNode(true);
+          clone.querySelectorAll('script, style, noscript, link, meta, template, svg').forEach(n => n.remove());
+          clone.querySelectorAll('*').forEach(el => {
+            for (const a of Array.from(el.attributes || [])) {
+              if (a.name.startsWith('on')) el.removeAttribute(a.name);
+              if (a.name === 'src' && /^data:/i.test(a.value)) el.setAttribute('src', '[data-uri-removed]');
+            }
+          });
+          let html = clone.outerHTML || '';
+          // Cap each item so two of them still fit comfortably in the prompt.
+          if (html.length > 15000) html = html.slice(0, 15000) + '...[truncated]';
+          return html;
+        };
+
+        const htmls = nodes.map(cleanOuter);
+        // Keep `html` (first item) for backward-compatible callers / logging.
+        return { html: htmls[0], htmls, count };
       }, containerSelector, selectorType || 'css');
     } catch (err) {
       console.warn(`${tag} failed to capture sample HTML: ${err.message}`);
@@ -1052,7 +1136,8 @@ io.on('connection', async (socket) => {
     if (!sample || sample.error) {
       return reply({ ok: false, error: sample?.error || 'No sample captured', code: 'NO_SAMPLE' });
     }
-    console.log(`${tag} captured sample (${sample.html.length}b, ${sample.count} sibling container(s))`);
+    const sampleBytes = (sample.htmls || [sample.html]).reduce((n, h) => n + (h ? h.length : 0), 0);
+    console.log(`${tag} captured ${(sample.htmls || [sample.html]).length} sample item(s) (${sampleBytes}b total, ${sample.count} sibling container(s))`);
 
     // ── Helper: verify a list of proposed fields against the live DOM,
     //    returning surviving ones with sample values + a hitCount across
@@ -1130,6 +1215,7 @@ io.on('connection', async (socket) => {
     // 2. Call the LLM.
     const aiResult = await extractListAI.proposeFields({
       sampleHtml: sample.html,
+      sampleHtmls: Array.isArray(sample.htmls) ? sample.htmls : undefined,
       userHint: typeof hint === 'string' ? hint : '',
       existingFields: existingFields && typeof existingFields === 'object' ? existingFields : null,
       requestId: requestId || '?',
@@ -1287,6 +1373,9 @@ io.on('connection', async (socket) => {
       fields: combined,
       rejected: aiRejected,
       explanation,
+      // Title Case name for the whole list/table — the frontend applies it as
+      // the step label automatically so the user doesn't have to name it.
+      name: (aiResult && aiResult.ok && aiResult.name) ? aiResult.name : '',
       sampleCount: sample.count,
       source: aiCount > 0 && heuCount > 0 ? 'mixed' : (heuCount > 0 ? 'heuristic' : 'ai'),
       aiOk: aiResult.ok,
@@ -1305,8 +1394,16 @@ io.on('connection', async (socket) => {
       const steps = data.steps || [];
       const customActions = resolveCustomActions(steps, socket.user.id);
       const subflows = resolveSubflows(steps, socket.user.id, data.workflowId || null);
-      const code = generateCode({ id: data.workflowId, steps, meta, customActions, subflows });
-      socket.emit('codeReady', { code });
+      // clean: true → strip platform-only instrumentation (step/iteration
+      // log markers + self-healing snapshots) so the downloaded script is
+      // short and readable.
+      const workflow = { id: data.workflowId, steps, meta, customActions, subflows };
+      const code = generateCode(workflow, { clean: true });
+      // Ship a tailored README alongside the script so a downloaded workflow
+      // is self-explanatory (how to run it, where to make changes).
+      let readme = null;
+      try { readme = generateReadme(workflow); } catch (_) {}
+      socket.emit('codeReady', { code, readme });
     } catch (err) {
       socket.emit('message', `❌ Code generation error: ${err.message}`);
     }
@@ -1364,9 +1461,14 @@ io.on('connection', async (socket) => {
           });
           return { rows, totalMatched: containers.length };
         }, sel, fields).catch(() => ({ error: 'preview failed' }));
+        // Apply each field's clean/split pipeline so the live preview shows
+        // exactly what the executed workflow will produce (cleaned values and
+        // any columns a field was split into).
+        let previewRows = rows?.rows || [];
+        try { previewRows = previewRows.map(r => __ftMaterializeRow(r, fields)); } catch (_) {}
         socket.emit('previewResult', {
           stepId,
-          previewRows: rows?.rows || [],
+          previewRows,
           totalMatched: rows?.totalMatched || 0,
           previewError: rows?.error || null,
         });
@@ -1538,6 +1640,17 @@ io.on('connection', async (socket) => {
 // Start the schedule dispatcher so any active schedules in the DB fire
 // even without an open socket. Polls every 30s; see scheduler.service.js.
 const scheduler = require('./services/scheduler.service');
-scheduler.start();
+const dbClient  = require('./db/client');
 
-server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+// Provision the schema / apply migrations on the async data layer before we
+// accept traffic. On SQLite this is a near-instant no-op (tables already
+// exist); on Postgres it creates the schema on first boot.
+dbClient.init()
+  .then(() => {
+    scheduler.start();
+    server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+  })
+  .catch((err) => {
+    console.error('[db] initialisation failed — server not started:', err);
+    process.exit(1);
+  });

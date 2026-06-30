@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node test/healing-pure.test.js",
     "test:browser": "node test/healing-integration.test.js && node test/healing-e2e.test.js",
+    "test:db": "node scripts/db-smoke.js",
     "start": "node server.js"
   },
   "keywords": [],
@@ -19,6 +20,7 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.3",
     "node-fetch": "^2.7.0",
+    "pg": "^8.13.1",
     "puppeteer": "^24.17.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",

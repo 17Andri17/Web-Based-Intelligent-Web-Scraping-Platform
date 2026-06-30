@@ -79,6 +79,29 @@
 .dp-sections::-webkit-scrollbar-track { background: transparent; }
 .dp-sections::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 3px; }
 
+/* ── Section wrapper (groups a section with optional notes) ─ */
+.dp-section-wrap {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Note shown above an extraction that lives inside a pagination loop —
+   its live preview reflects only the current page. */
+.dp-pagination-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  font-size: 11.5px;
+  color: #d29922;
+  background: rgba(210, 153, 34, 0.08);
+  border: 1px solid rgba(210, 153, 34, 0.26);
+  border-radius: 7px;
+}
+.dp-pagination-note-icon { font-size: 12px; line-height: 1; }
+
 /* ── Shared section card (never shrinks below content) ────── */
 .dp-section {
   flex-shrink: 0;       /* critical: cards must not shrink — sections scrolls */
@@ -333,3 +356,68 @@
   color: var(--text-muted);
   font-style: italic;
 }
+/* ── Per-column Clean / split controls + modal ──────────────────────── */
+.dp-col-clean {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 3px;
+  border-radius: 4px;
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+.dp-col-clean:hover { opacity: 1; filter: none; background: rgba(88,166,255,0.12); }
+.dp-col-clean.is-active { opacity: 1; filter: none; }
+
+.dp-col-derived {
+  display: block;
+  font-size: 9.5px;
+  color: var(--text-muted, #9aa0a6);
+  font-weight: 400;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.dp-clean-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.dp-clean-modal {
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel, #161616);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.dp-clean-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  font-weight: 600;
+  font-size: 13px;
+}
+.dp-clean-head code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #58a6ff;
+}
+.dp-clean-close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #9aa0a6);
+  cursor: pointer;
+  font-size: 15px;
+}
+.dp-clean-close:hover { color: var(--text-primary, #e6e6e6); }
+.dp-clean-body { padding: 14px; overflow: auto; }

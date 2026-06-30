@@ -32,6 +32,13 @@
   let _listPickOverlay    = null;
 
   const originalStyles = new Map();
+  // Every element we've ever applied a highlight style to. Used as a
+  // last-resort sweep when tearing down — guarantees no stray inline
+  // highlight survives even if the per-subsystem bookkeeping gets out of
+  // sync (e.g. styles applied via direct setProperty that aren't tracked
+  // in originalStyles).
+  const _styledEls = new Set();
+  function _markStyled(el) { if (el) _styledEls.add(el); }
 
   const SOFT_OUTLINE  = '2px dashed #d29922';
   const HARD_OUTLINE  = '2px solid #3fb950';
@@ -56,6 +63,7 @@
 
   function setStyle(el, prop, value, important) {
     storeOriginalStyle(el, prop);
+    _markStyled(el);
     if (important) el.style.setProperty(prop, value, 'important');
     else           el.style[prop] = value;
   }
@@ -84,6 +92,7 @@
 
   function _reapplyScopeEl(el) {
     if (!el) return;
+    _markStyled(el);
     el.style.setProperty('outline',    SCOPE_OUTLINE, 'important');
     el.style.setProperty('box-shadow', SCOPE_SHADOW,  'important');
     if (getComputedStyle(el).position === 'static') {
@@ -131,7 +140,42 @@
     selState     = 'idle';
   }
 
+  // Brute-force safety net: strip any leftover highlight inline styles we may
+  // have applied. Only removes values that match OUR highlight palette, so a
+  // site's own inline outline/box-shadow is left untouched. Catches styles
+  // applied via direct setProperty that originalStyles never tracked.
+  function _sweepStrayHighlights() {
+    var ourOutlines = [
+      SOFT_OUTLINE, HARD_OUTLINE, HOVER_OUTLINE,
+      CONTAINER_PICK_OUTLINE, FIELD_PICK_HOVER_OUTLINE, FIELD_PICK_CONFIRM_OUTLINE,
+      (typeof SCOPE_OUTLINE     !== 'undefined' ? SCOPE_OUTLINE     : null),
+      (typeof HOVER_PICK_OUTLINE !== 'undefined' ? HOVER_PICK_OUTLINE : null),
+    ];
+    _styledEls.forEach(function(el) {
+      try {
+        if (!el || !el.style) return;
+        if (ourOutlines.indexOf(el.style.outline) !== -1) el.style.removeProperty('outline');
+        var bs = el.style.boxShadow || el.style.getPropertyValue('box-shadow');
+        if (bs && (bs.indexOf('inset 0 0 0 9999px') !== -1 ||
+                   (typeof SCOPE_SHADOW !== 'undefined' && bs === SCOPE_SHADOW))) {
+          el.style.removeProperty('box-shadow');
+        }
+      } catch (_) {}
+    });
+    _styledEls.clear();
+  }
+
   function cleanupSelectionMode() {
+    // Tear down EVERY highlight subsystem — not just the main selection — so
+    // nothing lingers when the user flips to navigation mode. Each teardown
+    // is guarded/idempotent.
+    try { clearHoverHighlight(); } catch (_) {}
+    if (_listPickMode && typeof window.__stopListFieldPick__ === 'function') {
+      try { window.__stopListFieldPick__(); } catch (_) {}
+    }
+    if (_forEachScopeSel !== null && typeof window.__clearForEachScope__ === 'function') {
+      try { window.__clearForEachScope__(); } catch (_) {}
+    }
     fullReset();
     originalStyles.forEach(function(s, el) {
       Object.keys(s).forEach(function(prop) {
@@ -141,6 +185,7 @@
       });
     });
     originalStyles.clear();
+    _sweepStrayHighlights();
     if (tooltip) tooltip.style.display = 'none';
   }
 
@@ -439,6 +484,22 @@
      ELEMENT INFO
      ========================================================================= */
 
+  // Element-only child-index chain from <html> down to el — the same
+  // addressing the HTML tab's tree uses, so a selection made anywhere
+  // (canvas click, ancestor nav, child pick) can be mirrored back onto
+  // that tree without a CSS-selector round-trip.
+  function computePath(el) {
+    const path = [];
+    let cur = el;
+    while (cur && cur !== document.documentElement) {
+      const parent = cur.parentElement;
+      if (!parent) break;
+      path.unshift(Array.prototype.indexOf.call(parent.children, cur));
+      cur = parent;
+    }
+    return path;
+  }
+
   function buildElementInfo(el) {
     let primary           = null;
     let fallbackSelectors = [];
@@ -585,6 +646,7 @@
       parentTag:  parentTag,
       parentText: parentText,
       parentHtml: parentHtml,
+      path: computePath(el),
     };
   }
 
@@ -822,6 +884,14 @@
   }
 
   function onClick(e) {
+    // ── Cookie-consent auto-dismiss in progress ───────────────────────────
+    // The consent manager dispatches a synthetic click on the accept/reject
+    // button. Let it pass straight through to the real element instead of
+    // treating it as an element selection (which would preventDefault and
+    // emit a spurious selection). This is what keeps consent working while
+    // the user is in selection mode or switches modes mid-navigation.
+    if (window.__consentInProgress__) return;
+
     // ── List-field-pick mode (takes priority over selection mode) ──────────
     if (_listPickMode) {
       var tgt = e.target;
@@ -973,6 +1043,7 @@
 
   function _elevateEl(el) {
     if (!el) return;
+    _markStyled(el);
     storeOriginalStyle(el, 'outline');
     storeOriginalStyle(el, 'box-shadow');
     storeOriginalStyle(el, 'position');
@@ -1067,6 +1138,7 @@
       } catch (_2) { _listPickContainers = []; }
     }
     _listPickContainers.forEach(function(el) {
+      _markStyled(el);
       storeOriginalStyle(el, 'outline');
       storeOriginalStyle(el, 'box-shadow');
       storeOriginalStyle(el, 'position');
@@ -1154,6 +1226,29 @@
       // and fire selectionCleared instead of selecting the child.
       doFirstClick(el.children[childIndex]);
     }
+  };
+
+  // ── HTML-tree tab support ────────────────────────────────────────────────
+  // The HTML tab renders a DOMParser-built tree from the same markup the
+  // backend serialized via page.content(), and re-derives a child-index path
+  // for each node from <html> down. We just walk that path against the live
+  // DOM and reuse the existing click-selection pipeline. Stale paths (page
+  // mutated since the snapshot) simply find no element and no-op.
+  function resolvePath(path) {
+    let el = document.documentElement;
+    for (let i = 0; i < path.length && el; i++) el = el.children[path[i]];
+    return el || null;
+  }
+
+  window.__selectByPath__ = function(path) {
+    const el = resolvePath(path || []);
+    if (el) doFirstClick(el);
+  };
+
+  window.__highlightByPath__ = function(path) {
+    const el = resolvePath(path || []);
+    clearHoverHighlight();
+    if (el) applyHoverHighlight(el);
   };
 
   /* =========================================================================

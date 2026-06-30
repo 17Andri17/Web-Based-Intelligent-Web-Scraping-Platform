@@ -1,107 +1,123 @@
 'use strict';
 
 const crypto = require('crypto');
-const db = require('../db');
+const db = require('../db/client');
 
 /* ===========================================================================
    runStore.service
    ---------------------------------------------------------------------------
-   Thin DB wrapper for runs, run_logs, run_repairs and schedules. Everything
-   here is synchronous (better-sqlite3) — callers can treat these as plain
-   function calls.
+   Data access for runs, run_logs, run_repairs, workflow_versions and
+   schedules, on the async dual-backend client (migration slice 4). Every
+   function returns a Promise — callers must await.
+
+   Log sequence numbers are now derived from the DB (previously an in-memory
+   Map), so any process can write the next correct seq — a step toward a
+   stateless backend (see docs/SCALING_AND_DB_MIGRATION.md, habit #1). A small
+   per-run, process-local write queue serialises a single run's log writes so
+   the atomic "next seq" computation can't race with itself.
    ========================================================================= */
 
 // ── runs ───────────────────────────────────────────────────────────────────
-function createRun({ userId, workflowId, scheduleId = null, parentRunId = null, trigger = 'manual', versionId = null }) {
-  const info = db.prepare(`
+async function createRun({ userId, workflowId, scheduleId = null, parentRunId = null, trigger = 'manual', versionId = null }) {
+  const row = await db.get(`
     INSERT INTO runs (user_id, workflow_id, schedule_id, parent_run_id, trigger, status, version_id)
     VALUES (?, ?, ?, ?, ?, 'running', ?)
-  `).run(userId, workflowId, scheduleId, parentRunId, trigger, versionId);
-  return info.lastInsertRowid;
+    RETURNING id
+  `, [userId, workflowId, scheduleId, parentRunId, trigger, versionId]);
+  return row.id;
 }
 
-function finishRun(runId, patch) {
+async function finishRun(runId, patch) {
   const allowed = [
     'status', 'finished_at', 'duration_ms', 'results_json',
     'error_message', 'error_category', 'failed_step_id', 'failed_step_type',
     'failed_step_label', 'ai_summary', 'retry_count',
-    // Previously omitted — the patched workflow was computed but never saved,
-    // so the "Adopt AI-repaired workflow" button never had anything to adopt.
     'patched_steps_json',
   ];
   const fields = Object.keys(patch).filter(k => allowed.includes(k));
   if (fields.length === 0) return;
   const sql = `UPDATE runs SET ${fields.map(f => `${f} = ?`).join(', ')} WHERE id = ?`;
-  db.prepare(sql).run(...fields.map(f => patch[f]), runId);
+  await db.run(sql, [...fields.map(f => patch[f]), runId]);
 }
 
-function getRun(runId) {
-  return db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
+async function getRun(runId) {
+  return db.get('SELECT * FROM runs WHERE id = ?', [runId]);
 }
 
-function getRunForUser(runId, userId) {
-  return db.prepare('SELECT * FROM runs WHERE id = ? AND user_id = ?').get(runId, userId);
+async function getRunForUser(runId, userId) {
+  return db.get('SELECT * FROM runs WHERE id = ? AND user_id = ?', [runId, userId]);
 }
 
-function listRunsForUser(userId, { limit = 50, workflowId = null } = {}) {
+async function listRunsForUser(userId, { limit = 50, workflowId = null } = {}) {
+  const cols = `id, workflow_id, schedule_id, trigger, status, started_at, finished_at,
+                duration_ms, error_message, error_category, failed_step_label,
+                ai_summary, retry_count, parent_run_id, version_id`;
   if (workflowId) {
-    return db.prepare(`
-      SELECT id, workflow_id, schedule_id, trigger, status, started_at, finished_at,
-             duration_ms, error_message, error_category, failed_step_label,
-             ai_summary, retry_count, parent_run_id, version_id
-      FROM runs
+    return db.all(`
+      SELECT ${cols} FROM runs
       WHERE user_id = ? AND workflow_id = ?
       ORDER BY started_at DESC
       LIMIT ?
-    `).all(userId, workflowId, limit);
+    `, [userId, workflowId, limit]);
   }
-  return db.prepare(`
-    SELECT id, workflow_id, schedule_id, trigger, status, started_at, finished_at,
-           duration_ms, error_message, error_category, failed_step_label,
-           ai_summary, retry_count, parent_run_id, version_id
-    FROM runs
+  return db.all(`
+    SELECT ${cols} FROM runs
     WHERE user_id = ?
     ORDER BY started_at DESC
     LIMIT ?
-  `).all(userId, limit);
+  `, [userId, limit]);
 }
 
 // ── logs ──────────────────────────────────────────────────────────────────
-const logCounters = new Map(); // runId -> next seq number, kept in memory
+// Per-run, process-local write queue: chains a run's log inserts so the
+// atomic MAX(seq)+1 computation can't race with itself. The DB is the source
+// of truth for seq; this map only holds an in-flight tail promise and is
+// cleared by flushLogs when the run ends.
+const logQueues = new Map(); // runId -> tail Promise
 
 function appendLog(runId, level, line) {
-  const seq = (logCounters.get(runId) || 0) + 1;
-  logCounters.set(runId, seq);
   const trimmed = String(line || '').slice(0, 4000); // hard cap per line
-  db.prepare(`
-    INSERT INTO run_logs (run_id, seq, level, line) VALUES (?, ?, ?, ?)
-  `).run(runId, seq, level || 'info', trimmed);
+  const prev = logQueues.get(runId) || Promise.resolve();
+  const next = prev.then(() => db.run(`
+    INSERT INTO run_logs (run_id, seq, level, line)
+    SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?
+    FROM run_logs WHERE run_id = ?
+  `, [runId, level || 'info', trimmed, runId])).catch(() => { /* logging is best-effort */ });
+  logQueues.set(runId, next);
+  return next;
 }
 
-function getLogs(runId) {
-  return db.prepare(`
-    SELECT seq, level, line FROM run_logs WHERE run_id = ? ORDER BY seq ASC
-  `).all(runId);
+async function getLogs(runId) {
+  return db.all(
+    'SELECT seq, level, line FROM run_logs WHERE run_id = ? ORDER BY seq ASC',
+    [runId]
+  );
 }
 
-function clearLogCounter(runId) {
-  logCounters.delete(runId);
+// Await any pending log writes for a run and drop its queue entry. Call this
+// before marking a run done so its logs are durable. (Replaces the old
+// clearLogCounter, which just cleared the in-memory counter.)
+async function flushLogs(runId) {
+  const tail = logQueues.get(runId);
+  logQueues.delete(runId);
+  if (tail) { try { await tail; } catch (_) {} }
 }
 
 // ── repairs ───────────────────────────────────────────────────────────────
-function recordRepair({
+async function recordRepair({
   runId, workflowId, stepId, stepType, attempt,
   errorMessage, originalParams, suggestedParams, explanation, confidence,
   applied = false, verified = false, llmError = null,
   repairKind = null, evidence = null, autoAdopted = false,
 }) {
-  const info = db.prepare(`
+  const row = await db.get(`
     INSERT INTO run_repairs
       (run_id, workflow_id, step_id, step_type, attempt, error_message,
        original_params, suggested_params, explanation, confidence,
        applied, verified, llm_error, repair_kind, evidence_json, auto_adopted)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+    RETURNING id
+  `, [
     runId, workflowId, stepId, stepType, attempt,
     truncate(errorMessage, 1000),
     originalParams == null ? null : JSON.stringify(originalParams),
@@ -114,20 +130,40 @@ function recordRepair({
     repairKind || null,
     evidence == null ? null : truncate(JSON.stringify(evidence), 4000),
     autoAdopted ? 1 : 0,
-  );
-  return info.lastInsertRowid;
+  ]);
+  return row.id;
+}
+
+async function markRepairVerified(repairId, verified) {
+  await db.run('UPDATE run_repairs SET verified = ? WHERE id = ?', [verified ? 1 : 0, repairId]);
+}
+
+// Mark a repair as auto-written into the saved workflow. (Moved here from
+// executionPipeline so all run_repairs access lives in one place.)
+async function markAutoAdopted(repairId) {
+  await db.run('UPDATE run_repairs SET auto_adopted = 1, verified = 1 WHERE id = ?', [repairId]);
+}
+
+async function listRepairsForRun(runId) {
+  return db.all(`
+    SELECT id, step_id, step_type, attempt, error_message,
+           original_params, suggested_params, explanation, confidence,
+           applied, verified, llm_error, repair_kind, evidence_json,
+           auto_adopted, created_at
+    FROM run_repairs
+    WHERE run_id = ?
+    ORDER BY attempt ASC, id ASC
+  `, [runId]);
 }
 
 // Parsed results_json from the most recent successful runs of a workflow.
-// Used by self-healing to (a) establish a baseline record count per output
-// key and (b) show the LLM what a field "used to" contain.
-function recentSuccessfulResults(workflowId, limit = 5) {
-  const rows = db.prepare(`
+async function recentSuccessfulResults(workflowId, limit = 5) {
+  const rows = await db.all(`
     SELECT results_json FROM runs
     WHERE workflow_id = ? AND status = 'success' AND results_json IS NOT NULL
     ORDER BY started_at DESC
     LIMIT ?
-  `).all(workflowId, limit);
+  `, [workflowId, limit]);
   const out = [];
   for (const r of rows) {
     try { out.push(JSON.parse(r.results_json)); } catch (_) {}
@@ -140,105 +176,85 @@ function hashSteps(steps) {
   return crypto.createHash('sha256').update(JSON.stringify(steps || [])).digest('hex');
 }
 
-// Record a workflow's step tree as a version, deduped by content hash: if this
-// exact state already exists for the workflow we reuse that row (so identical
-// states aren't stored twice and many runs can share one version). Returns the
-// version id, or null on failure.
-function ensureVersion(workflowId, userId, steps, meta, source) {
+// Record a workflow's step tree as a version, deduped by content hash. Returns
+// the version id, or null on failure.
+async function ensureVersion(workflowId, userId, steps, meta, source) {
   try {
     const hash = hashSteps(steps);
-    const existing = db.prepare(
-      'SELECT id FROM workflow_versions WHERE workflow_id = ? AND hash = ?'
-    ).get(workflowId, hash);
+    const existing = await db.get(
+      'SELECT id FROM workflow_versions WHERE workflow_id = ? AND hash = ?',
+      [workflowId, hash]
+    );
     if (existing) return existing.id;
-    const info = db.prepare(`
+    const row = await db.get(`
       INSERT INTO workflow_versions (workflow_id, user_id, hash, steps_json, meta_json, source)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(workflowId, userId, hash, JSON.stringify(steps || []),
-           meta == null ? null : JSON.stringify(meta), source || null);
-    return info.lastInsertRowid;
+      RETURNING id
+    `, [workflowId, userId, hash, JSON.stringify(steps || []),
+        meta == null ? null : JSON.stringify(meta), source || null]);
+    return row.id;
   } catch (_) { return null; }
 }
 
-function getVersionForUser(versionId, userId) {
+async function getVersionForUser(versionId, userId) {
   if (!versionId) return null;
-  return db.prepare('SELECT * FROM workflow_versions WHERE id = ? AND user_id = ?').get(versionId, userId);
+  return db.get('SELECT * FROM workflow_versions WHERE id = ? AND user_id = ?', [versionId, userId]);
 }
 
-function listVersionsForWorkflow(workflowId, userId, { limit = 50 } = {}) {
-  return db.prepare(`
+async function listVersionsForWorkflow(workflowId, userId, { limit = 50 } = {}) {
+  return db.all(`
     SELECT id, hash, source, created_at
     FROM workflow_versions
     WHERE workflow_id = ? AND user_id = ?
     ORDER BY id DESC
     LIMIT ?
-  `).all(workflowId, userId, limit);
+  `, [workflowId, userId, limit]);
 }
 
 // Persist a healed step tree back into the saved workflow (auto-adopt path).
-// Returns the number of rows changed (0 if the workflow no longer exists or
-// isn't owned by the user).
-function updateWorkflowSteps(workflowId, userId, steps) {
-  return db.prepare(`
+// Returns the number of rows changed.
+async function updateWorkflowSteps(workflowId, userId, steps) {
+  const info = await db.run(`
     UPDATE workflows
-    SET steps_json = ?, updated_at = datetime('now')
+    SET steps_json = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ? AND user_id = ?
-  `).run(JSON.stringify(steps), workflowId, userId).changes;
-}
-
-function markRepairVerified(repairId, verified) {
-  db.prepare('UPDATE run_repairs SET verified = ? WHERE id = ?').run(verified ? 1 : 0, repairId);
-}
-
-function listRepairsForRun(runId) {
-  return db.prepare(`
-    SELECT id, step_id, step_type, attempt, error_message,
-           original_params, suggested_params, explanation, confidence,
-           applied, verified, llm_error, repair_kind, evidence_json,
-           auto_adopted, created_at
-    FROM run_repairs
-    WHERE run_id = ?
-    ORDER BY attempt ASC, id ASC
-  `).all(runId);
+  `, [JSON.stringify(steps), workflowId, userId]);
+  return info.changes;
 }
 
 // ── schedules ─────────────────────────────────────────────────────────────
-function listSchedulesForUser(userId) {
-  return db.prepare(`
+async function listSchedulesForUser(userId) {
+  return db.all(`
     SELECT s.*, w.name AS workflow_name
     FROM schedules s
     JOIN workflows w ON w.id = s.workflow_id
     WHERE s.user_id = ?
     ORDER BY s.updated_at DESC
-  `).all(userId);
+  `, [userId]);
 }
 
-function getScheduleByWorkflow(userId, workflowId) {
-  return db.prepare(`
-    SELECT * FROM schedules WHERE user_id = ? AND workflow_id = ?
-  `).get(userId, workflowId);
+async function getScheduleByWorkflow(userId, workflowId) {
+  return db.get('SELECT * FROM schedules WHERE user_id = ? AND workflow_id = ?', [userId, workflowId]);
 }
 
-function upsertSchedule({ userId, workflowId, intervalMinutes, isActive, anchorAtIso = null }) {
-  // SQLite upsert via unique index on workflow_id.
-  const existing = db.prepare(
-    'SELECT id FROM schedules WHERE workflow_id = ?'
-  ).get(workflowId);
+async function upsertSchedule({ userId, workflowId, intervalMinutes, isActive, anchorAtIso = null }) {
+  const existing = await db.get('SELECT id FROM schedules WHERE workflow_id = ?', [workflowId]);
   const validAnchor = normaliseAnchor(anchorAtIso);
   const nextRun = computeNextRun(validAnchor, intervalMinutes).toISOString();
   if (existing) {
-    db.prepare(`
+    await db.run(`
       UPDATE schedules
-      SET interval_minutes = ?, is_active = ?, anchor_at = ?, next_run_at = ?, updated_at = datetime('now')
+      SET interval_minutes = ?, is_active = ?, anchor_at = ?, next_run_at = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(intervalMinutes, isActive ? 1 : 0, validAnchor, nextRun, existing.id);
+    `, [intervalMinutes, isActive ? 1 : 0, validAnchor, nextRun, existing.id]);
     return getScheduleById(existing.id);
   }
-  const info = db.prepare(`
+  const inserted = await db.get(`
     INSERT INTO schedules (user_id, workflow_id, interval_minutes, is_active, anchor_at, next_run_at)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(userId, workflowId, intervalMinutes, isActive ? 1 : 0, validAnchor, nextRun);
-  return getScheduleById(info.lastInsertRowid);
+    RETURNING id
+  `, [userId, workflowId, intervalMinutes, isActive ? 1 : 0, validAnchor, nextRun]);
+  return getScheduleById(inserted.id);
 }
 
 function normaliseAnchor(anchorAtIso) {
@@ -250,12 +266,9 @@ function normaliseAnchor(anchorAtIso) {
 /**
  * Compute the next time a scheduled workflow should fire.
  *
- * With an anchor: we treat the schedule as recurring at anchor + k * interval
- * (k >= 0). The next fire time is the smallest such slot that is strictly in
- * the future. This keeps "daily at 09:00" anchored at 09:00 even if a run
- * gets delayed, and lets "every 3 hr from 09:00" produce 09:00, 12:00, 15:00…
- *
- * Without an anchor: fall back to plain "fire in `intervalMinutes` from now".
+ * With an anchor: recurring at anchor + k * interval (k >= 0); the next fire
+ * is the smallest such slot strictly in the future. Without an anchor: fire in
+ * `intervalMinutes` from now.
  */
 function computeNextRun(anchorIso, intervalMinutes) {
   const now = Date.now();
@@ -270,38 +283,56 @@ function computeNextRun(anchorIso, intervalMinutes) {
   return new Date(next);
 }
 
-function getScheduleById(id) {
-  return db.prepare('SELECT * FROM schedules WHERE id = ?').get(id);
+async function getScheduleById(id) {
+  return db.get('SELECT * FROM schedules WHERE id = ?', [id]);
 }
 
-function deleteSchedule(userId, workflowId) {
-  return db.prepare(`
-    DELETE FROM schedules WHERE user_id = ? AND workflow_id = ?
-  `).run(userId, workflowId).changes;
+async function deleteSchedule(userId, workflowId) {
+  const info = await db.run('DELETE FROM schedules WHERE user_id = ? AND workflow_id = ?', [userId, workflowId]);
+  return info.changes;
 }
 
-function dueSchedules(now = new Date()) {
-  // Used by the scheduler poll loop. We pass the current ISO time as a
-  // bound parameter so the comparison is text-based (sqlite ISO ordering
-  // is lexicographic — fine because we always store UTC ISO).
-  return db.prepare(`
+async function dueSchedules(now = new Date()) {
+  // ISO comparison is text-based; we always store UTC ISO so ordering holds.
+  return db.all(`
     SELECT s.*, w.steps_json, w.meta_json, w.name AS workflow_name
     FROM schedules s
     JOIN workflows w ON w.id = s.workflow_id
     WHERE s.is_active = 1 AND s.next_run_at <= ?
-  `).all(now.toISOString());
+  `, [now.toISOString()]);
 }
 
-function bumpScheduleAfterRun(scheduleId, intervalMinutes) {
-  // Recompute against the anchor (if any) so the schedule stays aligned to
-  // the user-chosen time-of-day even when the dispatcher tick lags slightly.
-  const row = db.prepare('SELECT anchor_at FROM schedules WHERE id = ?').get(scheduleId);
+async function bumpScheduleAfterRun(scheduleId, intervalMinutes) {
+  const row = await db.get('SELECT anchor_at FROM schedules WHERE id = ?', [scheduleId]);
   const next = computeNextRun(row && row.anchor_at, intervalMinutes).toISOString();
-  db.prepare(`
+  await db.run(`
     UPDATE schedules
-    SET last_run_at = datetime('now'), next_run_at = ?
+    SET last_run_at = CURRENT_TIMESTAMP, next_run_at = ?
     WHERE id = ?
-  `).run(next, scheduleId);
+  `, [next, scheduleId]);
+}
+
+/**
+ * Atomically claim a due schedule for dispatch. The conditional UPDATE only
+ * succeeds for the ONE caller that wins the race: it requires the schedule to
+ * still be active and past-due (`next_run_at <= now`), and pushes next_run_at
+ * into the future as part of the same statement. A losing/duplicate caller —
+ * including one in another backend process — sees `changes === 0` and must not
+ * dispatch. This is what lets the scheduler be stateless across processes
+ * (habit #1) instead of relying on an in-memory Set.
+ *
+ * Returns true iff this caller claimed the slot.
+ */
+async function claimDueSchedule(scheduleId, intervalMinutes, now = new Date()) {
+  const row = await db.get('SELECT anchor_at FROM schedules WHERE id = ?', [scheduleId]);
+  if (!row) return false;
+  const next = computeNextRun(row.anchor_at, intervalMinutes).toISOString();
+  const info = await db.run(`
+    UPDATE schedules
+    SET last_run_at = CURRENT_TIMESTAMP, next_run_at = ?
+    WHERE id = ? AND is_active = 1 AND next_run_at <= ?
+  `, [next, scheduleId, now.toISOString()]);
+  return info.changes === 1;
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -315,14 +346,14 @@ module.exports = {
   // runs
   createRun, finishRun, getRun, getRunForUser, listRunsForUser,
   // logs
-  appendLog, getLogs, clearLogCounter,
+  appendLog, getLogs, flushLogs,
   // repairs
-  recordRepair, markRepairVerified, listRepairsForRun,
+  recordRepair, markRepairVerified, markAutoAdopted, listRepairsForRun,
   // self-healing helpers
   recentSuccessfulResults, updateWorkflowSteps,
   // version history / rollback
   ensureVersion, getVersionForUser, listVersionsForWorkflow,
   // schedules
   listSchedulesForUser, getScheduleByWorkflow, upsertSchedule,
-  deleteSchedule, dueSchedules, bumpScheduleAfterRun, getScheduleById,
+  deleteSchedule, dueSchedules, bumpScheduleAfterRun, claimDueSchedule, getScheduleById,
 };

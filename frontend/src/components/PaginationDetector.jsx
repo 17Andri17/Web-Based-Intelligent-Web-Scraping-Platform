@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { createAction, createControl } from "../workflow/stepFactory";
+import { createControl } from "../workflow/stepFactory";
 import { CONTROL_TYPES } from "../workflow/controlDefinitions";
-import { ACTION_TYPES } from "../actions/actionTypes";
 
 // ─── Type metadata ────────────────────────────────────────────────────────────
 
@@ -42,6 +41,15 @@ const TYPE_INFO = {
     description: "Scrolls to the bottom repeatedly, collecting content as it loads.",
     loopLabel: "While more content loads",
   },
+  url_param: {
+    icon: "🔗",
+    label: "URL Pages (navigate)",
+    color: "#2dd4bf",
+    bg: "rgba(45,212,191,0.1)",
+    border: "rgba(45,212,191,0.28)",
+    description: "Each page is its own URL (…?page=2, /page/2). Navigates page-by-page — the most reliable strategy — for a set number of pages.",
+    loopLabel: "Repeat for N pages",
+  },
 };
 
 // ─── Confidence bar ───────────────────────────────────────────────────────────
@@ -58,160 +66,53 @@ function ConfidenceBar({ value, color }) {
   );
 }
 
-// ─── Generate WHILE loop steps for each pagination type ───────────────────────
+// ─── Build a native pagination container for each detected type ───────────────
+//
+// These map onto the dedicated PAGINATE_* control blocks. All of the looping /
+// stop logic lives in the code generator, so the step the user sees is a clean
+// container with one "run on each page" body and a handful of simple
+// parameters — no While + If/Break + click/wait machinery to untangle.
 
 function generatePaginationSteps(suggestion) {
   const { type, selector, containerSelector, hasNextButton } = suggestion;
 
-  // WHILE control wrapper — tagged with meta.kind = 'pagination' so the
-  // Workflow tab can render it as a single "Pagination" block by default
-  // and tuck the IF/BREAK/click/wait machinery behind an "Advanced
-  // controls" toggle that only technical users need to open.
-  const makeWhile = (expression, maxIterations, bodySteps) => {
-    const loop = createControl(CONTROL_TYPES.WHILE, {
-      expression,
-      maxIterations,
+  // URL-based pagination → PAGINATE_URL. Stitch the detected before/after
+  // fragments into a {n} pattern and seed the content selector from the
+  // results container so the loop knows when it has run out of pages.
+  if (type === "url_param") {
+    const before   = suggestion.urlBefore || "";
+    const after    = suggestion.urlAfter || "";
+    // startPage is the CURRENT page's number — the loop scrapes it first
+    // (no navigation) and only then advances to nextPage, nextPage+1, …. The
+    // detector reports the NEXT page it found, so the current page is one less.
+    const startPage = Number.isFinite(suggestion.nextPage) ? Math.max(1, suggestion.nextPage - 1) : 1;
+    return createControl(CONTROL_TYPES.PAGINATE_URL, {
+      urlPattern: `${before}{n}${after}`,
+      contentSelector: containerSelector || selector || "",
+      startPage,
+      step: 1,
+      delay: 1500,
     });
-    loop.label = TYPE_INFO[type]?.loopLabel || "Pagination loop";
-    loop.body  = bodySteps;
-    loop.meta  = { kind: 'pagination', strategy: type };
-    return loop;
-  };
-
-  // Auto-generated infrastructure step — marked so the Workflow tab can
-  // hide it in the simplified pagination view. The data is preserved
-  // verbatim, so advanced users (and code-gen) see the real thing.
-  const infra = (step) => { step.meta = { infrastructure: true }; return step; };
-
-  const makeClick = (sel) => infra(createAction(ACTION_TYPES.CLICK_ELEMENT, { selector: sel }));
-  const makeWait  = (ms)  => infra(createAction(ACTION_TYPES.WAIT,          { duration: ms }));
-  const makeScroll = () => createAction(ACTION_TYPES.SCROLL_PAGE, { direction: "bottom" });
-
-  // Build a do-while loop body: each iteration extracts the CURRENT page,
-  // then checks whether more pages exist, then clicks the next-page link.
-  // The IF check is positioned *before* the click so that on the last page
-  // we extract once and break out cleanly — without it, a plain WHILE
-  // either misses the first page (check + click runs before extract) or
-  // misses the last page (extract runs only when there's still a "next").
-  //
-  // Steps returned: [breakIf, click, wait]. The user drags their extraction
-  // steps to the TOP of the loop body — see the hint card under each
-  // suggestion. The loop's WHILE expression is just `true`; the break is
-  // gated by `breakWhen` (a JS expression that's truthy on the last page).
-  const makeDoWhileBody = (breakWhen, click, wait) => {
-    const breakIf = createControl(CONTROL_TYPES.IF, { expression: breakWhen });
-    breakIf.label = "Stop when last page reached";
-    breakIf.then  = [infra(createAction(ACTION_TYPES.BREAK_LOOP, {}))];
-    breakIf.else  = [];
-    breakIf.meta  = { infrastructure: true };
-    return [breakIf, click, wait];
-  };
-
-  switch (type) {
-    case "next_button": {
-      const click = makeClick(selector); click.label = "Click next page";
-      const wait  = makeWait(2000);      wait.label  = "Wait for next page to load";
-      return makeWhile(
-        "true", 500,
-        makeDoWhileBody(`(await page.$(\`${selector}\`)) === null`, click, wait)
-      );
-    }
-
-    case "page_numbers": {
-      // When the detector found a Next link inside the numbered pagination,
-      // treat it exactly like next_button.
-      if (hasNextButton) {
-        const click = makeClick(selector); click.label = "Click next page";
-        const wait  = makeWait(2000);      wait.label  = "Wait for next page to load";
-        return makeWhile(
-          "true", 500,
-          makeDoWhileBody(`(await page.$(\`${selector}\`)) === null`, click, wait)
-        );
-      }
-
-      // No Next button — only numbered links. We can't use a single
-      // static selector because each iteration needs a different number.
-      // The "find and mark" eval runs inside the container, identifies
-      // the active page, locates the link whose number is one greater,
-      // and tags it with `data-pagi-target="1"`. The body's click then
-      // targets that marker; a fresh marker is placed each iteration.
-      //
-      // We invert it for the break condition — when no `n+1` link
-      // exists we're on the last page, so the IF fires and breaks.
-      const container = containerSelector || selector;
-      const findAndMark = [
-        `await page.evaluate((sel) => {`,
-        `  const c = document.querySelector(sel);`,
-        `  if (!c) return false;`,
-        `  c.querySelectorAll('[data-pagi-target]').forEach(el => el.removeAttribute('data-pagi-target'));`,
-        `  const active = c.querySelector('[aria-current="page"],.active,[class~="active"],.current,[class~="current"],[class*="--active"],[class*="is-active"]');`,
-        `  let curN = NaN;`,
-        `  if (active) {`,
-        `    const t = (active.innerText || active.textContent || '').trim();`,
-        `    if (/^\\d+$/.test(t)) curN = parseInt(t, 10);`,
-        `  }`,
-        `  if (!Number.isFinite(curN)) {`,
-        `    const m = location.href.match(/[?&](?:page|paged|pg|pagenum|pageno|p)=(\\d+)/i) || location.pathname.match(/\\/(\\d+)\\/?$/);`,
-        `    if (m) curN = parseInt(m[1], 10);`,
-        `  }`,
-        `  if (!Number.isFinite(curN)) curN = 1;`,
-        `  const links = Array.from(c.querySelectorAll('a,button,[role="button"]'))`,
-        `    .map(a => {`,
-        `      const t = (a.innerText || a.textContent || '').trim();`,
-        `      return /^\\d+$/.test(t) ? { a, n: parseInt(t, 10) } : null;`,
-        `    })`,
-        `    .filter(Boolean);`,
-        `  if (!links.length) return false;`,
-        `  const target = links.find(x => x.n === curN + 1)`,
-        `             || links.filter(x => x.n > curN).sort((a, b) => a.n - b.n)[0];`,
-        `  if (!target) return false;`,
-        `  target.a.setAttribute('data-pagi-target', '1');`,
-        `  return true;`,
-        `}, ${JSON.stringify(container)})`,
-      ].join("\n");
-      const click = makeClick('[data-pagi-target="1"]'); click.label = "Click next numbered page";
-      const wait  = makeWait(2000);                      wait.label  = "Wait for next page to load";
-      return makeWhile(
-        "true", 500,
-        makeDoWhileBody(`!(${findAndMark})`, click, wait)
-      );
-    }
-
-    case "load_more": {
-      // WHILE selector exists → click load more → wait → [YOUR EXTRACTIONS]
-      const click  = makeClick(selector);
-      click.label  = "Click load more";
-      const wait   = makeWait(2000);
-      wait.label   = "Wait for content to load";
-      return makeWhile(`await page.$(\`${selector}\`) !== null`, 200, [click, wait]);
-    }
-
-    case "infinite_scroll": {
-      // WHILE scrollable → scroll to bottom + scrollIntoView last item → wait
-      // Both strategies ensure IntersectionObserver-based and scroll-event-based loaders fire
-      const scroll  = makeScroll();
-      scroll.label  = "Scroll to bottom of page";
-      const wait    = makeWait(2000);
-      wait.label    = "Wait for new content to load";
-      return makeWhile(
-        // Check if page can still scroll (both absolute bottom and last-element strategies)
-        [
-          `await page.evaluate(() => {`,
-          `  const ITEM_SEL = 'li,article,[class*="item"],[class*="card"],[class*="result"],[class*="product"]';`,
-          `  const items = document.querySelectorAll(ITEM_SEL);`,
-          `  if (items.length) items[items.length-1].scrollIntoView({ block:'end', behavior:'instant' });`,
-          `  window.scrollTo(0, document.body.scrollHeight);`,
-          `  return (window.innerHeight + window.scrollY) < document.body.scrollHeight - 50;`,
-          `})`,
-        ].join("\n"),
-        200,
-        [scroll, wait]
-      );
-    }
-
-    default:
-      return null;
   }
+
+  // Infinite scroll → PAGINATE_SCROLL (no selector needed).
+  if (type === "infinite_scroll") {
+    return createControl(CONTROL_TYPES.PAGINATE_SCROLL, {
+      scrollDelay: 1500,
+      maxNoChange: 3,
+    });
+  }
+
+  // Everything else (next button, load more, numbered pages with a Next link)
+  // → PAGINATE_BUTTON. We use the detected selector as the main one; the user
+  // can add fallback selectors in the editor.
+  // Numbered pages WITHOUT a Next link fall back to the same container —
+  // the detector's `selector` is the best available next-link guess.
+  void hasNextButton;
+  return createControl(CONTROL_TYPES.PAGINATE_BUTTON, {
+    selector: selector || "",
+    delay: 2000,
+  });
 }
 
 // ─── Suggestion card ──────────────────────────────────────────────────────────
@@ -277,7 +178,11 @@ function SuggestionCard({ suggestion, onAdd }) {
           <polyline points="17,1 21,5 17,9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
           <polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
         </svg>
-        Adds a <strong>While</strong> loop — drag your extraction steps to the <strong>top</strong> of the loop body, above the "Stop" check
+        {suggestion.type === "url_param"
+          ? <>Adds a <strong>URL Pages</strong> block that navigates page-by-page and stops automatically when a page has no items — just drop your extraction steps <strong>inside</strong> it.</>
+          : suggestion.type === "infinite_scroll"
+          ? <>Adds an <strong>Infinite Scroll</strong> block that loads everything, then runs your extraction steps <strong>inside</strong> it once.</>
+          : <>Adds a <strong>Click Button</strong> block that paginates until the button is gone — drop your extraction steps <strong>inside</strong> it to run on every page.</>}
       </div>
     </div>
   );
@@ -398,7 +303,7 @@ export default function PaginationDetector({ isDetecting, suggestions, error, ma
                 <circle cx="12" cy="12" r="10"/>
                 <line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
               </svg>
-              After adding, drag your data extraction steps to the <strong>top</strong> of the loop body — above the "Stop" check — so the first AND last pages are both captured.
+              After adding, drop your data-extraction steps <strong>inside</strong> the pagination block so they run on every page. The loop stops on its own when there are no more pages.
             </div>
           </>
         )}

@@ -64,6 +64,23 @@ function describeSample(v) {
   try { return clip(JSON.stringify(v), 300); } catch { return ''; }
 }
 
+// Steps that produce a TABLE / collection of repeating rows. These get a
+// human-friendly Title Case name (e.g. "Product Listings"); single-value
+// extractions keep a snake_case identifier.
+const TABLE_STEP_TYPES = new Set(['FOR_EACH_ELEMENTS', 'EXTRACT_LIST', 'EXTRACT_TABLE']);
+
+// "product_listings" → "Product Listings". The model is still asked for a
+// reliable snake_case token (which sanitiseName extracts robustly); we only
+// present it as a title.
+function snakeToTitle(s) {
+  if (typeof s !== 'string') return '';
+  return s
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
 function buildPrompt(payload) {
   const lines = [];
   // Collection steps iterate over / extract MANY items, so they want a plural
@@ -212,7 +229,11 @@ router.post('/suggest-step-name', async (req, res) => {
     return res.json({ name: '' });
   }
 
-  res.json({ name: sanitiseName(result.text) });
+  // The model returns a reliable snake_case token; for tables/collections we
+  // present it as a human-friendly Title Case name ("Product Listings").
+  const snake = sanitiseName(result.text);
+  const name = (snake && TABLE_STEP_TYPES.has(payload.stepType)) ? snakeToTitle(snake) : snake;
+  res.json({ name });
 });
 
 module.exports = router;
