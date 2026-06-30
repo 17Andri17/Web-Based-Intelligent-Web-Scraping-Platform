@@ -2,7 +2,7 @@
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const db = require('../db');
+const users = require('../db/repositories/users.repo');
 const { signToken, requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -21,12 +21,11 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({ error: 'Password must be 6-200 characters' });
   }
 
-  const exists = db.prepare('SELECT 1 FROM users WHERE username = ?').get(username);
+  const exists = await users.existsByUsername(username);
   if (exists) return res.status(409).json({ error: 'Username already taken' });
 
   const hash = await bcrypt.hash(password, 10);
-  const info = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hash);
-  const userId = info.lastInsertRowid;
+  const userId = await users.create({ username, passwordHash: hash });
   const token = signToken({ sub: userId, username });
   res.status(201).json({ token, user: { id: userId, username } });
 });
@@ -36,7 +35,7 @@ router.post('/login', async (req, res) => {
   if (typeof username !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ error: 'Username and password are required' });
   }
-  const row = db.prepare('SELECT id, username, password_hash FROM users WHERE username = ?').get(username);
+  const row = await users.findByUsername(username);
   if (!row) return res.status(401).json({ error: 'Invalid credentials' });
 
   const ok = await bcrypt.compare(password, row.password_hash);

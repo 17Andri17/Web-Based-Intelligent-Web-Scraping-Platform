@@ -1707,6 +1707,17 @@ io.on('connection', async (socket) => {
 // Start the schedule dispatcher so any active schedules in the DB fire
 // even without an open socket. Polls every 30s; see scheduler.service.js.
 const scheduler = require('./services/scheduler.service');
-scheduler.start();
+const dbClient  = require('./db/client');
 
-server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+// Provision the schema / apply migrations on the async data layer before we
+// accept traffic. On SQLite this is a near-instant no-op (tables already
+// exist); on Postgres it creates the schema on first boot.
+dbClient.init()
+  .then(() => {
+    scheduler.start();
+    server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+  })
+  .catch((err) => {
+    console.error('[db] initialisation failed — server not started:', err);
+    process.exit(1);
+  });
