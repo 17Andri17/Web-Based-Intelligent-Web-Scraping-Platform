@@ -952,6 +952,139 @@ function genControl(step, ctx, depth) {
       ].join('\n');
     }
 
+    // ── For Each Row (enrich a table with inline steps) ──────────────────
+    // The no-subflow twin of RUN_SUBFLOW "enrich": iterate a table's rows,
+    // run the body steps for each row (optionally after opening the row's
+    // link on a fresh page), and merge the body's named results back into
+    // that row via __enrichRows. The body runs in its OWN __results__ scope
+    // (exactly like an inlined subflow) so named extraction steps become the
+    // columns that get merged in. Row columns are reachable in the body as
+    // `{{row.column}}` (or whatever `itemVar` is named).
+    case 'FOR_EACH_ROW': {
+      const src       = jsExpr(params.source || '', '[]');
+      const itemVar   = /^[a-zA-Z_$][\w$]*$/.test(params.itemVar || '')  ? params.itemVar  : 'row';
+      const idxVar    = /^[a-zA-Z_$][\w$]*$/.test(params.indexVar || '') ? params.indexVar : 'index';
+      const openField = (params.openUrlField && String(params.openUrlField).trim()) || '';
+      const baseUrlExpr = qStr(params.baseUrl || '');
+      const timeoutMs = num(params.timeout, 30000);
+      const optsJson  = JSON.stringify({
+        strategy:     params.mergeStrategy || 'flat',
+        detailField:  (params.detailField  && String(params.detailField).trim())  || 'detail',
+        prefix:       (params.detailPrefix && String(params.detailPrefix))         || 'detail_',
+        explodeField: (params.explodeField && String(params.explodeField).trim()) || '',
+      });
+      const outKey = (params.outputVar && String(params.outputVar).trim())
+                  || (step.label && step.label.trim())
+                  || 'enriched_rows';
+      const idJson = JSON.stringify(step.id || '');
+      const uid    = ctx.nextId();
+
+      // Body → own alias scope, own __results__, NOT inLoop (each row's
+      // extractions are captured fresh, then merged).
+      const subCtx = {
+        nextId: ctx.nextId, declaredVars: ctx.declaredVars,
+        customActions: ctx.customActions, subflows: ctx.subflows,
+        visitedSubflows: new Set(ctx.visitedSubflows || []),
+        capturedAliases: new Set(),
+      };
+      const bodyCode = genStepList(step.body || [], subCtx, depth + 1);
+      const bodyAliasDecls = subCtx.capturedAliases.size === 0 ? '' :
+        Array.from(subCtx.capturedAliases).map(a => `        let ${a};`).join('\n');
+
+      // Expose the enriched table as a JS alias too (so you can chain another
+      // FOR_EACH_ROW / FOR_EACH off it), mirroring FOR_EACH_ELEMENTS.
+      const aliasName = toJsIdent(outKey);
+      const aliasLine = (aliasName && !ctx.declaredVars?.has(aliasName))
+        ? (ctx.capturedAliases && ctx.capturedAliases.add(aliasName), `  ${aliasName} = _out_${uid};`)
+        : '';
+
+      // The shared per-row body IIFE — assigns into the pre-declared
+      // _body_<uid>. `page` is shadowed to whichever page we run the row on.
+      const runBody = (pageArg, indent) => [
+        `${indent}_body_${uid} = await (async (page) => {`,
+        `${indent}  const __results__ = {};`,
+        `${indent}  let __currentStep__ = null;`,
+        bodyAliasDecls,
+        `${indent}  try {`,
+        bodyCode,
+        `${indent}  } catch (err) {`,
+        `${indent}    console.error(${JSON.stringify(`For Each Row "${outKey}" body error:`)}, err && err.message);`,
+        `${indent}  }`,
+        `${indent}  return __results__;`,
+        `${indent}})(${pageArg});`,
+      ].filter(Boolean).join('\n');
+
+      const rowDecl = `    const ${itemVar} = (_arr_${uid}[${idxVar}] && typeof _arr_${uid}[${idxVar}] === 'object' && !Array.isArray(_arr_${uid}[${idxVar}])) ? _arr_${uid}[${idxVar}] : { value: _arr_${uid}[${idxVar}] };`;
+      const mergeLine = `    for (const _er_${uid} of __enrichRows(${itemVar}, _body_${uid}, ${optsJson})) _out_${uid}.push(_er_${uid});`;
+
+      if (openField) {
+        return [
+          `{`,
+          `  // For Each Row (enrich): open each row's link, run steps, merge back`,
+          `  const _rows_${uid} = ${src};`,
+          `  const _arr_${uid} = Array.isArray(_rows_${uid}) ? _rows_${uid} : (_rows_${uid} || []);`,
+          `  const _base_${uid} = ${baseUrlExpr};`,
+          `  const _out_${uid} = [];`,
+          `  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: _arr_${uid}.length}));`,
+          `  for (let ${idxVar} = 0; ${idxVar} < _arr_${uid}.length; ${idxVar}++) {`,
+          `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: ${idxVar}}));`,
+          rowDecl,
+          `    let _body_${uid} = {};`,
+          `    let _href_${uid} = ${itemVar}[${JSON.stringify(openField)}];`,
+          `    if (_href_${uid} == null || _href_${uid} === '') { _out_${uid}.push(Object.assign({}, ${itemVar})); continue; }`,
+          `    _href_${uid} = String(_href_${uid});`,
+          `    if (_base_${uid} && !/^https?:\\/\\//i.test(_href_${uid})) { try { _href_${uid} = new URL(_href_${uid}, _base_${uid}).href; } catch (_) {} }`,
+          `    const _rowPage_${uid} = await browser.newPage();`,
+          `    try {`,
+          `      await applyStealthToPage(_rowPage_${uid});`,
+          `      await _rowPage_${uid}.goto(_href_${uid}, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+          `      await dismissConsent(_rowPage_${uid});`,
+          runBody(`_rowPage_${uid}`, '      '),
+          `      _body_${uid}._sourceUrl = _href_${uid};`,
+          `    } catch (err) {`,
+          `      console.error(${JSON.stringify(`For Each Row "${outKey}" failed on URL`)}, _href_${uid}, '—', err && err.message);`,
+          `    } finally {`,
+          `      try { await _rowPage_${uid}.close(); } catch (_) {}`,
+          `    }`,
+          mergeLine,
+          `  }`,
+          `  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));`,
+          `  __results__[${JSON.stringify(outKey)}] = _out_${uid};`,
+          aliasLine,
+          `}`,
+          ``,
+        ].filter(Boolean).join('\n');
+      }
+
+      // Current-page mode: no navigation — the body runs on the page as-is
+      // (e.g. type a row value into search, click, extract), results merged
+      // back into the row.
+      return [
+        `{`,
+        `  // For Each Row (enrich): run steps per row on the current page, merge back`,
+        `  const _rows_${uid} = ${src};`,
+        `  const _arr_${uid} = Array.isArray(_rows_${uid}) ? _rows_${uid} : (_rows_${uid} || []);`,
+        `  const _out_${uid} = [];`,
+        `  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: _arr_${uid}.length}));`,
+        `  for (let ${idxVar} = 0; ${idxVar} < _arr_${uid}.length; ${idxVar}++) {`,
+        `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: ${idxVar}}));`,
+        rowDecl,
+        `    let _body_${uid} = {};`,
+        `    try {`,
+        runBody(`page`, '      '),
+        `    } catch (err) {`,
+        `      console.error(${JSON.stringify(`For Each Row "${outKey}" body error:`)}, err && err.message);`,
+        `    }`,
+        mergeLine,
+        `  }`,
+        `  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));`,
+        `  __results__[${JSON.stringify(outKey)}] = _out_${uid};`,
+        aliasLine,
+        `}`,
+        ``,
+      ].filter(Boolean).join('\n');
+    }
+
 
     case 'WHILE': {
       const expr = jsExpr(params.expression, 'false');

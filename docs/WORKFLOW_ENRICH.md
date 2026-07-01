@@ -82,3 +82,28 @@ list the detail page produced, or name it explicitly (e.g. `Reviews`).
 - **List of URLs** — iterate a column of links and get back a *separate* array
   of per-page result objects (each tagged with `_sourceUrl`). Use this when you
   *don't* want the results folded back into the source table.
+
+## Inline enrich without a subflow: "For Each Row"
+
+You don't need a saved subflow to enrich a table. The **For Each Row (Enrich
+Table)** control (under *Control Flow*) does the same thing with steps you build
+inline:
+
+- **Source table** — the table to enrich (e.g. `{{products}}`).
+- **Row variable** — defaults to `row`; reference columns in your steps as
+  `{{row.link}}`, `{{row.title}}`, etc.
+- **Open link from column** *(optional)* — if set (e.g. `link`), each iteration
+  opens that URL on a fresh page and the body runs there; leave it blank to run
+  the body on the **current page** (handy for "type each row's value into a
+  search box, click, extract").
+- **Merge strategy** — identical to the subflow version (Flat / Prefix / Nest /
+  Explode).
+
+Name your extraction steps inside the loop — those names become the columns
+merged back into each row. The enriched table is also exposed as a variable
+(from the *Save enriched table under* name / step label) so you can chain
+another loop off it.
+
+Use **Run Subflow → Enrich** when the detail-page logic is a reusable workflow
+you want to share across projects; use **For Each Row** when the steps are
+specific to this workflow and you'd rather keep them inline.

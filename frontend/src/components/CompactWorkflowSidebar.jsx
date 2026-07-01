@@ -36,6 +36,7 @@ const TYPE_META = {
   WAIT_FOR_SELECTOR:   { cat:"Flow",        short:"WFS" },
   FOR_EACH_ELEMENTS:   { cat:"Flow",        short:"FOR" },
   FOR_EACH:            { cat:"Flow",        short:"FOR" },
+  FOR_EACH_ROW:        { cat:"Flow",        short:"ROW" },
   IF_ELEMENT_EXISTS:   { cat:"Flow",        short:"IF"  },
   CONDITION:           { cat:"Flow",        short:"IF"  },
   REPEAT:              { cat:"Flow",        short:"RPT" },
@@ -50,7 +51,7 @@ const HAS_SELECTOR = new Set([
   "EXTRACT_TEXT","EXTRACT_ATTRIBUTE","EXTRACT_HTML","EXTRACT_TABLE","EXTRACT_LIST","EXTRACT_JSON",
   "FOR_EACH_ELEMENTS","FOR_EACH","IF_ELEMENT_EXISTS","CLEAR_INPUT","TYPE_TEXT",
 ]);
-const LOOP_TYPES = new Set(["FOR_EACH_ELEMENTS","FOR_EACH","REPEAT","WHILE","CONDITION","IF_ELEMENT_EXISTS",
+const LOOP_TYPES = new Set(["FOR_EACH_ELEMENTS","FOR_EACH","FOR_EACH_ROW","REPEAT","WHILE","CONDITION","IF_ELEMENT_EXISTS",
   "PAGINATE_SCROLL","PAGINATE_BUTTON","PAGINATE_URL"]);
 const BRANCH_KEYS = ["body","then","else","try","catch"];
 
