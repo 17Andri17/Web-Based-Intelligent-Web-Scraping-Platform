@@ -169,8 +169,10 @@ const getNavigatorOverrideScript = (config) => `
     overrideProperty(screen, 'pixelDepth', config.colorDepth);
   }
   
-  // WebGL overrides (main context only)
-  if (!isWorker && typeof WebGLRenderingContext !== 'undefined') {
+  // WebGL overrides (main context AND workers — OffscreenCanvas lets workers
+  // open their own WebGL context, and a real GPU renderer leaking there while
+  // the main thread reports a spoofed one is itself a cross-context mismatch)
+  if (typeof WebGLRenderingContext !== 'undefined') {
     const getParameterProxy = function(target) {
       return new Proxy(target, {
         apply: function(target, thisArg, args) {
@@ -343,7 +345,17 @@ class BrowserManager {
         this.browserLaunching = null;
     }
 
-    // ==================== WORKER INTERCEPTION ====================
+    // ==================== WORKER INTERCEPTION (fallback) ====================
+    // Dedicated/shared workers created by `new Worker(...)` are primarily
+    // covered by the Blob-URL source rewrite installed in
+    // _applyStealthToPage — that's synchronous and race-free. This CDP path
+    // is a fallback for what source rewriting can't reach: service workers
+    // (registered via navigator.serviceWorker.register, never go through a
+    // Worker constructor) and cross-origin worker scripts the page's XHR
+    // can't read. It's still inherently reactive/racy for those cases —
+    // there's no reliable way in Puppeteer to pause a target before its
+    // first line of JS without risking it fighting Puppeteer's own
+    // auto-attach — so treat it as best-effort, not a guarantee.
     async _setupWorkerInterception() {
         if (!this.browser) return;
 
@@ -361,10 +373,9 @@ class BrowserManager {
         try {
             const client = await target.createCDPSession();
 
-            // Enable Runtime to execute code in worker
-            await client.send('Runtime.enable');
-
-            // Inject the navigator override script
+            // Inject the navigator override script. Runtime.evaluate works
+            // without a prior Runtime.enable, so skip that extra round trip
+            // to shave whatever latency we can off this race.
             await client.send('Runtime.evaluate', {
                 expression: getNavigatorOverrideScript(STEALTH_CONFIG),
                 awaitPromise: true
@@ -466,7 +477,12 @@ class BrowserManager {
             }
         });
 
-        // Inject stealth script on every new document (including workers!)
+        // Inject stealth script on every new document. Note: CDP's
+        // addScriptToEvaluateOnNewDocument only reaches the page's own
+        // frames/iframes — it does NOT run inside Worker/SharedWorker
+        // execution contexts, those are separate CDP targets. Workers are
+        // handled below via source rewriting (primary) and CDP injection
+        // (fallback, see _injectIntoWorker).
         await page.evaluateOnNewDocument(getNavigatorOverrideScript(STEALTH_CONFIG));
 
         // Additional CDP configurations for stealth
@@ -492,32 +508,110 @@ class BrowserManager {
             });
         });
 
-        // Intercept workers created via Worker constructor
-        await page.evaluateOnNewDocument(`
-      (function() {
-        const config = ${JSON.stringify(STEALTH_CONFIG)};
-        
-        // Intercept Worker constructor to inject overrides
-        const OriginalWorker = window.Worker;
-        window.Worker = function(scriptURL, options) {
-          const worker = new OriginalWorker(scriptURL, options);
-          return worker;
-        };
-        window.Worker.prototype = OriginalWorker.prototype;
-        Object.defineProperty(window.Worker, 'name', { value: 'Worker' });
-        
-        // Intercept SharedWorker
-        if (window.SharedWorker) {
-          const OriginalSharedWorker = window.SharedWorker;
-          window.SharedWorker = function(scriptURL, options) {
-            const worker = new OriginalSharedWorker(scriptURL, options);
-            return worker;
-          };
-          window.SharedWorker.prototype = OriginalSharedWorker.prototype;
-          Object.defineProperty(window.SharedWorker, 'name', { value: 'SharedWorker' });
-        }
-      })();
-    `);
+        // Intercept Worker/SharedWorker construction and rewrite the target
+        // script so our override script becomes the literal first statement
+        // of the worker's own source. This is the fix for
+        // "hasInconsistentWorkerValues": the previous approach relied on a
+        // CDP Runtime.evaluate injected reactively after the worker target
+        // was created (see _injectIntoWorker below), racing against the
+        // worker's own top-level code — a fingerprint script that reads
+        // navigator.userAgent/hardwareConcurrency/platform and posts it back
+        // immediately always won that race, so the real (unspoofed) values
+        // leaked out of the worker while the main thread showed spoofed
+        // ones. Rewriting the source removes the race entirely: there is no
+        // way for the worker's real code to run before our override, because
+        // it IS the first code in the file. CDP injection is kept as a
+        // fallback for cases source rewriting can't cover (cross-origin
+        // scripts blocked by CORS, and service workers, which aren't created
+        // via `new Worker()` at all).
+        await page.evaluateOnNewDocument((overrideSource) => {
+            function buildPatchedURL(originalURL) {
+                try {
+                    const abs = new URL(originalURL, location.href).href;
+                    const xhr = new XMLHttpRequest();
+                    // Synchronous on purpose: the patched source must be
+                    // ready before we hand a URL back to the real
+                    // Worker/SharedWorker constructor.
+                    xhr.open('GET', abs, false);
+                    xhr.send(null);
+                    if (xhr.status !== 200 && xhr.status !== 0) return null;
+
+                    // Once the worker runs from a blob: URL its own
+                    // self.location is that blob: URL, not `abs` — and
+                    // Chrome's URL resolver rejects root-relative paths
+                    // (e.g. importScripts('/chunk.js')) resolved against a
+                    // blob: base ("The URL '...' is invalid"). Real worker
+                    // scripts commonly use root-relative importScripts/fetch/
+                    // XHR calls, so without this fixup rewriting would break
+                    // the target site's own worker instead of just patching
+                    // its fingerprint surface. Rebase those calls onto the
+                    // worker's true absolute URL before the site's code runs.
+                    const baseFix = `
+            (function() {
+              var __trueBase = ${JSON.stringify(abs)};
+              function __resolve(u) { try { return new URL(u, __trueBase).href; } catch (e) { return u; } }
+              if (typeof importScripts === 'function') {
+                var __origImportScripts = importScripts;
+                self.importScripts = function() {
+                  var args = [];
+                  for (var i = 0; i < arguments.length; i++) args.push(__resolve(arguments[i]));
+                  return __origImportScripts.apply(self, args);
+                };
+              }
+              if (typeof fetch === 'function') {
+                var __origFetch = fetch;
+                self.fetch = function(input, init) {
+                  return __origFetch.call(self, typeof input === 'string' ? __resolve(input) : input, init);
+                };
+              }
+              if (typeof XMLHttpRequest !== 'undefined') {
+                var __origOpen = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function(method, url) {
+                  var rest = Array.prototype.slice.call(arguments, 2);
+                  return __origOpen.apply(this, [method, __resolve(url)].concat(rest));
+                };
+              }
+            })();
+          `;
+
+                    const blob = new Blob([baseFix, '\n', overrideSource, '\n', xhr.responseText], { type: 'text/javascript' });
+                    return URL.createObjectURL(blob);
+                } catch (e) {
+                    // Cross-origin script (CORS blocks the sync read), or a
+                    // Trusted Types / CSP restriction — fall back silently,
+                    // the CDP path will try to cover this worker instead.
+                    return null;
+                }
+            }
+
+            function patchWorkerClass(OriginalClass) {
+                if (!OriginalClass) return OriginalClass;
+                const Patched = new Proxy(OriginalClass, {
+                    construct(target, args) {
+                        const [scriptURL, options] = args;
+                        const isURLLike = typeof scriptURL === 'string' || (typeof URL !== 'undefined' && scriptURL instanceof URL);
+                        if (isURLLike) {
+                            const patchedURL = buildPatchedURL(String(scriptURL));
+                            if (patchedURL) {
+                                try {
+                                    return Reflect.construct(target, [patchedURL, options]);
+                                } catch (e) {
+                                    // e.g. CSP's worker-src doesn't allow blob: —
+                                    // fall through to the untouched original so we
+                                    // don't break the page's own functionality.
+                                }
+                            }
+                        }
+                        return Reflect.construct(target, args);
+                    }
+                });
+                try { Object.defineProperty(Patched, 'name', { value: OriginalClass.name }); } catch (e) {}
+                return Patched;
+            }
+
+            window.Worker = patchWorkerClass(window.Worker);
+            if (window.SharedWorker) window.SharedWorker = patchWorkerClass(window.SharedWorker);
+        }, getNavigatorOverrideScript(STEALTH_CONFIG));
 
         // Set viewport
         await page.setViewport({
