@@ -8,6 +8,7 @@ export const CONTROL_TYPES = {
   IF:                'IF',
   FOR_EACH:          'FOR_EACH',
   FOR_EACH_ELEMENTS: 'FOR_EACH_ELEMENTS',
+  FOR_EACH_ROW:      'FOR_EACH_ROW',
   WHILE:             'WHILE',
   REPEAT:            'REPEAT',
   TRY_CATCH:         'TRY_CATCH',
@@ -122,6 +123,88 @@ export const controlDefinitions = {
         label: 'Index variable name',
         default: 'i',
         placeholder: 'i',
+      },
+    },
+  },
+
+  [CONTROL_TYPES.FOR_EACH_ROW]: {
+    label:       'For Each Row (Enrich Table)',
+    description: 'Loop over a table (e.g. an Extract List), run your own steps for each row, and merge the results back INTO that row. Optionally open each row\'s link first to scrape its detail page — the inline, no-subflow version of Run Subflow → Enrich.',
+    color:       '#2dd4bf',   // teal (matches enrich)
+    bgColor:     'rgba(45, 212, 191, 0.08)',
+    icon:        '⊞',
+    branches: [
+      { key: 'body', label: 'Run for each row',
+        emptyLabel: 'Add steps to run per row. Name extraction steps — those names become the merged-in columns. Reference row columns as {{row.column}}.' },
+    ],
+    params: {
+      source: {
+        type: 'string', required: true,
+        label: 'Source table (array of rows)',
+        placeholder: '{{products}}  — the Extract List whose rows you want to enrich',
+      },
+      itemVar: {
+        type: 'string',
+        label: 'Row variable name (use it in steps as {{row.column}})',
+        default: 'row',
+        placeholder: 'row',
+      },
+      indexVar: {
+        type: 'string',
+        label: 'Index variable name',
+        default: 'index',
+        placeholder: 'index',
+      },
+      openUrlField: {
+        type: 'string',
+        label: 'Open link from column (optional) — leave blank to run on the current page',
+        placeholder: 'link',
+      },
+      baseUrl: {
+        type: 'string',
+        label: 'Base URL for relative links (optional)',
+        placeholder: 'https://example.com',
+      },
+      timeout: {
+        type: 'number',
+        label: 'Per-row page timeout (ms)',
+        default: 30000,
+      },
+      mergeStrategy: {
+        type: 'select',
+        label: 'How to merge each row\'s results back in',
+        default: 'flat',
+        options: [
+          { label: 'Flat — add fields as new columns (lists kept as a nested array)', value: 'flat' },
+          { label: 'Prefix — like Flat but prefix the new column names', value: 'prefix' },
+          { label: 'Nest — put the whole result object under one column', value: 'nest' },
+          { label: 'Explode — one output row per item of a list (denormalise)', value: 'explode' },
+        ],
+      },
+      detailPrefix: {
+        type: 'string',
+        label: 'Column prefix',
+        default: 'detail_',
+        placeholder: 'detail_',
+        showIf: { mergeStrategy: ['prefix'] },
+      },
+      detailField: {
+        type: 'string',
+        label: 'Nested column name',
+        default: 'detail',
+        placeholder: 'detail',
+        showIf: { mergeStrategy: ['nest'] },
+      },
+      explodeField: {
+        type: 'string',
+        label: 'List field to explode (blank = auto-pick the first list)',
+        placeholder: 'reviews',
+        showIf: { mergeStrategy: ['explode'] },
+      },
+      outputVar: {
+        type: 'string',
+        label: 'Save enriched table under (optional)',
+        placeholder: 'products_detailed',
       },
     },
   },

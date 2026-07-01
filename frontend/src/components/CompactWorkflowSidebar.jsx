@@ -31,11 +31,13 @@ const TYPE_META = {
   EXTRACT_HTML:        { cat:"Extraction",  short:"HTM" },
   EXTRACT_TABLE:       { cat:"Extraction",  short:"TBL" },
   EXTRACT_LIST:        { cat:"Extraction",  short:"LST" },
+  COLLECT_LIST:        { cat:"Extraction",  short:"SCL" },
   EXTRACT_JSON:        { cat:"Extraction",  short:"JSN" },
   WAIT:                { cat:"Flow",        short:"WIT" },
   WAIT_FOR_SELECTOR:   { cat:"Flow",        short:"WFS" },
   FOR_EACH_ELEMENTS:   { cat:"Flow",        short:"FOR" },
   FOR_EACH:            { cat:"Flow",        short:"FOR" },
+  FOR_EACH_ROW:        { cat:"Flow",        short:"ROW" },
   IF_ELEMENT_EXISTS:   { cat:"Flow",        short:"IF"  },
   CONDITION:           { cat:"Flow",        short:"IF"  },
   REPEAT:              { cat:"Flow",        short:"RPT" },
@@ -47,10 +49,10 @@ const TYPE_META = {
 
 const HAS_SELECTOR = new Set([
   "CLICK_ELEMENT","HOVER_ELEMENT","SCROLL_TO_ELEMENT","WAIT_FOR_SELECTOR",
-  "EXTRACT_TEXT","EXTRACT_ATTRIBUTE","EXTRACT_HTML","EXTRACT_TABLE","EXTRACT_LIST","EXTRACT_JSON",
+  "EXTRACT_TEXT","EXTRACT_ATTRIBUTE","EXTRACT_HTML","EXTRACT_TABLE","EXTRACT_LIST","COLLECT_LIST","EXTRACT_JSON",
   "FOR_EACH_ELEMENTS","FOR_EACH","IF_ELEMENT_EXISTS","CLEAR_INPUT","TYPE_TEXT",
 ]);
-const LOOP_TYPES = new Set(["FOR_EACH_ELEMENTS","FOR_EACH","REPEAT","WHILE","CONDITION","IF_ELEMENT_EXISTS",
+const LOOP_TYPES = new Set(["FOR_EACH_ELEMENTS","FOR_EACH","FOR_EACH_ROW","REPEAT","WHILE","CONDITION","IF_ELEMENT_EXISTS",
   "PAGINATE_SCROLL","PAGINATE_BUTTON","PAGINATE_URL"]);
 const BRANCH_KEYS = ["body","then","else","try","catch"];
 

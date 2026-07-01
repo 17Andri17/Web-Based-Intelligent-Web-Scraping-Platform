@@ -6,7 +6,7 @@ const { buildCodegenConsentHelper } = require('../browser/consent');
 // ─── Extraction action types (steps that produce named data) ──────────────
 const EXTRACTION_TYPES = new Set([
   'EXTRACT_TEXT', 'EXTRACT_ATTRIBUTE', 'EXTRACT_HTML',
-  'EXTRACT_TABLE', 'EXTRACT_LIST', 'EXTRACT_JSON',
+  'EXTRACT_TABLE', 'EXTRACT_LIST', 'EXTRACT_JSON', 'COLLECT_LIST',
 ]);
 
 // Extraction types whose "0 records / empty fields" outcome the self-healing
@@ -363,7 +363,7 @@ await Promise.all([
     case 'WAIT': return `await new Promise(r => setTimeout(r, ${num(params.duration, 1000)}));\n`;
 
     case 'WAIT_FOR_SELECTOR': return `
-await waitForAny(page, ${selList(params)}, ${num(advanced.timeout, 30000)});
+await waitForAny(page, ${selList(params)}, ${num(advanced.timeout, 30000)}, { reveal: false });
 `.trim() + '\n';
 
     case 'WAIT_FOR_NAVIGATION': return `
@@ -491,6 +491,53 @@ const ${varName} = await (async () => {
   ))${postProcess};
 })();
 ${store}`.trim() + '\n';
+    }
+
+    case 'COLLECT_LIST': {
+      // Same field model as EXTRACT_LIST, but the rows are harvested WHILE
+      // scrolling and de-duped by key — see harvestWhileScrolling. Handles
+      // infinite-scroll and virtualized/recycling lists.
+      const rawFields = params.fields || {};
+      const evalFields = {};
+      const postFields = {};
+      let hasPipeline = false;
+      for (const [name, v] of Object.entries(rawFields)) {
+        if (v == null) continue;
+        let spec;
+        if (typeof v === 'string') {
+          spec = { selector: v, kind: 'text', attribute: null };
+        } else if (typeof v === 'object') {
+          const kind = v.kind === 'attr' || v.kind === 'attribute' ? 'attr'
+                     : v.kind === 'html' ? 'html'
+                     : 'text';
+          spec = {
+            selector: typeof v.selector === 'string' ? v.selector : '',
+            kind,
+            attribute: kind === 'attr' && typeof v.attribute === 'string' ? v.attribute : null,
+          };
+          if (Array.isArray(v.transforms) && v.transforms.length) spec.transforms = v.transforms;
+          if (v.split && typeof v.split === 'object')             spec.split = v.split;
+        } else {
+          continue;
+        }
+        evalFields[name] = { selector: spec.selector, kind: spec.kind, attribute: spec.attribute };
+        postFields[name] = spec;
+        if (__ftHasPipeline(spec)) hasPipeline = true;
+      }
+      const fieldsJson = JSON.stringify(evalFields);
+      const containerExpr = q(params.containerSelector || '');   // supports {{var}}
+      const scrollExpr    = q(params.scrollContainer || '');
+      const keyJson = JSON.stringify((params.keyField && String(params.keyField).trim()) || '');
+      const optsJson = JSON.stringify({
+        scrollDelay: num(advanced.scrollDelay, 1200),
+        maxNoNew:    Math.max(1, num(advanced.maxNoNew, 3)),
+        maxScrolls:  num(advanced.maxScrolls, 300),
+      });
+      const postProcess = hasPipeline
+        ? `.then(_rows => _rows.map(_row => __ftMaterializeRow(_row, ${JSON.stringify(postFields)})))`
+        : '';
+      const code = `const ${varName} = await harvestWhileScrolling(page, ${containerExpr}, ${fieldsJson}, ${keyJson}, ${scrollExpr}, ${optsJson})${postProcess};\n`;
+      return code + store;
     }
 
     case 'EXTRACT_JSON': {
@@ -952,6 +999,139 @@ function genControl(step, ctx, depth) {
       ].join('\n');
     }
 
+    // ── For Each Row (enrich a table with inline steps) ──────────────────
+    // The no-subflow twin of RUN_SUBFLOW "enrich": iterate a table's rows,
+    // run the body steps for each row (optionally after opening the row's
+    // link on a fresh page), and merge the body's named results back into
+    // that row via __enrichRows. The body runs in its OWN __results__ scope
+    // (exactly like an inlined subflow) so named extraction steps become the
+    // columns that get merged in. Row columns are reachable in the body as
+    // `{{row.column}}` (or whatever `itemVar` is named).
+    case 'FOR_EACH_ROW': {
+      const src       = jsExpr(params.source || '', '[]');
+      const itemVar   = /^[a-zA-Z_$][\w$]*$/.test(params.itemVar || '')  ? params.itemVar  : 'row';
+      const idxVar    = /^[a-zA-Z_$][\w$]*$/.test(params.indexVar || '') ? params.indexVar : 'index';
+      const openField = (params.openUrlField && String(params.openUrlField).trim()) || '';
+      const baseUrlExpr = qStr(params.baseUrl || '');
+      const timeoutMs = num(params.timeout, 30000);
+      const optsJson  = JSON.stringify({
+        strategy:     params.mergeStrategy || 'flat',
+        detailField:  (params.detailField  && String(params.detailField).trim())  || 'detail',
+        prefix:       (params.detailPrefix && String(params.detailPrefix))         || 'detail_',
+        explodeField: (params.explodeField && String(params.explodeField).trim()) || '',
+      });
+      const outKey = (params.outputVar && String(params.outputVar).trim())
+                  || (step.label && step.label.trim())
+                  || 'enriched_rows';
+      const idJson = JSON.stringify(step.id || '');
+      const uid    = ctx.nextId();
+
+      // Body → own alias scope, own __results__, NOT inLoop (each row's
+      // extractions are captured fresh, then merged).
+      const subCtx = {
+        nextId: ctx.nextId, declaredVars: ctx.declaredVars,
+        customActions: ctx.customActions, subflows: ctx.subflows,
+        visitedSubflows: new Set(ctx.visitedSubflows || []),
+        capturedAliases: new Set(),
+      };
+      const bodyCode = genStepList(step.body || [], subCtx, depth + 1);
+      const bodyAliasDecls = subCtx.capturedAliases.size === 0 ? '' :
+        Array.from(subCtx.capturedAliases).map(a => `        let ${a};`).join('\n');
+
+      // Expose the enriched table as a JS alias too (so you can chain another
+      // FOR_EACH_ROW / FOR_EACH off it), mirroring FOR_EACH_ELEMENTS.
+      const aliasName = toJsIdent(outKey);
+      const aliasLine = (aliasName && !ctx.declaredVars?.has(aliasName))
+        ? (ctx.capturedAliases && ctx.capturedAliases.add(aliasName), `  ${aliasName} = _out_${uid};`)
+        : '';
+
+      // The shared per-row body IIFE — assigns into the pre-declared
+      // _body_<uid>. `page` is shadowed to whichever page we run the row on.
+      const runBody = (pageArg, indent) => [
+        `${indent}_body_${uid} = await (async (page) => {`,
+        `${indent}  const __results__ = {};`,
+        `${indent}  let __currentStep__ = null;`,
+        bodyAliasDecls,
+        `${indent}  try {`,
+        bodyCode,
+        `${indent}  } catch (err) {`,
+        `${indent}    console.error(${JSON.stringify(`For Each Row "${outKey}" body error:`)}, err && err.message);`,
+        `${indent}  }`,
+        `${indent}  return __results__;`,
+        `${indent}})(${pageArg});`,
+      ].filter(Boolean).join('\n');
+
+      const rowDecl = `    const ${itemVar} = (_arr_${uid}[${idxVar}] && typeof _arr_${uid}[${idxVar}] === 'object' && !Array.isArray(_arr_${uid}[${idxVar}])) ? _arr_${uid}[${idxVar}] : { value: _arr_${uid}[${idxVar}] };`;
+      const mergeLine = `    for (const _er_${uid} of __enrichRows(${itemVar}, _body_${uid}, ${optsJson})) _out_${uid}.push(_er_${uid});`;
+
+      if (openField) {
+        return [
+          `{`,
+          `  // For Each Row (enrich): open each row's link, run steps, merge back`,
+          `  const _rows_${uid} = ${src};`,
+          `  const _arr_${uid} = Array.isArray(_rows_${uid}) ? _rows_${uid} : (_rows_${uid} || []);`,
+          `  const _base_${uid} = ${baseUrlExpr};`,
+          `  const _out_${uid} = [];`,
+          `  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: _arr_${uid}.length}));`,
+          `  for (let ${idxVar} = 0; ${idxVar} < _arr_${uid}.length; ${idxVar}++) {`,
+          `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: ${idxVar}}));`,
+          rowDecl,
+          `    let _body_${uid} = {};`,
+          `    let _href_${uid} = ${itemVar}[${JSON.stringify(openField)}];`,
+          `    if (_href_${uid} == null || _href_${uid} === '') { _out_${uid}.push(Object.assign({}, ${itemVar})); continue; }`,
+          `    _href_${uid} = String(_href_${uid});`,
+          `    if (_base_${uid} && !/^https?:\\/\\//i.test(_href_${uid})) { try { _href_${uid} = new URL(_href_${uid}, _base_${uid}).href; } catch (_) {} }`,
+          `    const _rowPage_${uid} = await browser.newPage();`,
+          `    try {`,
+          `      await applyStealthToPage(_rowPage_${uid});`,
+          `      await _rowPage_${uid}.goto(_href_${uid}, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+          `      await dismissConsent(_rowPage_${uid});`,
+          runBody(`_rowPage_${uid}`, '      '),
+          `      _body_${uid}._sourceUrl = _href_${uid};`,
+          `    } catch (err) {`,
+          `      console.error(${JSON.stringify(`For Each Row "${outKey}" failed on URL`)}, _href_${uid}, '—', err && err.message);`,
+          `    } finally {`,
+          `      try { await _rowPage_${uid}.close(); } catch (_) {}`,
+          `    }`,
+          mergeLine,
+          `  }`,
+          `  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));`,
+          `  __results__[${JSON.stringify(outKey)}] = _out_${uid};`,
+          aliasLine,
+          `}`,
+          ``,
+        ].filter(Boolean).join('\n');
+      }
+
+      // Current-page mode: no navigation — the body runs on the page as-is
+      // (e.g. type a row value into search, click, extract), results merged
+      // back into the row.
+      return [
+        `{`,
+        `  // For Each Row (enrich): run steps per row on the current page, merge back`,
+        `  const _rows_${uid} = ${src};`,
+        `  const _arr_${uid} = Array.isArray(_rows_${uid}) ? _rows_${uid} : (_rows_${uid} || []);`,
+        `  const _out_${uid} = [];`,
+        `  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: _arr_${uid}.length}));`,
+        `  for (let ${idxVar} = 0; ${idxVar} < _arr_${uid}.length; ${idxVar}++) {`,
+        `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: ${idxVar}}));`,
+        rowDecl,
+        `    let _body_${uid} = {};`,
+        `    try {`,
+        runBody(`page`, '      '),
+        `    } catch (err) {`,
+        `      console.error(${JSON.stringify(`For Each Row "${outKey}" body error:`)}, err && err.message);`,
+        `    }`,
+        mergeLine,
+        `  }`,
+        `  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));`,
+        `  __results__[${JSON.stringify(outKey)}] = _out_${uid};`,
+        aliasLine,
+        `}`,
+        ``,
+      ].filter(Boolean).join('\n');
+    }
+
 
     case 'WHILE': {
       const expr = jsExpr(params.expression, 'false');
@@ -1304,6 +1484,85 @@ function __enrichRows(row, sub, opts) {
   return [Object.assign({}, base, detail)];
 }`;
 
+/* =========================================================================
+   HARVEST RUNTIME — collect a list WHILE scrolling (infinite / virtual lists)
+   -------------------------------------------------------------------------
+   Used by the COLLECT_LIST action. Extracts the currently-rendered items on
+   every scroll step and de-dupes by a key, so it works even when the page
+   RECYCLES rows out of the DOM once they scroll out of view (virtualized
+   lists) — a single end-of-page query would miss almost everything there.
+   Included on demand in both platform and downloaded scripts.
+   ========================================================================= */
+const HARVEST_RUNTIME_SRC = `/**
+ * Collect a repeating list while scrolling.
+ *   page         – puppeteer page
+ *   containerSel – CSS selector for each repeating item
+ *   fields       – { name: { selector, kind:'text'|'attr'|'html', attribute } }
+ *   keyField     – field to de-dupe on ('' → de-dupe on the whole row)
+ *   scrollSel    – scroll container selector ('' → scroll the window)
+ *   opts         – { scrollDelay, maxNoNew, maxScrolls }
+ * Returns the de-duplicated array of items, in first-seen order.
+ */
+async function harvestWhileScrolling(page, containerSel, fields, keyField, scrollSel, opts) {
+  opts = opts || {};
+  const delay      = opts.scrollDelay || 1200;
+  const maxNoNew   = Math.max(1, opts.maxNoNew || 3);
+  const maxScrolls = opts.maxScrolls || 300;
+  const seen = new Set();
+  const out  = [];
+  let noNew  = 0;
+
+  const extractVisible = () => page.evaluate((sel, fieldMap) => {
+    return Array.from(document.querySelectorAll(sel)).map(el => {
+      const item = {};
+      for (const [name, spec] of Object.entries(fieldMap)) {
+        const s = spec.selector || '';
+        const child = s ? el.querySelector(s) : el;
+        if (!child) { item[name] = null; continue; }
+        if (spec.kind === 'attr' && spec.attribute) item[name] = child.getAttribute(spec.attribute);
+        else if (spec.kind === 'html') item[name] = (child.innerHTML || '').trim();
+        else item[name] = (child.textContent || '').trim();
+      }
+      return item;
+    });
+  }, containerSel, fields);
+
+  const keyOf = (row) => {
+    if (keyField && row && Object.prototype.hasOwnProperty.call(row, keyField)) {
+      const v = row[keyField];
+      if (v != null && String(v).trim() !== '') return String(v);
+    }
+    return JSON.stringify(row);
+  };
+
+  const harvest = async () => {
+    let added = 0, rows = [];
+    try { rows = await extractVisible(); } catch (_) { rows = []; }
+    for (const row of rows) {
+      const k = keyOf(row);
+      if (seen.has(k)) continue;
+      seen.add(k); out.push(row); added++;
+    }
+    return added;
+  };
+
+  // Advance the scroll position of either an inner container or the window.
+  const scrollStep = () => page.evaluate((sSel) => {
+    const t = sSel ? document.querySelector(sSel) : null;
+    if (t) { t.scrollTop = Math.min(t.scrollTop + Math.round(t.clientHeight * 0.9), t.scrollHeight); return; }
+    window.scrollTo(0, Math.min(window.scrollY + Math.round(window.innerHeight * 0.9), document.body.scrollHeight));
+  }, scrollSel);
+
+  await harvest();   // grab whatever is on screen before scrolling
+  for (let i = 0; i < maxScrolls; i++) {
+    try { await scrollStep(); } catch (_) {}
+    await new Promise(r => setTimeout(r, delay));
+    const added = await harvest();
+    if (added === 0) { if (++noNew >= maxNoNew) break; } else { noNew = 0; }
+  }
+  return out;
+}`;
+
 // Remove the per-step / per-iteration marker lines and the stats calls from
 // generated step code. Every such marker is emitted as its own standalone
 // line, so a line-level filter is exact and safe.
@@ -1381,6 +1640,11 @@ function generateCode(workflow, options = {}) {
   const usesEnrichRuntime = /__enrichRows\(/.test(stepCode);
   const enrichRuntimeSrc = usesEnrichRuntime
     ? `\n// ─── Enrich runtime (merge subflow detail results back into list rows) ────\n${ENRICH_RUNTIME_SRC}\n`
+    : '';
+  // Harvest runtime (COLLECT_LIST) — behaviour, included in both modes on demand.
+  const usesHarvestRuntime = /harvestWhileScrolling\(/.test(stepCode);
+  const harvestRuntimeSrc = usesHarvestRuntime
+    ? `\n// ─── Harvest runtime (collect a list while scrolling; virtual lists) ──────\n${HARVEST_RUNTIME_SRC}\n`
     : '';
   const instrumentationSrc = clean ? '' : `\n${INSTRUMENTATION_HELPERS_SRC}\n`;
   // Cookie-consent auto-dismiss helper — always included so every navigation
@@ -1519,23 +1783,66 @@ async function resolveElements(page, selectors) {
  * Wait until any selector in the list appears within timeout ms.
  * Returns the ElementHandle of the first match found.
  * Throws if nothing resolves in time.
+ *
+ * opts.reveal (default true): if the element isn't in the DOM yet, progressively
+ * scroll the page down between polls to trigger lazy-rendered / below-the-fold
+ * content, and once found, scroll it into the centre of the viewport (and wait
+ * briefly for it to settle) so a subsequent click/hover/type lands on a visible,
+ * stable element. Pass { reveal: false } for a pure wait that must not scroll.
  */
-async function waitForAny(page, selectors, timeout = 10000) {
+async function waitForAny(page, selectors, timeout = 10000, opts = {}) {
+  const reveal = opts.reveal !== false;
   const deadline = Date.now() + timeout;
-  let lastErr;
+  let lastErr, atBottom = false;
   while (Date.now() < deadline) {
     for (const { value, type } of selectors) {
       try {
         const el = type === 'xpath'
           ? (await page.$x(value))[0]
           : await page.$(value);
-        if (el) return el;
+        if (el) {
+          if (reveal) await scrollIntoViewSafe(page, el);
+          return el;
+        }
       } catch (e) { lastErr = e; }
+    }
+    // Not found yet: nudge the page down ~one viewport to surface lazy content.
+    // Once we hit the bottom we stop scrolling but keep polling until timeout.
+    if (reveal && !atBottom) {
+      try {
+        atBottom = await page.evaluate(() => {
+          const before = window.scrollY;
+          window.scrollTo(0, Math.min(before + Math.round(window.innerHeight * 0.9), document.body.scrollHeight));
+          return window.scrollY <= before + 1; // didn't move → already at the bottom
+        });
+      } catch (_) {}
     }
     await new Promise(r => setTimeout(r, 200));
   }
   const tried = selectors.map(s => \`[\${s.type}] \${s.value}\`).join(', ');
   throw new Error(\`waitForAny: none matched within \${timeout}ms. Tried: \${tried}\`);
+}
+
+/**
+ * Centre an element in the viewport and wait until its position is stable (two
+ * consecutive frames with the same rect) so we don't act on it mid-animation.
+ * Best-effort — never throws.
+ */
+async function scrollIntoViewSafe(page, el) {
+  try {
+    await el.evaluate(e => e.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }));
+  } catch (_) {
+    try { await el.evaluate(e => e.scrollIntoView()); } catch (__) {}
+  }
+  try {
+    let prev = null;
+    for (let i = 0; i < 5; i++) {
+      const box = await el.boundingBox().catch(() => null);
+      if (box && prev && Math.abs(box.y - prev.y) < 1 && Math.abs(box.x - prev.x) < 1) break;
+      prev = box;
+      await new Promise(r => setTimeout(r, 80));
+    }
+  } catch (_) {}
 }
 
 /**
@@ -1555,7 +1862,7 @@ async function evalOnElements(page, selectors, fn) {
   if (!els.length) return [];
   return Promise.all(els.map(el => page.evaluate(fn, el)));
 }
-${fieldRuntimeSrc}${enrichRuntimeSrc}${instrumentationSrc}${consentHelperSrc}
+${fieldRuntimeSrc}${enrichRuntimeSrc}${harvestRuntimeSrc}${instrumentationSrc}${consentHelperSrc}
 async function run() {
   const __results__ = {};
 ${currentStepDecl}${variablesCode}${capturedAliasesCode}
