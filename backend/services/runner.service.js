@@ -16,6 +16,7 @@ const ITER_TICK      = 'ITER_TICK:';
 const ITER_END       = 'ITER_END:';
 const STEP_RESULT    = 'STEP_RESULT:';    // per-extraction record-count / field-fill stats
 const STEP_SNAPSHOT  = 'STEP_SNAPSHOT:';  // page HTML captured when a step looks broken
+const COLLECT_SUMMARY = 'COLLECT_SUMMARY:'; // Collect-List completeness (human line logged separately)
 
 /* ===========================================================================
    runner.service
@@ -117,6 +118,9 @@ function runChild(workflow, { signal } = {}) {
         } catch (_) {}
         return;
       }
+      // Collect-List completeness marker — machine twin of the human "✓/⚠
+      // Collect List" line, which is logged separately. Suppress the raw JSON.
+      if (line.startsWith(COLLECT_SUMMARY)) return;
       const level = isErr ? 'error' : 'info';
       if (line.trim()) {
         if (isErr) {

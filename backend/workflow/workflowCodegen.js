@@ -528,10 +528,15 @@ ${store}`.trim() + '\n';
       const containerExpr = q(params.containerSelector || '');   // supports {{var}}
       const scrollExpr    = q(params.scrollContainer || '');
       const keyJson = JSON.stringify((params.keyField && String(params.keyField).trim()) || '');
+      const overlapRaw = Number(advanced.scrollOverlap);
       const optsJson = JSON.stringify({
         scrollDelay: num(advanced.scrollDelay, 1200),
         maxNoNew:    Math.max(1, num(advanced.maxNoNew, 3)),
         maxScrolls:  num(advanced.maxScrolls, 300),
+        overlap:     (Number.isFinite(overlapRaw) && overlapRaw >= 0 && overlapRaw < 0.95) ? overlapRaw : 0.35,
+        loadingSelector:  (advanced.loadingSelector  && String(advanced.loadingSelector).trim())  || '',
+        endSelector:      (advanced.endSelector      && String(advanced.endSelector).trim())      || '',
+        expectedSelector: (advanced.expectedCountSelector && String(advanced.expectedCountSelector).trim()) || '',
       });
       const postProcess = hasPipeline
         ? `.then(_rows => _rows.map(_row => __ftMaterializeRow(_row, ${JSON.stringify(postFields)})))`
@@ -1494,13 +1499,27 @@ function __enrichRows(row, sub, opts) {
    Included on demand in both platform and downloaded scripts.
    ========================================================================= */
 const HARVEST_RUNTIME_SRC = `/**
- * Collect a repeating list while scrolling.
+ * Collect a repeating list while scrolling — robust against lazy-load and
+ * virtualized/recycling lists, and honest about completeness.
  *   page         – puppeteer page
  *   containerSel – CSS selector for each repeating item
  *   fields       – { name: { selector, kind:'text'|'attr'|'html', attribute } }
  *   keyField     – field to de-dupe on ('' → de-dupe on the whole row)
  *   scrollSel    – scroll container selector ('' → scroll the window)
- *   opts         – { scrollDelay, maxNoNew, maxScrolls }
+ *   opts         – { scrollDelay, maxNoNew, maxScrolls, overlap,
+ *                    loadingSelector, endSelector, expectedSelector }
+ *
+ * How it knows it's "done" (strongest → weakest):
+ *   1. expectedSelector  → a total shown on the page ("340 results"); stop when
+ *      collected ≥ that number, and REPORT if we fall short.
+ *   2. endSelector       → an explicit "no more results" element appears.
+ *   3. bottom-stable     → we're at the bottom AND no new unique items appear
+ *      for maxNoNew consecutive settles (loading indicator, if any, cleared).
+ * "No new items" is only counted when we're actually AT THE BOTTOM, so a slow
+ * loader mid-list never stops us early. Scrolling advances by (1-overlap) of a
+ * viewport so consecutive windows OVERLAP — no item window is skipped, which is
+ * what would otherwise drop items from the middle of a virtualized list.
+ * Emits a COLLECT_SUMMARY log line with { collected, expected, complete, reason }.
  * Returns the de-duplicated array of items, in first-seen order.
  */
 async function harvestWhileScrolling(page, containerSel, fields, keyField, scrollSel, opts) {
@@ -1508,6 +1527,10 @@ async function harvestWhileScrolling(page, containerSel, fields, keyField, scrol
   const delay      = opts.scrollDelay || 1200;
   const maxNoNew   = Math.max(1, opts.maxNoNew || 3);
   const maxScrolls = opts.maxScrolls || 300;
+  const overlap    = (typeof opts.overlap === 'number' && opts.overlap >= 0 && opts.overlap < 0.95) ? opts.overlap : 0.35;
+  const loadingSel = opts.loadingSelector || '';
+  const endSel     = opts.endSelector || '';
+  const expectSel  = opts.expectedSelector || '';
   const seen = new Set();
   const out  = [];
   let noNew  = 0;
@@ -1546,20 +1569,80 @@ async function harvestWhileScrolling(page, containerSel, fields, keyField, scrol
     return added;
   };
 
-  // Advance the scroll position of either an inner container or the window.
-  const scrollStep = () => page.evaluate((sSel) => {
+  // Advance by an OVERLAPPING step (never a whole viewport) so no window of
+  // items is skipped; report whether we've reached the bottom.
+  const scrollAndSense = () => page.evaluate((sSel, ov) => {
     const t = sSel ? document.querySelector(sSel) : null;
-    if (t) { t.scrollTop = Math.min(t.scrollTop + Math.round(t.clientHeight * 0.9), t.scrollHeight); return; }
-    window.scrollTo(0, Math.min(window.scrollY + Math.round(window.innerHeight * 0.9), document.body.scrollHeight));
-  }, scrollSel);
+    const view = t ? t.clientHeight : window.innerHeight;
+    const max  = t ? t.scrollHeight : (document.scrollingElement || document.documentElement || document.body).scrollHeight;
+    const before = t ? t.scrollTop : window.scrollY;
+    const stepPx = Math.max(40, Math.round(view * (1 - ov)));
+    const next = Math.min(before + stepPx, max);
+    if (t) t.scrollTop = next; else window.scrollTo(0, next);
+    const after = t ? t.scrollTop : window.scrollY;
+    // At the bottom if the viewport reaches the content end, or the position
+    // couldn't advance any further.
+    return { atBottom: (after + view >= max - 2) || (after <= before + 1) };
+  }, scrollSel, overlap);
+
+  const present = (sel) => sel
+    ? page.evaluate(s => !!document.querySelector(s), sel).catch(() => false)
+    : Promise.resolve(false);
+
+  // Wait for a loading indicator (if configured) to clear, so "no new items"
+  // isn't declared while the next batch is still fetching.
+  const waitLoadingGone = async () => {
+    if (!loadingSel) return;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 8000) {
+      if (!(await present(loadingSel))) return;
+      await new Promise(r => setTimeout(r, 150));
+    }
+  };
+
+  // First number in the expected-total element ("Showing 1–20 of 340" → 340;
+  // takes the largest number so "1-20 of 340" resolves to the total).
+  const expected = expectSel ? await page.evaluate(s => {
+    const el = document.querySelector(s);
+    if (!el) return null;
+    const nums = (el.textContent || '').replace(/[,\\.\\s]/g, '').match(/\\d+/g);
+    if (!nums) return null;
+    return nums.map(Number).reduce((a, b) => Math.max(a, b), 0);
+  }, expectSel).catch(() => null) : null;
 
   await harvest();   // grab whatever is on screen before scrolling
+  let reason = 'safety-cap';
   for (let i = 0; i < maxScrolls; i++) {
-    try { await scrollStep(); } catch (_) {}
+    if (expected != null && out.length >= expected) { reason = 'reached-expected-total'; break; }
+    if (await present(endSel)) { reason = 'end-marker'; break; }
+    let sense = { atBottom: false };
+    try { sense = await scrollAndSense(); } catch (_) {}
     await new Promise(r => setTimeout(r, delay));
+    await waitLoadingGone();
     const added = await harvest();
-    if (added === 0) { if (++noNew >= maxNoNew) break; } else { noNew = 0; }
+    if (added > 0) { noNew = 0; continue; }
+    // Nothing new this step. Only start counting toward "done" once we're
+    // genuinely at the bottom — mid-list empty steps are just slow loads.
+    if (sense.atBottom) { if (++noNew >= maxNoNew) { reason = 'bottom-stable'; break; } }
+    else { noNew = 0; }
   }
+
+  const complete = expected != null ? out.length >= expected : reason !== 'safety-cap';
+  try {
+    const ofExp = expected != null ? (' of ' + expected + ' expected') : '';
+    console.log(complete
+      ? ('✓ Collect List: collected ' + out.length + ' item(s)' + ofExp + ' (' + reason + ').')
+      : ('⚠ Collect List may be INCOMPLETE — collected ' + out.length + ' item(s)' + ofExp + ' (' + reason + '). ' +
+         (expected == null && reason === 'safety-cap'
+           ? 'Raise "Max scroll steps", or set an expected-total / end-of-list selector to confirm completeness.'
+           : 'The page reported more items than were collected.')));
+    // Machine-readable twin (suppressed from the platform log; kept for tools).
+    console.log('COLLECT_SUMMARY:' + JSON.stringify({
+      collected: out.length,
+      expected: expected == null ? undefined : expected,
+      complete, reason,
+    }));
+  } catch (_) {}
   return out;
 }`;
 

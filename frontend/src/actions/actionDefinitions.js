@@ -1142,6 +1142,26 @@ const ${outputVar} = await page.$$eval(
       },
     },
     advanced: {
+      expectedCountSelector: {
+        type: "string",
+        label: "Expected-total selector (element showing the total, e.g. \"340 results\") — enables completeness check",
+        placeholder: ".results-count",
+      },
+      endSelector: {
+        type: "string",
+        label: "End-of-list selector (element that appears when there are no more items)",
+        placeholder: ".no-more-results",
+      },
+      loadingSelector: {
+        type: "string",
+        label: "Loading indicator selector (waited out before deciding 'no new items')",
+        placeholder: ".spinner, .loading",
+      },
+      scrollOverlap: {
+        type: "number",
+        label: "Scroll overlap (0–0.9) — higher = smaller, safer steps that never skip a window",
+        default: 0.35,
+      },
       scrollDelay: {
         type: "number",
         label: "Wait after each scroll (ms)",
@@ -1149,7 +1169,7 @@ const ${outputVar} = await page.$$eval(
       },
       maxNoNew: {
         type: "number",
-        label: "Stop after this many scrolls with no new unique items",
+        label: "Stop after this many scrolls with no new items (only counted once at the bottom)",
         default: 3,
       },
       maxScrolls: {
