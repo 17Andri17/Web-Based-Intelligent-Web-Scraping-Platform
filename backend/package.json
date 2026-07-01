@@ -21,7 +21,7 @@
     "jsonwebtoken": "^9.0.3",
     "node-fetch": "^2.7.0",
     "pg": "^8.13.1",
-    "puppeteer": "^24.17.0",
+    "puppeteer": "npm:rebrowser-puppeteer@^24.8.1",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-stream": "^3.0.22",

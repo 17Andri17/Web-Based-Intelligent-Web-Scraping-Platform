@@ -4,42 +4,163 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 // ==================== ANTI-DETECTION CONFIG ====================
-const STEALTH_CONFIG = {
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    platform: 'Win32',
-    vendor: 'Google Inc.',
-    languages: ['en-US', 'en'],
-    hardwareConcurrency: 8,
-    deviceMemory: 8,
-    maxTouchPoints: 0,
-    webglVendor: 'Google Inc. (NVIDIA)',
-    webglRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)',
-    screenResolution: { width: 1920, height: 1080 },
-    colorDepth: 24
-};
+// A pool of internally-consistent device profiles (UA, GPU, screen, core
+// count all belong to a plausible real machine) instead of one fixed
+// fingerprint. Every session in the platform previously presented the exact
+// same UA/GPU/screen/hardwareConcurrency combination, which is itself a
+// signal — bot-farm detectors cluster on identical fingerprints appearing
+// across many sessions even when any single fingerprint looks "clean". A
+// profile is picked once per user/session (see _getProfileForUser) and held
+// for that session's lifetime so it stays internally consistent.
+const DEVICE_PROFILES = [
+    {
+        id: 'win-nvidia',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.85 Safari/537.36',
+        platform: 'Win32',
+        vendor: 'Google Inc.',
+        languages: ['en-US', 'en'],
+        hardwareConcurrency: 8,
+        deviceMemory: 8,
+        maxTouchPoints: 0,
+        webglVendor: 'Google Inc. (NVIDIA)',
+        webglRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+        screenResolution: { width: 1920, height: 1080 },
+        colorDepth: 24,
+        chromeMajor: '131',
+        chromeFullVersion: '131.0.6778.85',
+        uaPlatform: 'Windows',
+        uaPlatformVersion: '15.0.0',
+        architecture: 'x86',
+        bitness: '64',
+        wow64: false,
+        mobile: false
+    },
+    {
+        id: 'win-intel',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.85 Safari/537.36',
+        platform: 'Win32',
+        vendor: 'Google Inc.',
+        languages: ['en-US', 'en'],
+        hardwareConcurrency: 4,
+        deviceMemory: 8,
+        maxTouchPoints: 0,
+        webglVendor: 'Google Inc. (Intel)',
+        webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 (0x00003EA0) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+        screenResolution: { width: 1366, height: 768 },
+        colorDepth: 24,
+        chromeMajor: '131',
+        chromeFullVersion: '131.0.6778.85',
+        uaPlatform: 'Windows',
+        uaPlatformVersion: '15.0.0',
+        architecture: 'x86',
+        bitness: '64',
+        wow64: false,
+        mobile: false
+    },
+    {
+        id: 'win-amd',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.85 Safari/537.36',
+        platform: 'Win32',
+        vendor: 'Google Inc.',
+        languages: ['en-US', 'en'],
+        hardwareConcurrency: 12,
+        deviceMemory: 16,
+        maxTouchPoints: 0,
+        webglVendor: 'Google Inc. (AMD)',
+        webglRenderer: 'ANGLE (AMD, AMD Radeon RX 580 Series (0x00006FDF) Direct3D11 vs_5_0 ps_5_0, D3D11)',
+        screenResolution: { width: 2560, height: 1440 },
+        colorDepth: 24,
+        chromeMajor: '131',
+        chromeFullVersion: '131.0.6778.85',
+        uaPlatform: 'Windows',
+        uaPlatformVersion: '10.0.0',
+        architecture: 'x86',
+        bitness: '64',
+        wow64: false,
+        mobile: false
+    },
+    {
+        id: 'mac-m2',
+        // Real Chrome reports this exact legacy string on macOS regardless of
+        // Intel vs Apple Silicon — matching it is what makes this profile
+        // authentic rather than a giveaway.
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.85 Safari/537.36',
+        platform: 'MacIntel',
+        vendor: 'Google Inc.',
+        languages: ['en-US', 'en'],
+        hardwareConcurrency: 8,
+        deviceMemory: 16,
+        maxTouchPoints: 0,
+        webglVendor: 'Google Inc. (Apple)',
+        webglRenderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)',
+        screenResolution: { width: 1512, height: 982 },
+        colorDepth: 24,
+        chromeMajor: '131',
+        chromeFullVersion: '131.0.6778.85',
+        uaPlatform: 'macOS',
+        uaPlatformVersion: '14.5.0',
+        architecture: 'arm',
+        bitness: '64',
+        wow64: false,
+        mobile: false
+    }
+];
 
 // ==================== NAVIGATOR OVERRIDE SCRIPT ====================
-// This script will be injected into ALL contexts (main, workers, iframes)
+// This script is injected into every context: the page's main world, its
+// iframes (both via CDP's addScriptToEvaluateOnNewDocument, which covers
+// page/frame documents automatically), and — via source rewriting in
+// _applyStealthToPage plus the CDP fallback in _injectIntoWorker — dedicated
+// and shared workers.
 const getNavigatorOverrideScript = (config) => `
 (function() {
   'use strict';
-  
+
+  // Idempotency guard: this same script can legitimately run more than once
+  // in one realm (evaluateOnNewDocument + a worker's rewritten source both
+  // resolving to the same top frame in edge cases). Redefining everything a
+  // second time is harmless on its own, but it would also stack a second
+  // Function.prototype.toString proxy on top of the first — wasteful, not
+  // incorrect, but easy to just avoid.
+  if (typeof self !== 'undefined' && self.__stealthInitialized) return;
+
   const config = ${JSON.stringify(config)};
-  
+
+  // ---- Function.prototype.toString spoofing ----
+  // Every getter/function we inject below must report itself as native code.
+  // Calling .toString() on a tampered accessor is a standard "lie detector"
+  // check (used by CreepJS and similar tools): a plain arrow function's
+  // source is trivially distinguishable from "function get x() { [native
+  // code] }". This proxies Function.prototype.toString itself so registered
+  // functions return a native-looking string, and registers itself
+  // recursively so introspecting the patch mechanism doesn't reveal it.
+  var __nativeStrings = new WeakMap();
+  var __origFnToString = Function.prototype.toString;
+  var __fnToStringProxy = new Proxy(__origFnToString, {
+    apply: function(target, thisArg, args) {
+      if (__nativeStrings.has(thisArg)) return __nativeStrings.get(thisArg);
+      return Reflect.apply(target, thisArg, args);
+    }
+  });
+  try {
+    Object.defineProperty(Function.prototype, 'toString', {
+      value: __fnToStringProxy,
+      writable: true,
+      enumerable: false,
+      configurable: true
+    });
+  } catch (e) {}
+  function nativeize(fn, name) {
+    try { __nativeStrings.set(fn, 'function ' + (name || fn.name || '') + '() { [native code] }'); } catch (e) {}
+    return fn;
+  }
+  nativeize(Function.prototype.toString, 'toString');
+
   // Helper to safely override property
   const overrideProperty = (obj, prop, value) => {
     try {
-      Object.defineProperty(obj, prop, {
-        get: () => value,
-        configurable: true,
-        enumerable: true
-      });
-    } catch (e) {}
-  };
-  
-  // Helper to override getter
-  const overrideGetter = (obj, prop, getter) => {
-    try {
+      const getter = () => value;
+      nativeize(getter, 'get ' + prop);
       Object.defineProperty(obj, prop, {
         get: getter,
         configurable: true,
@@ -47,16 +168,28 @@ const getNavigatorOverrideScript = (config) => `
       });
     } catch (e) {}
   };
-  
+
+  // Helper to override getter
+  const overrideGetter = (obj, prop, getter) => {
+    try {
+      nativeize(getter, 'get ' + prop);
+      Object.defineProperty(obj, prop, {
+        get: getter,
+        configurable: true,
+        enumerable: true
+      });
+    } catch (e) {}
+  };
+
   // Detect context type
   const isWorker = typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope;
   const isServiceWorker = typeof ServiceWorkerGlobalScope !== 'undefined' && self instanceof ServiceWorkerGlobalScope;
   const isSharedWorker = typeof SharedWorkerGlobalScope !== 'undefined' && self instanceof SharedWorkerGlobalScope;
   const isDedicatedWorker = typeof DedicatedWorkerGlobalScope !== 'undefined' && self instanceof DedicatedWorkerGlobalScope;
-  
+
   // Get the navigator object for current context
   const nav = typeof navigator !== 'undefined' ? navigator : null;
-  
+
   if (nav) {
     // Core navigator properties - MUST be consistent across all contexts
     overrideProperty(nav, 'userAgent', config.userAgent);
@@ -67,10 +200,10 @@ const getNavigatorOverrideScript = (config) => `
     overrideProperty(nav, 'hardwareConcurrency', config.hardwareConcurrency);
     overrideProperty(nav, 'deviceMemory', config.deviceMemory);
     overrideProperty(nav, 'maxTouchPoints', config.maxTouchPoints);
-    
+
     // webdriver detection
     overrideProperty(nav, 'webdriver', false);
-    
+
     // Connection info
     if (nav.connection) {
       overrideProperty(nav.connection, 'rtt', 50);
@@ -78,33 +211,38 @@ const getNavigatorOverrideScript = (config) => `
       overrideProperty(nav.connection, 'effectiveType', '4g');
       overrideProperty(nav.connection, 'saveData', false);
     }
-    
-    // UserAgentData (Client Hints)
+
+    // UserAgentData (Client Hints) — brands/platform/architecture all derived
+    // from the same device profile as the UA string and the CDP-level
+    // Emulation.setUserAgentOverride, so none of these can disagree with
+    // each other the way a hardcoded-per-field version could.
     if ('userAgentData' in nav || !isWorker) {
+      const brands = [
+        { brand: 'Chromium', version: config.chromeMajor },
+        { brand: 'Google Chrome', version: config.chromeMajor },
+        { brand: 'Not_A Brand', version: '24' }
+      ];
+      const fullVersionList = [
+        { brand: 'Chromium', version: config.chromeFullVersion },
+        { brand: 'Google Chrome', version: config.chromeFullVersion },
+        { brand: 'Not_A Brand', version: '24.0.0.0' }
+      ];
       const userAgentData = {
-        brands: [
-          { brand: 'Chromium', version: '131' },
-          { brand: 'Google Chrome', version: '131' },
-          { brand: 'Not_A Brand', version: '24' }
-        ],
-        mobile: false,
-        platform: 'Windows',
+        brands: brands,
+        mobile: !!config.mobile,
+        platform: config.uaPlatform,
         getHighEntropyValues: async function(hints) {
           const values = {
-            architecture: 'x86',
-            bitness: '64',
+            architecture: config.architecture,
+            bitness: config.bitness,
             brands: this.brands,
-            fullVersionList: [
-              { brand: 'Chromium', version: '131.0.6778.85' },
-              { brand: 'Google Chrome', version: '131.0.6778.85' },
-              { brand: 'Not_A Brand', version: '24.0.0.0' }
-            ],
-            mobile: false,
+            fullVersionList: fullVersionList,
+            mobile: !!config.mobile,
             model: '',
-            platform: 'Windows',
-            platformVersion: '15.0.0',
-            uaFullVersion: '131.0.6778.85',
-            wow64: false
+            platform: config.uaPlatform,
+            platformVersion: config.uaPlatformVersion,
+            uaFullVersion: config.chromeFullVersion,
+            wow64: !!config.wow64
           };
           const result = {};
           for (const hint of hints) {
@@ -116,9 +254,11 @@ const getNavigatorOverrideScript = (config) => `
           return { brands: this.brands, mobile: this.mobile, platform: this.platform };
         }
       };
+      nativeize(userAgentData.getHighEntropyValues, 'getHighEntropyValues');
+      nativeize(userAgentData.toJSON, 'toJSON');
       overrideProperty(nav, 'userAgentData', userAgentData);
     }
-    
+
     // Plugins (empty in workers, but consistent)
     if (!isWorker) {
       const pluginArray = {
@@ -139,7 +279,7 @@ const getNavigatorOverrideScript = (config) => `
         [Symbol.iterator]: function* () { for (let i = 0; i < this.length; i++) yield this[i]; }
       };
       overrideProperty(nav, 'plugins', pluginArray);
-      
+
       // MimeTypes
       const mimeTypeArray = {
         length: 2,
@@ -158,7 +298,7 @@ const getNavigatorOverrideScript = (config) => `
       overrideProperty(nav, 'pdfViewerEnabled', true);
     }
   }
-  
+
   // Screen properties (main context only)
   if (!isWorker && typeof screen !== 'undefined') {
     overrideProperty(screen, 'width', config.screenResolution.width);
@@ -168,13 +308,13 @@ const getNavigatorOverrideScript = (config) => `
     overrideProperty(screen, 'colorDepth', config.colorDepth);
     overrideProperty(screen, 'pixelDepth', config.colorDepth);
   }
-  
+
   // WebGL overrides (main context AND workers — OffscreenCanvas lets workers
   // open their own WebGL context, and a real GPU renderer leaking there while
   // the main thread reports a spoofed one is itself a cross-context mismatch)
   if (typeof WebGLRenderingContext !== 'undefined') {
-    const getParameterProxy = function(target) {
-      return new Proxy(target, {
+    const getParameterProxy = function(target, name) {
+      const proxy = new Proxy(target, {
         apply: function(target, thisArg, args) {
           const param = args[0];
           // UNMASKED_VENDOR_WEBGL
@@ -184,17 +324,151 @@ const getNavigatorOverrideScript = (config) => `
           return Reflect.apply(target, thisArg, args);
         }
       });
+      nativeize(proxy, name);
+      return proxy;
     };
-    
+
     const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = getParameterProxy(originalGetParameter);
-    
+    WebGLRenderingContext.prototype.getParameter = getParameterProxy(originalGetParameter, 'getParameter');
+
     if (typeof WebGL2RenderingContext !== 'undefined') {
       const originalGetParameter2 = WebGL2RenderingContext.prototype.getParameter;
-      WebGL2RenderingContext.prototype.getParameter = getParameterProxy(originalGetParameter2);
+      WebGL2RenderingContext.prototype.getParameter = getParameterProxy(originalGetParameter2, 'getParameter');
     }
   }
-  
+
+  // ---- Canvas fingerprint noise ----
+  // A tiny, deterministic-per-session perturbation of pixel reads. It has to
+  // be deterministic (same coordinates always produce the same delta within
+  // one session) because a common detection technique re-renders the same
+  // canvas twice and flags the result if the two hashes differ — real
+  // hardware always produces identical output for identical draws. What
+  // this defeats is exact-hash tracking: two different sessions (or a
+  // session vs. a "clean" real browser) now produce different canvas hashes
+  // instead of an identical, trivially fingerprint-able one.
+  (function() {
+    const seed = (config.fingerprintSeed >>> 0) || 1;
+    function hash32(a, b) {
+      let h = (a ^ Math.imul(b + 0x9e3779b9, 0x85ebca6b)) >>> 0;
+      h = Math.imul(h ^ (h >>> 16), 2246822507);
+      h = Math.imul(h ^ (h >>> 13), 3266489909);
+      return (h ^ (h >>> 16)) >>> 0;
+    }
+    function noisifyImageData(imageData) {
+      // Skip very large canvases (real page rendering, screenshots-ish
+      // usage) — fingerprint probes are almost always small, and this keeps
+      // the cost of the patch negligible for legitimate large-canvas use.
+      if (imageData.width * imageData.height > 500000) return imageData;
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        const n = (hash32(seed, i) % 3) - 1; // -1, 0, or +1
+        if (n !== 0) {
+          data[i] = Math.min(255, Math.max(0, data[i] + n));
+          data[i + 1] = Math.min(255, Math.max(0, data[i + 1] + n));
+          data[i + 2] = Math.min(255, Math.max(0, data[i + 2] + n));
+        }
+      }
+      return imageData;
+    }
+    function patchCanvasNoise(CanvasProto, CtxProto, makeCanvas) {
+      if (!CtxProto || !CtxProto.getImageData) return;
+      const origGetImageData = CtxProto.getImageData;
+      CtxProto.getImageData = function(...args) {
+        const result = origGetImageData.apply(this, args);
+        return noisifyImageData(result);
+      };
+      nativeize(CtxProto.getImageData, 'getImageData');
+
+      if (CanvasProto && CanvasProto.toDataURL) {
+        const origToDataURL = CanvasProto.toDataURL;
+        CanvasProto.toDataURL = function(...args) {
+          try {
+            const w = this.width, h = this.height;
+            if (w > 0 && h > 0 && typeof this.getContext === 'function') {
+              const copy = makeCanvas(w, h);
+              if (copy) {
+                const copyCtx = copy.getContext('2d');
+                copyCtx.drawImage(this, 0, 0);
+                // Use the ORIGINAL getImageData here (not the patched one)
+                // so the noise is applied exactly once, then written back
+                // onto the disposable copy — the real canvas is never
+                // mutated, so screenshots/further drawing on it stay exact.
+                const imageData = origGetImageData.call(copyCtx, 0, 0, w, h);
+                noisifyImageData(imageData);
+                copyCtx.putImageData(imageData, 0, 0);
+                return origToDataURL.apply(copy, args);
+              }
+            }
+          } catch (e) {}
+          return origToDataURL.apply(this, args);
+        };
+        nativeize(CanvasProto.toDataURL, 'toDataURL');
+      }
+
+      if (CanvasProto && CanvasProto.toBlob) {
+        const origToBlob = CanvasProto.toBlob;
+        CanvasProto.toBlob = function(callback, ...rest) {
+          try {
+            const w = this.width, h = this.height;
+            if (w > 0 && h > 0 && typeof this.getContext === 'function') {
+              const copy = makeCanvas(w, h);
+              if (copy) {
+                const copyCtx = copy.getContext('2d');
+                copyCtx.drawImage(this, 0, 0);
+                const imageData = origGetImageData.call(copyCtx, 0, 0, w, h);
+                noisifyImageData(imageData);
+                copyCtx.putImageData(imageData, 0, 0);
+                return origToBlob.call(copy, callback, ...rest);
+              }
+            }
+          } catch (e) {}
+          return origToBlob.call(this, callback, ...rest);
+        };
+        nativeize(CanvasProto.toBlob, 'toBlob');
+      }
+    }
+    if (typeof HTMLCanvasElement !== 'undefined' && typeof document !== 'undefined') {
+      patchCanvasNoise(
+        HTMLCanvasElement.prototype,
+        typeof CanvasRenderingContext2D !== 'undefined' ? CanvasRenderingContext2D.prototype : null,
+        (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+      );
+    }
+    if (typeof OffscreenCanvas !== 'undefined') {
+      patchCanvasNoise(
+        OffscreenCanvas.prototype,
+        typeof OffscreenCanvasRenderingContext2D !== 'undefined' ? OffscreenCanvasRenderingContext2D.prototype : null,
+        (w, h) => new OffscreenCanvas(w, h)
+      );
+    }
+
+    // ---- AudioContext fingerprint noise ----
+    // Same deterministic-per-session-seed approach, applied to the two
+    // primary audio-fingerprint read paths (OfflineAudioContext rendering
+    // read via getChannelData, and analyser-based frequency reads).
+    if (typeof AudioBuffer !== 'undefined' && AudioBuffer.prototype.getChannelData) {
+      const origGetChannelData = AudioBuffer.prototype.getChannelData;
+      AudioBuffer.prototype.getChannelData = function(channel) {
+        const data = origGetChannelData.call(this, channel);
+        for (let i = 0; i < data.length; i += 97) {
+          data[i] += ((hash32(seed, i) % 2000) - 1000) / 10000000;
+        }
+        return data;
+      };
+      nativeize(AudioBuffer.prototype.getChannelData, 'getChannelData');
+    }
+    if (typeof AnalyserNode !== 'undefined' && AnalyserNode.prototype.getFloatFrequencyData) {
+      const origGetFloatFrequencyData = AnalyserNode.prototype.getFloatFrequencyData;
+      AnalyserNode.prototype.getFloatFrequencyData = function(array) {
+        origGetFloatFrequencyData.call(this, array);
+        for (let i = 0; i < array.length; i++) {
+          array[i] += ((hash32(seed, i) % 2000) - 1000) / 100000;
+        }
+      };
+      nativeize(AnalyserNode.prototype.getFloatFrequencyData, 'getFloatFrequencyData');
+    }
+  })();
+
   // Chrome object (main context only)
   if (!isWorker && typeof window !== 'undefined') {
     if (!window.chrome) window.chrome = {};
@@ -224,7 +498,9 @@ const getNavigatorOverrideScript = (config) => `
         tran: 15
       };
     };
-    
+    nativeize(window.chrome.loadTimes, 'loadTimes');
+    nativeize(window.chrome.csi, 'csi');
+
     // Remove automation-specific properties
     delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
     delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
@@ -246,7 +522,7 @@ const getNavigatorOverrideScript = (config) => `
     delete window.$cdc_asdjflasutopfhvcZLmcfl_;
     delete window.$chrome_asyncScriptInfo;
     delete window.__$webdriverAsyncExecutor;
-    
+
     // Permissions API
     if (navigator.permissions) {
       const originalQuery = navigator.permissions.query;
@@ -255,9 +531,10 @@ const getNavigatorOverrideScript = (config) => `
           Promise.resolve({ state: Notification.permission }) :
           originalQuery(parameters)
       );
+      nativeize(navigator.permissions.query, 'query');
     }
   }
-  
+
   // Mark as initialized to prevent double injection
   if (typeof self !== 'undefined') {
     self.__stealthInitialized = true;
@@ -273,6 +550,30 @@ class BrowserManager {
         this.pagePromises = new Map();
         this.exposedBindings = new Map();
         this.workerListeners = new Map();
+        this.userProfiles = new Map();
+    }
+
+    // Picks one internally-consistent device profile per user and holds it
+    // for the session's lifetime (until closeContext). A fresh, random
+    // fingerprintSeed is generated per session even when two sessions land
+    // on the same profile, so canvas/audio noise still differs between them
+    // — otherwise two sessions sharing a profile would also emit identical
+    // canvas hashes, which is exactly the cross-session correlation this is
+    // meant to avoid.
+    _getProfileForUser(userId) {
+        if (!this.userProfiles.has(userId)) {
+            const base = DEVICE_PROFILES[Math.floor(Math.random() * DEVICE_PROFILES.length)];
+            const profile = { ...base, fingerprintSeed: Math.floor(Math.random() * 2 ** 31) };
+            this.userProfiles.set(userId, profile);
+        }
+        return this.userProfiles.get(userId);
+    }
+
+    _getUserIdForContext(browserContext) {
+        for (const [userId, ctx] of this.contexts.entries()) {
+            if (ctx === browserContext) return userId;
+        }
+        return null;
     }
 
     async initBrowser() {
@@ -284,6 +585,7 @@ class BrowserManager {
         }
 
         this.browserLaunching = (async() => {
+            const defaultProfile = DEVICE_PROFILES[0];
             this.browser = await puppeteer.launch({
                 executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
                 headless: 'new',
@@ -308,11 +610,13 @@ class BrowserManager {
                     '--disable-features=BlockInsecurePrivateNetworkRequests',
                     '--disable-features=WebRtcHideLocalIpsWithMdns',
 
-                    // Consistent User-Agent
-                    `--user-agent=${STEALTH_CONFIG.userAgent}`,
+                    // Consistent User-Agent (blank-page default; each page
+                    // gets its own profile-accurate override before it
+                    // navigates anywhere, see _applyStealthToPage)
+                    `--user-agent=${defaultProfile.userAgent}`,
 
                     // Window size for consistency
-                    '--window-size=1920,1080',
+                    `--window-size=${defaultProfile.screenResolution.width},${defaultProfile.screenResolution.height}`,
 
                     // Disable automation extensions
                     '--disable-extensions',
@@ -371,13 +675,24 @@ class BrowserManager {
 
     async _injectIntoWorker(target) {
         try {
+            // Resolve which user/session this worker belongs to so it gets
+            // that session's actual profile, not some arbitrary default —
+            // otherwise a fallback injection could contradict the primary
+            // source-rewrite injection that already ran for the same worker.
+            let profile = DEVICE_PROFILES[0];
+            try {
+                const browserContext = typeof target.browserContext === 'function' ? target.browserContext() : null;
+                const userId = browserContext ? this._getUserIdForContext(browserContext) : null;
+                if (userId) profile = this._getProfileForUser(userId);
+            } catch (e) {}
+
             const client = await target.createCDPSession();
 
             // Inject the navigator override script. Runtime.evaluate works
             // without a prior Runtime.enable, so skip that extra round trip
             // to shave whatever latency we can off this race.
             await client.send('Runtime.evaluate', {
-                expression: getNavigatorOverrideScript(STEALTH_CONFIG),
+                expression: getNavigatorOverrideScript(profile),
                 awaitPromise: true
             });
 
@@ -423,9 +738,10 @@ class BrowserManager {
         const promise = (async() => {
             const context = await this.getContext(userId);
             const page = await context.newPage();
+            const profile = this._getProfileForUser(userId);
 
             // Apply comprehensive stealth before any navigation
-            await this._applyStealthToPage(page);
+            await this._applyStealthToPage(page, profile);
 
             this.pages.set(userId, page);
             this.pagePromises.delete(userId);
@@ -435,7 +751,7 @@ class BrowserManager {
             // Handle new frames (iframes)
             page.on('frameattached', async(frame) => {
                 try {
-                    await frame.evaluate(getNavigatorOverrideScript(STEALTH_CONFIG));
+                    await frame.evaluate(getNavigatorOverrideScript(profile));
                 } catch (e) {}
             });
 
@@ -448,32 +764,35 @@ class BrowserManager {
     }
 
     // ==================== STEALTH APPLICATION ====================
-    async _applyStealthToPage(page) {
+    async _applyStealthToPage(page, config) {
         // Set user agent via CDP for consistency
         const client = await page.target().createCDPSession();
 
-        // Set User-Agent Override (affects main context AND workers)
+        // Set User-Agent Override (affects main context AND workers). Every
+        // field here comes from the same device profile as the JS-level
+        // navigator overrides below, so the network-visible UA header and
+        // Client Hints can't disagree with what the page's own JS reports.
         await client.send('Emulation.setUserAgentOverride', {
-            userAgent: STEALTH_CONFIG.userAgent,
-            platform: STEALTH_CONFIG.platform,
+            userAgent: config.userAgent,
+            platform: config.platform,
             userAgentMetadata: {
                 brands: [
-                    { brand: 'Chromium', version: '131' },
-                    { brand: 'Google Chrome', version: '131' },
+                    { brand: 'Chromium', version: config.chromeMajor },
+                    { brand: 'Google Chrome', version: config.chromeMajor },
                     { brand: 'Not_A Brand', version: '24' }
                 ],
                 fullVersionList: [
-                    { brand: 'Chromium', version: '131.0.6778.85' },
-                    { brand: 'Google Chrome', version: '131.0.6778.85' },
+                    { brand: 'Chromium', version: config.chromeFullVersion },
+                    { brand: 'Google Chrome', version: config.chromeFullVersion },
                     { brand: 'Not_A Brand', version: '24.0.0.0' }
                 ],
-                platform: 'Windows',
-                platformVersion: '15.0.0',
-                architecture: 'x86',
+                platform: config.uaPlatform,
+                platformVersion: config.uaPlatformVersion,
+                architecture: config.architecture,
                 model: '',
-                mobile: false,
-                bitness: '64',
-                wow64: false
+                mobile: !!config.mobile,
+                bitness: config.bitness,
+                wow64: !!config.wow64
             }
         });
 
@@ -483,7 +802,7 @@ class BrowserManager {
         // execution contexts, those are separate CDP targets. Workers are
         // handled below via source rewriting (primary) and CDP injection
         // (fallback, see _injectIntoWorker).
-        await page.evaluateOnNewDocument(getNavigatorOverrideScript(STEALTH_CONFIG));
+        await page.evaluateOnNewDocument(getNavigatorOverrideScript(config));
 
         // Additional CDP configurations for stealth
         try {
@@ -499,14 +818,6 @@ class BrowserManager {
                 timezoneId: 'America/New_York'
             });
         } catch (e) {}
-
-        // Override navigator.webdriver at the earliest opportunity
-        await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => false,
-                configurable: true
-            });
-        });
 
         // Intercept Worker/SharedWorker construction and rewrite the target
         // script so our override script becomes the literal first statement
@@ -525,6 +836,30 @@ class BrowserManager {
         // scripts blocked by CORS, and service workers, which aren't created
         // via `new Worker()` at all).
         await page.evaluateOnNewDocument((overrideSource) => {
+            // Small, self-contained toString nativizer for the two
+            // constructors patched below — kept independent from the main
+            // override script's own nativizer (a separate closure/realm at
+            // injection time) rather than trying to share state across the
+            // two evaluateOnNewDocument calls.
+            const nativeStrings = new WeakMap();
+            const origFnToString = Function.prototype.toString;
+            const fnToStringProxy = new Proxy(origFnToString, {
+                apply(target, thisArg, args) {
+                    if (nativeStrings.has(thisArg)) return nativeStrings.get(thisArg);
+                    return Reflect.apply(target, thisArg, args);
+                }
+            });
+            try {
+                Object.defineProperty(Function.prototype, 'toString', {
+                    value: fnToStringProxy, writable: true, enumerable: false, configurable: true
+                });
+            } catch (e) {}
+            function nativeize(fn, name) {
+                try { nativeStrings.set(fn, `function ${name}() { [native code] }`); } catch (e) {}
+                return fn;
+            }
+            nativeize(fnToStringProxy, 'toString');
+
             function buildPatchedURL(originalURL) {
                 try {
                     const abs = new URL(originalURL, location.href).href;
@@ -605,24 +940,25 @@ class BrowserManager {
                         return Reflect.construct(target, args);
                     }
                 });
+                nativeize(Patched, OriginalClass.name);
                 try { Object.defineProperty(Patched, 'name', { value: OriginalClass.name }); } catch (e) {}
                 return Patched;
             }
 
             window.Worker = patchWorkerClass(window.Worker);
             if (window.SharedWorker) window.SharedWorker = patchWorkerClass(window.SharedWorker);
-        }, getNavigatorOverrideScript(STEALTH_CONFIG));
+        }, getNavigatorOverrideScript(config));
 
-        // Set viewport
+        // Set viewport to match the assigned device profile
         await page.setViewport({
-            width: 1920,
-            height: 1080,
+            width: config.screenResolution.width,
+            height: config.screenResolution.height,
             deviceScaleFactor: 1,
-            hasTouch: false,
-            isMobile: false
+            hasTouch: config.maxTouchPoints > 0,
+            isMobile: !!config.mobile
         });
 
-        console.log('✅ Stealth applied to page');
+        console.log(`✅ Stealth applied to page (profile: ${config.id})`);
     }
 
     async ensureBinding(userId, name, fn) {
@@ -674,6 +1010,8 @@ class BrowserManager {
             }
             this.contexts.delete(userId);
         }
+
+        this.userProfiles.delete(userId);
     }
 
     async closeBrowser() {
@@ -687,6 +1025,7 @@ class BrowserManager {
             this.contexts.clear();
             this.pages.clear();
             this.exposedBindings.clear();
+            this.userProfiles.clear();
         }
     }
 }
