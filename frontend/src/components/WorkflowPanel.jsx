@@ -24,7 +24,7 @@ function dzCollision(args) {
 
 const EXTRACTION_TYPES = new Set([
   "EXTRACT_TEXT", "EXTRACT_ATTRIBUTE", "EXTRACT_HTML",
-  "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON",
+  "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON", "COLLECT_LIST",
 ]);
 
 // Walk the workflow tree and return every named extraction step as a
@@ -314,7 +314,7 @@ function summariseParams(step, ctx = {}) {
   // EXTRACT_LIST cards summarise specially: show the container selector
   // plus the comma-separated field names, so the user can see "what
   // they're extracting" at a glance without expanding the editor.
-  if (step.type === "EXTRACT_LIST") {
+  if (step.type === "EXTRACT_LIST" || step.type === "COLLECT_LIST") {
     const out = [];
     if (step.params?.containerSelector) {
       out.push(["container", String(step.params.containerSelector)]);
@@ -323,6 +323,10 @@ function summariseParams(step, ctx = {}) {
     const names = Object.keys(f);
     if (names.length) {
       out.push(["fields", `${names.length} (${names.slice(0, 4).join(", ")}${names.length > 4 ? "…" : ""})`]);
+    }
+    if (step.type === "COLLECT_LIST") {
+      out.push(["mode", "scroll-collect"]);
+      if (step.params?.keyField) out.push(["key", String(step.params.keyField)]);
     }
     return out;
   }

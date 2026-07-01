@@ -6,7 +6,7 @@ const { buildCodegenConsentHelper } = require('../browser/consent');
 // ─── Extraction action types (steps that produce named data) ──────────────
 const EXTRACTION_TYPES = new Set([
   'EXTRACT_TEXT', 'EXTRACT_ATTRIBUTE', 'EXTRACT_HTML',
-  'EXTRACT_TABLE', 'EXTRACT_LIST', 'EXTRACT_JSON',
+  'EXTRACT_TABLE', 'EXTRACT_LIST', 'EXTRACT_JSON', 'COLLECT_LIST',
 ]);
 
 // Extraction types whose "0 records / empty fields" outcome the self-healing
@@ -363,7 +363,7 @@ await Promise.all([
     case 'WAIT': return `await new Promise(r => setTimeout(r, ${num(params.duration, 1000)}));\n`;
 
     case 'WAIT_FOR_SELECTOR': return `
-await waitForAny(page, ${selList(params)}, ${num(advanced.timeout, 30000)});
+await waitForAny(page, ${selList(params)}, ${num(advanced.timeout, 30000)}, { reveal: false });
 `.trim() + '\n';
 
     case 'WAIT_FOR_NAVIGATION': return `
@@ -491,6 +491,53 @@ const ${varName} = await (async () => {
   ))${postProcess};
 })();
 ${store}`.trim() + '\n';
+    }
+
+    case 'COLLECT_LIST': {
+      // Same field model as EXTRACT_LIST, but the rows are harvested WHILE
+      // scrolling and de-duped by key — see harvestWhileScrolling. Handles
+      // infinite-scroll and virtualized/recycling lists.
+      const rawFields = params.fields || {};
+      const evalFields = {};
+      const postFields = {};
+      let hasPipeline = false;
+      for (const [name, v] of Object.entries(rawFields)) {
+        if (v == null) continue;
+        let spec;
+        if (typeof v === 'string') {
+          spec = { selector: v, kind: 'text', attribute: null };
+        } else if (typeof v === 'object') {
+          const kind = v.kind === 'attr' || v.kind === 'attribute' ? 'attr'
+                     : v.kind === 'html' ? 'html'
+                     : 'text';
+          spec = {
+            selector: typeof v.selector === 'string' ? v.selector : '',
+            kind,
+            attribute: kind === 'attr' && typeof v.attribute === 'string' ? v.attribute : null,
+          };
+          if (Array.isArray(v.transforms) && v.transforms.length) spec.transforms = v.transforms;
+          if (v.split && typeof v.split === 'object')             spec.split = v.split;
+        } else {
+          continue;
+        }
+        evalFields[name] = { selector: spec.selector, kind: spec.kind, attribute: spec.attribute };
+        postFields[name] = spec;
+        if (__ftHasPipeline(spec)) hasPipeline = true;
+      }
+      const fieldsJson = JSON.stringify(evalFields);
+      const containerExpr = q(params.containerSelector || '');   // supports {{var}}
+      const scrollExpr    = q(params.scrollContainer || '');
+      const keyJson = JSON.stringify((params.keyField && String(params.keyField).trim()) || '');
+      const optsJson = JSON.stringify({
+        scrollDelay: num(advanced.scrollDelay, 1200),
+        maxNoNew:    Math.max(1, num(advanced.maxNoNew, 3)),
+        maxScrolls:  num(advanced.maxScrolls, 300),
+      });
+      const postProcess = hasPipeline
+        ? `.then(_rows => _rows.map(_row => __ftMaterializeRow(_row, ${JSON.stringify(postFields)})))`
+        : '';
+      const code = `const ${varName} = await harvestWhileScrolling(page, ${containerExpr}, ${fieldsJson}, ${keyJson}, ${scrollExpr}, ${optsJson})${postProcess};\n`;
+      return code + store;
     }
 
     case 'EXTRACT_JSON': {
@@ -1437,6 +1484,85 @@ function __enrichRows(row, sub, opts) {
   return [Object.assign({}, base, detail)];
 }`;
 
+/* =========================================================================
+   HARVEST RUNTIME — collect a list WHILE scrolling (infinite / virtual lists)
+   -------------------------------------------------------------------------
+   Used by the COLLECT_LIST action. Extracts the currently-rendered items on
+   every scroll step and de-dupes by a key, so it works even when the page
+   RECYCLES rows out of the DOM once they scroll out of view (virtualized
+   lists) — a single end-of-page query would miss almost everything there.
+   Included on demand in both platform and downloaded scripts.
+   ========================================================================= */
+const HARVEST_RUNTIME_SRC = `/**
+ * Collect a repeating list while scrolling.
+ *   page         – puppeteer page
+ *   containerSel – CSS selector for each repeating item
+ *   fields       – { name: { selector, kind:'text'|'attr'|'html', attribute } }
+ *   keyField     – field to de-dupe on ('' → de-dupe on the whole row)
+ *   scrollSel    – scroll container selector ('' → scroll the window)
+ *   opts         – { scrollDelay, maxNoNew, maxScrolls }
+ * Returns the de-duplicated array of items, in first-seen order.
+ */
+async function harvestWhileScrolling(page, containerSel, fields, keyField, scrollSel, opts) {
+  opts = opts || {};
+  const delay      = opts.scrollDelay || 1200;
+  const maxNoNew   = Math.max(1, opts.maxNoNew || 3);
+  const maxScrolls = opts.maxScrolls || 300;
+  const seen = new Set();
+  const out  = [];
+  let noNew  = 0;
+
+  const extractVisible = () => page.evaluate((sel, fieldMap) => {
+    return Array.from(document.querySelectorAll(sel)).map(el => {
+      const item = {};
+      for (const [name, spec] of Object.entries(fieldMap)) {
+        const s = spec.selector || '';
+        const child = s ? el.querySelector(s) : el;
+        if (!child) { item[name] = null; continue; }
+        if (spec.kind === 'attr' && spec.attribute) item[name] = child.getAttribute(spec.attribute);
+        else if (spec.kind === 'html') item[name] = (child.innerHTML || '').trim();
+        else item[name] = (child.textContent || '').trim();
+      }
+      return item;
+    });
+  }, containerSel, fields);
+
+  const keyOf = (row) => {
+    if (keyField && row && Object.prototype.hasOwnProperty.call(row, keyField)) {
+      const v = row[keyField];
+      if (v != null && String(v).trim() !== '') return String(v);
+    }
+    return JSON.stringify(row);
+  };
+
+  const harvest = async () => {
+    let added = 0, rows = [];
+    try { rows = await extractVisible(); } catch (_) { rows = []; }
+    for (const row of rows) {
+      const k = keyOf(row);
+      if (seen.has(k)) continue;
+      seen.add(k); out.push(row); added++;
+    }
+    return added;
+  };
+
+  // Advance the scroll position of either an inner container or the window.
+  const scrollStep = () => page.evaluate((sSel) => {
+    const t = sSel ? document.querySelector(sSel) : null;
+    if (t) { t.scrollTop = Math.min(t.scrollTop + Math.round(t.clientHeight * 0.9), t.scrollHeight); return; }
+    window.scrollTo(0, Math.min(window.scrollY + Math.round(window.innerHeight * 0.9), document.body.scrollHeight));
+  }, scrollSel);
+
+  await harvest();   // grab whatever is on screen before scrolling
+  for (let i = 0; i < maxScrolls; i++) {
+    try { await scrollStep(); } catch (_) {}
+    await new Promise(r => setTimeout(r, delay));
+    const added = await harvest();
+    if (added === 0) { if (++noNew >= maxNoNew) break; } else { noNew = 0; }
+  }
+  return out;
+}`;
+
 // Remove the per-step / per-iteration marker lines and the stats calls from
 // generated step code. Every such marker is emitted as its own standalone
 // line, so a line-level filter is exact and safe.
@@ -1514,6 +1640,11 @@ function generateCode(workflow, options = {}) {
   const usesEnrichRuntime = /__enrichRows\(/.test(stepCode);
   const enrichRuntimeSrc = usesEnrichRuntime
     ? `\n// ─── Enrich runtime (merge subflow detail results back into list rows) ────\n${ENRICH_RUNTIME_SRC}\n`
+    : '';
+  // Harvest runtime (COLLECT_LIST) — behaviour, included in both modes on demand.
+  const usesHarvestRuntime = /harvestWhileScrolling\(/.test(stepCode);
+  const harvestRuntimeSrc = usesHarvestRuntime
+    ? `\n// ─── Harvest runtime (collect a list while scrolling; virtual lists) ──────\n${HARVEST_RUNTIME_SRC}\n`
     : '';
   const instrumentationSrc = clean ? '' : `\n${INSTRUMENTATION_HELPERS_SRC}\n`;
   // Cookie-consent auto-dismiss helper — always included so every navigation
@@ -1652,23 +1783,66 @@ async function resolveElements(page, selectors) {
  * Wait until any selector in the list appears within timeout ms.
  * Returns the ElementHandle of the first match found.
  * Throws if nothing resolves in time.
+ *
+ * opts.reveal (default true): if the element isn't in the DOM yet, progressively
+ * scroll the page down between polls to trigger lazy-rendered / below-the-fold
+ * content, and once found, scroll it into the centre of the viewport (and wait
+ * briefly for it to settle) so a subsequent click/hover/type lands on a visible,
+ * stable element. Pass { reveal: false } for a pure wait that must not scroll.
  */
-async function waitForAny(page, selectors, timeout = 10000) {
+async function waitForAny(page, selectors, timeout = 10000, opts = {}) {
+  const reveal = opts.reveal !== false;
   const deadline = Date.now() + timeout;
-  let lastErr;
+  let lastErr, atBottom = false;
   while (Date.now() < deadline) {
     for (const { value, type } of selectors) {
       try {
         const el = type === 'xpath'
           ? (await page.$x(value))[0]
           : await page.$(value);
-        if (el) return el;
+        if (el) {
+          if (reveal) await scrollIntoViewSafe(page, el);
+          return el;
+        }
       } catch (e) { lastErr = e; }
+    }
+    // Not found yet: nudge the page down ~one viewport to surface lazy content.
+    // Once we hit the bottom we stop scrolling but keep polling until timeout.
+    if (reveal && !atBottom) {
+      try {
+        atBottom = await page.evaluate(() => {
+          const before = window.scrollY;
+          window.scrollTo(0, Math.min(before + Math.round(window.innerHeight * 0.9), document.body.scrollHeight));
+          return window.scrollY <= before + 1; // didn't move → already at the bottom
+        });
+      } catch (_) {}
     }
     await new Promise(r => setTimeout(r, 200));
   }
   const tried = selectors.map(s => \`[\${s.type}] \${s.value}\`).join(', ');
   throw new Error(\`waitForAny: none matched within \${timeout}ms. Tried: \${tried}\`);
+}
+
+/**
+ * Centre an element in the viewport and wait until its position is stable (two
+ * consecutive frames with the same rect) so we don't act on it mid-animation.
+ * Best-effort — never throws.
+ */
+async function scrollIntoViewSafe(page, el) {
+  try {
+    await el.evaluate(e => e.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }));
+  } catch (_) {
+    try { await el.evaluate(e => e.scrollIntoView()); } catch (__) {}
+  }
+  try {
+    let prev = null;
+    for (let i = 0; i < 5; i++) {
+      const box = await el.boundingBox().catch(() => null);
+      if (box && prev && Math.abs(box.y - prev.y) < 1 && Math.abs(box.x - prev.x) < 1) break;
+      prev = box;
+      await new Promise(r => setTimeout(r, 80));
+    }
+  } catch (_) {}
 }
 
 /**
@@ -1688,7 +1862,7 @@ async function evalOnElements(page, selectors, fn) {
   if (!els.length) return [];
   return Promise.all(els.map(el => page.evaluate(fn, el)));
 }
-${fieldRuntimeSrc}${enrichRuntimeSrc}${instrumentationSrc}${consentHelperSrc}
+${fieldRuntimeSrc}${enrichRuntimeSrc}${harvestRuntimeSrc}${instrumentationSrc}${consentHelperSrc}
 async function run() {
   const __results__ = {};
 ${currentStepDecl}${variablesCode}${capturedAliasesCode}

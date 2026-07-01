@@ -7,7 +7,7 @@ import { PAGINATION_CONTROL_TYPES } from "../workflow/controlDefinitions";
 
 const EXTRACTION_TYPES = new Set([
   "EXTRACT_TEXT", "EXTRACT_ATTRIBUTE", "EXTRACT_HTML",
-  "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON",
+  "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON", "COLLECT_LIST",
 ]);
 // Loop types that produce a fixed-shape preview table — one row per
 // matched element / iteration index. WHILE is intentionally excluded:
