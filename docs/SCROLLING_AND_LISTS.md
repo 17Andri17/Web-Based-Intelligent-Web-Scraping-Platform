@@ -60,6 +60,43 @@ auto-detect, same per-field transforms/splits).
 
 Implementation: `harvestWhileScrolling(...)` in the generated script.
 
+### "How do I know I got them ALL?"
+
+Honest answer: with a purely heuristic stop you can't be *certain* — so Collect
+List uses the strongest available signal and then **tells you how confident it
+is**. After the run it logs one of:
+
+- `✓ Collect List: collected N item(s) (reason)` — a definitive stop.
+- `⚠ Collect List may be INCOMPLETE — collected N … (reason)` — couldn't confirm.
+
+The stop **reason** (strongest → weakest):
+
+1. **`reached-expected-total`** — you set an **Expected-total selector** (an
+   element like "340 results"); it collected at least that many. *Verified.*
+   If it stops short, you get the ⚠ warning with `N of 340`.
+2. **`end-marker`** — you set an **End-of-list selector** (e.g. a "No more
+   results" element) and it appeared. *Definitive.*
+3. **`bottom-stable`** — reached the bottom **and** no new unique items appeared
+   for *maxNoNew* consecutive settles. Good confidence for finite lists.
+4. **`safety-cap`** — hit *Max scroll steps* first → reported as **incomplete**;
+   raise the cap or add one of the selectors above.
+
+Two design choices make the heuristic trustworthy:
+
+- **"No new items" is only counted at the bottom.** A quiet step in the *middle*
+  of the list (a slow fetch) never ends the collection — so you don't stop early.
+  If you set a **Loading indicator selector**, each step also waits for it to
+  clear before judging "nothing new".
+- **Overlapping scroll steps.** It advances by *(1 − overlap)* of a viewport
+  (default overlap 0.35), so consecutive windows overlap. This prevents the
+  nastiest failure — *skipping a window* and dropping items from the **middle**
+  of a virtualized list (not just the end). Increase **Scroll overlap** for
+  tall/uneven items.
+
+Practical recipe for "be sure": point the **Expected-total selector** at the
+page's own result count. Then completeness is *verified against the site's own
+number* rather than guessed.
+
 ## 3. Learning scroll/click intent from a recording — (proposed, not yet built)
 
 The recorder already tracks scroll position and clicks (`UserActionsTracker`).
