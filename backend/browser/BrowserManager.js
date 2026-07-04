@@ -106,6 +106,19 @@ const DEVICE_PROFILES = [
     }
 ];
 
+// ==================== FEATURE KILL-SWITCHES ====================
+// Independent on/off toggles for each stealth technique, env-driven so a
+// technique that turns out to backfire against a specific target (crash,
+// hang, or otherwise) can be ruled in/out or disabled without touching code.
+// All default to enabled; set STEALTH_DISABLE_<NAME>=true to turn one off.
+const STEALTH_FEATURES = {
+    toStringSpoof: process.env.STEALTH_DISABLE_TOSTRING_SPOOF !== 'true',
+    webglSpoof: process.env.STEALTH_DISABLE_WEBGL_SPOOF !== 'true',
+    canvasNoise: process.env.STEALTH_DISABLE_CANVAS_NOISE !== 'true',
+    audioNoise: process.env.STEALTH_DISABLE_AUDIO_NOISE !== 'true',
+    workerRewrite: process.env.STEALTH_DISABLE_WORKER_REWRITE !== 'true'
+};
+
 // ==================== NAVIGATOR OVERRIDE SCRIPT ====================
 // This script is injected into every context: the page's main world, its
 // iframes (both via CDP's addScriptToEvaluateOnNewDocument, which covers
@@ -125,6 +138,7 @@ const getNavigatorOverrideScript = (config) => `
   if (typeof self !== 'undefined' && self.__stealthInitialized) return;
 
   const config = ${JSON.stringify(config)};
+  const FEATURES = ${JSON.stringify(STEALTH_FEATURES)};
 
   // ---- Function.prototype.toString spoofing ----
   // Every getter/function we inject below must report itself as native code.
@@ -134,27 +148,39 @@ const getNavigatorOverrideScript = (config) => `
   // code] }". This proxies Function.prototype.toString itself so registered
   // functions return a native-looking string, and registers itself
   // recursively so introspecting the patch mechanism doesn't reveal it.
-  var __nativeStrings = new WeakMap();
-  var __origFnToString = Function.prototype.toString;
-  var __fnToStringProxy = new Proxy(__origFnToString, {
-    apply: function(target, thisArg, args) {
-      if (__nativeStrings.has(thisArg)) return __nativeStrings.get(thisArg);
-      return Reflect.apply(target, thisArg, args);
-    }
-  });
-  try {
-    Object.defineProperty(Function.prototype, 'toString', {
-      value: __fnToStringProxy,
-      writable: true,
-      enumerable: false,
-      configurable: true
+  //
+  // Gated behind a kill-switch: replacing this particular global is the
+  // single riskiest override here — it's invoked by engine/DevTools-internal
+  // code paths far more often than app code calls it directly, so a target
+  // that hammers it (or that's instrumented in a way our own CDP session
+  // also touches) is the most plausible source of a renderer-level crash,
+  // as opposed to a detection flag. Disable with STEALTH_DISABLE_TOSTRING_SPOOF=true.
+  var nativeize;
+  if (FEATURES.toStringSpoof) {
+    var __nativeStrings = new WeakMap();
+    var __origFnToString = Function.prototype.toString;
+    var __fnToStringProxy = new Proxy(__origFnToString, {
+      apply: function(target, thisArg, args) {
+        if (__nativeStrings.has(thisArg)) return __nativeStrings.get(thisArg);
+        return Reflect.apply(target, thisArg, args);
+      }
     });
-  } catch (e) {}
-  function nativeize(fn, name) {
-    try { __nativeStrings.set(fn, 'function ' + (name || fn.name || '') + '() { [native code] }'); } catch (e) {}
-    return fn;
+    try {
+      Object.defineProperty(Function.prototype, 'toString', {
+        value: __fnToStringProxy,
+        writable: true,
+        enumerable: false,
+        configurable: true
+      });
+    } catch (e) {}
+    nativeize = function(fn, name) {
+      try { __nativeStrings.set(fn, 'function ' + (name || fn.name || '') + '() { [native code] }'); } catch (e) {}
+      return fn;
+    };
+    nativeize(Function.prototype.toString, 'toString');
+  } else {
+    nativeize = function(fn) { return fn; };
   }
-  nativeize(Function.prototype.toString, 'toString');
 
   // Helper to safely override property
   const overrideProperty = (obj, prop, value) => {
@@ -312,7 +338,8 @@ const getNavigatorOverrideScript = (config) => `
   // WebGL overrides (main context AND workers — OffscreenCanvas lets workers
   // open their own WebGL context, and a real GPU renderer leaking there while
   // the main thread reports a spoofed one is itself a cross-context mismatch)
-  if (typeof WebGLRenderingContext !== 'undefined') {
+  // Disable with STEALTH_DISABLE_WEBGL_SPOOF=true.
+  if (FEATURES.webglSpoof && typeof WebGLRenderingContext !== 'undefined') {
     const getParameterProxy = function(target, name) {
       const proxy = new Proxy(target, {
         apply: function(target, thisArg, args) {
@@ -427,14 +454,15 @@ const getNavigatorOverrideScript = (config) => `
         nativeize(CanvasProto.toBlob, 'toBlob');
       }
     }
-    if (typeof HTMLCanvasElement !== 'undefined' && typeof document !== 'undefined') {
+    // Disable with STEALTH_DISABLE_CANVAS_NOISE=true.
+    if (FEATURES.canvasNoise && typeof HTMLCanvasElement !== 'undefined' && typeof document !== 'undefined') {
       patchCanvasNoise(
         HTMLCanvasElement.prototype,
         typeof CanvasRenderingContext2D !== 'undefined' ? CanvasRenderingContext2D.prototype : null,
         (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
       );
     }
-    if (typeof OffscreenCanvas !== 'undefined') {
+    if (FEATURES.canvasNoise && typeof OffscreenCanvas !== 'undefined') {
       patchCanvasNoise(
         OffscreenCanvas.prototype,
         typeof OffscreenCanvasRenderingContext2D !== 'undefined' ? OffscreenCanvasRenderingContext2D.prototype : null,
@@ -446,7 +474,8 @@ const getNavigatorOverrideScript = (config) => `
     // Same deterministic-per-session-seed approach, applied to the two
     // primary audio-fingerprint read paths (OfflineAudioContext rendering
     // read via getChannelData, and analyser-based frequency reads).
-    if (typeof AudioBuffer !== 'undefined' && AudioBuffer.prototype.getChannelData) {
+    // Disable with STEALTH_DISABLE_AUDIO_NOISE=true.
+    if (FEATURES.audioNoise && typeof AudioBuffer !== 'undefined' && AudioBuffer.prototype.getChannelData) {
       const origGetChannelData = AudioBuffer.prototype.getChannelData;
       AudioBuffer.prototype.getChannelData = function(channel) {
         const data = origGetChannelData.call(this, channel);
@@ -457,7 +486,7 @@ const getNavigatorOverrideScript = (config) => `
       };
       nativeize(AudioBuffer.prototype.getChannelData, 'getChannelData');
     }
-    if (typeof AnalyserNode !== 'undefined' && AnalyserNode.prototype.getFloatFrequencyData) {
+    if (FEATURES.audioNoise && typeof AnalyserNode !== 'undefined' && AnalyserNode.prototype.getFloatFrequencyData) {
       const origGetFloatFrequencyData = AnalyserNode.prototype.getFloatFrequencyData;
       AnalyserNode.prototype.getFloatFrequencyData = function(array) {
         origGetFloatFrequencyData.call(this, array);
@@ -835,30 +864,43 @@ class BrowserManager {
         // fallback for cases source rewriting can't cover (cross-origin
         // scripts blocked by CORS, and service workers, which aren't created
         // via `new Worker()` at all).
-        await page.evaluateOnNewDocument((overrideSource) => {
+        //
+        // Gated behind its own kill-switch — this technique's synchronous
+        // XHR has no way to be timed out on the main thread (the spec
+        // forbids setting .timeout on a sync request there), so a target
+        // with a slow/hanging worker-script endpoint could stall navigation.
+        // Disable with STEALTH_DISABLE_WORKER_REWRITE=true; the reactive CDP
+        // path in _injectIntoWorker still covers workers when this is off.
+        if (STEALTH_FEATURES.workerRewrite)
+        await page.evaluateOnNewDocument((overrideSource, toStringSpoofEnabled) => {
             // Small, self-contained toString nativizer for the two
             // constructors patched below — kept independent from the main
             // override script's own nativizer (a separate closure/realm at
             // injection time) rather than trying to share state across the
             // two evaluateOnNewDocument calls.
-            const nativeStrings = new WeakMap();
-            const origFnToString = Function.prototype.toString;
-            const fnToStringProxy = new Proxy(origFnToString, {
-                apply(target, thisArg, args) {
-                    if (nativeStrings.has(thisArg)) return nativeStrings.get(thisArg);
-                    return Reflect.apply(target, thisArg, args);
-                }
-            });
-            try {
-                Object.defineProperty(Function.prototype, 'toString', {
-                    value: fnToStringProxy, writable: true, enumerable: false, configurable: true
+            let nativeize;
+            if (toStringSpoofEnabled) {
+                const nativeStrings = new WeakMap();
+                const origFnToString = Function.prototype.toString;
+                const fnToStringProxy = new Proxy(origFnToString, {
+                    apply(target, thisArg, args) {
+                        if (nativeStrings.has(thisArg)) return nativeStrings.get(thisArg);
+                        return Reflect.apply(target, thisArg, args);
+                    }
                 });
-            } catch (e) {}
-            function nativeize(fn, name) {
-                try { nativeStrings.set(fn, `function ${name}() { [native code] }`); } catch (e) {}
-                return fn;
+                try {
+                    Object.defineProperty(Function.prototype, 'toString', {
+                        value: fnToStringProxy, writable: true, enumerable: false, configurable: true
+                    });
+                } catch (e) {}
+                nativeize = (fn, name) => {
+                    try { nativeStrings.set(fn, `function ${name}() { [native code] }`); } catch (e) {}
+                    return fn;
+                };
+                nativeize(fnToStringProxy, 'toString');
+            } else {
+                nativeize = (fn) => fn;
             }
-            nativeize(fnToStringProxy, 'toString');
 
             function buildPatchedURL(originalURL) {
                 try {
@@ -947,7 +989,7 @@ class BrowserManager {
 
             window.Worker = patchWorkerClass(window.Worker);
             if (window.SharedWorker) window.SharedWorker = patchWorkerClass(window.SharedWorker);
-        }, getNavigatorOverrideScript(config));
+        }, getNavigatorOverrideScript(config), STEALTH_FEATURES.toStringSpoof);
 
         // Set viewport to match the assigned device profile
         await page.setViewport({
