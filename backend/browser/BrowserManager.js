@@ -112,6 +112,15 @@ const DEVICE_PROFILES = [
 // hang, or otherwise) can be ruled in/out or disabled without touching code.
 // All default to enabled; set STEALTH_DISABLE_<NAME>=true to turn one off.
 const STEALTH_FEATURES = {
+    // Master switch: turns off every custom override in this file (base
+    // navigator/plugins/screen/chrome-object overrides, the CDP UA/locale/
+    // timezone overrides, the worker rewrite, and the CDP worker fallback) —
+    // leaving only puppeteer-extra-plugin-stealth and the launch flags. Use
+    // this to check whether a problem traces to BrowserManager.js at all, as
+    // opposed to something elsewhere (server.js's other page injections,
+    // page.setBypassCSP, etc.) before reaching for the individual switches
+    // below.
+    allOverrides: process.env.STEALTH_DISABLE_ALL !== 'true',
     toStringSpoof: process.env.STEALTH_DISABLE_TOSTRING_SPOOF !== 'true',
     webglSpoof: process.env.STEALTH_DISABLE_WEBGL_SPOOF !== 'true',
     canvasNoise: process.env.STEALTH_DISABLE_CANVAS_NOISE !== 'true',
@@ -703,6 +712,7 @@ class BrowserManager {
     }
 
     async _injectIntoWorker(target) {
+        if (!STEALTH_FEATURES.allOverrides) return;
         try {
             // Resolve which user/session this worker belongs to so it gets
             // that session's actual profile, not some arbitrary default —
@@ -797,6 +807,13 @@ class BrowserManager {
         // Set user agent via CDP for consistency
         const client = await page.target().createCDPSession();
 
+        // Everything below is BrowserManager's own custom stealth surface —
+        // gated behind the master switch so a target-specific problem can be
+        // isolated to "something in here" vs. "something elsewhere" (server.js's
+        // other page injections, page.setBypassCSP, puppeteer-extra-plugin-
+        // stealth itself) before reaching for the individual switches on each
+        // technique. Disable with STEALTH_DISABLE_ALL=true.
+        if (STEALTH_FEATURES.allOverrides) {
         // Set User-Agent Override (affects main context AND workers). Every
         // field here comes from the same device profile as the JS-level
         // navigator overrides below, so the network-visible UA header and
@@ -990,6 +1007,7 @@ class BrowserManager {
             window.Worker = patchWorkerClass(window.Worker);
             if (window.SharedWorker) window.SharedWorker = patchWorkerClass(window.SharedWorker);
         }, getNavigatorOverrideScript(config), STEALTH_FEATURES.toStringSpoof);
+        } // end if (STEALTH_FEATURES.allOverrides)
 
         // Set viewport to match the assigned device profile
         await page.setViewport({
