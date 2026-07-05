@@ -56,6 +56,19 @@ const { buildInjectedConsentScript } = require('./browser/consent');
 const injectedConsent  = buildInjectedConsentScript();
 const CONSENT_PREF     = process.env.SCRAPER_CONSENT || 'accept';
 
+// Kill-switches for bisecting a target-specific crash/hang against this
+// navigation flow's own injections — separate from BrowserManager.js's
+// STEALTH_DISABLE_* switches, which only cover its own custom overrides.
+// All default to enabled; set NAV_DISABLE_<NAME>=true to turn one off.
+const NAV_FEATURES = {
+  all: process.env.NAV_DISABLE_ALL !== 'true',
+  bypassCSP: process.env.NAV_DISABLE_BYPASS_CSP !== 'true',
+  selectorTool: process.env.NAV_DISABLE_SELECTOR_TOOL !== 'true',
+  forceSameTab: process.env.NAV_DISABLE_FORCE_SAME_TAB !== 'true',
+  consent: process.env.NAV_DISABLE_CONSENT !== 'true',
+  screencast: process.env.NAV_DISABLE_SCREENCAST !== 'true',
+};
+
 // Active CDP sessions per user
 const userSessions = new Map();
 
@@ -318,7 +331,9 @@ io.on('connection', async (socket) => {
       // ─────────────────────────────────────────────────────────────
       // BYPASS CSP (must happen BEFORE goto)
       // ─────────────────────────────────────────────────────────────
-      await page.setBypassCSP(true);
+      if (NAV_FEATURES.all && NAV_FEATURES.bypassCSP) {
+        await page.setBypassCSP(true);
+      }
 
       // ─────────────────────────────────────────────────────────────
       // Node bindings
@@ -352,8 +367,9 @@ io.on('connection', async (socket) => {
         ? data.consent
         : CONSENT_PREF;
 
+      if (NAV_FEATURES.all) {
       await page.evaluateOnNewDocument(
-        (selectorsCode, toolCode, consentCode, forceSameTabCode, consentPref) => {
+        (selectorsCode, toolCode, consentCode, forceSameTabCode, consentPref, flags) => {
 
           // Always refresh the consent preference (latest navigation wins),
           // even when the heavy injection below is skipped on a stacked run —
@@ -367,19 +383,25 @@ io.on('connection', async (socket) => {
           window.__SCRAPER_TOOL_ALREADY_INJECTED__ = true;
 
           try {
-            eval(selectorsCode);
-            eval(toolCode);
+            if (flags.selectorTool) {
+              eval(selectorsCode);
+              eval(toolCode);
+            }
 
             window.__SELECTION_MODE__ = false;
 
             // Keep navigation inside the single streamed tab (rewrites
             // target="_blank" / overrides window.open). Wrapped separately so a
             // failure here can never block the selector tool.
-            try { eval(forceSameTabCode); } catch (e) { console.error('ForceSameTab inject failed:', e); }
+            if (flags.forceSameTab) {
+              try { eval(forceSameTabCode); } catch (e) { console.error('ForceSameTab inject failed:', e); }
+            }
 
             // Cookie-consent auto-dismiss. Wrapped separately so a failure
             // here can never block the selector tool from working.
-            try { eval(consentCode); } catch (e) { console.error('Consent inject failed:', e); }
+            if (flags.consent) {
+              try { eval(consentCode); } catch (e) { console.error('Consent inject failed:', e); }
+            }
 
             console.log('✅ Injection successful');
           } catch (err) {
@@ -390,8 +412,10 @@ io.on('connection', async (socket) => {
         injectedScript,
         injectedConsent,
         injectedForceSameTab,
-        navConsentPref
+        navConsentPref,
+        { selectorTool: NAV_FEATURES.selectorTool, forceSameTab: NAV_FEATURES.forceSameTab, consent: NAV_FEATURES.consent }
       );
+      }
 
       // ─────────────────────────────────────────────────────────────
       // Navigate
@@ -423,41 +447,48 @@ io.on('connection', async (socket) => {
       // ─────────────────────────────────────────────────────────────
       const client = await page.target().createCDPSession();
 
+      const screencastEnabled = NAV_FEATURES.all && NAV_FEATURES.screencast;
+
       userSessions.set(userId, {
         session: client,
         page,
-        streaming: true,
+        streaming: screencastEnabled,
         currentWidth: viewportWidth,
         currentHeight: viewportHeight,
       });
 
-      await client.send('Page.startScreencast', {
-        format: 'png',
-        maxWidth: viewportWidth,
-        maxHeight: viewportHeight,
-        everyNthFrame: 1,
-      });
+      let onFrame = () => {};
+      if (screencastEnabled) {
+        await client.send('Page.startScreencast', {
+          format: 'png',
+          maxWidth: viewportWidth,
+          maxHeight: viewportHeight,
+          everyNthFrame: 1,
+        });
+
+        onFrame = async (frame) => {
+          const s = userSessions.get(userId);
+
+          if (!s?.streaming) return;
+
+          try {
+            socket.emit('frame', Buffer.from(frame.data, 'base64'));
+
+            await client.send('Page.screencastFrameAck', {
+              sessionId: frame.sessionId,
+            });
+          } catch (_) {}
+        };
+
+        client.on('Page.screencastFrame', onFrame);
+      } else {
+        console.log('⚠️ Screencast disabled via NAV_DISABLE_SCREENCAST/NAV_DISABLE_ALL — live view will not stream.');
+      }
 
       socket.emit('viewportUpdated', {
         width: viewportWidth,
         height: viewportHeight,
       });
-
-      const onFrame = async (frame) => {
-        const s = userSessions.get(userId);
-
-        if (!s?.streaming) return;
-
-        try {
-          socket.emit('frame', Buffer.from(frame.data, 'base64'));
-
-          await client.send('Page.screencastFrameAck', {
-            sessionId: frame.sessionId,
-          });
-        } catch (_) {}
-      };
-
-      client.on('Page.screencastFrame', onFrame);
 
       // ─────────────────────────────────────────────────────────────
       // Stop streaming
