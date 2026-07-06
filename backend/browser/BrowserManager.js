@@ -140,6 +140,13 @@ const STEALTH_FEATURES = {
     // matters. Each only takes effect when baseOverrides is NOT explicitly
     // disabled (i.e. these subdivide it rather than being independent).
     coreNavProps: process.env.STEALTH_DISABLE_CORE_NAV_PROPS !== 'true',
+    // coreNavProps was confirmed as the crash cause but bundles four
+    // unrelated things — split further. Only take effect when
+    // coreNavProps is not itself disabled.
+    coreNavIdentity: process.env.STEALTH_DISABLE_CORE_NAV_IDENTITY !== 'true',
+    coreNavHardware: process.env.STEALTH_DISABLE_CORE_NAV_HARDWARE !== 'true',
+    coreNavWebdriver: process.env.STEALTH_DISABLE_CORE_NAV_WEBDRIVER !== 'true',
+    coreNavConnection: process.env.STEALTH_DISABLE_CORE_NAV_CONNECTION !== 'true',
     userAgentData: process.env.STEALTH_DISABLE_USERAGENTDATA !== 'true',
     pluginsMimeTypes: process.env.STEALTH_DISABLE_PLUGINS_MIMETYPES !== 'true',
     screenOverrides: process.env.STEALTH_DISABLE_SCREEN_OVERRIDES !== 'true',
@@ -245,21 +252,28 @@ const getNavigatorOverrideScript = (config) => `
 
   if (nav && FEATURES.baseOverrides) {
     if (FEATURES.coreNavProps) {
+    if (FEATURES.coreNavIdentity) {
     // Core navigator properties - MUST be consistent across all contexts
     overrideProperty(nav, 'userAgent', config.userAgent);
     overrideProperty(nav, 'platform', config.platform);
     overrideProperty(nav, 'vendor', config.vendor);
     overrideProperty(nav, 'language', config.languages[0]);
     overrideProperty(nav, 'languages', Object.freeze([...config.languages]));
+    }
+
+    if (FEATURES.coreNavHardware) {
     overrideProperty(nav, 'hardwareConcurrency', config.hardwareConcurrency);
     overrideProperty(nav, 'deviceMemory', config.deviceMemory);
     overrideProperty(nav, 'maxTouchPoints', config.maxTouchPoints);
+    }
 
     // webdriver detection
+    if (FEATURES.coreNavWebdriver) {
     overrideProperty(nav, 'webdriver', false);
+    }
 
     // Connection info
-    if (nav.connection) {
+    if (FEATURES.coreNavConnection && nav.connection) {
       overrideProperty(nav.connection, 'rtt', 50);
       overrideProperty(nav.connection, 'downlink', 10);
       overrideProperty(nav.connection, 'effectiveType', '4g');
