@@ -125,7 +125,16 @@ const STEALTH_FEATURES = {
     webglSpoof: process.env.STEALTH_DISABLE_WEBGL_SPOOF !== 'true',
     canvasNoise: process.env.STEALTH_DISABLE_CANVAS_NOISE !== 'true',
     audioNoise: process.env.STEALTH_DISABLE_AUDIO_NOISE !== 'true',
-    workerRewrite: process.env.STEALTH_DISABLE_WORKER_REWRITE !== 'true'
+    workerRewrite: process.env.STEALTH_DISABLE_WORKER_REWRITE !== 'true',
+    // These two were never individually gated before — only the master
+    // switch touched them. baseOverrides covers the core navigator
+    // property overrides (userAgent/platform/hardwareConcurrency/etc via
+    // overrideProperty, userAgentData, plugins/mimeTypes, screen, the
+    // chrome object + cdc_ deletions + permissions.query). cdpEmulation
+    // covers the three CDP Emulation.* calls (setUserAgentOverride,
+    // setLocaleOverride, setTimezoneOverride) made per-page.
+    baseOverrides: process.env.STEALTH_DISABLE_BASE_OVERRIDES !== 'true',
+    cdpEmulation: process.env.STEALTH_DISABLE_CDP_EMULATION !== 'true'
 };
 
 // ==================== NAVIGATOR OVERRIDE SCRIPT ====================
@@ -225,7 +234,7 @@ const getNavigatorOverrideScript = (config) => `
   // Get the navigator object for current context
   const nav = typeof navigator !== 'undefined' ? navigator : null;
 
-  if (nav) {
+  if (nav && FEATURES.baseOverrides) {
     // Core navigator properties - MUST be consistent across all contexts
     overrideProperty(nav, 'userAgent', config.userAgent);
     overrideProperty(nav, 'platform', config.platform);
@@ -335,7 +344,7 @@ const getNavigatorOverrideScript = (config) => `
   }
 
   // Screen properties (main context only)
-  if (!isWorker && typeof screen !== 'undefined') {
+  if (FEATURES.baseOverrides && !isWorker && typeof screen !== 'undefined') {
     overrideProperty(screen, 'width', config.screenResolution.width);
     overrideProperty(screen, 'height', config.screenResolution.height);
     overrideProperty(screen, 'availWidth', config.screenResolution.width);
@@ -508,7 +517,7 @@ const getNavigatorOverrideScript = (config) => `
   })();
 
   // Chrome object (main context only)
-  if (!isWorker && typeof window !== 'undefined') {
+  if (FEATURES.baseOverrides && !isWorker && typeof window !== 'undefined') {
     if (!window.chrome) window.chrome = {};
     window.chrome.runtime = {};
     window.chrome.loadTimes = function() {
@@ -839,6 +848,8 @@ class BrowserManager {
         // field here comes from the same device profile as the JS-level
         // navigator overrides below, so the network-visible UA header and
         // Client Hints can't disagree with what the page's own JS reports.
+        // Disable with STEALTH_DISABLE_CDP_EMULATION=true.
+        if (STEALTH_FEATURES.cdpEmulation) {
         await client.send('Emulation.setUserAgentOverride', {
             userAgent: config.userAgent,
             platform: config.platform,
@@ -862,6 +873,7 @@ class BrowserManager {
                 wow64: !!config.wow64
             }
         });
+        }
 
         // Inject stealth script on every new document. Note: CDP's
         // addScriptToEvaluateOnNewDocument only reaches the page's own
@@ -872,6 +884,7 @@ class BrowserManager {
         await page.evaluateOnNewDocument(getNavigatorOverrideScript(config));
 
         // Additional CDP configurations for stealth
+        if (STEALTH_FEATURES.cdpEmulation) {
         try {
             // Set locale
             await client.send('Emulation.setLocaleOverride', {
@@ -885,6 +898,7 @@ class BrowserManager {
                 timezoneId: 'America/New_York'
             });
         } catch (e) {}
+        }
 
         // Intercept Worker/SharedWorker construction and rewrite the target
         // script so our override script becomes the literal first statement
