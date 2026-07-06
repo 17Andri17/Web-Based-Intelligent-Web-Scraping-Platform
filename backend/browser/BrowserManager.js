@@ -624,56 +624,70 @@ class BrowserManager {
 
         this.browserLaunching = (async() => {
             const defaultProfile = DEVICE_PROFILES[0];
+            // Diagnostic switch: the --user-agent launch flag only rewrites
+            // the legacy User-Agent header/navigator.userAgent — it does NOT
+            // touch Client Hints (Sec-CH-UA headers, navigator.userAgentData),
+            // which Chrome derives natively from its real build. With
+            // STEALTH_DISABLE_ALL on (no JS-level Client Hints override
+            // masking this), that's a real, glaring mismatch: the legacy UA
+            // claims one Chrome version while Client Hints reveal the real
+            // installed one. This flag was never gated by anything, so it was
+            // still active during every prior bisection test. Set
+            // STEALTH_DISABLE_LAUNCH_UA_FLAG=true to launch with the browser's
+            // own real, unmodified UA instead.
+            const launchArgs = [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu-sandbox',
+                '--enable-gpu-rasterization',
+                '--enable-accelerated-2d-canvas',
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+                '--force-color-profile=srgb',
+                '--enable-font-antialiasing',
+                '--font-render-hinting=medium',
+
+                // Anti-detection flags
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-web-security',
+                '--disable-features=BlockInsecurePrivateNetworkRequests',
+                '--disable-features=WebRtcHideLocalIpsWithMdns',
+            ];
+            if (process.env.STEALTH_DISABLE_LAUNCH_UA_FLAG !== 'true') {
+                // Consistent User-Agent (blank-page default; each page
+                // gets its own profile-accurate override before it
+                // navigates anywhere, see _applyStealthToPage)
+                launchArgs.push(`--user-agent=${defaultProfile.userAgent}`);
+                // Window size for consistency
+                launchArgs.push(`--window-size=${defaultProfile.screenResolution.width},${defaultProfile.screenResolution.height}`);
+            }
+            launchArgs.push(
+                // Disable automation extensions
+                '--disable-extensions',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-default-apps',
+                '--disable-hang-monitor',
+                '--disable-popup-blocking',
+                '--disable-prompt-on-repost',
+                '--disable-sync',
+                '--disable-translate',
+                '--metrics-recording-only',
+                '--no-first-run',
+                '--safebrowsing-disable-auto-update',
+
+                // Memory/performance
+                '--disable-background-networking',
+                '--disable-client-side-phishing-detection',
+                '--disable-component-update'
+            );
+
             this.browser = await puppeteer.launch({
                 executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
                 headless: 'new',
                 defaultViewport: null,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu-sandbox',
-                    '--enable-gpu-rasterization',
-                    '--enable-accelerated-2d-canvas',
-                    '--disable-background-timer-throttling',
-                    '--disable-renderer-backgrounding',
-                    '--force-color-profile=srgb',
-                    '--enable-font-antialiasing',
-                    '--font-render-hinting=medium',
-
-                    // Anti-detection flags
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-features=IsolateOrigins,site-per-process',
-                    '--disable-web-security',
-                    '--disable-features=BlockInsecurePrivateNetworkRequests',
-                    '--disable-features=WebRtcHideLocalIpsWithMdns',
-
-                    // Consistent User-Agent (blank-page default; each page
-                    // gets its own profile-accurate override before it
-                    // navigates anywhere, see _applyStealthToPage)
-                    `--user-agent=${defaultProfile.userAgent}`,
-
-                    // Window size for consistency
-                    `--window-size=${defaultProfile.screenResolution.width},${defaultProfile.screenResolution.height}`,
-
-                    // Disable automation extensions
-                    '--disable-extensions',
-                    '--disable-component-extensions-with-background-pages',
-                    '--disable-default-apps',
-                    '--disable-hang-monitor',
-                    '--disable-popup-blocking',
-                    '--disable-prompt-on-repost',
-                    '--disable-sync',
-                    '--disable-translate',
-                    '--metrics-recording-only',
-                    '--no-first-run',
-                    '--safebrowsing-disable-auto-update',
-
-                    // Memory/performance
-                    '--disable-background-networking',
-                    '--disable-client-side-phishing-detection',
-                    '--disable-component-update'
-                ],
+                args: launchArgs,
                 ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars']
             });
 
