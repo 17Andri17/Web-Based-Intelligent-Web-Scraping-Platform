@@ -134,7 +134,16 @@ const STEALTH_FEATURES = {
     // covers the three CDP Emulation.* calls (setUserAgentOverride,
     // setLocaleOverride, setTimezoneOverride) made per-page.
     baseOverrides: process.env.STEALTH_DISABLE_BASE_OVERRIDES !== 'true',
-    cdpEmulation: process.env.STEALTH_DISABLE_CDP_EMULATION !== 'true'
+    cdpEmulation: process.env.STEALTH_DISABLE_CDP_EMULATION !== 'true',
+    // baseOverrides was confirmed as the crash cause but is itself a big
+    // block — split into finer pieces to pinpoint which property actually
+    // matters. Each only takes effect when baseOverrides is NOT explicitly
+    // disabled (i.e. these subdivide it rather than being independent).
+    coreNavProps: process.env.STEALTH_DISABLE_CORE_NAV_PROPS !== 'true',
+    userAgentData: process.env.STEALTH_DISABLE_USERAGENTDATA !== 'true',
+    pluginsMimeTypes: process.env.STEALTH_DISABLE_PLUGINS_MIMETYPES !== 'true',
+    screenOverrides: process.env.STEALTH_DISABLE_SCREEN_OVERRIDES !== 'true',
+    chromeObject: process.env.STEALTH_DISABLE_CHROME_OBJECT !== 'true'
 };
 
 // ==================== NAVIGATOR OVERRIDE SCRIPT ====================
@@ -235,6 +244,7 @@ const getNavigatorOverrideScript = (config) => `
   const nav = typeof navigator !== 'undefined' ? navigator : null;
 
   if (nav && FEATURES.baseOverrides) {
+    if (FEATURES.coreNavProps) {
     // Core navigator properties - MUST be consistent across all contexts
     overrideProperty(nav, 'userAgent', config.userAgent);
     overrideProperty(nav, 'platform', config.platform);
@@ -255,12 +265,13 @@ const getNavigatorOverrideScript = (config) => `
       overrideProperty(nav.connection, 'effectiveType', '4g');
       overrideProperty(nav.connection, 'saveData', false);
     }
+    }
 
     // UserAgentData (Client Hints) — brands/platform/architecture all derived
     // from the same device profile as the UA string and the CDP-level
     // Emulation.setUserAgentOverride, so none of these can disagree with
     // each other the way a hardcoded-per-field version could.
-    if ('userAgentData' in nav || !isWorker) {
+    if (FEATURES.userAgentData && ('userAgentData' in nav || !isWorker)) {
       const brands = [
         { brand: 'Chromium', version: config.chromeMajor },
         { brand: 'Google Chrome', version: config.chromeMajor },
@@ -304,7 +315,7 @@ const getNavigatorOverrideScript = (config) => `
     }
 
     // Plugins (empty in workers, but consistent)
-    if (!isWorker) {
+    if (FEATURES.pluginsMimeTypes && !isWorker) {
       const pluginArray = {
         length: 5,
         item: (i) => pluginArray[i],
@@ -344,7 +355,7 @@ const getNavigatorOverrideScript = (config) => `
   }
 
   // Screen properties (main context only)
-  if (FEATURES.baseOverrides && !isWorker && typeof screen !== 'undefined') {
+  if (FEATURES.baseOverrides && FEATURES.screenOverrides && !isWorker && typeof screen !== 'undefined') {
     overrideProperty(screen, 'width', config.screenResolution.width);
     overrideProperty(screen, 'height', config.screenResolution.height);
     overrideProperty(screen, 'availWidth', config.screenResolution.width);
@@ -517,7 +528,7 @@ const getNavigatorOverrideScript = (config) => `
   })();
 
   // Chrome object (main context only)
-  if (FEATURES.baseOverrides && !isWorker && typeof window !== 'undefined') {
+  if (FEATURES.baseOverrides && FEATURES.chromeObject && !isWorker && typeof window !== 'undefined') {
     if (!window.chrome) window.chrome = {};
     window.chrome.runtime = {};
     window.chrome.loadTimes = function() {
