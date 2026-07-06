@@ -68,6 +68,9 @@ const NAV_FEATURES = {
   consent: process.env.NAV_DISABLE_CONSENT !== 'true',
   screencast: process.env.NAV_DISABLE_SCREENCAST !== 'true',
   bindings: process.env.NAV_DISABLE_BINDINGS !== 'true',
+  frameNavigatedHook: process.env.NAV_DISABLE_FRAMENAVIGATED_HOOK !== 'true',
+  loadHook: process.env.NAV_DISABLE_LOAD_HOOK !== 'true',
+  consoleHook: process.env.NAV_DISABLE_CONSOLE_HOOK !== 'true',
 };
 
 // Active CDP sessions per user
@@ -287,20 +290,22 @@ io.on('connection', async (socket) => {
       // to recover their mode after each page change.
       const prevHook = modeReapplyListeners.get(userId);
       if (prevHook) { try { page.off('framenavigated', prevHook); } catch (_) {} }
-      const hook = async (frame) => {
-        if (frame !== page.mainFrame()) return;
-        // 1. Tell the frontend where we just landed so the URL bar can
-        //    track navigations the user made by clicking page links.
-        try { socket.emit('pageUrlChanged', { url: frame.url() }); } catch (_) {}
-        // 2. Re-apply the user's last-chosen mode — evaluateOnNewDocument
-        //    resets window.__SELECTION_MODE__ to false on every new document.
-        const mode = scraperService.getMode(userId);
-        try {
-          await page.evaluate((m) => { window.__SELECTION_MODE__ = m === 'selection'; }, mode);
-        } catch (_) {}
-      };
-      modeReapplyListeners.set(userId, hook);
-      page.on('framenavigated', hook);
+      if (NAV_FEATURES.all && NAV_FEATURES.frameNavigatedHook) {
+        const hook = async (frame) => {
+          if (frame !== page.mainFrame()) return;
+          // 1. Tell the frontend where we just landed so the URL bar can
+          //    track navigations the user made by clicking page links.
+          try { socket.emit('pageUrlChanged', { url: frame.url() }); } catch (_) {}
+          // 2. Re-apply the user's last-chosen mode — evaluateOnNewDocument
+          //    resets window.__SELECTION_MODE__ to false on every new document.
+          const mode = scraperService.getMode(userId);
+          try {
+            await page.evaluate((m) => { window.__SELECTION_MODE__ = m === 'selection'; }, mode);
+          } catch (_) {}
+        };
+        modeReapplyListeners.set(userId, hook);
+        page.on('framenavigated', hook);
+      }
 
       // Page's `load` event = full DOM is parsed and ready. The frontend
       // uses this to re-fire previewStep against a settled page after the
@@ -308,26 +313,38 @@ io.on('connection', async (socket) => {
       // the still-loading page and return nothing).
       const prevLoadHook = pageLoadListeners.get(userId);
       if (prevLoadHook) { try { page.off('load', prevLoadHook); } catch (_) {} }
-      const loadHook = () => {
-        try { socket.emit('pageReady'); } catch (_) {}
-      };
-      pageLoadListeners.set(userId, loadHook);
-      page.on('load', loadHook);
+      if (NAV_FEATURES.all && NAV_FEATURES.loadHook) {
+        const loadHook = () => {
+          try { socket.emit('pageReady'); } catch (_) {}
+        };
+        pageLoadListeners.set(userId, loadHook);
+        page.on('load', loadHook);
+      }
 
       // Surface cookie-consent auto-dismiss activity to the client. The
       // in-page runner logs "🍪 Consent handled: <CMP>" from whichever frame
       // dismissed the banner; forward those lines as a status message so the
       // user gets visible confirmation it ran.
+      //
+      // NOTE: this is the ONLY page.on('console', ...) listener in the app.
+      // Receiving console events over CDP requires Runtime.consoleAPICalled,
+      // which requires Runtime.enable — if Puppeteer only activates that
+      // domain lazily when something actually listens for 'console', this
+      // listener alone could be reintroducing the exact Runtime.enable CDP
+      // signal rebrowser-puppeteer is meant to avoid, independent of every
+      // other switch in this app. Top suspect — test this one first.
       const prevConsentHook = consentLogListeners.get(userId);
       if (prevConsentHook) { try { page.off('console', prevConsentHook); } catch (_) {} }
-      const consentHook = (msg) => {
-        try {
-          const text = typeof msg.text === 'function' ? msg.text() : String(msg);
-          if (text && text.indexOf('🍪') !== -1) socket.emit('message', text);
-        } catch (_) {}
-      };
-      consentLogListeners.set(userId, consentHook);
-      page.on('console', consentHook);
+      if (NAV_FEATURES.all && NAV_FEATURES.consoleHook) {
+        const consentHook = (msg) => {
+          try {
+            const text = typeof msg.text === 'function' ? msg.text() : String(msg);
+            if (text && text.indexOf('🍪') !== -1) socket.emit('message', text);
+          } catch (_) {}
+        };
+        consentLogListeners.set(userId, consentHook);
+        page.on('console', consentHook);
+      }
 
       // ─────────────────────────────────────────────────────────────
       // BYPASS CSP (must happen BEFORE goto)
