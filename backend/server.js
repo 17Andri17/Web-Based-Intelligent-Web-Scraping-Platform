@@ -67,6 +67,7 @@ const NAV_FEATURES = {
   forceSameTab: process.env.NAV_DISABLE_FORCE_SAME_TAB !== 'true',
   consent: process.env.NAV_DISABLE_CONSENT !== 'true',
   screencast: process.env.NAV_DISABLE_SCREENCAST !== 'true',
+  bindings: process.env.NAV_DISABLE_BINDINGS !== 'true',
 };
 
 // Active CDP sessions per user
@@ -338,13 +339,15 @@ io.on('connection', async (socket) => {
       // ─────────────────────────────────────────────────────────────
       // Node bindings
       // ─────────────────────────────────────────────────────────────
-      await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
-        socket.emit('browserEvent', event);
-      });
+      if (NAV_FEATURES.all && NAV_FEATURES.bindings) {
+        await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
+          socket.emit('browserEvent', event);
+        });
 
-      await browserManager.ensureBinding(userId, 'sendCursorType', (cursorType) => {
-        socket.emit('cursorType', { cursor: cursorType });
-      });
+        await browserManager.ensureBinding(userId, 'sendCursorType', (cursorType) => {
+          socket.emit('cursorType', { cursor: cursorType });
+        });
+      }
 
       const viewportWidth  = data.viewportWidth  || 1280;
       const viewportHeight = data.viewportHeight || 720;
