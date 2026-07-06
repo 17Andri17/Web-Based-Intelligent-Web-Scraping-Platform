@@ -705,7 +705,7 @@ class BrowserManager {
 
             this.browser = await puppeteer.launch({
                 executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-                headless: 'new',
+                headless: false,
                 defaultViewport: null,
                 args: launchArgs,
                 ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars']
