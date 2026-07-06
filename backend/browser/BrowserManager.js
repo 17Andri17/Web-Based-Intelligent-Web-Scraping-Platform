@@ -748,7 +748,13 @@ class BrowserManager {
         await this.initBrowser();
         if (!this.contexts.has(userId)) {
             let context;
-            if (typeof this.browser.createBrowserContext === 'function') {
+            // Diagnostic switch: force the browser's single default context
+            // instead of a fresh per-user incognito-style one, to test
+            // whether per-user context isolation itself (rather than
+            // anything injected into the page) affects a specific target.
+            if (process.env.STEALTH_DISABLE_BROWSER_CONTEXT === 'true') {
+                context = this.browser.defaultBrowserContext();
+            } else if (typeof this.browser.createBrowserContext === 'function') {
                 context = await this.browser.createBrowserContext();
             } else if (typeof this.browser.createIncognitoBrowserContext === 'function') {
                 context = await this.browser.createIncognitoBrowserContext();
@@ -804,16 +810,17 @@ class BrowserManager {
 
     // ==================== STEALTH APPLICATION ====================
     async _applyStealthToPage(page, config) {
-        // Set user agent via CDP for consistency
-        const client = await page.target().createCDPSession();
-
         // Everything below is BrowserManager's own custom stealth surface —
         // gated behind the master switch so a target-specific problem can be
         // isolated to "something in here" vs. "something elsewhere" (server.js's
         // other page injections, page.setBypassCSP, puppeteer-extra-plugin-
         // stealth itself) before reaching for the individual switches on each
-        // technique. Disable with STEALTH_DISABLE_ALL=true.
+        // technique. Disable with STEALTH_DISABLE_ALL=true — with it set, this
+        // function creates no extra CDP session and does nothing at all.
         if (STEALTH_FEATURES.allOverrides) {
+        // Set user agent via CDP for consistency
+        const client = await page.target().createCDPSession();
+
         // Set User-Agent Override (affects main context AND workers). Every
         // field here comes from the same device profile as the JS-level
         // navigator overrides below, so the network-visible UA header and
