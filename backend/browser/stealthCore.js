@@ -247,12 +247,28 @@ const getNavigatorOverrideScript = (config) => `
   }
   nativeize(Function.prototype.toString, 'toString');
 
-  // Helper to safely override property
-  const overrideProperty = (obj, prop, value) => {
+  // Defines the accessor on the INTERFACE PROTOTYPE (Navigator.prototype,
+  // Screen.prototype, ...) instead of as an own property on the instance
+  // passed in. Every real WebIDL attribute — navigator.webdriver,
+  // .plugins, .languages, .hardwareConcurrency, screen.width, all of it —
+  // lives on the prototype, never on the instance, so
+  // navigator.hasOwnProperty('webdriver') is false on every real,
+  // unautomated browser. Defining straight on obj (an earlier version of
+  // this file did) makes that true instead — a single, trivial
+  // hasOwnProperty/getOwnPropertyDescriptor check away from catching
+  // the patch regardless of what value it returns. This is one of the
+  // most commonly cited ways to unmask naive stealth scripts.
+  const definePrototypeAccessor = (obj, prop, getter) => {
     try {
-      const getter = () => value;
+      const proto = Object.getPrototypeOf(obj) || obj;
       nativeize(getter, 'get ' + prop);
-      Object.defineProperty(obj, prop, {
+      // The getter's own .name is a real, independently-readable data
+      // property — separate from the toString spoof above. Native
+      // accessors are always named "get <prop>"; an anonymous arrow
+      // passed to defineProperty keeps its default empty name unless we
+      // set this explicitly, which is itself a checkable tell.
+      try { Object.defineProperty(getter, 'name', { value: 'get ' + prop, configurable: true }); } catch (e) {}
+      Object.defineProperty(proto, prop, {
         get: getter,
         configurable: true,
         enumerable: true
@@ -260,17 +276,11 @@ const getNavigatorOverrideScript = (config) => `
     } catch (e) {}
   };
 
+  // Helper to safely override property
+  const overrideProperty = (obj, prop, value) => definePrototypeAccessor(obj, prop, () => value);
+
   // Helper to override getter
-  const overrideGetter = (obj, prop, getter) => {
-    try {
-      nativeize(getter, 'get ' + prop);
-      Object.defineProperty(obj, prop, {
-        get: getter,
-        configurable: true,
-        enumerable: true
-      });
-    } catch (e) {}
-  };
+  const overrideGetter = (obj, prop, getter) => definePrototypeAccessor(obj, prop, getter);
 
   // Detect context type
   const isWorker = typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope;
@@ -350,6 +360,15 @@ const getNavigatorOverrideScript = (config) => `
       };
       nativeize(userAgentData.getHighEntropyValues, 'getHighEntropyValues');
       nativeize(userAgentData.toJSON, 'toJSON');
+      // Real navigator.userAgentData is a NavigatorUAData instance, so
+      // navigator.userAgentData instanceof NavigatorUAData is true on a
+      // real browser. Our object is a plain literal unless we splice it
+      // into that prototype chain too — every own method we set above
+      // still shadows whatever's on the real prototype, so this is a
+      // free win with no behavioral risk.
+      if (typeof NavigatorUAData !== 'undefined') {
+        try { Object.setPrototypeOf(userAgentData, NavigatorUAData.prototype); } catch (e) {}
+      }
       overrideProperty(nav, 'userAgentData', userAgentData);
     }
 
@@ -372,6 +391,18 @@ const getNavigatorOverrideScript = (config) => `
         4: { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 2 },
         [Symbol.iterator]: function* () { for (let i = 0; i < this.length; i++) yield this[i]; }
       };
+      // Container-level instanceof checks (navigator.plugins instanceof
+      // PluginArray) — safe to splice in because every method the real
+      // PluginArray interface exposes (item/namedItem/refresh/length/
+      // iterator) is already redefined as an own property above, so
+      // nothing falls through to the real prototype's internals. Individual
+      // Plugin entries are deliberately left as plain objects: Plugin.item/
+      // namedItem aren't implemented here, and giving them Plugin.prototype
+      // without real internal slots would make an unimplemented call throw
+      // "Illegal invocation" instead of a plain "not a function".
+      if (typeof PluginArray !== 'undefined') {
+        try { Object.setPrototypeOf(pluginArray, PluginArray.prototype); } catch (e) {}
+      }
       overrideProperty(nav, 'plugins', pluginArray);
 
       // MimeTypes
@@ -388,6 +419,9 @@ const getNavigatorOverrideScript = (config) => `
         1: { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format', enabledPlugin: pluginArray[0] },
         [Symbol.iterator]: function* () { for (let i = 0; i < this.length; i++) yield this[i]; }
       };
+      if (typeof MimeTypeArray !== 'undefined') {
+        try { Object.setPrototypeOf(mimeTypeArray, MimeTypeArray.prototype); } catch (e) {}
+      }
       overrideProperty(nav, 'mimeTypes', mimeTypeArray);
       overrideProperty(nav, 'pdfViewerEnabled', true);
     }
@@ -401,6 +435,21 @@ const getNavigatorOverrideScript = (config) => `
     overrideProperty(screen, 'availHeight', config.screenResolution.height - 40);
     overrideProperty(screen, 'colorDepth', config.colorDepth);
     overrideProperty(screen, 'pixelDepth', config.colorDepth);
+  }
+
+  // window.outerWidth/outerHeight (main context only). Headless Chrome's
+  // real, unpatched values make outerWidth===innerWidth and
+  // outerHeight===innerHeight — there's no actual browser chrome (tab bar,
+  // address bar, bookmarks bar) around the viewport to create a gap. A
+  // zero gap is itself a headless tell, and some devtools-open heuristics
+  // key off exactly this gap (a docked devtools panel normally shrinks
+  // innerWidth/innerHeight relative to outer). Report a believable
+  // windowed-Chrome gap instead: ~0px width (borders are usually
+  // sub-pixel/invisible on Windows/Mac Chrome) and ~87px height for the
+  // title/tab/address/bookmarks bars combined.
+  if (!isWorker && typeof window !== 'undefined') {
+    overrideGetter(window, 'outerWidth', () => window.innerWidth);
+    overrideGetter(window, 'outerHeight', () => window.innerHeight + 87);
   }
 
   // WebGL overrides (main context AND workers — OffscreenCanvas lets workers
