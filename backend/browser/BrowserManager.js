@@ -591,7 +591,7 @@ class BrowserManager {
             const defaultProfile = DEVICE_PROFILES[0];
             this.browser = await puppeteer.launch({
                 executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-                headless: false,
+                headless: 'new',
                 defaultViewport: null,
                 args: [
                     '--no-sandbox',
