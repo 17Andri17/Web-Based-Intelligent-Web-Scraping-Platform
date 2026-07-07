@@ -294,7 +294,19 @@ function buildInjectedConsentScript() {
     if (t - _lastRun < 400) return;
     _lastRun = t;
     var name = window.__dismissConsent__();
-    if (name) { try { console.log('🍪 Consent handled: ' + name); } catch (_) {} }
+    if (name) {
+      // Reported via the sendToNode exposed-function binding (CDP
+      // Runtime.addBinding) instead of console.log + page.on('console', ...).
+      // The latter only delivers Runtime.consoleAPICalled events once
+      // Runtime.enable has been called for the page, and enabling that
+      // domain also switches on Chrome's console object-preview machinery —
+      // which is exactly what some "devtools/debugger attached" fingerprint
+      // checks probe for (they format a trap object via console.log and see
+      // if its getter fires), regardless of whether a visible DevTools panel
+      // is open. addBinding never touches the Runtime domain, so it can't
+      // trip that signal.
+      try { if (typeof window.sendToNode === 'function') window.sendToNode({ type: 'consent', text: '🍪 Consent handled: ' + name }); } catch (_) {}
+    }
   }
 
   // Banners often inject after load — poll a handful of times over a few
