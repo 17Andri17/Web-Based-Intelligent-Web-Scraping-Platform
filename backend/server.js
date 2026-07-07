@@ -72,11 +72,6 @@ const modeReapplyListeners = new Map();
 // queries against a settled page (e.g. after opening a saved workflow).
 const pageLoadListeners = new Map();
 
-// Per-user console forwarder used to surface cookie-consent auto-dismiss
-// activity (the in-page runner logs "🍪 Consent handled: <CMP>") back to the
-// client as a status message, so the user can see it actually firing.
-const consentLogListeners = new Map();
-
 io.on('connection', async (socket) => {
   const userId = `u${socket.user.id}`;
   console.log(`🔌 User connected: ${socket.user.username} (${userId})`);
@@ -89,6 +84,10 @@ io.on('connection', async (socket) => {
   if (browserManager.hasPage(userId)) {
     try {
       await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
+        // Cookie-consent auto-dismiss status (see browser/consent.js) rides
+        // this same binding rather than its own page.on('console', ...)
+        // listener — see the comment there for why.
+        if (event && event.type === 'consent') { socket.emit('message', event.text); return; }
         socket.emit('browserEvent', event);
       });
       await browserManager.ensureBinding(userId, 'sendCursorType', (cursorType) => {
@@ -300,21 +299,6 @@ io.on('connection', async (socket) => {
       pageLoadListeners.set(userId, loadHook);
       page.on('load', loadHook);
 
-      // Surface cookie-consent auto-dismiss activity to the client. The
-      // in-page runner logs "🍪 Consent handled: <CMP>" from whichever frame
-      // dismissed the banner; forward those lines as a status message so the
-      // user gets visible confirmation it ran.
-      const prevConsentHook = consentLogListeners.get(userId);
-      if (prevConsentHook) { try { page.off('console', prevConsentHook); } catch (_) {} }
-      const consentHook = (msg) => {
-        try {
-          const text = typeof msg.text === 'function' ? msg.text() : String(msg);
-          if (text && text.indexOf('🍪') !== -1) socket.emit('message', text);
-        } catch (_) {}
-      };
-      consentLogListeners.set(userId, consentHook);
-      page.on('console', consentHook);
-
       // ─────────────────────────────────────────────────────────────
       // BYPASS CSP (must happen BEFORE goto)
       // ─────────────────────────────────────────────────────────────
@@ -324,6 +308,10 @@ io.on('connection', async (socket) => {
       // Node bindings
       // ─────────────────────────────────────────────────────────────
       await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
+        // Cookie-consent auto-dismiss status (see browser/consent.js) rides
+        // this same binding rather than its own page.on('console', ...)
+        // listener — see the comment there for why.
+        if (event && event.type === 'consent') { socket.emit('message', event.text); return; }
         socket.emit('browserEvent', event);
       });
 

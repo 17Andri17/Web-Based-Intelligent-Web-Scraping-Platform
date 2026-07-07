@@ -452,6 +452,73 @@ const getNavigatorOverrideScript = (config) => `
     overrideGetter(window, 'outerHeight', () => window.innerHeight + 87);
   }
 
+  // ---- Propagate the toString spoof into freshly-created iframes ----
+  // The classic bypass for toString spoofing: create a new iframe, read ITS
+  // (pristine, untouched) Function.prototype.toString before this script
+  // has had a chance to run there, then call THAT reference against our
+  // patched getters/functions to see their real, un-nativized source —
+  // every "is this browser tampered" fingerprint script does some version
+  // of this. Relying on CDP re-injecting this whole script into the new
+  // frame (evaluateOnNewDocument) doesn't close it: that's asynchronous
+  // relative to a same-tick document.createElement('iframe') + immediate
+  // contentWindow access, so it can race and lose. Patching the
+  // contentWindow/contentDocument ACCESSORS instead is race-free — whoever
+  // asks for the iframe's realm only gets it after we've had a synchronous
+  // chance to patch that realm's own toString first, because the patch runs
+  // inside the getter itself.
+  if (!isWorker && typeof HTMLIFrameElement !== 'undefined') {
+    const patchRealmToString = (win) => {
+      if (!win) return;
+      try {
+        if (win.Function && win.Function.prototype && win.Function.prototype.toString !== __fnToStringProxy) {
+          Object.defineProperty(win.Function.prototype, 'toString', {
+            value: __fnToStringProxy,
+            writable: true,
+            enumerable: false,
+            configurable: true
+          });
+        }
+      } catch (e) {}
+    };
+    // Defined directly on HTMLIFrameElement.prototype (not via
+    // definePrototypeAccessor, which derives the target prototype from an
+    // INSTANCE — here we already have the interface prototype itself, and
+    // going through that helper would wrongly land the accessor one level
+    // up on HTMLElement.prototype).
+    const redefineOwnAccessor = (proto, prop, getter) => {
+      try {
+        nativeize(getter, 'get ' + prop);
+        try { Object.defineProperty(getter, 'name', { value: 'get ' + prop, configurable: true }); } catch (e) {}
+        const existing = Object.getOwnPropertyDescriptor(proto, prop);
+        Object.defineProperty(proto, prop, {
+          get: getter,
+          configurable: true,
+          enumerable: existing ? existing.enumerable : true
+        });
+      } catch (e) {}
+    };
+    try {
+      const cwDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
+      if (cwDesc && cwDesc.get) {
+        const origGet = cwDesc.get;
+        redefineOwnAccessor(HTMLIFrameElement.prototype, 'contentWindow', function() {
+          const win = origGet.call(this);
+          patchRealmToString(win);
+          return win;
+        });
+      }
+      const cdDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentDocument');
+      if (cdDesc && cdDesc.get) {
+        const origGet = cdDesc.get;
+        redefineOwnAccessor(HTMLIFrameElement.prototype, 'contentDocument', function() {
+          const doc = origGet.call(this);
+          try { patchRealmToString(doc && doc.defaultView); } catch (e) {}
+          return doc;
+        });
+      }
+    } catch (e) {}
+  }
+
   // WebGL overrides (main context AND workers — OffscreenCanvas lets workers
   // open their own WebGL context, and a real GPU renderer leaking there while
   // the main thread reports a spoofed one is itself a cross-context mismatch)
