@@ -2,6 +2,7 @@
 
 const { RUNTIME_SRC: FIELD_TRANSFORM_RUNTIME, __ftHasPipeline } = require('./fieldTransforms');
 const { buildCodegenConsentHelper } = require('../browser/consent');
+const { buildCodegenStealthHelper } = require('../browser/stealthCore');
 
 // ─── Extraction action types (steps that produce named data) ──────────────
 const EXTRACTION_TYPES = new Set([
@@ -1674,6 +1675,12 @@ function generateCode(workflow, options = {}) {
   const vpH      = workflow.meta?.viewportHeight || 720;
   const variables = Array.isArray(workflow.meta?.variables) ? workflow.meta.variables : [];
 
+  // Picked fresh on every call — generateCode() runs once per execution
+  // (see runner.service.js), so scheduled/repeated runs of the same
+  // workflow each get their own device profile instead of all presenting
+  // an identical fingerprint. See backend/browser/stealthCore.js.
+  const stealth = buildCodegenStealthHelper();
+
   // Render user-defined workflow variables as `let` declarations at the
   // top of run(). Names are sanitised JS identifiers; values are JSON-
   // encoded according to the variable's declared type. Booleans accept
@@ -1807,23 +1814,7 @@ ${headerDoc}
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
-
-const STEALTH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-
-async function applyStealthToPage(page) {
-  try {
-    const client = await page.target().createCDPSession();
-    await client.send('Emulation.setUserAgentOverride', {
-      userAgent: STEALTH_UA,
-      platform: 'Win32',
-    });
-    await client.send('Emulation.setLocaleOverride', { locale: 'en-US' }).catch(() => {});
-    await client.send('Emulation.setTimezoneOverride', { timezoneId: 'America/New_York' }).catch(() => {});
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
-    });
-  } catch (_) {}
-}
+${stealth.source}
 
 /**
  * Try each selector in order; return the first ElementHandle that resolves.
@@ -1953,14 +1944,10 @@ ${currentStepDecl}${variablesCode}${capturedAliasesCode}
     // Honour CHROME_PATH when set (Linux servers / CI / containers); fall back
     // to the local Chrome install used during development.
     executablePath: process.env.CHROME_PATH || 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-blink-features=AutomationControlled',
-      '--window-size=${vpW},${vpH}',
-    ],
+    headless: 'new',
+    defaultViewport: null,
+    args: ${JSON.stringify(stealth.launchArgs, null, 6).replace(/\n/g, '\n    ')},
+    ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
   });
 
   let page = await browser.newPage();
@@ -2206,7 +2193,7 @@ function generateReadme(workflow) {
   if (info.hasTransforms) {
     L.push('- **Field cleaning / splitting** — fields are post-processed in the ' + code('__ftMaterializeRow(...)') + ' call; tweak the ' + code('transforms') + ' / ' + code('split') + ' specs there.');
   }
-  L.push('- **Show the browser window** — set ' + code('headless: true') + ' to ' + code('false') + ' in ' + code('puppeteer.launch({ … })') + '.');
+  L.push('- **Show the browser window** — set ' + code("headless: 'new'") + ' to ' + code('false') + ' in ' + code('puppeteer.launch({ … })') + '.');
   L.push('- **Use your own Chrome** — set the ' + code('CHROME_PATH') + ' env var, or edit ' + code('executablePath') + ' in ' + code('puppeteer.launch') + '.');
   L.push('- **Window size** — ' + code('page.setViewport({ width, height })') + '.');
   L.push('- **Timeouts** — the ' + code('timeout:') + ' values on navigation / waits (milliseconds).');
