@@ -56,23 +56,6 @@ const { buildInjectedConsentScript } = require('./browser/consent');
 const injectedConsent  = buildInjectedConsentScript();
 const CONSENT_PREF     = process.env.SCRAPER_CONSENT || 'accept';
 
-// Kill-switches for bisecting a target-specific crash/hang against this
-// navigation flow's own injections — separate from BrowserManager.js's
-// STEALTH_DISABLE_* switches, which only cover its own custom overrides.
-// All default to enabled; set NAV_DISABLE_<NAME>=true to turn one off.
-const NAV_FEATURES = {
-  all: process.env.NAV_DISABLE_ALL !== 'true',
-  bypassCSP: process.env.NAV_DISABLE_BYPASS_CSP !== 'true',
-  selectorTool: process.env.NAV_DISABLE_SELECTOR_TOOL !== 'true',
-  forceSameTab: process.env.NAV_DISABLE_FORCE_SAME_TAB !== 'true',
-  consent: process.env.NAV_DISABLE_CONSENT !== 'true',
-  screencast: process.env.NAV_DISABLE_SCREENCAST !== 'true',
-  bindings: process.env.NAV_DISABLE_BINDINGS !== 'true',
-  frameNavigatedHook: process.env.NAV_DISABLE_FRAMENAVIGATED_HOOK !== 'true',
-  loadHook: process.env.NAV_DISABLE_LOAD_HOOK !== 'true',
-  consoleHook: process.env.NAV_DISABLE_CONSOLE_HOOK !== 'true',
-};
-
 // Active CDP sessions per user
 const userSessions = new Map();
 
@@ -290,22 +273,20 @@ io.on('connection', async (socket) => {
       // to recover their mode after each page change.
       const prevHook = modeReapplyListeners.get(userId);
       if (prevHook) { try { page.off('framenavigated', prevHook); } catch (_) {} }
-      if (NAV_FEATURES.all && NAV_FEATURES.frameNavigatedHook) {
-        const hook = async (frame) => {
-          if (frame !== page.mainFrame()) return;
-          // 1. Tell the frontend where we just landed so the URL bar can
-          //    track navigations the user made by clicking page links.
-          try { socket.emit('pageUrlChanged', { url: frame.url() }); } catch (_) {}
-          // 2. Re-apply the user's last-chosen mode — evaluateOnNewDocument
-          //    resets window.__SELECTION_MODE__ to false on every new document.
-          const mode = scraperService.getMode(userId);
-          try {
-            await page.evaluate((m) => { window.__SELECTION_MODE__ = m === 'selection'; }, mode);
-          } catch (_) {}
-        };
-        modeReapplyListeners.set(userId, hook);
-        page.on('framenavigated', hook);
-      }
+      const hook = async (frame) => {
+        if (frame !== page.mainFrame()) return;
+        // 1. Tell the frontend where we just landed so the URL bar can
+        //    track navigations the user made by clicking page links.
+        try { socket.emit('pageUrlChanged', { url: frame.url() }); } catch (_) {}
+        // 2. Re-apply the user's last-chosen mode — evaluateOnNewDocument
+        //    resets window.__SELECTION_MODE__ to false on every new document.
+        const mode = scraperService.getMode(userId);
+        try {
+          await page.evaluate((m) => { window.__SELECTION_MODE__ = m === 'selection'; }, mode);
+        } catch (_) {}
+      };
+      modeReapplyListeners.set(userId, hook);
+      page.on('framenavigated', hook);
 
       // Page's `load` event = full DOM is parsed and ready. The frontend
       // uses this to re-fire previewStep against a settled page after the
@@ -313,58 +294,42 @@ io.on('connection', async (socket) => {
       // the still-loading page and return nothing).
       const prevLoadHook = pageLoadListeners.get(userId);
       if (prevLoadHook) { try { page.off('load', prevLoadHook); } catch (_) {} }
-      if (NAV_FEATURES.all && NAV_FEATURES.loadHook) {
-        const loadHook = () => {
-          try { socket.emit('pageReady'); } catch (_) {}
-        };
-        pageLoadListeners.set(userId, loadHook);
-        page.on('load', loadHook);
-      }
+      const loadHook = () => {
+        try { socket.emit('pageReady'); } catch (_) {}
+      };
+      pageLoadListeners.set(userId, loadHook);
+      page.on('load', loadHook);
 
       // Surface cookie-consent auto-dismiss activity to the client. The
       // in-page runner logs "🍪 Consent handled: <CMP>" from whichever frame
       // dismissed the banner; forward those lines as a status message so the
       // user gets visible confirmation it ran.
-      //
-      // NOTE: this is the ONLY page.on('console', ...) listener in the app.
-      // Receiving console events over CDP requires Runtime.consoleAPICalled,
-      // which requires Runtime.enable — if Puppeteer only activates that
-      // domain lazily when something actually listens for 'console', this
-      // listener alone could be reintroducing the exact Runtime.enable CDP
-      // signal rebrowser-puppeteer is meant to avoid, independent of every
-      // other switch in this app. Top suspect — test this one first.
       const prevConsentHook = consentLogListeners.get(userId);
       if (prevConsentHook) { try { page.off('console', prevConsentHook); } catch (_) {} }
-      if (NAV_FEATURES.all && NAV_FEATURES.consoleHook) {
-        const consentHook = (msg) => {
-          try {
-            const text = typeof msg.text === 'function' ? msg.text() : String(msg);
-            if (text && text.indexOf('🍪') !== -1) socket.emit('message', text);
-          } catch (_) {}
-        };
-        consentLogListeners.set(userId, consentHook);
-        page.on('console', consentHook);
-      }
+      const consentHook = (msg) => {
+        try {
+          const text = typeof msg.text === 'function' ? msg.text() : String(msg);
+          if (text && text.indexOf('🍪') !== -1) socket.emit('message', text);
+        } catch (_) {}
+      };
+      consentLogListeners.set(userId, consentHook);
+      page.on('console', consentHook);
 
       // ─────────────────────────────────────────────────────────────
       // BYPASS CSP (must happen BEFORE goto)
       // ─────────────────────────────────────────────────────────────
-      if (NAV_FEATURES.all && NAV_FEATURES.bypassCSP) {
-        await page.setBypassCSP(true);
-      }
+      await page.setBypassCSP(true);
 
       // ─────────────────────────────────────────────────────────────
       // Node bindings
       // ─────────────────────────────────────────────────────────────
-      if (NAV_FEATURES.all && NAV_FEATURES.bindings) {
-        await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
-          socket.emit('browserEvent', event);
-        });
+      await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
+        socket.emit('browserEvent', event);
+      });
 
-        await browserManager.ensureBinding(userId, 'sendCursorType', (cursorType) => {
-          socket.emit('cursorType', { cursor: cursorType });
-        });
-      }
+      await browserManager.ensureBinding(userId, 'sendCursorType', (cursorType) => {
+        socket.emit('cursorType', { cursor: cursorType });
+      });
 
       const viewportWidth  = data.viewportWidth  || 1280;
       const viewportHeight = data.viewportHeight || 720;
@@ -387,9 +352,8 @@ io.on('connection', async (socket) => {
         ? data.consent
         : CONSENT_PREF;
 
-      if (NAV_FEATURES.all) {
       await page.evaluateOnNewDocument(
-        (selectorsCode, toolCode, consentCode, forceSameTabCode, consentPref, flags) => {
+        (selectorsCode, toolCode, consentCode, forceSameTabCode, consentPref) => {
 
           // Always refresh the consent preference (latest navigation wins),
           // even when the heavy injection below is skipped on a stacked run —
@@ -403,25 +367,19 @@ io.on('connection', async (socket) => {
           window.__SCRAPER_TOOL_ALREADY_INJECTED__ = true;
 
           try {
-            if (flags.selectorTool) {
-              eval(selectorsCode);
-              eval(toolCode);
-            }
+            eval(selectorsCode);
+            eval(toolCode);
 
             window.__SELECTION_MODE__ = false;
 
             // Keep navigation inside the single streamed tab (rewrites
             // target="_blank" / overrides window.open). Wrapped separately so a
             // failure here can never block the selector tool.
-            if (flags.forceSameTab) {
-              try { eval(forceSameTabCode); } catch (e) { console.error('ForceSameTab inject failed:', e); }
-            }
+            try { eval(forceSameTabCode); } catch (e) { console.error('ForceSameTab inject failed:', e); }
 
             // Cookie-consent auto-dismiss. Wrapped separately so a failure
             // here can never block the selector tool from working.
-            if (flags.consent) {
-              try { eval(consentCode); } catch (e) { console.error('Consent inject failed:', e); }
-            }
+            try { eval(consentCode); } catch (e) { console.error('Consent inject failed:', e); }
 
             console.log('✅ Injection successful');
           } catch (err) {
@@ -432,10 +390,8 @@ io.on('connection', async (socket) => {
         injectedScript,
         injectedConsent,
         injectedForceSameTab,
-        navConsentPref,
-        { selectorTool: NAV_FEATURES.selectorTool, forceSameTab: NAV_FEATURES.forceSameTab, consent: NAV_FEATURES.consent }
+        navConsentPref
       );
-      }
 
       // ─────────────────────────────────────────────────────────────
       // Navigate
@@ -467,48 +423,41 @@ io.on('connection', async (socket) => {
       // ─────────────────────────────────────────────────────────────
       const client = await page.target().createCDPSession();
 
-      const screencastEnabled = NAV_FEATURES.all && NAV_FEATURES.screencast;
-
       userSessions.set(userId, {
         session: client,
         page,
-        streaming: screencastEnabled,
+        streaming: true,
         currentWidth: viewportWidth,
         currentHeight: viewportHeight,
       });
 
-      let onFrame = () => {};
-      if (screencastEnabled) {
-        await client.send('Page.startScreencast', {
-          format: 'png',
-          maxWidth: viewportWidth,
-          maxHeight: viewportHeight,
-          everyNthFrame: 1,
-        });
-
-        onFrame = async (frame) => {
-          const s = userSessions.get(userId);
-
-          if (!s?.streaming) return;
-
-          try {
-            socket.emit('frame', Buffer.from(frame.data, 'base64'));
-
-            await client.send('Page.screencastFrameAck', {
-              sessionId: frame.sessionId,
-            });
-          } catch (_) {}
-        };
-
-        client.on('Page.screencastFrame', onFrame);
-      } else {
-        console.log('⚠️ Screencast disabled via NAV_DISABLE_SCREENCAST/NAV_DISABLE_ALL — live view will not stream.');
-      }
+      await client.send('Page.startScreencast', {
+        format: 'png',
+        maxWidth: viewportWidth,
+        maxHeight: viewportHeight,
+        everyNthFrame: 1,
+      });
 
       socket.emit('viewportUpdated', {
         width: viewportWidth,
         height: viewportHeight,
       });
+
+      const onFrame = async (frame) => {
+        const s = userSessions.get(userId);
+
+        if (!s?.streaming) return;
+
+        try {
+          socket.emit('frame', Buffer.from(frame.data, 'base64'));
+
+          await client.send('Page.screencastFrameAck', {
+            sessionId: frame.sessionId,
+          });
+        } catch (_) {}
+      };
+
+      client.on('Page.screencastFrame', onFrame);
 
       // ─────────────────────────────────────────────────────────────
       // Stop streaming

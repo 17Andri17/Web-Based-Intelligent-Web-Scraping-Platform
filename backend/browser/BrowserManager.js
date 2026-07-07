@@ -106,53 +106,6 @@ const DEVICE_PROFILES = [
     }
 ];
 
-// ==================== FEATURE KILL-SWITCHES ====================
-// Independent on/off toggles for each stealth technique, env-driven so a
-// technique that turns out to backfire against a specific target (crash,
-// hang, or otherwise) can be ruled in/out or disabled without touching code.
-// All default to enabled; set STEALTH_DISABLE_<NAME>=true to turn one off.
-const STEALTH_FEATURES = {
-    // Master switch: turns off every custom override in this file (base
-    // navigator/plugins/screen/chrome-object overrides, the CDP UA/locale/
-    // timezone overrides, the worker rewrite, and the CDP worker fallback) —
-    // leaving only puppeteer-extra-plugin-stealth and the launch flags. Use
-    // this to check whether a problem traces to BrowserManager.js at all, as
-    // opposed to something elsewhere (server.js's other page injections,
-    // page.setBypassCSP, etc.) before reaching for the individual switches
-    // below.
-    allOverrides: process.env.STEALTH_DISABLE_ALL !== 'true',
-    toStringSpoof: process.env.STEALTH_DISABLE_TOSTRING_SPOOF !== 'true',
-    webglSpoof: process.env.STEALTH_DISABLE_WEBGL_SPOOF !== 'true',
-    canvasNoise: process.env.STEALTH_DISABLE_CANVAS_NOISE !== 'true',
-    audioNoise: process.env.STEALTH_DISABLE_AUDIO_NOISE !== 'true',
-    workerRewrite: process.env.STEALTH_DISABLE_WORKER_REWRITE !== 'true',
-    // These two were never individually gated before — only the master
-    // switch touched them. baseOverrides covers the core navigator
-    // property overrides (userAgent/platform/hardwareConcurrency/etc via
-    // overrideProperty, userAgentData, plugins/mimeTypes, screen, the
-    // chrome object + cdc_ deletions + permissions.query). cdpEmulation
-    // covers the three CDP Emulation.* calls (setUserAgentOverride,
-    // setLocaleOverride, setTimezoneOverride) made per-page.
-    baseOverrides: process.env.STEALTH_DISABLE_BASE_OVERRIDES !== 'true',
-    cdpEmulation: process.env.STEALTH_DISABLE_CDP_EMULATION !== 'true',
-    // baseOverrides was confirmed as the crash cause but is itself a big
-    // block — split into finer pieces to pinpoint which property actually
-    // matters. Each only takes effect when baseOverrides is NOT explicitly
-    // disabled (i.e. these subdivide it rather than being independent).
-    coreNavProps: process.env.STEALTH_DISABLE_CORE_NAV_PROPS !== 'true',
-    // coreNavProps was confirmed as the crash cause but bundles four
-    // unrelated things — split further. Only take effect when
-    // coreNavProps is not itself disabled.
-    coreNavIdentity: process.env.STEALTH_DISABLE_CORE_NAV_IDENTITY !== 'true',
-    coreNavHardware: process.env.STEALTH_DISABLE_CORE_NAV_HARDWARE !== 'true',
-    coreNavWebdriver: process.env.STEALTH_DISABLE_CORE_NAV_WEBDRIVER !== 'true',
-    coreNavConnection: process.env.STEALTH_DISABLE_CORE_NAV_CONNECTION !== 'true',
-    userAgentData: process.env.STEALTH_DISABLE_USERAGENTDATA !== 'true',
-    pluginsMimeTypes: process.env.STEALTH_DISABLE_PLUGINS_MIMETYPES !== 'true',
-    screenOverrides: process.env.STEALTH_DISABLE_SCREEN_OVERRIDES !== 'true',
-    chromeObject: process.env.STEALTH_DISABLE_CHROME_OBJECT !== 'true'
-};
-
 // ==================== NAVIGATOR OVERRIDE SCRIPT ====================
 // This script is injected into every context: the page's main world, its
 // iframes (both via CDP's addScriptToEvaluateOnNewDocument, which covers
@@ -172,7 +125,6 @@ const getNavigatorOverrideScript = (config) => `
   if (typeof self !== 'undefined' && self.__stealthInitialized) return;
 
   const config = ${JSON.stringify(config)};
-  const FEATURES = ${JSON.stringify(STEALTH_FEATURES)};
 
   // ---- Function.prototype.toString spoofing ----
   // Every getter/function we inject below must report itself as native code.
@@ -182,39 +134,27 @@ const getNavigatorOverrideScript = (config) => `
   // code] }". This proxies Function.prototype.toString itself so registered
   // functions return a native-looking string, and registers itself
   // recursively so introspecting the patch mechanism doesn't reveal it.
-  //
-  // Gated behind a kill-switch: replacing this particular global is the
-  // single riskiest override here — it's invoked by engine/DevTools-internal
-  // code paths far more often than app code calls it directly, so a target
-  // that hammers it (or that's instrumented in a way our own CDP session
-  // also touches) is the most plausible source of a renderer-level crash,
-  // as opposed to a detection flag. Disable with STEALTH_DISABLE_TOSTRING_SPOOF=true.
-  var nativeize;
-  if (FEATURES.toStringSpoof) {
-    var __nativeStrings = new WeakMap();
-    var __origFnToString = Function.prototype.toString;
-    var __fnToStringProxy = new Proxy(__origFnToString, {
-      apply: function(target, thisArg, args) {
-        if (__nativeStrings.has(thisArg)) return __nativeStrings.get(thisArg);
-        return Reflect.apply(target, thisArg, args);
-      }
+  var __nativeStrings = new WeakMap();
+  var __origFnToString = Function.prototype.toString;
+  var __fnToStringProxy = new Proxy(__origFnToString, {
+    apply: function(target, thisArg, args) {
+      if (__nativeStrings.has(thisArg)) return __nativeStrings.get(thisArg);
+      return Reflect.apply(target, thisArg, args);
+    }
+  });
+  try {
+    Object.defineProperty(Function.prototype, 'toString', {
+      value: __fnToStringProxy,
+      writable: true,
+      enumerable: false,
+      configurable: true
     });
-    try {
-      Object.defineProperty(Function.prototype, 'toString', {
-        value: __fnToStringProxy,
-        writable: true,
-        enumerable: false,
-        configurable: true
-      });
-    } catch (e) {}
-    nativeize = function(fn, name) {
-      try { __nativeStrings.set(fn, 'function ' + (name || fn.name || '') + '() { [native code] }'); } catch (e) {}
-      return fn;
-    };
-    nativeize(Function.prototype.toString, 'toString');
-  } else {
-    nativeize = function(fn) { return fn; };
+  } catch (e) {}
+  function nativeize(fn, name) {
+    try { __nativeStrings.set(fn, 'function ' + (name || fn.name || '') + '() { [native code] }'); } catch (e) {}
+    return fn;
   }
+  nativeize(Function.prototype.toString, 'toString');
 
   // Helper to safely override property
   const overrideProperty = (obj, prop, value) => {
@@ -250,42 +190,36 @@ const getNavigatorOverrideScript = (config) => `
   // Get the navigator object for current context
   const nav = typeof navigator !== 'undefined' ? navigator : null;
 
-  if (nav && FEATURES.baseOverrides) {
-    if (FEATURES.coreNavProps) {
-    if (FEATURES.coreNavIdentity) {
+  if (nav) {
     // Core navigator properties - MUST be consistent across all contexts
     overrideProperty(nav, 'userAgent', config.userAgent);
     overrideProperty(nav, 'platform', config.platform);
     overrideProperty(nav, 'vendor', config.vendor);
     overrideProperty(nav, 'language', config.languages[0]);
     overrideProperty(nav, 'languages', Object.freeze([...config.languages]));
-    }
-
-    if (FEATURES.coreNavHardware) {
     overrideProperty(nav, 'hardwareConcurrency', config.hardwareConcurrency);
     overrideProperty(nav, 'deviceMemory', config.deviceMemory);
     overrideProperty(nav, 'maxTouchPoints', config.maxTouchPoints);
-    }
 
     // webdriver detection
-    if (FEATURES.coreNavWebdriver) {
     overrideProperty(nav, 'webdriver', false);
-    }
 
-    // Connection info
-    if (FEATURES.coreNavConnection && nav.connection) {
-      overrideProperty(nav.connection, 'rtt', 50);
-      overrideProperty(nav.connection, 'downlink', 10);
-      overrideProperty(nav.connection, 'effectiveType', '4g');
-      overrideProperty(nav.connection, 'saveData', false);
-    }
-    }
+    // Deliberately NOT overriding navigator.connection (NetworkInformation).
+    // Unlike the plain-value properties above, it's a native, C++-backed
+    // EventTarget wired into the browser's real network-state machinery —
+    // redefining its properties via Object.defineProperty reproducibly
+    // crashes the renderer (STATUS_BREAKPOINT) on at least one real
+    // fingerprinting site, almost certainly by tripping an internal
+    // Chromium invariant when that machinery tries to update/notify through
+    // the object we've shadowed. The fingerprinting value of spoofing
+    // rtt/downlink/effectiveType is low next to that risk, so it's left as
+    // the browser's real, native NetworkInformation object.
 
     // UserAgentData (Client Hints) — brands/platform/architecture all derived
     // from the same device profile as the UA string and the CDP-level
     // Emulation.setUserAgentOverride, so none of these can disagree with
     // each other the way a hardcoded-per-field version could.
-    if (FEATURES.userAgentData && ('userAgentData' in nav || !isWorker)) {
+    if ('userAgentData' in nav || !isWorker) {
       const brands = [
         { brand: 'Chromium', version: config.chromeMajor },
         { brand: 'Google Chrome', version: config.chromeMajor },
@@ -329,7 +263,7 @@ const getNavigatorOverrideScript = (config) => `
     }
 
     // Plugins (empty in workers, but consistent)
-    if (FEATURES.pluginsMimeTypes && !isWorker) {
+    if (!isWorker) {
       const pluginArray = {
         length: 5,
         item: (i) => pluginArray[i],
@@ -369,7 +303,7 @@ const getNavigatorOverrideScript = (config) => `
   }
 
   // Screen properties (main context only)
-  if (FEATURES.baseOverrides && FEATURES.screenOverrides && !isWorker && typeof screen !== 'undefined') {
+  if (!isWorker && typeof screen !== 'undefined') {
     overrideProperty(screen, 'width', config.screenResolution.width);
     overrideProperty(screen, 'height', config.screenResolution.height);
     overrideProperty(screen, 'availWidth', config.screenResolution.width);
@@ -381,8 +315,7 @@ const getNavigatorOverrideScript = (config) => `
   // WebGL overrides (main context AND workers — OffscreenCanvas lets workers
   // open their own WebGL context, and a real GPU renderer leaking there while
   // the main thread reports a spoofed one is itself a cross-context mismatch)
-  // Disable with STEALTH_DISABLE_WEBGL_SPOOF=true.
-  if (FEATURES.webglSpoof && typeof WebGLRenderingContext !== 'undefined') {
+  if (typeof WebGLRenderingContext !== 'undefined') {
     const getParameterProxy = function(target, name) {
       const proxy = new Proxy(target, {
         apply: function(target, thisArg, args) {
@@ -497,15 +430,14 @@ const getNavigatorOverrideScript = (config) => `
         nativeize(CanvasProto.toBlob, 'toBlob');
       }
     }
-    // Disable with STEALTH_DISABLE_CANVAS_NOISE=true.
-    if (FEATURES.canvasNoise && typeof HTMLCanvasElement !== 'undefined' && typeof document !== 'undefined') {
+    if (typeof HTMLCanvasElement !== 'undefined' && typeof document !== 'undefined') {
       patchCanvasNoise(
         HTMLCanvasElement.prototype,
         typeof CanvasRenderingContext2D !== 'undefined' ? CanvasRenderingContext2D.prototype : null,
         (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
       );
     }
-    if (FEATURES.canvasNoise && typeof OffscreenCanvas !== 'undefined') {
+    if (typeof OffscreenCanvas !== 'undefined') {
       patchCanvasNoise(
         OffscreenCanvas.prototype,
         typeof OffscreenCanvasRenderingContext2D !== 'undefined' ? OffscreenCanvasRenderingContext2D.prototype : null,
@@ -517,8 +449,7 @@ const getNavigatorOverrideScript = (config) => `
     // Same deterministic-per-session-seed approach, applied to the two
     // primary audio-fingerprint read paths (OfflineAudioContext rendering
     // read via getChannelData, and analyser-based frequency reads).
-    // Disable with STEALTH_DISABLE_AUDIO_NOISE=true.
-    if (FEATURES.audioNoise && typeof AudioBuffer !== 'undefined' && AudioBuffer.prototype.getChannelData) {
+    if (typeof AudioBuffer !== 'undefined' && AudioBuffer.prototype.getChannelData) {
       const origGetChannelData = AudioBuffer.prototype.getChannelData;
       AudioBuffer.prototype.getChannelData = function(channel) {
         const data = origGetChannelData.call(this, channel);
@@ -529,7 +460,7 @@ const getNavigatorOverrideScript = (config) => `
       };
       nativeize(AudioBuffer.prototype.getChannelData, 'getChannelData');
     }
-    if (FEATURES.audioNoise && typeof AnalyserNode !== 'undefined' && AnalyserNode.prototype.getFloatFrequencyData) {
+    if (typeof AnalyserNode !== 'undefined' && AnalyserNode.prototype.getFloatFrequencyData) {
       const origGetFloatFrequencyData = AnalyserNode.prototype.getFloatFrequencyData;
       AnalyserNode.prototype.getFloatFrequencyData = function(array) {
         origGetFloatFrequencyData.call(this, array);
@@ -542,7 +473,7 @@ const getNavigatorOverrideScript = (config) => `
   })();
 
   // Chrome object (main context only)
-  if (FEATURES.baseOverrides && FEATURES.chromeObject && !isWorker && typeof window !== 'undefined') {
+  if (!isWorker && typeof window !== 'undefined') {
     if (!window.chrome) window.chrome = {};
     window.chrome.runtime = {};
     window.chrome.loadTimes = function() {
@@ -658,70 +589,56 @@ class BrowserManager {
 
         this.browserLaunching = (async() => {
             const defaultProfile = DEVICE_PROFILES[0];
-            // Diagnostic switch: the --user-agent launch flag only rewrites
-            // the legacy User-Agent header/navigator.userAgent — it does NOT
-            // touch Client Hints (Sec-CH-UA headers, navigator.userAgentData),
-            // which Chrome derives natively from its real build. With
-            // STEALTH_DISABLE_ALL on (no JS-level Client Hints override
-            // masking this), that's a real, glaring mismatch: the legacy UA
-            // claims one Chrome version while Client Hints reveal the real
-            // installed one. This flag was never gated by anything, so it was
-            // still active during every prior bisection test. Set
-            // STEALTH_DISABLE_LAUNCH_UA_FLAG=true to launch with the browser's
-            // own real, unmodified UA instead.
-            const launchArgs = [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu-sandbox',
-                '--enable-gpu-rasterization',
-                '--enable-accelerated-2d-canvas',
-                '--disable-background-timer-throttling',
-                '--disable-renderer-backgrounding',
-                '--force-color-profile=srgb',
-                '--enable-font-antialiasing',
-                '--font-render-hinting=medium',
-
-                // Anti-detection flags
-                '--disable-blink-features=AutomationControlled',
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-web-security',
-                '--disable-features=BlockInsecurePrivateNetworkRequests',
-                '--disable-features=WebRtcHideLocalIpsWithMdns',
-            ];
-            if (process.env.STEALTH_DISABLE_LAUNCH_UA_FLAG !== 'true') {
-                // Consistent User-Agent (blank-page default; each page
-                // gets its own profile-accurate override before it
-                // navigates anywhere, see _applyStealthToPage)
-                launchArgs.push(`--user-agent=${defaultProfile.userAgent}`);
-                // Window size for consistency
-                launchArgs.push(`--window-size=${defaultProfile.screenResolution.width},${defaultProfile.screenResolution.height}`);
-            }
-            launchArgs.push(
-                // Disable automation extensions
-                '--disable-extensions',
-                '--disable-component-extensions-with-background-pages',
-                '--disable-default-apps',
-                '--disable-hang-monitor',
-                '--disable-popup-blocking',
-                '--disable-prompt-on-repost',
-                '--disable-sync',
-                '--disable-translate',
-                '--metrics-recording-only',
-                '--no-first-run',
-                '--safebrowsing-disable-auto-update',
-
-                // Memory/performance
-                '--disable-background-networking',
-                '--disable-client-side-phishing-detection',
-                '--disable-component-update'
-            );
-
             this.browser = await puppeteer.launch({
                 executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
                 headless: 'new',
                 defaultViewport: null,
-                args: launchArgs,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu-sandbox',
+                    '--enable-gpu-rasterization',
+                    '--enable-accelerated-2d-canvas',
+                    '--disable-background-timer-throttling',
+                    '--disable-renderer-backgrounding',
+                    '--force-color-profile=srgb',
+                    '--enable-font-antialiasing',
+                    '--font-render-hinting=medium',
+
+                    // Anti-detection flags
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--disable-web-security',
+                    '--disable-features=BlockInsecurePrivateNetworkRequests',
+                    '--disable-features=WebRtcHideLocalIpsWithMdns',
+
+                    // Consistent User-Agent (blank-page default; each page
+                    // gets its own profile-accurate override before it
+                    // navigates anywhere, see _applyStealthToPage)
+                    `--user-agent=${defaultProfile.userAgent}`,
+
+                    // Window size for consistency
+                    `--window-size=${defaultProfile.screenResolution.width},${defaultProfile.screenResolution.height}`,
+
+                    // Disable automation extensions
+                    '--disable-extensions',
+                    '--disable-component-extensions-with-background-pages',
+                    '--disable-default-apps',
+                    '--disable-hang-monitor',
+                    '--disable-popup-blocking',
+                    '--disable-prompt-on-repost',
+                    '--disable-sync',
+                    '--disable-translate',
+                    '--metrics-recording-only',
+                    '--no-first-run',
+                    '--safebrowsing-disable-auto-update',
+
+                    // Memory/performance
+                    '--disable-background-networking',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-component-update'
+                ],
                 ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars']
             });
 
@@ -760,7 +677,6 @@ class BrowserManager {
     }
 
     async _injectIntoWorker(target) {
-        if (!STEALTH_FEATURES.allOverrides) return;
         try {
             // Resolve which user/session this worker belongs to so it gets
             // that session's actual profile, not some arbitrary default —
@@ -796,13 +712,7 @@ class BrowserManager {
         await this.initBrowser();
         if (!this.contexts.has(userId)) {
             let context;
-            // Diagnostic switch: force the browser's single default context
-            // instead of a fresh per-user incognito-style one, to test
-            // whether per-user context isolation itself (rather than
-            // anything injected into the page) affects a specific target.
-            if (process.env.STEALTH_DISABLE_BROWSER_CONTEXT === 'true') {
-                context = this.browser.defaultBrowserContext();
-            } else if (typeof this.browser.createBrowserContext === 'function') {
+            if (typeof this.browser.createBrowserContext === 'function') {
                 context = await this.browser.createBrowserContext();
             } else if (typeof this.browser.createIncognitoBrowserContext === 'function') {
                 context = await this.browser.createIncognitoBrowserContext();
@@ -858,14 +768,6 @@ class BrowserManager {
 
     // ==================== STEALTH APPLICATION ====================
     async _applyStealthToPage(page, config) {
-        // Everything below is BrowserManager's own custom stealth surface —
-        // gated behind the master switch so a target-specific problem can be
-        // isolated to "something in here" vs. "something elsewhere" (server.js's
-        // other page injections, page.setBypassCSP, puppeteer-extra-plugin-
-        // stealth itself) before reaching for the individual switches on each
-        // technique. Disable with STEALTH_DISABLE_ALL=true — with it set, this
-        // function creates no extra CDP session and does nothing at all.
-        if (STEALTH_FEATURES.allOverrides) {
         // Set user agent via CDP for consistency
         const client = await page.target().createCDPSession();
 
@@ -873,8 +775,6 @@ class BrowserManager {
         // field here comes from the same device profile as the JS-level
         // navigator overrides below, so the network-visible UA header and
         // Client Hints can't disagree with what the page's own JS reports.
-        // Disable with STEALTH_DISABLE_CDP_EMULATION=true.
-        if (STEALTH_FEATURES.cdpEmulation) {
         await client.send('Emulation.setUserAgentOverride', {
             userAgent: config.userAgent,
             platform: config.platform,
@@ -898,7 +798,6 @@ class BrowserManager {
                 wow64: !!config.wow64
             }
         });
-        }
 
         // Inject stealth script on every new document. Note: CDP's
         // addScriptToEvaluateOnNewDocument only reaches the page's own
@@ -909,7 +808,6 @@ class BrowserManager {
         await page.evaluateOnNewDocument(getNavigatorOverrideScript(config));
 
         // Additional CDP configurations for stealth
-        if (STEALTH_FEATURES.cdpEmulation) {
         try {
             // Set locale
             await client.send('Emulation.setLocaleOverride', {
@@ -923,7 +821,6 @@ class BrowserManager {
                 timezoneId: 'America/New_York'
             });
         } catch (e) {}
-        }
 
         // Intercept Worker/SharedWorker construction and rewrite the target
         // script so our override script becomes the literal first statement
@@ -941,43 +838,30 @@ class BrowserManager {
         // fallback for cases source rewriting can't cover (cross-origin
         // scripts blocked by CORS, and service workers, which aren't created
         // via `new Worker()` at all).
-        //
-        // Gated behind its own kill-switch — this technique's synchronous
-        // XHR has no way to be timed out on the main thread (the spec
-        // forbids setting .timeout on a sync request there), so a target
-        // with a slow/hanging worker-script endpoint could stall navigation.
-        // Disable with STEALTH_DISABLE_WORKER_REWRITE=true; the reactive CDP
-        // path in _injectIntoWorker still covers workers when this is off.
-        if (STEALTH_FEATURES.workerRewrite)
-        await page.evaluateOnNewDocument((overrideSource, toStringSpoofEnabled) => {
+        await page.evaluateOnNewDocument((overrideSource) => {
             // Small, self-contained toString nativizer for the two
             // constructors patched below — kept independent from the main
             // override script's own nativizer (a separate closure/realm at
             // injection time) rather than trying to share state across the
             // two evaluateOnNewDocument calls.
-            let nativeize;
-            if (toStringSpoofEnabled) {
-                const nativeStrings = new WeakMap();
-                const origFnToString = Function.prototype.toString;
-                const fnToStringProxy = new Proxy(origFnToString, {
-                    apply(target, thisArg, args) {
-                        if (nativeStrings.has(thisArg)) return nativeStrings.get(thisArg);
-                        return Reflect.apply(target, thisArg, args);
-                    }
+            const nativeStrings = new WeakMap();
+            const origFnToString = Function.prototype.toString;
+            const fnToStringProxy = new Proxy(origFnToString, {
+                apply(target, thisArg, args) {
+                    if (nativeStrings.has(thisArg)) return nativeStrings.get(thisArg);
+                    return Reflect.apply(target, thisArg, args);
+                }
+            });
+            try {
+                Object.defineProperty(Function.prototype, 'toString', {
+                    value: fnToStringProxy, writable: true, enumerable: false, configurable: true
                 });
-                try {
-                    Object.defineProperty(Function.prototype, 'toString', {
-                        value: fnToStringProxy, writable: true, enumerable: false, configurable: true
-                    });
-                } catch (e) {}
-                nativeize = (fn, name) => {
-                    try { nativeStrings.set(fn, `function ${name}() { [native code] }`); } catch (e) {}
-                    return fn;
-                };
-                nativeize(fnToStringProxy, 'toString');
-            } else {
-                nativeize = (fn) => fn;
+            } catch (e) {}
+            function nativeize(fn, name) {
+                try { nativeStrings.set(fn, `function ${name}() { [native code] }`); } catch (e) {}
+                return fn;
             }
+            nativeize(fnToStringProxy, 'toString');
 
             function buildPatchedURL(originalURL) {
                 try {
@@ -1066,8 +950,7 @@ class BrowserManager {
 
             window.Worker = patchWorkerClass(window.Worker);
             if (window.SharedWorker) window.SharedWorker = patchWorkerClass(window.SharedWorker);
-        }, getNavigatorOverrideScript(config), STEALTH_FEATURES.toStringSpoof);
-        } // end if (STEALTH_FEATURES.allOverrides)
+        }, getNavigatorOverrideScript(config));
 
         // Set viewport to match the assigned device profile
         await page.setViewport({
