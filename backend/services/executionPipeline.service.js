@@ -1,6 +1,7 @@
 'use strict';
 
 const runner            = require('./runner.service');
+const { resolveWorkflowProxy } = require('./proxyResolver.service');
 const runStore          = require('./runStore.service');
 const errorClassifier   = require('./errorClassifier.service');
 const repair            = require('./repair.service');
@@ -68,6 +69,15 @@ async function executeAndPersist(arg) {
   const subflows = arg.workflow.subflows || {};
   const rootWorkflowId = arg.workflow.id || arg.workflowId || null;
 
+  // Resolved once per run (not per retry-attempt — a rotated-pool proxy
+  // shouldn't change mid-run just because a step failed and got retried).
+  // Ownership/sharing is enforced inside the resolver, so meta.proxy can't
+  // be used to reach someone else's private proxy or pool. Silently
+  // proceeds without a proxy on any resolution failure (deleted proxy,
+  // empty pool, ...) rather than failing the whole run over it — see
+  // services/proxyResolver.service.js.
+  const proxy = await safeCall(() => resolveWorkflowProxy(meta, userId), null);
+
   const t0 = nowMs();
   // Record the workflow version this run executes (deduped by content) so run
   // history doubles as a restorable version timeline.
@@ -126,7 +136,7 @@ async function executeAndPersist(arg) {
     // data forward and being mis-recorded as 'success'.
     finalResults = null;
 
-    const workflowForRun = { id: rootWorkflowId, steps: currentSteps, meta, customActions, subflows };
+    const workflowForRun = { id: rootWorkflowId, steps: currentSteps, meta, customActions, subflows, proxy };
     const { events, promise } = runner.runChild(workflowForRun, { signal });
     onRunnerEvents(events);
     const result = await promise;

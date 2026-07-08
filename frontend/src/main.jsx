@@ -15,6 +15,7 @@ import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
 import CustomActionsMenu from "./customActions/CustomActionsMenu";
+import ProxiesMenu from "./proxies/ProxiesMenu";
 import { API_BASE, customActionsApi, workflowsApi, aiApi } from "./api/client";
 import "./styles/PaginationDetector.css";
 import "./styles/app.css";
@@ -216,6 +217,16 @@ function AppShell({ user, token, onLogout }) {
   const [currentWorkflowId, setCurrentWorkflowId] = useState(null);
   const [currentWorkflowName, setCurrentWorkflowName] = useState("");
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+
+  // ── Proxy servers ──────────────────────────────────────────────────────
+  const [proxiesOpen, setProxiesOpen] = useState(false);
+  // { mode: 'single', id } | { mode: 'pool', poolId } | { mode: 'platform' } | null.
+  // Persisted into workflow.meta.proxy on save (see performNavigate and
+  // WorkflowsMenu's currentMeta below) — read by
+  // services/proxyResolver.service.js for both scheduled/manual runs and
+  // server.js's navigate handler for the live preview. A 'pool'/'platform'
+  // selection rotates to a different member proxy on each resolution.
+  const [selectedProxy, setSelectedProxy] = useState(null);
 
   // ── Custom actions (user-defined reusable steps) ─────────────────────────
   const [customActionsOpen, setCustomActionsOpen] = useState(false);
@@ -550,6 +561,7 @@ function AppShell({ user, token, onLogout }) {
     setCurrentPageUrl("");
     sessionMetaRef.current = {};
     setWorkflowVariables([]);
+    setSelectedProxy(null);
     socketRef.current?.emit("stopStreaming");
     isStreamingRef.current = false;
     setStatus("");
@@ -641,15 +653,15 @@ function AppShell({ user, token, onLogout }) {
     const rect = canvasContainerRef.current?.getBoundingClientRect();
     const vpW = Math.floor(rect?.width) || 1280;
     const vpH = Math.floor(rect?.height) || 720;
-    sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: url, viewportWidth: vpW, viewportHeight: vpH };
+    sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: url, viewportWidth: vpW, viewportHeight: vpH, proxy: selectedProxy };
     // Honour the start step's cookie-consent preference in the live editor too
     // (e.g. "Leave popup visible"), so what you see while building matches what
     // the workflow will do. Falls back to accept.
     const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
     const consent = pinned?.advanced?.consent || "accept";
-    socketRef.current.emit("navigate", { url, mode, consent, viewportWidth: vpW, viewportHeight: vpH });
+    socketRef.current.emit("navigate", { url, mode, consent, viewportWidth: vpW, viewportHeight: vpH, proxy: selectedProxy });
     isStreamingRef.current = true;
-  }, [mode, steps, lockInteraction]);
+  }, [mode, steps, lockInteraction, selectedProxy]);
 
   // ── Navigate ──────────────────────────────────────────────────────────────
   // Three paths:
@@ -1281,6 +1293,7 @@ function AppShell({ user, token, onLogout }) {
                   }}>New workflow</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setWorkflowsOpen(true); }}>Workflows…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setCustomActionsOpen(true); }}>Custom actions…</button>
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setProxiesOpen(true); }}>Proxies…</button>
                   <button className="item danger" onClick={() => { setUserMenuOpen(false); onLogout(); }}>Sign out</button>
                 </div>
               </>
@@ -1799,12 +1812,26 @@ function AppShell({ user, token, onLogout }) {
         onChanged={refreshCustomActions}
       />
 
+      <ProxiesMenu
+        open={proxiesOpen}
+        onClose={() => setProxiesOpen(false)}
+        showToast={showToast}
+        isAdmin={!!user?.isAdmin}
+        selectedProxy={selectedProxy}
+        onSelectProxy={(proxy) => {
+          setSelectedProxy(proxy);
+          // Re-apply immediately to the live preview rather than waiting for
+          // the next unrelated navigation to pick it up.
+          if (urlInput) performNavigate(urlInput);
+        }}
+      />
+
       {/* ── Workflows menu (save / open / delete) ───────────────────────── */}
       <WorkflowsMenu
         open={workflowsOpen}
         onClose={() => setWorkflowsOpen(false)}
         currentSteps={steps}
-        currentMeta={{ ...sessionMetaRef.current, variables: workflowVariables }}
+        currentMeta={{ ...sessionMetaRef.current, variables: workflowVariables, proxy: selectedProxy }}
         currentWorkflowId={currentWorkflowId}
         currentName={currentWorkflowName}
         showToast={showToast}
@@ -1824,6 +1851,10 @@ function AppShell({ user, token, onLogout }) {
           setCurrentWorkflowName(wf.name);
           if (wf.meta) sessionMetaRef.current = { ...sessionMetaRef.current, ...wf.meta };
           setWorkflowVariables(Array.isArray(wf.meta?.variables) ? wf.meta.variables : []);
+          // New format is meta.proxy = {mode, id/poolId}; fall back to the
+          // legacy bare meta.proxyId from before pools existed so workflows
+          // saved with the previous single-proxy feature still restore.
+          setSelectedProxy(wf.meta?.proxy || (wf.meta?.proxyId ? { mode: "single", id: wf.meta.proxyId } : null));
           setExecResults(null);
           setExecLogs([]);
           setExecStatus("idle");

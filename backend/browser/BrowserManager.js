@@ -9,7 +9,8 @@ const {
     getLaunchArgs,
     getUserAgentMetadata,
     getNavigatorOverrideScript,
-    workerConstructorPatchFn
+    workerConstructorPatchFn,
+    PROXY_WEBRTC_GUARD_SCRIPT
 } = require('./stealthCore');
 
 class BrowserManager {
@@ -21,6 +22,30 @@ class BrowserManager {
         this.exposedBindings = new Map();
         this.workerListeners = new Map();
         this.userProfiles = new Map();
+        this.userProxies = new Map();
+    }
+
+    // Called by server.js (which owns the DB lookup — this class has no DB
+    // access) before a user's first getPage()/getContext() call, with either
+    // a plain { protocol, host, port, username?, password? } object or null.
+    // The browser is a single shared process serving every user through
+    // per-user BrowserContexts, so proxy has to be a per-context setting
+    // (see getContext) rather than a launch flag — unlike
+    // workflowCodegen.js's generated scripts, which each get a dedicated
+    // process and can just pass --proxy-server at launch.
+    //
+    // If a context already exists for this user and the proxy actually
+    // changed, tear it down so the next getPage()/getContext() call creates
+    // a fresh one with the new proxy — Chrome has no way to change a
+    // BrowserContext's proxy after creation.
+    async setUserProxy(userId, proxyConfig) {
+        const prev = this.userProxies.get(userId) || null;
+        const next = proxyConfig || null;
+        const changed = JSON.stringify(prev) !== JSON.stringify(next);
+        this.userProxies.set(userId, next);
+        if (changed && this.contexts.has(userId)) {
+            await this.closeContext(userId);
+        }
     }
 
     // Picks one internally-consistent device profile per user and holds it
@@ -134,10 +159,19 @@ class BrowserManager {
     async getContext(userId) {
         await this.initBrowser();
         if (!this.contexts.has(userId)) {
+            const proxy = this.userProxies.get(userId);
+            const contextOptions = {};
+            if (proxy && proxy.host && proxy.port) {
+                contextOptions.proxyServer = `${(proxy.protocol || 'http').toLowerCase()}://${proxy.host}:${proxy.port}`;
+            }
+
             let context;
             if (typeof this.browser.createBrowserContext === 'function') {
-                context = await this.browser.createBrowserContext();
+                context = await this.browser.createBrowserContext(contextOptions);
             } else if (typeof this.browser.createIncognitoBrowserContext === 'function') {
+                if (contextOptions.proxyServer) {
+                    console.warn(`⚠️ Proxy requested for user ${userId} but this Puppeteer version's createIncognitoBrowserContext() doesn't support per-context proxies — ignoring.`);
+                }
                 context = await this.browser.createIncognitoBrowserContext();
             } else {
                 context = this.browser.defaultBrowserContext();
@@ -165,9 +199,10 @@ class BrowserManager {
             const context = await this.getContext(userId);
             const page = await context.newPage();
             const profile = this._getProfileForUser(userId);
+            const proxy = this.userProxies.get(userId);
 
             // Apply comprehensive stealth before any navigation
-            await this._applyStealthToPage(page, profile);
+            await this._applyStealthToPage(page, profile, proxy);
 
             this.pages.set(userId, page);
             this.pagePromises.delete(userId);
@@ -190,9 +225,28 @@ class BrowserManager {
     }
 
     // ==================== STEALTH APPLICATION ====================
-    async _applyStealthToPage(page, config) {
+    async _applyStealthToPage(page, config, proxy) {
         // Set user agent via CDP for consistency
         const client = await page.target().createCDPSession();
+
+        // Proxy auth: the proxyServer set on the BrowserContext (see
+        // getContext) only carries scheme://host:port — Chrome doesn't
+        // accept embedded credentials there, it challenges via
+        // Proxy-Authentication and Puppeteer answers through this handler.
+        if (proxy && proxy.username) {
+            try {
+                await page.authenticate({ username: proxy.username, password: proxy.password || '' });
+            } catch (e) {}
+        }
+
+        // WebRTC can leak the real IP around the proxy via its own STUN-based
+        // candidate gathering, which --proxy-server doesn't cover — see the
+        // comment on PROXY_WEBRTC_GUARD_SCRIPT in stealthCore.js for why this
+        // (rather than a launch flag) is what BrowserManager's shared browser
+        // process has to use.
+        if (proxy && proxy.host) {
+            await page.evaluateOnNewDocument(PROXY_WEBRTC_GUARD_SCRIPT);
+        }
 
         // Set User-Agent Override (affects main context AND workers). Every
         // field here comes from the same device profile as the JS-level
@@ -308,6 +362,7 @@ class BrowserManager {
         }
 
         this.userProfiles.delete(userId);
+        this.userProxies.delete(userId);
     }
 
     async closeBrowser() {
@@ -322,6 +377,7 @@ class BrowserManager {
             this.pages.clear();
             this.exposedBindings.clear();
             this.userProfiles.clear();
+            this.userProxies.clear();
         }
     }
 }

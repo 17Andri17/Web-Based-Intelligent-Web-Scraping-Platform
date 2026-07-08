@@ -2,7 +2,7 @@
 
 const { RUNTIME_SRC: FIELD_TRANSFORM_RUNTIME, __ftHasPipeline } = require('./fieldTransforms');
 const { buildCodegenConsentHelper } = require('../browser/consent');
-const { buildCodegenStealthHelper } = require('../browser/stealthCore');
+const { buildCodegenStealthHelper, getProxyLaunchArgs, PROXY_WEBRTC_GUARD_SCRIPT } = require('../browser/stealthCore');
 
 // ─── Extraction action types (steps that produce named data) ──────────────
 const EXTRACTION_TYPES = new Set([
@@ -1674,12 +1674,24 @@ function generateCode(workflow, options = {}) {
   const vpW      = workflow.meta?.viewportWidth  || 1280;
   const vpH      = workflow.meta?.viewportHeight || 720;
   const variables = Array.isArray(workflow.meta?.variables) ? workflow.meta.variables : [];
+  // Resolved, credentials-included proxy config — attached by
+  // executionPipeline.service.js (interactive/scheduled runs) or
+  // server.js's downloadCode handler (which omits it; see the `clean`
+  // branch below). { protocol, host, port, username?, password? } | null.
+  const proxy = workflow.proxy || null;
 
   // Picked fresh on every call — generateCode() runs once per execution
   // (see runner.service.js), so scheduled/repeated runs of the same
   // workflow each get their own device profile instead of all presenting
   // an identical fingerprint. See backend/browser/stealthCore.js.
   const stealth = buildCodegenStealthHelper();
+  // Real credentials are only safe to embed for a platform-run script — it's
+  // written to a temp file and deleted immediately after the run (see
+  // runner.service.js). A downloaded (`clean`) script can end up anywhere,
+  // so it never gets literal proxy details — see the SCRAPER_PROXY_SERVER
+  // env-var block spliced into the launch template below instead.
+  const proxyLaunchArgs = (!clean && proxy) ? getProxyLaunchArgs(proxy) : [];
+  const launchArgs = [...stealth.launchArgs, ...proxyLaunchArgs];
 
   // Render user-defined workflow variables as `let` declarations at the
   // top of run(). Names are sanitised JS identifiers; values are JSON-
@@ -1805,6 +1817,43 @@ function generateCode(workflow, options = {}) {
     '\n  // ─── Captured outputs (from named extraction steps) ──────────\n' +
     Array.from(ctx.capturedAliases).map(a => `  let ${a};`).join('\n') +
     '\n  // ─────────────────────────────────────────────────────────────';
+
+  // ── Proxy: launch-arg suffix, page.authenticate(), WebRTC guard ────────
+  // Non-clean (platform-run): real values, computed above into launchArgs
+  // already — nothing extra needed for the args array itself here.
+  // Clean (download): never embed literal proxy details (see the comment
+  // by `proxyLaunchArgs` above) — read them from env vars at the
+  // downloaded script's own runtime instead.
+  const launchArgsCode = clean
+    ? `${JSON.stringify(launchArgs, null, 6).replace(/\n/g, '\n    ')}.concat(process.env.SCRAPER_PROXY_SERVER ? ['--proxy-server=' + process.env.SCRAPER_PROXY_SERVER, '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'] : [])`
+    : JSON.stringify(launchArgs, null, 6).replace(/\n/g, '\n    ');
+
+  let proxyAuthCode = '';
+  if (clean) {
+    proxyAuthCode = `
+  // Proxy support: set SCRAPER_PROXY_SERVER (e.g. "http://host:port" or
+  // "socks5://host:port") to route through a proxy, and — if it needs
+  // auth — SCRAPER_PROXY_USERNAME / SCRAPER_PROXY_PASSWORD. SOCKS5 proxy
+  // auth isn't supported by Chrome itself (page.authenticate() only
+  // answers HTTP(S) proxy challenges).
+  if (process.env.SCRAPER_PROXY_USERNAME) {
+    await page.authenticate({ username: process.env.SCRAPER_PROXY_USERNAME, password: process.env.SCRAPER_PROXY_PASSWORD || '' });
+  }
+`;
+  } else if (proxy && proxy.username) {
+    proxyAuthCode = `  await page.authenticate(${JSON.stringify({ username: proxy.username, password: proxy.password || '' })});\n`;
+  }
+
+  // WebRTC's own STUN-based IP discovery doesn't go through --proxy-server —
+  // see PROXY_WEBRTC_GUARD_SCRIPT's comment in stealthCore.js.
+  let proxyWebRtcGuardCode = '';
+  if (clean) {
+    proxyWebRtcGuardCode = `  if (process.env.SCRAPER_PROXY_SERVER) {
+    await page.evaluateOnNewDocument(${JSON.stringify(PROXY_WEBRTC_GUARD_SCRIPT)});
+  }\n`;
+  } else if (proxy) {
+    proxyWebRtcGuardCode = `  await page.evaluateOnNewDocument(${JSON.stringify(PROXY_WEBRTC_GUARD_SCRIPT)});\n`;
+  }
 
   return `#!/usr/bin/env node
 'use strict';
@@ -1946,12 +1995,12 @@ ${currentStepDecl}${variablesCode}${capturedAliasesCode}
     executablePath: process.env.CHROME_PATH || 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
     headless: 'new',
     defaultViewport: null,
-    args: ${JSON.stringify(stealth.launchArgs, null, 6).replace(/\n/g, '\n    ')},
+    args: ${launchArgsCode},
     ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
   });
 
   let page = await browser.newPage();
-  await applyStealthToPage(page);
+${proxyAuthCode}${proxyWebRtcGuardCode}  await applyStealthToPage(page);
   await page.setViewport({ width: ${vpW}, height: ${vpH}, deviceScaleFactor: 1 });
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
