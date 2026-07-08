@@ -51,6 +51,10 @@ const CATEGORIES = [
     actions: [
       { type: "CLICK_ELEMENT",    icon: "▶", needsEl: true,  quickAdd: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
+      { type: "DISMISS_COOKIE_BANNER", icon: "🍪", needsEl: false,
+        smartDefault: (el) => el
+          ? { selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }
+          : { selector: "", selectorType: "css", fallbackSelectors: [] } },
       { type: "TYPE_TEXT",        icon: "✏️", needsEl: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], clearFirst: true, pressEnter: false }),
         showWhen: (el) => el.isInput },

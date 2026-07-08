@@ -20,6 +20,7 @@ const TYPE_META = {
   GO_BACK:             { cat:"Navigation",  short:"BCK" },
   RELOAD_PAGE:         { cat:"Navigation",  short:"RLD" },
   CLICK_ELEMENT:       { cat:"Interaction", short:"CLK" },
+  DISMISS_COOKIE_BANNER: { cat:"Interaction", short:"CKY" },
   HOVER_ELEMENT:       { cat:"Interaction", short:"HVR" },
   TYPE_TEXT:           { cat:"Interaction", short:"TYP" },
   CLEAR_INPUT:         { cat:"Interaction", short:"CLR" },
@@ -48,7 +49,7 @@ const TYPE_META = {
 };
 
 const HAS_SELECTOR = new Set([
-  "CLICK_ELEMENT","HOVER_ELEMENT","SCROLL_TO_ELEMENT","WAIT_FOR_SELECTOR",
+  "CLICK_ELEMENT","DISMISS_COOKIE_BANNER","HOVER_ELEMENT","SCROLL_TO_ELEMENT","WAIT_FOR_SELECTOR",
   "EXTRACT_TEXT","EXTRACT_ATTRIBUTE","EXTRACT_HTML","EXTRACT_TABLE","EXTRACT_LIST","COLLECT_LIST","EXTRACT_JSON",
   "FOR_EACH_ELEMENTS","FOR_EACH","IF_ELEMENT_EXISTS","CLEAR_INPUT","TYPE_TEXT",
 ]);

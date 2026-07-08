@@ -298,6 +298,33 @@ await Promise.all([
 `.trim() + '\n';
     }
 
+    case 'DISMISS_COOKIE_BANNER': {
+      // Cookie banners are legitimately absent when consent was already
+      // stored (repeat visit, persisted profile) — this step must NEVER
+      // fail the workflow, so it clicks-if-present instead of waiting-then-
+      // throwing like CLICK_ELEMENT.
+      const hasSel = !!(params.selector || (params.fallbackSelectors || []).length);
+      const timeout = num(advanced.timeout, 8000);
+      if (!hasSel) {
+        return `
+// Close cookie banner (automatic detection — skipped silently when absent)
+await dismissConsent(page);
+`.trim() + '\n';
+      }
+      const autoFallback = advanced.autoFallback !== false;
+      return `
+// Close cookie banner: ${params.selector} (click if present — never fails)
+{
+  let _closed = await clickIfPresent(page, ${selList(params)}, ${timeout});${autoFallback ? `
+  // Selector didn't match (banner redesign?) → try automatic detection.
+  if (!_closed) _closed = await dismissConsent(page);` : ''}
+  console.log(_closed
+    ? '🍪 Cookie banner closed.'
+    : '🍪 Cookie banner not found — already consented or not shown; continuing.');
+}
+`.trim() + '\n';
+    }
+
     case 'HOVER_ELEMENT': return `
 {
   const _el = await waitForAny(page, ${selList(params)}, ${num(advanced.timeout, 10000)});
@@ -1966,6 +1993,44 @@ async function scrollIntoViewSafe(page, el) {
       await new Promise(r => setTimeout(r, 80));
     }
   } catch (_) {}
+}
+
+/**
+ * Click the first selector that resolves to a VISIBLE element in ANY frame,
+ * polling until timeout. Never throws — used for cookie banners and other
+ * "dismiss if present" elements that may legitimately not exist (e.g.
+ * consent already stored from a previous visit). Returns true if clicked.
+ */
+async function clickIfPresent(page, selectors, timeout = 8000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    let frames = [];
+    try { frames = page.frames(); } catch (_) { try { frames = [page.mainFrame()]; } catch (_2) { frames = []; } }
+    for (const frame of frames) {
+      for (const { value, type } of selectors) {
+        try {
+          const sel = type === 'xpath' ? \`::-p-xpath(\${value})\` : value;
+          const el = await frame.$(sel);
+          if (!el) continue;
+          const vis = await el.evaluate(e => {
+            const r = e.getBoundingClientRect();
+            const s = getComputedStyle(e);
+            return r.width > 1 && r.height > 1 && s.display !== 'none' && s.visibility !== 'hidden';
+          }).catch(() => false);
+          if (!vis) continue;
+          try { await el.evaluate(e => e.scrollIntoView({ block: 'center' })); } catch (_) {}
+          try { await el.click(); return true; }
+          catch (_) {
+            // Overlapped by another layer (or detached mid-click) — fall back
+            // to a DOM-level click, which most banner buttons accept.
+            try { await el.evaluate(e => e.click()); return true; } catch (_2) {}
+          }
+        } catch (_) {}
+      }
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return false;
 }
 
 /**
