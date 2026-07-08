@@ -27,6 +27,92 @@ async function createRun({ userId, workflowId, scheduleId = null, parentRunId = 
   return row.id;
 }
 
+// ── queued runs (public API) ────────────────────────────────────────────────
+// API-triggered runs are created up-front as status='queued' so the trigger
+// endpoint can return a run_id immediately (202); the apiWorker claims and
+// executes them in the background. See docs/API_ARCHITECTURE.md.
+
+async function createQueuedRun({ userId, workflowId, trigger = 'api', apiKeyId = null, inputsJson = null, idempotencyKey = null }) {
+  const row = await db.get(`
+    INSERT INTO runs (user_id, workflow_id, trigger, status, queued_at, api_key_id, inputs_json, idempotency_key)
+    VALUES (?, ?, ?, 'queued', CURRENT_TIMESTAMP, ?, ?, ?)
+    RETURNING id
+  `, [userId, workflowId, trigger, apiKeyId, inputsJson, idempotencyKey]);
+  return row.id;
+}
+
+async function findRunByIdempotencyKey(userId, idempotencyKey) {
+  return db.get(
+    'SELECT * FROM runs WHERE user_id = ? AND idempotency_key = ?',
+    [userId, idempotencyKey]
+  );
+}
+
+// Oldest queued runs first (FIFO). The worker still has to win the atomic
+// claim below before executing one, so overlapping pollers are safe.
+async function nextQueuedRuns(limit = 5) {
+  return db.all(
+    `SELECT * FROM runs WHERE status = 'queued' ORDER BY id ASC LIMIT ?`,
+    [limit]
+  );
+}
+
+// Atomically claim a queued run for execution: only the one caller whose
+// conditional UPDATE succeeds may run it — the same stateless-dispatch trick
+// as claimDueSchedule, so multiple worker processes can't double-run a job
+// and a cancel can't race a claim.
+async function claimQueuedRun(runId) {
+  const info = await db.run(`
+    UPDATE runs SET status = 'running', started_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'queued'
+  `, [runId]);
+  return info.changes === 1;
+}
+
+// Cancel a run that hasn't started. Atomic against claimQueuedRun: whichever
+// conditional UPDATE wins decides whether the run executes or dies queued.
+async function cancelQueuedRun(runId, userId) {
+  const info = await db.run(`
+    UPDATE runs
+    SET status = 'cancelled', finished_at = CURRENT_TIMESTAMP,
+        error_message = 'Run cancelled before it started'
+    WHERE id = ? AND user_id = ? AND status = 'queued'
+  `, [runId, userId]);
+  return info.changes === 1;
+}
+
+// Transition a pre-created (queued/claimed) run row into its running state —
+// used by executionPipeline when the run row already exists instead of
+// createRun. Also records the executed workflow version.
+async function startQueuedRun(runId, versionId = null) {
+  await db.run(`
+    UPDATE runs SET status = 'running', started_at = CURRENT_TIMESTAMP, version_id = ?
+    WHERE id = ?
+  `, [versionId, runId]);
+}
+
+// Cursor-paginated run listing for the public API. Ordered by id DESC;
+// `beforeId` returns the page strictly older than that id (ids only ever
+// grow, so pages never shift under the caller the way offsets do).
+async function listRunsForUserPage(userId, { limit = 20, workflowId = null, status = null, beforeId = null } = {}) {
+  const where = ['user_id = ?'];
+  const params = [userId];
+  if (workflowId != null) { where.push('workflow_id = ?'); params.push(workflowId); }
+  if (status)             { where.push('status = ?');      params.push(status); }
+  if (beforeId != null)   { where.push('id < ?');          params.push(beforeId); }
+  params.push(limit);
+  return db.all(`
+    SELECT id, workflow_id, schedule_id, trigger, status, queued_at, started_at,
+           finished_at, duration_ms, error_message, error_category, ai_summary,
+           retry_count, api_key_id,
+           CASE WHEN results_json IS NOT NULL THEN 1 ELSE 0 END AS has_results
+    FROM runs
+    WHERE ${where.join(' AND ')}
+    ORDER BY id DESC
+    LIMIT ?
+  `, params);
+}
+
 async function finishRun(runId, patch) {
   const allowed = [
     'status', 'finished_at', 'duration_ms', 'results_json',
@@ -345,6 +431,9 @@ function truncate(s, n) {
 module.exports = {
   // runs
   createRun, finishRun, getRun, getRunForUser, listRunsForUser,
+  // queued runs (public API)
+  createQueuedRun, findRunByIdempotencyKey, nextQueuedRuns,
+  claimQueuedRun, cancelQueuedRun, startQueuedRun, listRunsForUserPage,
   // logs
   appendLog, getLogs, flushLogs,
   // repairs

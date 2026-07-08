@@ -4,6 +4,7 @@ const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const runStore = require('../services/runStore.service');
 const workflows = require('../db/repositories/workflows.repo');
+const { resultsToCsv } = require('../utils/resultsExport');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -104,10 +105,9 @@ router.get('/:id/data.csv', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Run not found' });
   const results = safeJson(row.results_json);
   if (!results) return res.status(404).json({ error: 'No results for this run' });
-  const sections = Object.entries(results).map(([k, v]) => `# ${k}\n${toCSV(v)}`);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="run-${row.id}.csv"`);
-  res.send(sections.join('\n\n'));
+  res.send(resultsToCsv(results));
 });
 
 // One-click adopt: replace the workflow's steps with the auto-patched version
@@ -162,21 +162,5 @@ function serializeWorkflow(w) {
 }
 
 function safeJson(s) { try { return JSON.parse(s); } catch (_) { return null; } }
-
-function toCSV(data) {
-  if (data == null) return '';
-  if (!Array.isArray(data)) return JSON.stringify(data);
-  if (data.length === 0) return '';
-  if (typeof data[0] !== 'object' || data[0] === null) return data.join('\n');
-  const headers = Object.keys(data[0]);
-  const rows = data.map(r => headers.map(h => csvCell(r[h])).join(','));
-  return [headers.join(','), ...rows].join('\n');
-}
-
-function csvCell(v) {
-  if (v == null) return '';
-  const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
 
 module.exports = router;

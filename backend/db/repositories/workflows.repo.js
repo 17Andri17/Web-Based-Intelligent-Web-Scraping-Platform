@@ -20,6 +20,27 @@ async function listSummariesForUser(userId) {
   `, [userId]);
 }
 
+// Cursor-paginated summary list (id DESC) for the public API. `beforeId`
+// returns workflows strictly older than that id.
+async function listSummariesForUserPage(userId, { limit = 20, beforeId = null } = {}) {
+  if (beforeId != null) {
+    return db.all(`
+      SELECT id, name, created_at, updated_at
+      FROM workflows
+      WHERE user_id = ? AND id < ?
+      ORDER BY id DESC
+      LIMIT ?
+    `, [userId, beforeId, limit]);
+  }
+  return db.all(`
+    SELECT id, name, created_at, updated_at
+    FROM workflows
+    WHERE user_id = ?
+    ORDER BY id DESC
+    LIMIT ?
+  `, [userId, limit]);
+}
+
 async function getForUser(id, userId) {
   return db.get('SELECT * FROM workflows WHERE id = ? AND user_id = ?', [id, userId]);
 }
@@ -79,6 +100,6 @@ async function restore({ id, userId, stepsJson, metaJson }) {
 }
 
 module.exports = {
-  listSummariesForUser, getForUser, existsForUser, create, update, remove,
-  updateStepsAndMeta, restore,
+  listSummariesForUser, listSummariesForUserPage, getForUser, existsForUser,
+  create, update, remove, updateStepsAndMeta, restore,
 };
