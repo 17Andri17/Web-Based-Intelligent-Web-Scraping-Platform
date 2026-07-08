@@ -97,6 +97,14 @@ export const schedulesApi = {
     api.delete(`/api/schedules/workflow/${workflowId}`).then(r => r.data),
 };
 
+export const apiKeysApi = {
+  list:   () => api.get("/api/api-keys").then(r => r.data.apiKeys),
+  // The response carries the plaintext key exactly once ({ apiKey, key }) —
+  // after this call it can never be retrieved again, only revoked.
+  create: (name) => api.post("/api/api-keys", { name }).then(r => r.data),
+  revoke: (id) => api.delete(`/api/api-keys/${id}`).then(r => r.data),
+};
+
 export const runsApi = {
   list:     (workflowId)         => api.get("/api/runs", { params: workflowId ? { workflowId } : {} }).then(r => r.data.runs),
   get:      (id)                 => api.get(`/api/runs/${id}`).then(r => r.data.run),

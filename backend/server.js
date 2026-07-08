@@ -1644,6 +1644,9 @@ io.on('connection', async (socket) => {
 // Start the schedule dispatcher so any active schedules in the DB fire
 // even without an open socket. Polls every 30s; see scheduler.service.js.
 const scheduler = require('./services/scheduler.service');
+// Background executor for API-triggered runs: picks up runs enqueued by the
+// public POST /v1/workflows/:id/runs endpoint. See apiWorker.service.js.
+const apiWorker = require('./services/apiWorker.service');
 const dbClient  = require('./db/client');
 
 // Provision the schema / apply migrations on the async data layer before we
@@ -1659,6 +1662,7 @@ dbClient.init()
       await users.syncAdminsFromUsernames(process.env.ADMIN_USERNAMES.split(','));
     }
     scheduler.start();
+    apiWorker.start();
     server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
   })
   .catch((err) => {

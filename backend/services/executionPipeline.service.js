@@ -10,6 +10,7 @@ const healingStats      = require('./healingStats');
 const { checkCompiles } = require('./codeCheck');
 const llm               = require('./llm.service');
 const { generateCode }  = require('../workflow/workflowCodegen');
+const webhookDispatcher = require('./webhookDispatcher.service');
 const {
   patchStepParams, setStepParams, removeStepById, clone,
 } = require('../workflow/workflowUtils');
@@ -85,7 +86,16 @@ async function executeAndPersist(arg) {
     () => runStore.ensureVersion(workflowId, userId, arg.workflow.steps || [], meta, 'run'),
     null,
   );
-  const runId = await runStore.createRun({ userId, workflowId, scheduleId, trigger, versionId: executedVersionId });
+  // API-triggered runs already have a row (created as status='queued' so the
+  // trigger endpoint could return its id immediately) — adopt it instead of
+  // creating a second one. Everything downstream is identical.
+  let runId;
+  if (arg.runId) {
+    runId = arg.runId;
+    await runStore.startQueuedRun(runId, executedVersionId);
+  } else {
+    runId = await runStore.createRun({ userId, workflowId, scheduleId, trigger, versionId: executedVersionId });
+  }
   emit(callbacks, 'onStart', { runId });
 
   const log = (line, level = 'info') => {
@@ -439,6 +449,9 @@ async function executeAndPersist(arg) {
 
   const finalRow = await runStore.getRun(runId);
   emit(callbacks, 'onDone', { run: finalRow });
+  // Push notification to any registered webhook endpoints (run.completed /
+  // run.failed). Fire-and-forget: delivery problems must never fail a run.
+  safeCall(() => webhookDispatcher.dispatchRunEvent(finalRow), null);
   return finalRow;
 }
 
