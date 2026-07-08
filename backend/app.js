@@ -8,6 +8,7 @@ const aiRoutes = require('./routes/ai.routes');
 const schedulesRoutes = require('./routes/schedules.routes');
 const runsRoutes = require('./routes/runs.routes');
 const proxiesRoutes = require('./routes/proxies.routes');
+const proxyPoolsRoutes = require('./routes/proxyPools.routes');
 
 const app = express();
 
@@ -23,6 +24,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/schedules', schedulesRoutes);
 app.use('/api/runs', runsRoutes);
 app.use('/api/proxies', proxiesRoutes);
+app.use('/api/proxy-pools', proxyPoolsRoutes);
 
 app.get('/', (req, res) => res.send('Scraper API running'));
 

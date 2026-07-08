@@ -1,7 +1,7 @@
 'use strict';
 
 const runner            = require('./runner.service');
-const proxiesRepo       = require('../db/repositories/proxies.repo');
+const { resolveWorkflowProxy } = require('./proxyResolver.service');
 const runStore          = require('./runStore.service');
 const errorClassifier   = require('./errorClassifier.service');
 const repair            = require('./repair.service');
@@ -69,15 +69,14 @@ async function executeAndPersist(arg) {
   const subflows = arg.workflow.subflows || {};
   const rootWorkflowId = arg.workflow.id || arg.workflowId || null;
 
-  // Resolved once per run (not per retry-attempt — the proxy doesn't change
-  // mid-run). resolveForUse scopes to proxies the user actually owns or that
-  // are platform-shared, so meta.proxyId can't be used to read someone
-  // else's private proxy credentials. Silently proceeds without a proxy if
-  // the id is missing/deleted/no-longer-accessible rather than failing the
-  // whole run over it — see db/repositories/proxies.repo.js.
-  const proxy = meta.proxyId
-    ? await safeCall(() => proxiesRepo.resolveForUse(meta.proxyId, userId), null)
-    : null;
+  // Resolved once per run (not per retry-attempt — a rotated-pool proxy
+  // shouldn't change mid-run just because a step failed and got retried).
+  // Ownership/sharing is enforced inside the resolver, so meta.proxy can't
+  // be used to reach someone else's private proxy or pool. Silently
+  // proceeds without a proxy on any resolution failure (deleted proxy,
+  // empty pool, ...) rather than failing the whole run over it — see
+  // services/proxyResolver.service.js.
+  const proxy = await safeCall(() => resolveWorkflowProxy(meta, userId), null);
 
   const t0 = nowMs();
   // Record the workflow version this run executes (deduped by content) so run

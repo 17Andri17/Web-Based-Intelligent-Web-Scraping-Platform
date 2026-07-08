@@ -17,7 +17,7 @@ const { generateCode, generateReadme } = require('./workflow/workflowCodegen');
 const { __ftMaterializeRow } = require('./workflow/fieldTransforms');
 const { verifyToken }    = require('./middleware/auth');
 const workflows          = require('./db/repositories/workflows.repo');
-const proxiesRepo        = require('./db/repositories/proxies.repo');
+const { resolveWorkflowProxy } = require('./services/proxyResolver.service');
 const { resolveCustomActions, resolveSubflows } = require('./workflow/dependencyResolver');
 const extractListAI      = require('./services/extractListAI.service');
 const extractListHeuristics = require('./services/extractListHeuristics.service');
@@ -270,12 +270,13 @@ io.on('connection', async (socket) => {
       // BrowserManager.js), so this has to run before getPage(). Always
       // called (even with null) so a proxy from a previously-edited
       // workflow doesn't leak into a session for one that has none.
-      // resolveForUse scopes to proxies this user owns or that are
-      // platform-shared, so data.proxyId can't be used to preview through
-      // someone else's private proxy.
-      const proxy = data.proxyId
-        ? await proxiesRepo.resolveForUse(data.proxyId, socket.user.id).catch(() => null)
-        : null;
+      // resolveWorkflowProxy scopes to proxies/pools this user owns or that
+      // are platform-shared, so data.proxy can't be used to preview through
+      // someone else's private proxy or pool. A "pool"/"platform" mode
+      // advances that pool's rotation on every navigate — acceptable for
+      // the live editor since navigating is already an infrequent, explicit
+      // user action, not a tight loop.
+      const proxy = await resolveWorkflowProxy({ proxy: data.proxy, proxyId: data.proxyId }, socket.user.id).catch(() => null);
       await browserManager.setUserProxy(userId, proxy);
 
       const page = await browserManager.getPage(userId);

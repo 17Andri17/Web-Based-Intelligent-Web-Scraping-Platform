@@ -59,10 +59,24 @@ export const proxiesApi = {
   create: (payload) => api.post("/api/proxies", payload).then(r => r.data.proxy),
   update: (id, payload) => api.put(`/api/proxies/${id}`, payload).then(r => r.data.proxy),
   remove: (id) => api.delete(`/api/proxies/${id}`).then(r => r.data),
-  // Admin-only: manage the platform-wide shared pool.
+  // Admin-only: manage individual platform/shared proxies.
   createShared: (payload) => api.post("/api/proxies/shared", payload).then(r => r.data.proxy),
   updateShared: (id, payload) => api.put(`/api/proxies/shared/${id}`, payload).then(r => r.data.proxy),
   removeShared: (id) => api.delete(`/api/proxies/shared/${id}`).then(r => r.data),
+};
+
+export const proxyPoolsApi = {
+  // Own pools + every shared/platform pool — the full picker list. Each
+  // pool carries isShared/isDefault and its resolved `members`.
+  list:   () => api.get("/api/proxy-pools").then(r => r.data.pools),
+  get:    (id) => api.get(`/api/proxy-pools/${id}`).then(r => r.data.pool),
+  create: (payload) => api.post("/api/proxy-pools", payload).then(r => r.data.pool),
+  update: (id, payload) => api.put(`/api/proxy-pools/${id}`, payload).then(r => r.data.pool),
+  remove: (id) => api.delete(`/api/proxy-pools/${id}`).then(r => r.data),
+  // Admin-only: manage platform pools (rotation groups built from shared proxies).
+  createShared: (payload) => api.post("/api/proxy-pools/shared", payload).then(r => r.data.pool),
+  updateShared: (id, payload) => api.put(`/api/proxy-pools/shared/${id}`, payload).then(r => r.data.pool),
+  removeShared: (id) => api.delete(`/api/proxy-pools/shared/${id}`).then(r => r.data),
 };
 
 export const aiApi = {
