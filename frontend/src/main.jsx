@@ -16,6 +16,7 @@ import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
 import CustomActionsMenu from "./customActions/CustomActionsMenu";
 import ProxiesMenu from "./proxies/ProxiesMenu";
+import ApiKeysMenu from "./apiKeys/ApiKeysMenu";
 import { API_BASE, customActionsApi, workflowsApi, aiApi } from "./api/client";
 import "./styles/PaginationDetector.css";
 import "./styles/app.css";
@@ -227,6 +228,9 @@ function AppShell({ user, token, onLogout }) {
   // server.js's navigate handler for the live preview. A 'pool'/'platform'
   // selection rotates to a different member proxy on each resolution.
   const [selectedProxy, setSelectedProxy] = useState(null);
+
+  // ── API keys (public /v1 API credentials) ────────────────────────────────
+  const [apiKeysOpen, setApiKeysOpen] = useState(false);
 
   // ── Custom actions (user-defined reusable steps) ─────────────────────────
   const [customActionsOpen, setCustomActionsOpen] = useState(false);
@@ -1294,6 +1298,7 @@ function AppShell({ user, token, onLogout }) {
                   <button className="item" onClick={() => { setUserMenuOpen(false); setWorkflowsOpen(true); }}>Workflows…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setCustomActionsOpen(true); }}>Custom actions…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setProxiesOpen(true); }}>Proxies…</button>
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setApiKeysOpen(true); }}>API keys…</button>
                   <button className="item danger" onClick={() => { setUserMenuOpen(false); onLogout(); }}>Sign out</button>
                 </div>
               </>
@@ -1824,6 +1829,13 @@ function AppShell({ user, token, onLogout }) {
           // the next unrelated navigation to pick it up.
           if (urlInput) performNavigate(urlInput);
         }}
+      />
+
+      {/* ── API keys (public /v1 API credentials) ───────────────────────── */}
+      <ApiKeysMenu
+        open={apiKeysOpen}
+        onClose={() => setApiKeysOpen(false)}
+        showToast={showToast}
       />
 
       {/* ── Workflows menu (save / open / delete) ───────────────────────── */}

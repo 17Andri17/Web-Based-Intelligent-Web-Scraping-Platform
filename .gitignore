@@ -3,3 +3,4 @@ backend/data/
 *.sqlite
 *.db
 .env
+frontend/dist/
