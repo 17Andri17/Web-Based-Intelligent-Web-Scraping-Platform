@@ -17,6 +17,7 @@ const { generateCode, generateReadme } = require('./workflow/workflowCodegen');
 const { __ftMaterializeRow } = require('./workflow/fieldTransforms');
 const { verifyToken }    = require('./middleware/auth');
 const workflows          = require('./db/repositories/workflows.repo');
+const proxiesRepo        = require('./db/repositories/proxies.repo');
 const { resolveCustomActions, resolveSubflows } = require('./workflow/dependencyResolver');
 const extractListAI      = require('./services/extractListAI.service');
 const extractListHeuristics = require('./services/extractListHeuristics.service');
@@ -263,6 +264,20 @@ io.on('connection', async (socket) => {
   // ── Navigate ────────────────────────────────────────────────────────────
   socket.on('navigate', async (data) => {
     try {
+      // Resolve + apply the workflow's configured proxy BEFORE the page is
+      // created/reused below — BrowserManager can only set a proxy at
+      // BrowserContext-creation time (see setUserProxy's comment in
+      // BrowserManager.js), so this has to run before getPage(). Always
+      // called (even with null) so a proxy from a previously-edited
+      // workflow doesn't leak into a session for one that has none.
+      // resolveForUse scopes to proxies this user owns or that are
+      // platform-shared, so data.proxyId can't be used to preview through
+      // someone else's private proxy.
+      const proxy = data.proxyId
+        ? await proxiesRepo.resolveForUse(data.proxyId, socket.user.id).catch(() => null)
+        : null;
+      await browserManager.setUserProxy(userId, proxy);
+
       const page = await browserManager.getPage(userId);
 
       // Re-apply the user's last-set mode whenever the page navigates
@@ -1634,7 +1649,14 @@ const dbClient  = require('./db/client');
 // accept traffic. On SQLite this is a near-instant no-op (tables already
 // exist); on Postgres it creates the schema on first boot.
 dbClient.init()
-  .then(() => {
+  .then(async () => {
+    // ADMIN_USERNAMES (comma-separated) is the single source of truth for
+    // who can manage the shared/platform proxy pool — see
+    // db/repositories/users.repo.js and routes/proxies.routes.js.
+    if (process.env.ADMIN_USERNAMES) {
+      const users = require('./db/repositories/users.repo');
+      await users.syncAdminsFromUsernames(process.env.ADMIN_USERNAMES.split(','));
+    }
     scheduler.start();
     server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
   })

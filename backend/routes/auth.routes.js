@@ -3,6 +3,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const users = require('../db/repositories/users.repo');
+const db = require('../db/client');
 const { signToken, requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -45,8 +46,14 @@ router.post('/login', async (req, res) => {
   res.json({ token, user: { id: row.id, username: row.username } });
 });
 
-router.get('/me', requireAuth, (req, res) => {
-  res.json({ user: req.user });
+router.get('/me', requireAuth, async (req, res) => {
+  // isAdmin isn't in the JWT payload (a promotion/demotion via
+  // ADMIN_USERNAMES shouldn't need re-login to take effect) — the frontend
+  // needs it to decide whether to show shared/platform proxy management
+  // controls, so it's a fresh DB read, same as middleware/auth.js's
+  // requireAdmin.
+  const row = await db.get('SELECT is_admin FROM users WHERE id = ?', [req.user.id]);
+  res.json({ user: { ...req.user, isAdmin: !!(row && row.is_admin) } });
 });
 
 module.exports = router;

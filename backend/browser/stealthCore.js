@@ -197,6 +197,74 @@ function getUserAgentMetadata(profile) {
     };
 }
 
+// ==================== PROXY SUPPORT ====================
+// Kept orthogonal from getLaunchArgs(profile)/getNavigatorOverrideScript
+// above: proxy config is per-session/per-run, not part of the device
+// fingerprint, and only one of the two consumers can actually use the
+// launch-arg form (see the comment on PROXY_WEBRTC_GUARD_SCRIPT below).
+
+// Extra Chrome launch args for a dedicated, single-run process
+// (workflowCodegen.js — each generated script gets its own `puppeteer.launch`,
+// so a launch-time --proxy-server is scoped to exactly one workflow's proxy).
+// BrowserManager.js's shared, long-lived browser CANNOT use this — a launch
+// flag is process-wide, but its contexts serve many users with different (or
+// no) proxies concurrently — it uses per-context
+// browser.createBrowserContext({ proxyServer }) instead (see getContext()).
+function getProxyLaunchArgs(proxy) {
+    if (!proxy || !proxy.host || !proxy.port) return [];
+    const scheme = (proxy.protocol || 'http').toLowerCase();
+    return [
+        `--proxy-server=${scheme}://${proxy.host}:${proxy.port}`,
+        // WebRTC's ICE candidate gathering is a separate UDP path that a
+        // plain --proxy-server doesn't cover — without this, a page can
+        // still discover the real public IP via STUN even though every
+        // HTTP(S) request correctly goes through the proxy. This is the
+        // whole point of a proxy for IP masking, so it's not optional
+        // when a proxy is configured.
+        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+    ];
+}
+
+// Chrome has no per-BrowserContext / per-CDP-target equivalent of
+// --force-webrtc-ip-handling-policy (checked against the installed
+// devtools-protocol types — Target.createBrowserContext only takes
+// proxyServer/proxyBypassList/downloadBehavior). So BrowserManager.js's
+// shared browser process — many users, many proxies, one process — can't
+// use the launch-flag fix at all. Instead, whenever a session/run has a
+// proxy configured, this replaces the RTCPeerConnection constructor with
+// one that throws, closing the leak completely rather than trying to
+// filter individual ICE candidates. Scraping workflows have no legitimate
+// use for WebRTC, so this is a safe trade — and it's injected in BOTH
+// consumers (defense in depth alongside the launch flag above for
+// workflowCodegen.js too, in case a given Chrome build's launch-flag
+// coverage has gaps).
+//
+// A throwing GETTER on window.RTCPeerConnection would break ordinary
+// `if (window.RTCPeerConnection)` feature-detection (merely reading the
+// property would throw); replacing the VALUE instead keeps `typeof
+// RTCPeerConnection === 'function'` and presence-checks working — only an
+// actual `new RTCPeerConnection(...)` call fails, the same shape a real
+// enterprise-policy-disabled WebRTC takes.
+const PROXY_WEBRTC_GUARD_SCRIPT = `
+(function() {
+  try {
+    function BlockedRTCPeerConnection() {
+      throw new DOMException('WebRTC is disabled while a proxy is active.', 'NotSupportedError');
+    }
+    if (typeof window !== 'undefined') {
+      ['RTCPeerConnection', 'webkitRTCPeerConnection', 'mozRTCPeerConnection'].forEach(function(name) {
+        try {
+          if (name in window) {
+            BlockedRTCPeerConnection.prototype = window[name].prototype;
+            window[name] = BlockedRTCPeerConnection;
+          }
+        } catch (e) {}
+      });
+    }
+  } catch (e) {}
+})();
+`;
+
 // ==================== NAVIGATOR OVERRIDE SCRIPT ====================
 // This script is injected into every context: the page's main world, its
 // iframes (via CDP's addScriptToEvaluateOnNewDocument, which covers page/
@@ -938,5 +1006,7 @@ module.exports = {
     getUserAgentMetadata,
     getNavigatorOverrideScript,
     workerConstructorPatchFn,
-    buildCodegenStealthHelper
+    buildCodegenStealthHelper,
+    getProxyLaunchArgs,
+    PROXY_WEBRTC_GUARD_SCRIPT
 };

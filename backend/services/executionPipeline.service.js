@@ -1,6 +1,7 @@
 'use strict';
 
 const runner            = require('./runner.service');
+const proxiesRepo       = require('../db/repositories/proxies.repo');
 const runStore          = require('./runStore.service');
 const errorClassifier   = require('./errorClassifier.service');
 const repair            = require('./repair.service');
@@ -68,6 +69,16 @@ async function executeAndPersist(arg) {
   const subflows = arg.workflow.subflows || {};
   const rootWorkflowId = arg.workflow.id || arg.workflowId || null;
 
+  // Resolved once per run (not per retry-attempt — the proxy doesn't change
+  // mid-run). resolveForUse scopes to proxies the user actually owns or that
+  // are platform-shared, so meta.proxyId can't be used to read someone
+  // else's private proxy credentials. Silently proceeds without a proxy if
+  // the id is missing/deleted/no-longer-accessible rather than failing the
+  // whole run over it — see db/repositories/proxies.repo.js.
+  const proxy = meta.proxyId
+    ? await safeCall(() => proxiesRepo.resolveForUse(meta.proxyId, userId), null)
+    : null;
+
   const t0 = nowMs();
   // Record the workflow version this run executes (deduped by content) so run
   // history doubles as a restorable version timeline.
@@ -126,7 +137,7 @@ async function executeAndPersist(arg) {
     // data forward and being mis-recorded as 'success'.
     finalResults = null;
 
-    const workflowForRun = { id: rootWorkflowId, steps: currentSteps, meta, customActions, subflows };
+    const workflowForRun = { id: rootWorkflowId, steps: currentSteps, meta, customActions, subflows, proxy };
     const { events, promise } = runner.runChild(workflowForRun, { signal });
     onRunnerEvents(events);
     const result = await promise;
