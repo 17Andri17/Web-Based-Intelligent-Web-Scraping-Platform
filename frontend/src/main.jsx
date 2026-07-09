@@ -143,6 +143,13 @@ function AppShell({ user, token, onLogout }) {
   // Selectors the user said "No thanks" to — don't re-offer this session.
   const declinedCookieSelectorsRef = useRef(new Set());
 
+  // CAPTCHA prompt (see browser/captcha.js): when a challenge is detected on
+  // the streamed page we surface a banner so the user can solve it in place,
+  // auto-solve it (if a solver is configured), or add a "Solve CAPTCHA" step.
+  // { captchaType, sitekey, action, url, provider, solverConfigured, solving } | null
+  const [captchaPrompt, setCaptchaPrompt] = useState(null);
+  const captchaPromptTimerRef = useRef(null);
+
   // Preview data: separate from steps so updates don't re-trigger emission
   const [previewData,     setPreviewData]     = useState({});
   // Sidebar: shared inspector + workflow panel
@@ -286,6 +293,46 @@ function AppShell({ user, token, onLogout }) {
     // flight when the steps-changed effect first ran).
     socket.on("pageReady", () => { setPageReadyTick(t => t + 1); releaseInteractionSoon(); });
     socket.on("actionResult", res => setStatus(res.success ? "Action executed." : "Action failed: " + (res.error || "")));
+
+    // ── CAPTCHA detected on the streamed page (see browser/captcha.js) ──────
+    // Offer to solve it here (free — you can just click it in the preview),
+    // auto-solve it (when a server-side solver is configured), or add a
+    // "Solve CAPTCHA" step so unattended runs handle it too.
+    socket.on("captchaDetected", (data) => {
+      const hasSolveStep = (function scan(arr) {
+        for (const s of arr || []) {
+          if (!s || typeof s !== "object") continue;
+          if (s.type === "SOLVE_CAPTCHA") return true;
+          for (const key of ["body", "then", "else", "try", "catch"]) {
+            if (Array.isArray(s[key]) && scan(s[key])) return true;
+          }
+        }
+        return false;
+      })(stepsRef.current);
+      clearTimeout(captchaPromptTimerRef.current);
+      setCaptchaPrompt({
+        captchaType:      data.captchaType || "unknown",
+        sitekey:          data.sitekey || null,
+        action:           data.action || null,
+        url:              data.url || "",
+        provider:         data.provider || "none",
+        solverConfigured: !!data.solverConfigured,
+        hasSolveStep,
+        solving:          false,
+      });
+      // The banner is informational; keep it up a while but not forever.
+      captchaPromptTimerRef.current = setTimeout(() => setCaptchaPrompt(null), 45000);
+    });
+    socket.on("captchaSolveResult", (res) => {
+      if (res.ok) {
+        showToast(res.injected ? "🧩 CAPTCHA solved" : "🧩 Token obtained — submit the form", "success");
+        clearTimeout(captchaPromptTimerRef.current);
+        setCaptchaPrompt(null);
+      } else {
+        showToast("🧩 " + (res.error || "Couldn't auto-solve — solve it in the preview"), "error");
+        setCaptchaPrompt(p => (p ? { ...p, solving: false } : p));
+      }
+    });
     socket.on("viewportUpdated", (data) => {
       sessionMetaRef.current.viewportWidth  = data.width;
       sessionMetaRef.current.viewportHeight = data.height;
@@ -692,6 +739,34 @@ function AppShell({ user, token, onLogout }) {
     if (cookiePrompt?.selector) declinedCookieSelectorsRef.current.add(cookiePrompt.selector);
     clearTimeout(cookiePromptTimerRef.current);
     setCookiePrompt(null);
+  };
+
+  // ── CAPTCHA prompt (see browser/captcha.js) ──────────────────────────────
+  // Ask the backend to auto-solve the detected challenge (only offered when a
+  // solver provider is configured server-side).
+  const autoSolveCaptcha = () => {
+    if (!captchaPrompt) return;
+    socketRef.current?.emit("solveCaptcha", {
+      captchaType: captchaPrompt.captchaType,
+      sitekey:     captchaPrompt.sitekey,
+      action:      captchaPrompt.action,
+      url:         captchaPrompt.url,
+    });
+    showToast("🧩 Solving CAPTCHA…", "info");
+    setCaptchaPrompt(p => (p ? { ...p, solving: true } : p));
+  };
+  // Record a "Solve CAPTCHA" step so unattended runs handle this challenge too.
+  const addSolveCaptchaStep = () => {
+    const step = createAction("SOLVE_CAPTCHA", {});
+    const root = stepsRef.current || [];
+    addStep(step, [], root[0]?.type === "NAVIGATE" ? 1 : 0);
+    showToast("🧩 Added \"Solve CAPTCHA\" step", "success");
+    clearTimeout(captchaPromptTimerRef.current);
+    setCaptchaPrompt(null);
+  };
+  const dismissCaptchaPrompt = () => {
+    clearTimeout(captchaPromptTimerRef.current);
+    setCaptchaPrompt(null);
   };
 
   // Pause click forwarding for the loading + consent-analysis window.
@@ -1579,6 +1654,33 @@ function AppShell({ user, token, onLogout }) {
                   <div className="cookie-teach-actions">
                     <button className="cookie-teach-add" onClick={acceptCookiePrompt}>Add step</button>
                     <button className="cookie-teach-dismiss" onClick={declineCookiePrompt}>No thanks</button>
+                  </div>
+                </div>
+              )}
+              {captchaPrompt && (
+                <div className="cookie-teach-prompt captcha-prompt">
+                  <span className="cookie-teach-emoji">🧩</span>
+                  <div className="cookie-teach-body">
+                    <strong>CAPTCHA detected ({captchaPrompt.captchaType.replace(/_/g, " ")})</strong>
+                    <div className="cookie-teach-sub">
+                      {captchaPrompt.captchaType === "cloudflare_interstitial"
+                        ? <>This usually clears itself in a few seconds — give it a moment. </>
+                        : <>Solve it right here in the preview (just click it). </>}
+                      {captchaPrompt.solverConfigured && captchaPrompt.sitekey
+                        ? <>Or auto-solve it via <em>{captchaPrompt.provider}</em>.</>
+                        : <>For unattended runs, add a step or configure a solver.</>}
+                    </div>
+                  </div>
+                  <div className="cookie-teach-actions">
+                    {captchaPrompt.solverConfigured && captchaPrompt.sitekey && (
+                      <button className="cookie-teach-add" onClick={autoSolveCaptcha} disabled={captchaPrompt.solving}>
+                        {captchaPrompt.solving ? "Solving…" : "Auto-solve"}
+                      </button>
+                    )}
+                    {!captchaPrompt.hasSolveStep && (
+                      <button className="cookie-teach-dismiss" onClick={addSolveCaptchaStep}>Add step</button>
+                    )}
+                    <button className="cookie-teach-dismiss" onClick={dismissCaptchaPrompt}>Dismiss</button>
                   </div>
                 </div>
               )}

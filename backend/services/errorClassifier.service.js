@@ -6,6 +6,7 @@
    Classifies a workflow execution error into one of:
      CONNECTION  — transient network failure, safe to retry
      HTTP        — server returned a non-success status (4xx/5xx)
+     CAPTCHA     — a CAPTCHA / anti-bot challenge blocked the page
      SELECTOR    — a CSS/XPath selector failed to match, the page structure
                    likely changed: candidate for LLM-driven repair
      LLM         — the LLM API itself failed (rate limit, network, etc.)
@@ -14,6 +15,8 @@
    The categorisation drives the recovery strategy:
      CONNECTION → retry with backoff
      HTTP       → surface to the user (page can't be reached)
+     CAPTCHA    → surface to the user (configure a solver or solve manually);
+                  never a selector-repair candidate
      SELECTOR   → ask the LLM to propose a new selector
      LLM        → mark the run as 'needs_review'
    ========================================================================= */
@@ -58,6 +61,15 @@ const LLM_PATTERNS = [
   /\bECONNREFUSED.*(?:groq|openai|anthropic)/i,
 ];
 
+// CAPTCHA / anti-bot challenge. The generated runtime throws with a
+// "CAPTCHA_DETECTED: ..." message (see browser/captcha.js). We also catch a
+// couple of provider-agnostic phrasings just in case.
+const CAPTCHA_PATTERNS = [
+  /\bCAPTCHA_DETECTED\b/i,
+  /\b(?:recaptcha|hcaptcha|turnstile)\b.*\b(?:challenge|blocked|required)\b/i,
+  /\bare you a (?:human|robot)\b/i,
+];
+
 function matches(patterns, s) {
   return patterns.some(p => p.test(s));
 }
@@ -66,6 +78,10 @@ function classifyError(message) {
   const s = String(message || '');
   if (!s) return 'UNKNOWN';
   if (matches(LLM_PATTERNS, s)) return 'LLM';
+  // CAPTCHA before HTTP/SELECTOR: an anti-bot block often co-occurs with a 403
+  // and with selectors that "don't match" (because the real page never
+  // loaded) — but the actionable cause is the challenge, not the selector.
+  if (matches(CAPTCHA_PATTERNS, s)) return 'CAPTCHA';
   // HTTP must be checked before CONNECTION, since 'net::ERR_*' patterns
   // overlap (a 503 wrapped in net::ERR_HTTP_RESPONSE_CODE_FAILURE).
   if (matches(HTTP_PATTERNS, s)) return 'HTTP';
@@ -83,6 +99,8 @@ function summarise(category, message, stepLabel) {
       return `Network problem while running ${stepRef}. The platform retried automatically — if you're seeing this, the retries didn't succeed either.`;
     case 'HTTP':
       return `The target page returned an error response while running ${stepRef}. Check the URL is still reachable and not blocked / rate-limited.`;
+    case 'CAPTCHA':
+      return `A CAPTCHA / anti-bot challenge blocked ${stepRef}. Free options: solve it live while building the scraper, or lower your request rate and use a residential proxy so it stops appearing. For unattended runs, configure a solver (set CAPTCHA_PROVIDER + CAPTCHA_API_KEY — e.g. CapSolver ~$0.30–0.80 / 1000 solves) and add a "Solve CAPTCHA" step.`;
     case 'SELECTOR':
       return `Could not locate the element used by ${stepRef}. The website's HTML may have changed — the platform attempted an automatic repair via the LLM.`;
     case 'EMPTY_RESULT':

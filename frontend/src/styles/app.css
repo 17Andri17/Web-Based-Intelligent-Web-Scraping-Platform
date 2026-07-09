@@ -455,6 +455,16 @@ body {
     to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
+/* CAPTCHA banner reuses the cookie-teach layout with an info-accent border. */
+.captcha-prompt {
+    border-color: var(--accent-primary, #4f9cf9);
+}
+
+.cookie-teach-add:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 .cookie-teach-emoji {
     font-size: 22px;
     line-height: 1;
