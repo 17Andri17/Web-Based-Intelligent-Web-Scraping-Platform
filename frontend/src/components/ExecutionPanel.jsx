@@ -389,6 +389,7 @@ function stepKindIcon(step) {
     case "NAVIGATE":            return "🌐";
     case "GO_BACK":             return "◀";
     case "CLICK_ELEMENT":       return "▶";
+    case "DISMISS_COOKIE_BANNER": return "🍪";
     case "TYPE_TEXT":           return "✏️";
     case "SCROLL_PAGE":         return "📜";
     case "WAIT":                return "⏱";

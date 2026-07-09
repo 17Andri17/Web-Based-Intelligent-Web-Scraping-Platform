@@ -290,6 +290,52 @@ await page.click(${selector}, { timeout: ${timeout} });
     }
   },
 
+  [ACTION_TYPES.DISMISS_COOKIE_BANNER]: {
+    label: "Close Cookie Banner",
+    category: "Interaction",
+    description: "Click the cookie-consent button if it appears. Never fails when the banner is absent (e.g. consent was already given on a previous visit). Leave the selector empty to use automatic banner detection.",
+    inputs: {
+      selector: {
+        type: "string",
+        required: false,
+        label: "Banner button selector (optional — empty = automatic detection)"
+      },
+      selectorType: {
+        type: "hidden",
+        default: "css",
+        label: "Selector type"
+      },
+      fallbackSelectors: {
+        type: "selectorList",
+        required: false,
+        label: "Fallback Selectors",
+        default: []
+      },
+    },
+    advanced: {
+      timeout: {
+        type: "number",
+        default: 8000,
+        label: "How long to watch for the banner (ms)"
+      },
+      autoFallback: {
+        type: "boolean",
+        default: true,
+        label: "If the selector isn't found, also try automatic detection"
+      }
+    },
+    generateCode: ({ params }) => {
+      if (!params.selector) return `\nawait dismissConsent(page); // automatic cookie-banner detection (never fails)\n`;
+      return `
+// Close cookie banner if present — never fails when absent
+{
+  const _el = await page.$(${JSON.stringify(params.selector)});
+  if (_el) { try { await _el.click(); } catch (_) {} }
+}
+`;
+    }
+  },
+
   [ACTION_TYPES.HOVER_ELEMENT]: {
     label: "Hover Element",
     category: "Interaction",

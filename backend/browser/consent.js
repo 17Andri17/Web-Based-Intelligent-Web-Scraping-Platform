@@ -10,12 +10,29 @@
 
    The core is `__consentApplyOnce(preference, registryOnly)` — pure DOM, no
    dependencies. It returns the handled CMP/source name (string) or null.
+   `__consentClassifyClick(target)` shares the same word lists / region
+   detection and is used by the live editor's "click-to-teach" listener to
+   recognise when the USER manually dismissed a banner the cascade missed.
 
    Default behaviour is ACCEPT: as a scraper the goal is to remove the overlay
    and unblock content as reliably as possible, and the accept control is the
    one CMPs almost always render with a single, stably-labelled click. A
    'reject' preference is supported (prefers a one-click reject, else falls
    back to accept), and 'off' disables it entirely.
+
+   Detection strategy (in order of precision):
+     1. Known-CMP registry — exact selectors / JS APIs for ~25 popular CMPs.
+     2. Container-first heuristic — find elements that LOOK like a consent
+        surface (cookie-ish id/class, dialog role, fixed overlay) whose text
+        talks about cookies, then scan clickable descendants (including
+        pointer-cursor divs/spans, which many custom banners use).
+     3. Global scored scan — every button-ish element on the page (and in
+        open shadow roots) is scored on wording strength + surrounding
+        consent evidence; the best candidate above threshold is clicked.
+        This replaces the old first-match-wins scan, which often clicked a
+        weak match (or nothing) on long-tail banners.
+     4. Close-button last resort — inside a container with STRONG cookie
+        evidence, a plain ×/close control also unblocks the page.
 
    Cooperation with the in-page SelectorTool: clicks are wrapped with
    window.__consentInProgress__ = true so the selector tool's capture-phase
@@ -25,15 +42,107 @@
    ========================================================================= */
 
 const CONSENT_CASCADE_SRC = `
-function __consentApplyOnce(preference, registryOnly) {
-  preference = preference === 'reject' ? 'reject' : 'accept';
+var __consentU = (function () {
+  /* ── Wording tiers ──────────────────────────────────────────────────────
+     STRONG phrases are unambiguous consent wording — safe to click on any
+     single piece of region evidence. WEAK words ('ok', 'continue', …) also
+     appear on newsletter popups / app banners, so they additionally require
+     EXPLICIT cookie evidence (cookie-ish id/class or cookie-talking text).
+     All entries are diacritics-stripped lowercase (see norm()). */
+  var STRONG_ACCEPT = [
+    'accept all','accept all cookies','allow all','allow all cookies','accept cookies','allow cookies',
+    'agree and close','agree & close','agree to all','agree and continue','accept and continue','accept & continue',
+    'accept and close','accept & close','i accept','i agree','yes, i agree','consent to all','enable all',
+    'alle akzeptieren','alle cookies akzeptieren','allen zustimmen','akzeptieren und weiter','alles akzeptieren','einverstanden',
+    'tout accepter','accepter tout','accepter et fermer',"j'accepte",'accepter les cookies','tout autoriser','autoriser tous',
+    'aceptar todo','aceptar todas','aceptar cookies','aceptar y cerrar','aceptar y continuar',
+    'accetta tutto','accetta tutti','accetto','accetta e chiudi','accetta cookie','accetta i cookie',
+    'aceitar todos','aceitar tudo','aceitar cookies','aceitar e fechar',
+    'akceptuj wszystko','akceptuj wszystkie','akceptuje wszystkie','zaakceptuj wszystko','zaakceptuj wszystkie',
+    'zgadzam sie','zgoda na wszystkie','zezwol na wszystkie','przejdz do serwisu','akceptuje i przechodze',
+    'alles accepteren','accepteer alles','alles toestaan','ik ga akkoord','akkoord',
+    'godkann alla','acceptera alla','tillat alla','godta alle','tillad alle','accepter alle','accepter alle cookies',
+    'hyvaksy kaikki','salli kaikki',
+    'prijmout vse','prijmout vsechny','souhlasim','prijat vse',
+    'osszes elfogadasa','mindet elfogadom','elfogadom',
+    'accepta tot','accepta toate','sunt de acord',
+    'tumunu kabul et','hepsini kabul et','kabul et',
+    'prihvati sve','slazem se','sprejmi vse',
+    'принять все','принять всё','прийняти вси','прийняти всі'
+  ];
+  var WEAK_ACCEPT = [
+    'accept','agree','allow','ok','okay','got it','i understand','understood','continue','proceed','fine','yes',
+    'akzeptieren','zustimmen','verstanden','weiter','stimme zu',
+    'accepter','autoriser','compris','continuer',
+    'aceptar','acepto','entendido','de acuerdo','continuar',
+    'accetta','va bene','ho capito','continua',
+    'aceitar','entendi','prosseguir',
+    'akceptuj','akceptuje','rozumiem','zgoda','dalej','kontynuuj',
+    'accepteren','toestaan','begrepen','prima','doorgaan',
+    'godkann','tillat','godta','acceptera','fortsatt',
+    'hyvaksy','jatka',
+    'prijmout','souhlas','pokracovat',
+    'elfogad','folytatas',
+    'accepta','continua',
+    'kabul','devam',
+    'prihvatam','prihvati','razumem','nastavi'
+  ];
+  var STRONG_REJECT = [
+    'reject all','reject all cookies','decline all','deny all','refuse all','refuse cookies','reject cookies',
+    'only necessary','necessary only','only essential','essential only','strictly necessary','necessary cookies only',
+    'use necessary cookies only','continue without accepting','continue without agreeing','without accepting',
+    'alle ablehnen','nur notwendige','nur erforderliche','ablehnen und weiter','alles ablehnen',
+    'tout refuser','refuser tout','continuer sans accepter','refuser les cookies',
+    'rechazar todo','rechazar todas','solo necesarias','seguir sin aceptar',
+    'rifiuta tutto','rifiuta tutti','solo essenziali','continua senza accettare',
+    'recusar todos','recusar tudo','apenas necessarios',
+    'odrzuc wszystko','odrzuc wszystkie','tylko niezbedne','nie zgadzam sie','nie wyrazam zgody',
+    'alles afwijzen','weiger alles','alleen noodzakelijk',
+    'avvisa alla','endast nodvandiga','avsla alle','kun nodvendige','afvis alle',
+    'hylkaa kaikki','vain valttamattomat',
+    'odmitnout vse','pouze nezbytne',
+    'elutasitom','osszes elutasitasa',
+    'respinge tot','doar necesare',
+    'tumunu reddet',
+    'odbij sve','otkloni sve',
+    'отклонить все'
+  ];
+  var WEAK_REJECT = [
+    'reject','decline','deny','refuse','disagree',
+    'ablehnen','verweigern','refuser','rechazar','rifiuta','recusar','odrzuc','weigeren',
+    'avvisa','avsla','afvis','hylkaa','odmitnout','elutasit','respinge','reddet','otkloni'
+  ];
+  /* Words that must NEVER be auto-clicked (they open settings panels or
+     navigate away). Authoritative — checked before want-lists. */
+  var BLOCK_WORDS = [
+    'settings','manage','preferences','customize','customise','options','choose','select','configure','configuration',
+    'more info','learn more','more information','read more','find out more','show purposes','purposes','partners','vendors',
+    'cookie policy','privacy policy','cookie notice','details','more options','advanced',
+    'einstellungen','verwalten','anpassen','zwecke','mehr erfahren','mehr informationen','auswahl',
+    'parametres','personnaliser','gerer','en savoir plus','plus d\\'informations',
+    'configurar','personalizar','gestionar','mas informacion','preferencias','opciones',
+    'preferenze','personalizza','gestisci','maggiori informazioni','impostazioni',
+    'definicoes','gerir','saiba mais','mais informacoes',
+    'ustawienia','zarzadzaj','preferencje','dostosuj','wiecej informacji','szczegoly','dowiedz sie wiecej',
+    'instellingen','beheren','aanpassen','meer informatie','voorkeuren',
+    'installningar','hantera','anpassa','las mer','indstillinger','tilpas','laes mere',
+    'asetukset','lisatietoja',
+    'nastaveni','spravovat','vice informaci',
+    'beallitasok','tovabbi informacio',
+    'setari','mai multe',
+    'ayarlar','secenekler',
+    'postavke','podesavanja',
+    'настройки','подробнее'
+  ];
+  var CLOSE_WORDS = [
+    'close','dismiss','no thanks','not now','schliessen','fermer','cerrar','chiudi','fechar','zamknij',
+    'sluiten','stang','luk','lukk','sulje','zavrit','bezaras','inchide','kapat','затвори','закрыть'
+  ];
+  var CLOSE_CHARS = { 'x': 1, '\\u00d7': 1, '\\u2715': 1, '\\u2716': 1, '\\u2717': 1, '\\u274c': 1 };
 
-  // Cooldown: don't re-fire a click before the banner tears down (also avoids
-  // fighting SPA re-renders that re-insert the banner momentarily).
-  try {
-    var _now = Date.now();
-    if (window.__consentLastClick__ && _now - window.__consentLastClick__ < 1500) return null;
-  } catch (_) {}
+  // Explicit cookie/consent vocabulary for id/class names and container text.
+  var IDCLASS_RX = /cookie|consent|gdpr|rodo|privacy|cmp|didomi|onetrust|cc-window|cc-banner|qc-cmp|notice|dsgvo/i;
+  var COOKIE_TEXT_RX = /cookie|cookies|gdpr|rodo|dsgvo|consent|datenschutz|ciasteczk|prywatno|privacidad|privacidade|confidentialit|informativa|personvern|integritetspolicy|yksityisyy|soukrom|adatvedel|gizlilik|privatnost|конфиденциальн/i;
 
   function isVisible(el) {
     if (!el) return false;
@@ -46,6 +155,135 @@ function __consentApplyOnce(preference, registryOnly) {
       return true;
     } catch (_) { return false; }
   }
+
+  function norm(t) {
+    var s = (t || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    // Strip diacritics so 'odrzuć' matches 'odrzuc', then fold the letters
+    // NFD can't decompose (ß, ø, ł, æ, œ, đ) so Danish/Polish/German wording
+    // matches its ASCII form in the lists above.
+    try { s = s.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_) {}
+    s = s.replace(/\\u00df/g, 'ss').replace(/\\u00f8/g, 'o').replace(/\\u0142/g, 'l')
+         .replace(/\\u00e6/g, 'ae').replace(/\\u0153/g, 'oe').replace(/\\u0111/g, 'd');
+    return s;
+  }
+
+  // Token-prefix matching. Splitting into word tokens and testing
+  // startsWith(word) tolerates inflection ('akceptuj' matches 'akceptuję'
+  // → 'akceptuje') WITHOUT the substring false-positives that plagued plain
+  // includes() — e.g. 'ok' is NOT found inside 'cookie', and 'agree' is NOT
+  // found inside 'disagree'. Multi-word phrases are matched as a substring
+  // anchored on a word boundary. Returns the matched word (for specificity
+  // ranking) or null.
+  function matchAny(text, words) {
+    if (!text) return null;
+    var toks = text.split(/[^a-z0-9\\u0400-\\u04ff]+/).filter(Boolean);
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i];
+      if (text === w) return w;
+      if (w.indexOf(' ') !== -1) {
+        var idx = text.indexOf(w);
+        if (idx !== -1) {
+          var before = idx === 0 ? ' ' : text.charAt(idx - 1);
+          if (!/[a-z0-9\\u0400-\\u04ff]/.test(before)) return w;
+        }
+      } else {
+        for (var j = 0; j < toks.length; j++) { if (toks[j].indexOf(w) === 0) return w; }
+      }
+    }
+    return null;
+  }
+
+  // The clickable text of a control — falls back to aria-label/title/value
+  // so icon buttons and inputs are classifiable too.
+  function clickableText(el) {
+    var t = '';
+    try { t = el.innerText || el.textContent || ''; } catch (_) {}
+    t = (t || '').trim();
+    if (!t) {
+      try { t = el.getAttribute('aria-label') || el.getAttribute('title') || el.value || ''; } catch (_) {}
+    }
+    return t;
+  }
+
+  /* ── Region evidence ─────────────────────────────────────────────────────
+     Walks up to 8 ancestors (following shadow-root hosts) collecting four
+     independent signals of "this element sits inside a consent surface":
+       idclass     — cookie/consent vocabulary in an ancestor id/class
+       textmention — a reasonably-sized ancestor's text talks about cookies
+       dialog      — role=dialog / aria-modal ancestor
+       overlay     — fixed/sticky ancestor with high z-index, or an
+                     edge-pinned full-width bar (classic bottom banner,
+                     which often has NO elevated z-index)
+     score: idclass/textmention 3 points, dialog/overlay 2 points.        */
+  function regionEvidence(el) {
+    var ev = { idclass: false, textmention: false, dialog: false, overlay: false, score: 0 };
+    var node = el;
+    for (var d = 0; d < 8 && node && node !== document.body && node !== document.documentElement; d++) {
+      try {
+        if (!ev.idclass) {
+          var idc = (node.id || '') + ' ' + (typeof node.className === 'string' ? node.className : '');
+          if (IDCLASS_RX.test(idc)) ev.idclass = true;
+        }
+        if (!ev.dialog) {
+          if (node.getAttribute && (node.getAttribute('role') === 'dialog' || node.getAttribute('role') === 'alertdialog' || node.getAttribute('aria-modal') === 'true')) ev.dialog = true;
+        }
+        if (!ev.overlay) {
+          var cs = getComputedStyle(node);
+          if (cs.position === 'fixed' || cs.position === 'sticky') {
+            var z = parseInt(cs.zIndex || '0', 10);
+            if (z >= 50) ev.overlay = true;
+            else {
+              // Edge-pinned full-width bar: the classic bottom/top cookie
+              // strip frequently sits at z-index auto.
+              var r = node.getBoundingClientRect();
+              var vw = window.innerWidth || 1, vh = window.innerHeight || 1;
+              if (r.width > vw * 0.85 && (r.top < 8 || r.bottom > vh - 8)) ev.overlay = true;
+            }
+          }
+        }
+        if (!ev.textmention) {
+          // Size-capped so a whole article ABOUT cookies (ancestor near
+          // <body>) doesn't count as banner evidence.
+          var tc = (node.textContent || '').slice(0, 8000);
+          if (tc.length > 0 && tc.length < 6000 && COOKIE_TEXT_RX.test(tc)) ev.textmention = true;
+        }
+      } catch (_) {}
+      node = node.parentElement || (node.getRootNode && node.getRootNode() && node.getRootNode().host) || null;
+    }
+    ev.score = (ev.idclass ? 3 : 0) + (ev.textmention ? 3 : 0) + (ev.dialog ? 2 : 0) + (ev.overlay ? 2 : 0);
+    return ev;
+  }
+
+  function isCloseControl(el, txt) {
+    if (txt && (CLOSE_CHARS[txt] || matchAny(txt, CLOSE_WORDS))) return true;
+    try {
+      var aria = norm((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || ''));
+      if (aria && matchAny(aria, CLOSE_WORDS)) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  return {
+    STRONG_ACCEPT: STRONG_ACCEPT, WEAK_ACCEPT: WEAK_ACCEPT,
+    STRONG_REJECT: STRONG_REJECT, WEAK_REJECT: WEAK_REJECT,
+    BLOCK_WORDS: BLOCK_WORDS,
+    IDCLASS_RX: IDCLASS_RX, COOKIE_TEXT_RX: COOKIE_TEXT_RX,
+    isVisible: isVisible, norm: norm, matchAny: matchAny,
+    clickableText: clickableText, regionEvidence: regionEvidence,
+    isCloseControl: isCloseControl
+  };
+})();
+
+function __consentApplyOnce(preference, registryOnly) {
+  preference = preference === 'reject' ? 'reject' : 'accept';
+  var U = __consentU;
+
+  // Cooldown: don't re-fire a click before the banner tears down (also avoids
+  // fighting SPA re-renders that re-insert the banner momentarily).
+  try {
+    var _now = Date.now();
+    if (window.__consentLastClick__ && _now - window.__consentLastClick__ < 1500) return null;
+  } catch (_) {}
 
   function clickEl(el) {
     if (!el) return false;
@@ -74,7 +312,7 @@ function __consentApplyOnce(preference, registryOnly) {
   function firstVisible(selectors) {
     for (var i = 0; i < selectors.length; i++) {
       var el = deepQueryOne(selectors[i]);
-      if (el && isVisible(el)) return el;
+      if (el && U.isVisible(el)) return el;
     }
     return null;
   }
@@ -82,8 +320,8 @@ function __consentApplyOnce(preference, registryOnly) {
   // ── Method 1: known-CMP registry (highest precision) ─────────────────────
   var REGISTRY = [
     { name: 'OneTrust',
-      sig: function () { return !!(window.OneTrust || document.getElementById('onetrust-banner-sdk')); },
-      accept: ['#onetrust-accept-btn-handler', '#accept-recommended-btn-handler'],
+      sig: function () { return !!(window.OneTrust || document.getElementById('onetrust-banner-sdk') || document.querySelector('.optanon-alert-box-wrapper')); },
+      accept: ['#onetrust-accept-btn-handler', '#accept-recommended-btn-handler', '.optanon-allow-all'],
       reject: ['#onetrust-reject-all-handler', '.ot-pc-refuse-all-handler'] },
     { name: 'Cookiebot',
       sig: function () { return !!(window.Cookiebot || document.getElementById('CybotCookiebotDialog')); },
@@ -114,6 +352,54 @@ function __consentApplyOnce(preference, registryOnly) {
       sig: function () { return !!document.querySelector('[id^="sp_message_container"], .sp_choice_type_11'); },
       accept: ['.sp_choice_type_11', 'button[title="Accept"]', 'button[title="Accept all"]', 'button[aria-label="Accept all"]'],
       reject: ['.sp_choice_type_13', 'button[title="Reject all"]'] },
+    { name: 'FundingChoices',
+      sig: function () { return !!document.querySelector('.fc-consent-root, .fc-dialog-container'); },
+      accept: ['.fc-cta-consent', 'button.fc-cta-consent'],
+      reject: ['.fc-cta-do-not-consent'] },
+    { name: 'ConsentManager',
+      sig: function () { return !!(window.__cmp && document.getElementById('cmpbox')) || !!document.getElementById('cmpbox'); },
+      accept: ['#cmpwelcomebtnyes', '.cmpboxbtnyes', '#cmpbox .cmpboxbtnyescustomchoices'],
+      reject: ['#cmpwelcomebtnno', '.cmpboxbtnno'] },
+    { name: 'Iubenda',
+      sig: function () { return !!document.getElementById('iubenda-cs-banner'); },
+      accept: ['#iubenda-cs-banner .iubenda-cs-accept-btn', '.iubenda-cs-accept-btn'],
+      reject: ['#iubenda-cs-banner .iubenda-cs-reject-btn', '.iubenda-cs-reject-btn'] },
+    { name: 'Tarteaucitron',
+      sig: function () { return !!document.getElementById('tarteaucitronRoot'); },
+      accept: ['#tarteaucitronPersonalize2', '#tarteaucitronAllAllowed', '.tarteaucitronAllow'],
+      reject: ['#tarteaucitronAllDenied2', '.tarteaucitronDeny'] },
+    { name: 'CookieLawInfo',
+      sig: function () { return !!document.querySelector('#cookie-law-info-bar, .cli-modal-backdrop'); },
+      accept: ['[data-cli_action="accept_all"]', '.wt-cli-accept-all-btn', '#cookie_action_close_header', '[data-cli_action="accept"]'],
+      reject: ['.wt-cli-reject-btn', '[data-cli_action="reject"]'] },
+    { name: 'CookieNotice',
+      sig: function () { return !!document.getElementById('cookie-notice'); },
+      accept: ['#cn-accept-cookie'],
+      reject: ['#cn-refuse-cookie'] },
+    { name: 'MooveGDPR',
+      sig: function () { return !!document.getElementById('moove_gdpr_cookie_info_bar'); },
+      accept: ['.moove-gdpr-infobar-allow-all'],
+      reject: ['.moove-gdpr-infobar-reject-btn'] },
+    { name: 'CookieFirst',
+      sig: function () { return !!(window.CookieFirst || document.querySelector('[data-cookiefirst-widget], [id^="cookiefirst"]')); },
+      accept: ['[data-cookiefirst-action="accept"]', '[data-cookiefirst-button="primary"]'],
+      reject: ['[data-cookiefirst-action="reject"]'] },
+    { name: 'HubSpot',
+      sig: function () { return !!document.getElementById('hs-eu-cookie-confirmation'); },
+      accept: ['#hs-eu-confirmation-button'],
+      reject: ['#hs-eu-decline-button'] },
+    { name: 'Shopify',
+      sig: function () { return !!document.getElementById('shopify-pc__banner'); },
+      accept: ['#shopify-pc__banner__btn-accept'],
+      reject: ['#shopify-pc__banner__btn-decline'] },
+    { name: 'Ezoic',
+      sig: function () { return !!document.getElementById('ez-cookie-dialog'); },
+      accept: ['#ez-accept-all', '#ez-cookie-dialog-wrapper .ez-accept-all'],
+      reject: [] },
+    { name: 'CivicUK',
+      sig: function () { return !!(window.CookieControl || document.getElementById('ccc')); },
+      accept: ['#ccc-recommended-settings', '#ccc-accept-settings'],
+      reject: ['#ccc-reject-settings'] },
     { name: 'Osano',
       sig: function () { return !!(window.Osano || document.querySelector('.osano-cm-window')); },
       accept: ['.osano-cm-accept-all', '.osano-cm-accept'],
@@ -172,89 +458,193 @@ function __consentApplyOnce(preference, registryOnly) {
   // below could mis-fire inside unrelated iframes (ads, embeds).
   if (registryOnly) return null;
 
-  // ── Method 3: generic heuristic (covers the long tail) ───────────────────
-  var ACCEPT_WORDS = ['accept all','accept all cookies','accept cookies','accept','agree','i agree','agree and close','agree & close','allow all','allow cookies','allow','got it','ok','okay','understood','continue','akzeptieren','alle akzeptieren','alle cookies akzeptieren','zustimmen','einverstanden','accepter','tout accepter',"j'accepte",'accepter et fermer','aceptar','aceptar todo','acepto','accetta','accetta tutto','aceitar','aceitar todos','akceptuj','akceptuje','akceptuj wszystko','zaakceptuj','zaakceptuj wszystko','zgadzam sie','zezwol na wszystkie','rozumiem','godkann alla','godta alle','hyvaksy kaikki','prihvati sve'];
-  var REJECT_WORDS = ['reject all','reject','decline','deny','refuse','disagree','necessary only','only necessary','reject cookies','ablehnen','alle ablehnen','refuser','refuser tout','rechazar','rifiuta','recusar','odrzuc','odrzuc wszystko','nie zgadzam sie','tylko niezbedne','avvisa alla'];
-  var BLOCK_WORDS = ['settings','manage','preferences','customize','customise','options','more info','learn more','ustawienia','zarzadzaj','preferencje','dostosuj','wiecej','einstellungen','verwalten','parametres','personnaliser','configurar','impostazioni','definicoes'];
-
-  function norm(t) {
-    var s = (t || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-    // Strip diacritics so 'odrzuć' matches 'odrzuc', 'akzeptieren' → 'akzeptieren'.
-    try { s = s.normalize('NFD').replace(/[\\u0300-\\u036f]/g, ''); } catch (_) {}
-    return s;
-  }
-  // Token-prefix matching. Splitting into word tokens and testing
-  // startsWith(phrase) tolerates inflection ('akceptuj' matches 'akceptuję'
-  // → 'akceptuje') WITHOUT the substring false-positives that plagued plain
-  // includes() — e.g. 'ok' is NOT found inside 'cookie', and 'agree' is NOT
-  // found inside 'disagree'. Multi-word phrases are matched as a substring
-  // anchored on a word boundary.
-  function matchesWordList(text, words) {
-    if (!text) return false;
-    var toks = text.split(/[^a-z0-9]+/).filter(Boolean);
-    for (var i = 0; i < words.length; i++) {
-      var w = words[i];
-      if (text === w) return true;
-      if (w.indexOf(' ') !== -1) {
-        var idx = text.indexOf(w);
-        if (idx !== -1) {
-          var before = idx === 0 ? ' ' : text.charAt(idx - 1);
-          if (!/[a-z0-9]/.test(before)) return true;
-        }
-      } else {
-        for (var j = 0; j < toks.length; j++) { if (toks[j].indexOf(w) === 0) return true; }
+  // ── Consent containers (for the container-first pass + close fallback) ───
+  // Elements that structurally look like a consent surface AND whose text
+  // actually talks about cookies. Case-insensitive attribute selectors keep
+  // this to a single fast query.
+  function findConsentContainers() {
+    var out = [];
+    function offer(n) {
+      if (out.length >= 8 || !n) return;
+      if (!U.isVisible(n)) return;
+      var tc = (n.textContent || '').slice(0, 8000);
+      if (tc.length < 15 || tc.length >= 6000) return;     // too tiny / whole-page
+      if (!U.COOKIE_TEXT_RX.test(tc)) return;
+      // Skip nested duplicates — keep the outermost matching container.
+      for (var j = 0; j < out.length; j++) { if (out[j].contains(n) || n.contains(out[j])) return; }
+      out.push(n);
+    }
+    // Named surfaces: cookie-ish id/class or dialog semantics.
+    var sel = '[id*="cookie" i],[class*="cookie" i],[id*="consent" i],[class*="consent" i],' +
+              '[id*="gdpr" i],[class*="gdpr" i],[id*="cmp" i],[aria-modal="true"],[role="dialog"],[role="alertdialog"]';
+    var nodes;
+    try { nodes = document.querySelectorAll(sel); } catch (_) { nodes = []; }
+    for (var i = 0; i < nodes.length; i++) offer(nodes[i]);
+    // Structural surfaces: fixed/sticky overlays mounted near the root —
+    // custom banners often carry no cookie vocabulary in their class names
+    // and use plain divs as buttons, so the named query above misses them.
+    // Banners virtually always live within a few levels of <body>.
+    function structuralScan(node, depth) {
+      if (!node || depth > 3 || out.length >= 8) return;
+      var kids = node.children || [];
+      for (var k = 0; k < kids.length && k < 60; k++) {
+        var el = kids[k];
+        try {
+          var cs = getComputedStyle(el);
+          if (cs.position === 'fixed' || cs.position === 'sticky') { offer(el); continue; }
+        } catch (_) {}
+        structuralScan(el, depth + 1);
       }
     }
-    return false;
+    structuralScan(document.body, 0);
+    return out;
   }
-  function looksLikeConsentRegion(el) {
-    var node = el;
-    for (var d = 0; d < 6 && node && node !== document.body; d++) {
-      try {
-        var idc = ((node.id || '') + ' ' + (typeof node.className === 'string' ? node.className : '')).toLowerCase();
-        if (/cookie|consent|gdpr|cmp|privacy|cc-window|cc-banner|notice/.test(idc)) return true;
-        var cs = getComputedStyle(node);
-        if (cs.position === 'fixed' || cs.position === 'sticky') {
-          var z = parseInt(cs.zIndex || '0', 10);
-          if (z >= 100 || node.getAttribute('role') === 'dialog' || node.getAttribute('aria-modal') === 'true') return true;
-        }
-      } catch (_) {}
-      node = node.parentElement || (node.getRootNode && node.getRootNode() && node.getRootNode().host) || null;
+
+  // ── Methods 2+3: scored heuristic (covers the long tail) ─────────────────
+  var wantStrong = preference === 'reject' ? U.STRONG_REJECT : U.STRONG_ACCEPT;
+  var wantWeak   = preference === 'reject' ? U.WEAK_REJECT   : U.WEAK_ACCEPT;
+  var avoid      = preference === 'reject'
+    ? U.BLOCK_WORDS.concat(U.STRONG_ACCEPT, U.WEAK_ACCEPT)
+    : U.BLOCK_WORDS.concat(U.STRONG_REJECT, U.WEAK_REJECT);
+
+  var best = null;
+  function consider(el, containerBoost) {
+    if (!U.isVisible(el)) return;
+    var txt = U.norm(U.clickableText(el));
+    if (!txt || txt.length > 80) return;
+    if (U.matchAny(txt, avoid)) return;
+    var strong = U.matchAny(txt, wantStrong);
+    var weak   = strong ? null : U.matchAny(txt, wantWeak);
+    if (!strong && !weak) return;
+    var ev = U.regionEvidence(el);
+    // STRONG wording clicks on any single evidence signal; WEAK wording
+    // ('ok', 'continue', …) demands explicit cookie evidence so newsletter /
+    // app-install popups are never touched.
+    if (strong) { if (ev.score < 2) return; }
+    else if (!(ev.idclass || ev.textmention)) return;
+    var score = (strong ? 4 : 1) + ev.score + (containerBoost ? 1 : 0);
+    var tag = (el.tagName || '').toLowerCase();
+    if (tag === 'button' || tag === 'input' || (el.getAttribute && el.getAttribute('role') === 'button')) score += 1;
+    if (!best || score > best.score) best = { el: el, score: score };
+  }
+
+  // Pass A — inside detected consent containers: scan ALL clickables,
+  // including the pointer-cursor <div>/<span> "buttons" custom banners use.
+  var containers = findConsentContainers();
+  for (var c = 0; c < containers.length; c++) {
+    var kids;
+    try { kids = containers[c].querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"], [onclick], div, span'); }
+    catch (_) { continue; }
+    var budget = 0;
+    for (var k = 0; k < kids.length && budget < 400; k++) {
+      var kid = kids[k];
+      var ktag = (kid.tagName || '').toLowerCase();
+      if (ktag === 'div' || ktag === 'span') {
+        // Only treat generic elements as clickable when they look clickable
+        // and are leaf-ish (a wrapper div would swallow the whole banner).
+        if (kid.children.length > 2) continue;
+        budget++;
+        try { if (getComputedStyle(kid).cursor !== 'pointer') continue; } catch (_) { continue; }
+        // Skip if a real button ancestor/descendant will be considered anyway.
+        if (kid.closest && kid.closest('button, a, [role="button"]')) continue;
+      }
+      consider(kid, true);
     }
-    return false;
   }
-  // want = words that should be clicked; avoid = words that must NOT be
-  // clicked (the block-list PLUS the opposite intent). avoid is authoritative
-  // — a "Cookie settings" or "Nie zgadzam się / Disagree" button is skipped
-  // even if it also brushes a want word.
-  function scanForButton(root, want, avoid) {
+
+  // Pass B — global button-ish scan (documents + open shadow roots).
+  function scanAll(root) {
     var candidates;
     try { candidates = root.querySelectorAll('button, a[role="button"], [role="button"], input[type="button"], input[type="submit"], a[href="#"]'); }
-    catch (_) { return null; }
-    for (var i = 0; i < candidates.length; i++) {
-      var el = candidates[i];
-      if (!isVisible(el)) continue;
-      var txt = norm(el.innerText || el.textContent || el.value || el.getAttribute('aria-label'));
-      if (!txt) continue;
-      if (matchesWordList(txt, avoid)) continue;
-      if (matchesWordList(txt, want) && looksLikeConsentRegion(el)) return el;
-    }
+    catch (_) { return; }
+    for (var i = 0; i < candidates.length; i++) consider(candidates[i], false);
     var hosts;
     try { hosts = root.querySelectorAll('*'); } catch (_) { hosts = []; }
     for (var h = 0; h < hosts.length; h++) {
-      if (hosts[h].shadowRoot) { var f = scanForButton(hosts[h].shadowRoot, want, avoid); if (f) return f; }
+      if (hosts[h].shadowRoot) scanAll(hosts[h].shadowRoot);
     }
-    return null;
+  }
+  scanAll(document);
+
+  // Reject preference with no reject control anywhere → fall back to accept.
+  if (!best && preference === 'reject') {
+    wantStrong = U.STRONG_ACCEPT; wantWeak = U.WEAK_ACCEPT;
+    avoid = U.BLOCK_WORDS.concat(U.STRONG_REJECT, U.WEAK_REJECT);
+    for (var c2 = 0; c2 < containers.length; c2++) {
+      var kids2;
+      try { kids2 = containers[c2].querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]'); }
+      catch (_) { continue; }
+      for (var k2 = 0; k2 < kids2.length; k2++) consider(kids2[k2], true);
+    }
+    scanAll(document);
   }
 
-  var want  = preference === 'reject' ? REJECT_WORDS : ACCEPT_WORDS;
-  var avoid = BLOCK_WORDS.concat(preference === 'reject' ? ACCEPT_WORDS : REJECT_WORDS);
-  var hit = scanForButton(document, want, avoid);
-  // reject preference with no reject control → fall back to accept.
-  if (!hit && preference === 'reject') hit = scanForButton(document, ACCEPT_WORDS, BLOCK_WORDS.concat(REJECT_WORDS));
-  if (hit) { if (clickEl(hit)) return 'heuristic'; }
+  if (best) { if (clickEl(best.el)) return 'heuristic'; }
+
+  // ── Method 4: close-button last resort ───────────────────────────────────
+  // Only inside a container with strong, explicit cookie evidence: a plain
+  // ×/close control still unblocks the page (no consent recorded — fine for
+  // scraping). Never applied outside detected containers.
+  for (var c3 = 0; c3 < containers.length; c3++) {
+    var cont = containers[c3];
+    var contEv = U.regionEvidence(cont.firstElementChild || cont);
+    if (!(contEv.textmention && (contEv.idclass || contEv.overlay || contEv.dialog))) continue;
+    var closers;
+    try { closers = cont.querySelectorAll('button, a, [role="button"]'); } catch (_) { continue; }
+    for (var q = 0; q < closers.length; q++) {
+      var cand = closers[q];
+      if (!U.isVisible(cand)) continue;
+      var ctxt = U.norm(U.clickableText(cand));
+      if (ctxt && ctxt.length > 24) continue;
+      if (U.matchAny(ctxt, U.BLOCK_WORDS)) continue;
+      if (U.isCloseControl(cand, ctxt)) { if (clickEl(cand)) return 'close-button'; }
+    }
+  }
 
   return null;
+}
+
+/* Classify a USER click as a probable cookie-banner dismissal. Shares the
+   cascade's word lists + region evidence so the "click-to-teach" prompt
+   (live editor) agrees with what the auto-dismiss would have looked for.
+   Returns { el, kind: 'accept'|'reject'|'close', text } or null. */
+function __consentClassifyClick(target) {
+  var U = __consentU;
+  if (!target || !target.closest) return null;
+  var el = null;
+  try { el = target.closest('button, a, [role="button"], input[type="button"], input[type="submit"]'); } catch (_) {}
+  if (!el) {
+    // Custom banners often use pointer-cursor divs/spans as buttons.
+    var n = target, hops = 0;
+    while (n && n !== document.body && hops++ < 4) {
+      try { if (getComputedStyle(n).cursor === 'pointer' && n.children.length <= 2) { el = n; break; } } catch (_) {}
+      n = n.parentElement;
+    }
+  }
+  if (!el || !U.isVisible(el)) return null;
+  var txt = U.norm(U.clickableText(el));
+  if (txt.length > 80) return null;
+  if (txt && U.matchAny(txt, U.BLOCK_WORDS)) return null;
+
+  var kind = null, strong = false;
+  if (U.matchAny(txt, U.STRONG_ACCEPT)) { kind = 'accept'; strong = true; }
+  else if (U.matchAny(txt, U.STRONG_REJECT)) { kind = 'reject'; strong = true; }
+  else if (U.matchAny(txt, U.WEAK_ACCEPT)) kind = 'accept';
+  else if (U.matchAny(txt, U.WEAK_REJECT)) kind = 'reject';
+  else if (U.isCloseControl(el, txt)) kind = 'close';
+  if (!kind) return null;
+
+  var ev = U.regionEvidence(el);
+  if (kind === 'close') {
+    if (!(ev.textmention && (ev.idclass || ev.overlay || ev.dialog))) return null;
+  } else if (strong) {
+    if (ev.score < 2) return null;
+  } else {
+    if (!(ev.idclass || ev.textmention)) return null;
+  }
+  var label = '';
+  try { label = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 60); } catch (_) {}
+  return { el: el, kind: kind, text: label };
 }
 `;
 
@@ -263,6 +653,13 @@ function __consentApplyOnce(preference, registryOnly) {
  * evaluateOnNewDocument. Installs an auto-runner (poll a few times + watch the
  * DOM for late/SPA banners) and exposes window.__dismissConsent__() for manual
  * triggering. Honours window.__CONSENT_PREF__ ('accept' | 'reject' | 'off').
+ *
+ * Also installs the "click-to-teach" listener: when the USER manually clicks
+ * something that classifies as a cookie-banner control (typically because the
+ * auto-dismiss missed the banner, or the preference is 'off'), it reports a
+ * `consentClickCandidate` event over the sendToNode binding so the frontend
+ * can offer to record a "Close cookie banner" workflow step — without the
+ * user ever leaving navigation mode. The click itself is never blocked.
  */
 function buildInjectedConsentScript() {
   return `(function () {
@@ -295,6 +692,7 @@ function buildInjectedConsentScript() {
     _lastRun = t;
     var name = window.__dismissConsent__();
     if (name) {
+      window.__consentHandled__ = true;
       // Reported via the sendToNode exposed-function binding (CDP
       // Runtime.addBinding) instead of console.log + page.on('console', ...).
       // The latter only delivers Runtime.consoleAPICalled events once
@@ -309,10 +707,11 @@ function buildInjectedConsentScript() {
     }
   }
 
-  // Banners often inject after load — poll a handful of times over a few
-  // seconds, and (top frame only) watch the DOM for late / SPA banners.
+  // Banners often inject after load — poll a handful of times over ~8s
+  // (slow pages load their CMP script late), and (top frame only) watch the
+  // DOM for late / SPA banners for 30s.
   var attempts = 0;
-  var iv = setInterval(function () { attempts++; tryRun(); if (attempts >= 10) clearInterval(iv); }, 600);
+  var iv = setInterval(function () { attempts++; tryRun(); if (attempts >= 14) clearInterval(iv); }, 600);
 
   if (_isTop) {
     try {
@@ -322,12 +721,60 @@ function buildInjectedConsentScript() {
       };
       if (document.body) start();
       else document.addEventListener('DOMContentLoaded', start, { once: true });
-      setTimeout(function () { try { mo.disconnect(); } catch (_) {} }, 15000);
+      setTimeout(function () { try { mo.disconnect(); } catch (_) {} }, 30000);
     } catch (_) {}
   }
 
   if (document.readyState !== 'loading') tryRun();
   else document.addEventListener('DOMContentLoaded', tryRun, { once: true });
+
+  // ── Click-to-teach: detect a manual cookie-banner dismissal ──────────────
+  // Editor clicks arrive as TRUSTED events (they're replayed through CDP
+  // Input.dispatchMouseEvent), while the cascade's own el.click() is
+  // untrusted — so isTrusted cleanly separates "the user clicked" from "we
+  // clicked". Capture phase: classify BEFORE the banner's handler removes it
+  // from the DOM, so selector generation still sees the real element.
+  var _userClicks = 0;
+  document.addEventListener('click', function (e) {
+    try {
+      if (!e.isTrusted) return;
+      if (window.__consentInProgress__) return;
+      _userClicks++;
+      if (window.__SELECTION_MODE__) return;      // selection clicks never reach the page
+      if (e.defaultPrevented) return;             // consumed by another tool
+      if (window.__consentTeachSent__) return;    // one prompt per page load
+      if (_userClicks > 8) return;                // banner clicks happen early
+      var res = __consentClassifyClick(e.target);
+      if (!res) return;
+      var primary = null, primaryType = 'css', fallbacks = [];
+      try {
+        if (window.SelectorGenerator && window.SelectorGenerator.getSelectorsForElement) {
+          var out = window.SelectorGenerator.getSelectorsForElement(res.el, { maxFallbacks: 4, actionType: 'CLICK_ELEMENT' });
+          if (out && out.primary) {
+            primary = out.primary.value;
+            primaryType = out.primary.type || 'css';
+            fallbacks = (out.fallbacks || []).map(function (f) { return { value: f.value, type: f.type || 'css' }; });
+          }
+        }
+      } catch (_) {}
+      if (!primary) return;
+      window.__consentTeachSent__ = true;
+      try {
+        if (typeof window.sendToNode === 'function') {
+          window.sendToNode({
+            type: 'consentClickCandidate',
+            selector: primary,
+            selectorType: primaryType,
+            fallbackSelectors: fallbacks,
+            text: res.text,
+            kind: res.kind,
+            autoHandled: !!window.__consentHandled__,
+            inIframe: !_isTop
+          });
+        }
+      } catch (_) {}
+    } catch (_) {}
+  }, true);
 })();`;
 }
 
@@ -336,7 +783,9 @@ function buildInjectedConsentScript() {
  * async `dismissConsent(targetPage)` that runs the cascade across every frame
  * (top frame = full, sub-frames = registry-only), retrying briefly to catch
  * late banners. Preference comes from process.env.SCRAPER_CONSENT (default
- * 'accept'); set it to 'off' to disable.
+ * 'accept'); set it to 'off' to disable. Returns true when a banner was
+ * handled, false otherwise (absent banner is NOT an error — consent may
+ * already be stored in the profile).
  */
 function buildCodegenConsentHelper() {
   return `
@@ -348,7 +797,7 @@ async function dismissConsent(targetPage, preference) {
   // Per-call preference (from the step) wins; otherwise fall back to the env
   // default. 'off' = leave the banner alone.
   const __pref = preference || __CONSENT_PREF;
-  if (!pg || __pref === 'off') return;
+  if (!pg || __pref === 'off') return false;
   for (let _a = 0; _a < 6; _a++) {
     let _hit = false;
     let _frames = [];
@@ -365,9 +814,10 @@ async function dismissConsent(targetPage, preference) {
         if (_name) { _hit = true; try { console.log('🍪 Consent handled: ' + _name); } catch (_) {} }
       } catch (_) {}
     }
-    if (_hit) break;
+    if (_hit) return true;
     await new Promise(r => setTimeout(r, 500));
   }
+  return false;
 }
 `;
 }

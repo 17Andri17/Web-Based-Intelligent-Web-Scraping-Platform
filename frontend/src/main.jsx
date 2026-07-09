@@ -133,6 +133,15 @@ function AppShell({ user, token, onLogout }) {
   const [childrenList,    setChildrenList]     = useState(null);  // { levelsUp, children }
   const [toast,           setToast]           = useState(null);   // { msg, type }
   const toastTimerRef = useRef(null);
+  // Click-to-teach cookie-banner prompt (see browser/consent.js): when the
+  // user manually dismisses a banner the auto-detection missed — in ANY
+  // mode, including plain navigation — the page reports the clicked control
+  // and we offer to record it as a "Close Cookie Banner" step.
+  // { selector, selectorType, fallbackSelectors, text, kind } | null
+  const [cookiePrompt, setCookiePrompt] = useState(null);
+  const cookiePromptTimerRef = useRef(null);
+  // Selectors the user said "No thanks" to — don't re-offer this session.
+  const declinedCookieSelectorsRef = useRef(new Set());
 
   // Preview data: separate from steps so updates don't re-trigger emission
   const [previewData,     setPreviewData]     = useState({});
@@ -285,6 +294,37 @@ function AppShell({ user, token, onLogout }) {
     socket.on("browserEvent", (data) => {
       if (data.type === "workflowStep") {
         addStep(createAction(data.action, data.params || {}, data.advanced || {}), [], null);
+      }
+      // Click-to-teach cookie-banner detection (see browser/consent.js): the
+      // user manually clicked something that classifies as a consent control
+      // (works from navigation mode — no mode switch needed). Offer to record
+      // it as a "Close Cookie Banner" step unless the workflow already has
+      // one or the user declined this selector before.
+      if (data.type === "consentClickCandidate") {
+        const sel = data.selector || "";
+        const hasDismissStep = (function scan(arr) {
+          for (const s of arr || []) {
+            if (!s || typeof s !== "object") continue;
+            if (s.type === "DISMISS_COOKIE_BANNER") return true;
+            for (const key of ["body", "then", "else", "try", "catch"]) {
+              if (Array.isArray(s[key]) && scan(s[key])) return true;
+            }
+          }
+          return false;
+        })(stepsRef.current);
+        if (sel && !hasDismissStep && !declinedCookieSelectorsRef.current.has(sel)) {
+          clearTimeout(cookiePromptTimerRef.current);
+          setCookiePrompt({
+            selector:          sel,
+            selectorType:      data.selectorType || "css",
+            fallbackSelectors: data.fallbackSelectors || [],
+            text:              data.text || "",
+            kind:              data.kind || "accept",
+          });
+          // The offer is contextual — don't let it linger once the moment
+          // has passed.
+          cookiePromptTimerRef.current = setTimeout(() => setCookiePrompt(null), 20000);
+        }
       }
       if (data.type === "elementSelected") {
         if (paginationManualWaitingRef.current) {
@@ -629,6 +669,30 @@ function AppShell({ user, token, onLogout }) {
     // (typing in the URL bar would reset itself on each keystroke).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [steps]);
+
+  // ── Click-to-teach cookie prompt actions ─────────────────────────────────
+  // Insert the recorded "Close Cookie Banner" step right after the start
+  // NAVIGATE step (the banner shows on page load), or at the very start when
+  // the workflow doesn't begin with a navigation. The step never fails when
+  // the banner is absent, so it's safe on repeat visits with stored consent.
+  const acceptCookiePrompt = () => {
+    if (!cookiePrompt) return;
+    const step = createAction("DISMISS_COOKIE_BANNER", {
+      selector:          cookiePrompt.selector,
+      selectorType:      cookiePrompt.selectorType || "css",
+      fallbackSelectors: cookiePrompt.fallbackSelectors || [],
+    });
+    const root = stepsRef.current || [];
+    addStep(step, [], root[0]?.type === "NAVIGATE" ? 1 : 0);
+    showToast("🍪 Added \"Close Cookie Banner\" step", "success");
+    clearTimeout(cookiePromptTimerRef.current);
+    setCookiePrompt(null);
+  };
+  const declineCookiePrompt = () => {
+    if (cookiePrompt?.selector) declinedCookieSelectorsRef.current.add(cookiePrompt.selector);
+    clearTimeout(cookiePromptTimerRef.current);
+    setCookiePrompt(null);
+  };
 
   // Pause click forwarding for the loading + consent-analysis window.
   const lockInteraction = useCallback(() => {
@@ -1501,6 +1565,23 @@ function AppShell({ user, token, onLogout }) {
                   : <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg> Navigation Mode</>
                 }
               </div>
+              {cookiePrompt && (
+                <div className="cookie-teach-prompt">
+                  <span className="cookie-teach-emoji">🍪</span>
+                  <div className="cookie-teach-body">
+                    <strong>Looks like you closed a cookie banner</strong>
+                    <div className="cookie-teach-sub">
+                      {cookiePrompt.text ? <>You clicked <em>“{cookiePrompt.text}”</em>. </> : null}
+                      Add a step that does this on every run? It's skipped when
+                      no banner appears (e.g. consent already given).
+                    </div>
+                  </div>
+                  <div className="cookie-teach-actions">
+                    <button className="cookie-teach-add" onClick={acceptCookiePrompt}>Add step</button>
+                    <button className="cookie-teach-dismiss" onClick={declineCookiePrompt}>No thanks</button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Unified sidebar — always in flow next to canvas when on Live Browser */}

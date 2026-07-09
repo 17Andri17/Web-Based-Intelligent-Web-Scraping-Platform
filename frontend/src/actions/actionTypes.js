@@ -8,6 +8,10 @@ export const ACTION_TYPES = {
 
   // ── Interaction ──────────────────────────────────────────────
   CLICK_ELEMENT:       "CLICK_ELEMENT",
+  // Click the cookie-consent banner button if it shows up — never fails
+  // when the banner is absent (consent may already be stored). With no
+  // selector it falls back to the automatic CMP detection cascade.
+  DISMISS_COOKIE_BANNER: "DISMISS_COOKIE_BANNER",
   HOVER_ELEMENT:       "HOVER_ELEMENT",
   TYPE_TEXT:           "TYPE_TEXT",
   CLEAR_INPUT:         "CLEAR_INPUT",
