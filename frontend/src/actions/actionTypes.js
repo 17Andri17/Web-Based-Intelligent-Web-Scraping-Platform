@@ -12,6 +12,11 @@ export const ACTION_TYPES = {
   // when the banner is absent (consent may already be stored). With no
   // selector it falls back to the automatic CMP detection cascade.
   DISMISS_COOKIE_BANNER: "DISMISS_COOKIE_BANNER",
+  // Detect and (if a solver is configured) solve a CAPTCHA / anti-bot
+  // challenge. Free by default: with no solver it just flags the run — you
+  // solve challenges by hand while building the scraper. See
+  // docs/CAPTCHA_HANDLING.md.
+  SOLVE_CAPTCHA:       "SOLVE_CAPTCHA",
   HOVER_ELEMENT:       "HOVER_ELEMENT",
   TYPE_TEXT:           "TYPE_TEXT",
   CLEAR_INPUT:         "CLEAR_INPUT",

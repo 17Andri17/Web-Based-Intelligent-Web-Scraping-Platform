@@ -17,6 +17,7 @@ const ITER_END       = 'ITER_END:';
 const STEP_RESULT    = 'STEP_RESULT:';    // per-extraction record-count / field-fill stats
 const STEP_SNAPSHOT  = 'STEP_SNAPSHOT:';  // page HTML captured when a step looks broken
 const COLLECT_SUMMARY = 'COLLECT_SUMMARY:'; // Collect-List completeness (human line logged separately)
+const CAPTCHA_MARKER = 'CAPTCHA_DETECTED:'; // a captcha was seen but not solved (auto-handle continued)
 
 /* ===========================================================================
    runner.service
@@ -61,6 +62,7 @@ function runChild(workflow, { signal } = {}) {
     let errorInfo  = null;
     const stepResults   = [];   // [{ stepId, type, label, key, count, fields, multiple }]
     const stepSnapshots = {};   // stepId → { url, html }
+    const captchaEvents = [];   // [{ type, sitekey, provider, url, reason }] — seen-but-not-solved
     let buffer     = '';
     // Keep the tail of stderr lines so that when the child exits non-zero
     // WITHOUT emitting a structured STEP_ERROR (e.g. a SyntaxError that
@@ -121,6 +123,17 @@ function runChild(workflow, { signal } = {}) {
       // Collect-List completeness marker — machine twin of the human "✓/⚠
       // Collect List" line, which is logged separately. Suppress the raw JSON.
       if (line.startsWith(COLLECT_SUMMARY)) return;
+      // A captcha was detected but left unsolved (auto-handle continued rather
+      // than failing). Surface it as a friendly warning + a structured event
+      // so the run can be flagged/inspected — but don't fail the run over it.
+      if (line.startsWith(CAPTCHA_MARKER)) {
+        let info = null;
+        try { info = JSON.parse(line.slice(CAPTCHA_MARKER.length)); } catch (_) { info = { raw: line.slice(CAPTCHA_MARKER.length) }; }
+        captchaEvents.push(info);
+        events.emit('captcha', info);
+        events.emit('log', { line: `🧩 CAPTCHA detected (${info.type || 'unknown'})${info.reason ? ' — ' + info.reason : ''}`, level: 'error' });
+        return;
+      }
       const level = isErr ? 'error' : 'info';
       if (line.trim()) {
         if (isErr) {
@@ -156,7 +169,7 @@ function runChild(workflow, { signal } = {}) {
       events.emit('log', { line: `❌ Failed to start runner: ${err.message}`, level: 'error' });
       resolve({ success: false, exitCode: -1, results: null,
                 errorInfo: errorInfo || { message: err.message, step: null },
-                stepResults, stepSnapshots });
+                stepResults, stepSnapshots, captchaEvents });
     });
 
     child.on('close', (exitCode) => {
@@ -182,7 +195,7 @@ function runChild(workflow, { signal } = {}) {
           preExecution: true,
         };
       }
-      resolve({ success, exitCode, results: resultsObj, errorInfo, stepResults, stepSnapshots });
+      resolve({ success, exitCode, results: resultsObj, errorInfo, stepResults, stepSnapshots, captchaEvents });
     });
   });
 

@@ -56,6 +56,13 @@ const injectedForceSameTab = fs.readFileSync(path.join(__dirname, './browser/inj
 const { buildInjectedConsentScript } = require('./browser/consent');
 const injectedConsent  = buildInjectedConsentScript();
 const CONSENT_PREF     = process.env.SCRAPER_CONSENT || 'accept';
+// CAPTCHA detection — injected alongside consent so the editor can tell the
+// user (or auto-solve) when an anti-bot challenge appears while they build a
+// scraper. Detection is free/always-on; solving is opt-in (see
+// services/captchaSolver.service.js).
+const { buildInjectedCaptchaScript } = require('./browser/captcha');
+const captchaSolver    = require('./services/captchaSolver.service');
+const injectedCaptcha  = buildInjectedCaptchaScript();
 
 // Active CDP sessions per user
 const userSessions = new Map();
@@ -89,6 +96,8 @@ io.on('connection', async (socket) => {
         // this same binding rather than its own page.on('console', ...)
         // listener — see the comment there for why.
         if (event && event.type === 'consent') { socket.emit('message', event.text); return; }
+        // CAPTCHA detection (see browser/captcha.js) rides the same binding.
+        if (event && event.type === 'captcha') { socket.emit('captchaDetected', { ...event, solverConfigured: captchaSolver.isConfigured(), provider: captchaSolver.getProviderName() }); return; }
         socket.emit('browserEvent', event);
       });
       await browserManager.ensureBinding(userId, 'sendCursorType', (cursorType) => {
@@ -328,6 +337,10 @@ io.on('connection', async (socket) => {
         // this same binding rather than its own page.on('console', ...)
         // listener — see the comment there for why.
         if (event && event.type === 'consent') { socket.emit('message', event.text); return; }
+        // CAPTCHA detection (see browser/captcha.js) rides the same binding.
+        // We tag whether a solver is configured so the frontend can decide
+        // between offering "auto-solve" and "solve it yourself in the preview".
+        if (event && event.type === 'captcha') { socket.emit('captchaDetected', { ...event, solverConfigured: captchaSolver.isConfigured(), provider: captchaSolver.getProviderName() }); return; }
         socket.emit('browserEvent', event);
       });
 
@@ -357,13 +370,23 @@ io.on('connection', async (socket) => {
         : CONSENT_PREF;
 
       await page.evaluateOnNewDocument(
-        (selectorsCode, toolCode, consentCode, forceSameTabCode, consentPref) => {
+        (selectorsCode, toolCode, consentCode, forceSameTabCode, captchaCode, consentPref) => {
 
           // Always refresh the consent preference (latest navigation wins),
           // even when the heavy injection below is skipped on a stacked run —
           // this is what lets the user change "Accept / Reject / Leave visible"
           // and have it take effect on the next navigation.
           window.__CONSENT_PREF__ = consentPref;
+
+          // CAPTCHA detection always runs in the editor (it never blocks the
+          // page or the user's clicks) so the user is told the moment a
+          // challenge appears and can solve it — or auto-solve it — in place.
+          window.__CAPTCHA_PREF__ = 'notify';
+
+          // The captcha runner installs its OWN idempotency guard, so it must
+          // run even on stacked SPA navigations where the selector-tool block
+          // below early-returns.
+          try { if (typeof eval === 'function') eval(captchaCode); } catch (e) { console.error('Captcha inject failed:', e); }
 
           // Prevent double injection on SPA navigations
           if (window.__SCRAPER_TOOL_ALREADY_INJECTED__) return;
@@ -394,6 +417,7 @@ io.on('connection', async (socket) => {
         injectedScript,
         injectedConsent,
         injectedForceSameTab,
+        injectedCaptcha,
         navConsentPref
       );
 
@@ -531,6 +555,56 @@ io.on('connection', async (socket) => {
       await page.evaluate((m) => { window.__SELECTION_MODE__ = m === 'selection'; }, mode);
       socket.emit('message', `Mode: ${mode}`);
     } catch (_) {}
+  });
+
+  // ── CAPTCHA: auto-solve in the live editor ────────────────────────────────
+  // Only meaningful when a solving provider is configured (CAPTCHA_PROVIDER +
+  // CAPTCHA_API_KEY). Without one the user simply solves the challenge by hand
+  // in the streamed browser — the CDP input forwarding makes that free. The
+  // frontend sends back the detection payload it received via 'captchaDetected'.
+  socket.on('solveCaptcha', async (payload = {}) => {
+    try {
+      if (!captchaSolver.isConfigured()) {
+        socket.emit('captchaSolveResult', { ok: false, code: 'NO_PROVIDER',
+          error: 'No solver configured. Solve the CAPTCHA directly in the preview, or set CAPTCHA_PROVIDER + CAPTCHA_API_KEY to enable auto-solve.' });
+        return;
+      }
+      const page = await getActivePage();
+      if (!page) { socket.emit('captchaSolveResult', { ok: false, code: 'NO_PAGE', error: 'No active page.' }); return; }
+
+      const type = payload.captchaType || payload.type;
+      const sitekey = payload.sitekey;
+      const url = payload.url || (page.url && page.url()) || '';
+      if (!captchaSolver.isSupportedType(type) || !sitekey) {
+        socket.emit('captchaSolveResult', { ok: false, code: 'UNSUPPORTED',
+          error: `This challenge (${type || 'unknown'}${sitekey ? '' : ', no sitekey'}) can't be auto-solved — please solve it in the preview.` });
+        return;
+      }
+
+      socket.emit('message', `🧩 Requesting a CAPTCHA solution from ${captchaSolver.getProviderName()}…`);
+      const out = await captchaSolver.solveToken({ type, sitekey, url, action: payload.action || null });
+      if (!out.ok || !out.token) {
+        socket.emit('captchaSolveResult', { ok: false, code: out.code || 'SOLVE_FAILED', error: out.error || 'Solver failed.' });
+        return;
+      }
+
+      // Inject the token into every frame (widget lives in a cross-origin one).
+      let injected = false;
+      let frames = [];
+      try { frames = page.frames(); } catch (_) { frames = [page.mainFrame()]; }
+      for (const fr of frames) {
+        try {
+          const ok = await fr.evaluate((t, tok) => {
+            return typeof window.__injectCaptchaToken__ === 'function' ? window.__injectCaptchaToken__(t, tok) : false;
+          }, type, out.token);
+          if (ok) injected = true;
+        } catch (_) {}
+      }
+      socket.emit('captchaSolveResult', { ok: true, injected, type });
+      socket.emit('message', injected ? '🧩 CAPTCHA solved and token injected.' : '🧩 CAPTCHA token obtained — submit the form to continue.');
+    } catch (err) {
+      socket.emit('captchaSolveResult', { ok: false, code: 'EXCEPTION', error: err.message });
+    }
   });
 
   // ── User actions (mouse/keyboard forwarding) ─────────────────────────────

@@ -255,6 +255,7 @@ async function executeAndPersist(arg) {
       continue;
     }
     if (category === 'HTTP') { log('• HTTP error from target — no automatic repair possible.', 'error'); break; }
+    if (category === 'CAPTCHA') { log('• CAPTCHA / anti-bot challenge — selector repair can\'t help. Configure a solver (CAPTCHA_PROVIDER + CAPTCHA_API_KEY) or solve it while building the scraper.', 'error'); break; }
     if (category === 'LLM')  { log('• LLM service unreachable — flagging for manual review.', 'error'); break; }
     if (!errorClassifier.shouldAttemptRepair(category)) { log(`• error category "${category}" is not repairable — stopping.`, 'error'); break; }
     if (repairAttempts >= MAX_REPAIR_ATTEMPTS) { log(`• reached repair budget (${MAX_REPAIR_ATTEMPTS}) — flagging for manual review.`, 'error'); break; }
@@ -414,6 +415,12 @@ async function executeAndPersist(arg) {
   } else if (lastError.category === 'HTTP') {
     status = 'error'; errorCategory = 'HTTP'; finalErrorMessage = lastError.message;
     aiSummary = errorClassifier.summarise('HTTP', lastError.message, lastError.step?.label);
+    failedStepInfo = stepInfoFrom(lastError.step);
+  } else if (lastError.category === 'CAPTCHA') {
+    // Anti-bot challenge — a human decision (solve manually / configure a
+    // solver / change proxy), never an auto-repairable selector problem.
+    status = 'needs_review'; errorCategory = 'CAPTCHA'; finalErrorMessage = lastError.message;
+    aiSummary = errorClassifier.summarise('CAPTCHA', lastError.message, lastError.step?.label);
     failedStepInfo = stepInfoFrom(lastError.step);
   } else if (lastError.category === 'LLM') {
     status = 'needs_review'; errorCategory = 'LLM'; finalErrorMessage = lastError.message;

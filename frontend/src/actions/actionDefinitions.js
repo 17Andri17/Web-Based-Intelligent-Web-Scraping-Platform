@@ -57,6 +57,15 @@ export const actionDefinitions = {
           { label: "Leave popup visible (do nothing)", value: "off" }
         ],
         default: "accept"
+      },
+      captcha: {
+        type: "select",
+        label: "CAPTCHA handling",
+        options: [
+          { label: "Auto (detect, wait out challenges, solve if a solver is set)", value: "auto" },
+          { label: "Off (ignore CAPTCHAs)", value: "off" }
+        ],
+        default: "auto"
       }
     },
     outputs: {
@@ -334,6 +343,40 @@ await page.click(${selector}, { timeout: ${timeout} });
 }
 `;
     }
+  },
+
+  [ACTION_TYPES.SOLVE_CAPTCHA]: {
+    label: "Solve CAPTCHA",
+    category: "Interaction",
+    description:
+      "Detect a CAPTCHA / anti-bot challenge (reCAPTCHA, hCaptcha, Cloudflare Turnstile, Cloudflare 'Just a moment') and deal with it. " +
+      "Cloudflare interstitials are waited out for free. Token challenges are solved automatically only when a solver is configured " +
+      "(CAPTCHA_PROVIDER + CAPTCHA_API_KEY — e.g. CapSolver, ~$0.30–0.80/1000). With no solver it flags the run for review; while building a scraper you can just solve it in the live preview.",
+    inputs: {},
+    advanced: {
+      onUnsolved: {
+        type: "select",
+        label: "If it can't be solved",
+        options: [
+          { label: "Continue anyway (flag the run)", value: "continue" },
+          { label: "Fail the step", value: "fail" }
+        ],
+        default: "continue"
+      },
+      maxWaitMs: {
+        type: "number",
+        label: "Max wait for a self-clearing challenge (ms)",
+        default: 25000
+      }
+    },
+    outputs: {},
+    // Real code generation is on the backend (workflowCodegen.js SOLVE_CAPTCHA),
+    // which inlines the detector + solver. This placeholder keeps the
+    // "Download code" path valid.
+    generateCode: () => `
+// Solve CAPTCHA if present (detector + solver inlined by the backend)
+await solveCaptcha(page, { onUnsolved: "continue" });
+`
   },
 
   [ACTION_TYPES.HOVER_ELEMENT]: {
