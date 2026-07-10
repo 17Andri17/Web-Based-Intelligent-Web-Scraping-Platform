@@ -207,6 +207,40 @@ io.on('connection', async (socket) => {
     } catch (_) {}
   });
 
+  // ── Copy: read the remote page's current text selection ──────────────────
+  // The user only ever sees a pixel stream, so Ctrl+C in the host browser
+  // can't reach the remote page's selection by itself. The frontend
+  // intercepts the copy shortcut, asks for the selection here, and writes
+  // the reply into the LOCAL clipboard. Checked across all frames since the
+  // selection may live inside an iframe.
+  socket.on('getSelection', async () => {
+    const page = await getActivePage();
+    if (!page) { socket.emit('selectionText', { text: '' }); return; }
+    let text = '';
+    let frames = [];
+    try { frames = page.frames(); } catch (_) { try { frames = [page.mainFrame()]; } catch (_) { frames = []; } }
+    for (const fr of frames) {
+      try {
+        const t = await fr.evaluate(() => {
+          const sel = window.getSelection && window.getSelection();
+          let out = sel ? sel.toString() : '';
+          // Text selected inside a focused <input>/<textarea> doesn't show
+          // up in window.getSelection() — read the field's range instead.
+          if (!out) {
+            const el = document.activeElement;
+            if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') &&
+                typeof el.selectionStart === 'number' && el.selectionEnd > el.selectionStart) {
+              out = String(el.value).slice(el.selectionStart, el.selectionEnd);
+            }
+          }
+          return out || '';
+        });
+        if (t) { text = t; break; }
+      } catch (_) {}
+    }
+    socket.emit('selectionText', { text });
+  });
+
   // ── Breadcrumb: navigate to ancestor ─────────────────────────────────────
   socket.on('navigateAncestor', async ({ levelsUp }) => {
     try {
@@ -350,11 +384,16 @@ io.on('connection', async (socket) => {
 
       const viewportWidth  = data.viewportWidth  || 1280;
       const viewportHeight = data.viewportHeight || 720;
+      // The client's devicePixelRatio (capped at 2 to bound CPU/bandwidth).
+      // Used two ways: as the viewport's deviceScaleFactor so the page sees
+      // a HiDPI display (and serves retina-quality srcset images), and as
+      // the clip.scale of the idle hi-res refinement frames below.
+      const dpr = Math.min(Math.max(Number(data.devicePixelRatio) || 1, 1), 2);
 
       await page.setViewport({
         width: viewportWidth,
         height: viewportHeight,
-        deviceScaleFactor: 1,
+        deviceScaleFactor: dpr,
         hasTouch: false,
         isMobile: false,
       });
@@ -457,8 +496,13 @@ io.on('connection', async (socket) => {
         streaming: true,
         currentWidth: viewportWidth,
         currentHeight: viewportHeight,
+        currentDpr: dpr,
       });
 
+      // Screencast frames are capped at device-independent (CSS) pixel
+      // resolution regardless of deviceScaleFactor (verified against the
+      // bundled Chromium) — so the screencast is the fluid, low-res motion
+      // channel and the idle hi-res refinement below provides sharpness.
       await client.send('Page.startScreencast', {
         format: 'png',
         maxWidth: viewportWidth,
@@ -469,7 +513,39 @@ io.on('connection', async (socket) => {
       socket.emit('viewportUpdated', {
         width: viewportWidth,
         height: viewportHeight,
+        dpr,
       });
+
+      // ── HiDPI idle refinement ─────────────────────────────────────
+      // On retina displays the CSS-resolution screencast has to be
+      // upscaled ~2x by the canvas, which reads as "blurrier than a real
+      // browser". Whenever the page goes visually quiet (no screencast
+      // frame for HIRES_IDLE_MS) we send ONE Page.captureScreenshot
+      // rendered at clip.scale = devicePixelRatio — the canvas snaps to
+      // native sharpness exactly when the user is reading the page or
+      // picking elements. Real motion resumes the screencast frames
+      // automatically, and taking the screenshot does NOT provoke a
+      // screencast frame (probe-verified), so this can't ping-pong.
+      const HIRES_IDLE_MS = 300;
+      let hiResTimer = null;
+      let hiResBusy  = false;
+      const captureHiResFrame = async () => {
+        const s = userSessions.get(userId);
+        if (!s?.streaming || hiResBusy) return;
+        const scale = s.currentDpr || 1;
+        if (scale <= 1) return;   // 1:1 display — screencast is already native
+        hiResBusy = true;
+        try {
+          const shot = await client.send('Page.captureScreenshot', {
+            format: 'jpeg', quality: 92, optimizeForSpeed: true,
+            clip: { x: 0, y: 0, width: s.currentWidth, height: s.currentHeight, scale },
+          });
+          if (userSessions.get(userId)?.streaming) {
+            socket.emit('frame', Buffer.from(shot.data, 'base64'));
+          }
+        } catch (_) {}
+        hiResBusy = false;
+      };
 
       const onFrame = async (frame) => {
         const s = userSessions.get(userId);
@@ -478,6 +554,9 @@ io.on('connection', async (socket) => {
 
         try {
           socket.emit('frame', Buffer.from(frame.data, 'base64'));
+
+          clearTimeout(hiResTimer);
+          hiResTimer = setTimeout(captureHiResFrame, HIRES_IDLE_MS);
 
           await client.send('Page.screencastFrameAck', {
             sessionId: frame.sessionId,
@@ -496,6 +575,7 @@ io.on('connection', async (socket) => {
         if (!s?.streaming) return;
 
         s.streaming = false;
+        clearTimeout(hiResTimer);
 
         try {
           await client.send('Page.stopScreencast');
@@ -524,19 +604,21 @@ io.on('connection', async (socket) => {
   });
 
   // ── Resize viewport ──────────────────────────────────────────────────────
-  socket.on('resizeViewport', async ({ width, height }) => {
+  socket.on('resizeViewport', async ({ width, height, devicePixelRatio }) => {
     const s = userSessions.get(userId);
     if (!s?.streaming) return;
     if (Math.abs(s.currentWidth - width) < 10 && Math.abs(s.currentHeight - height) < 10) return;
     try {
+      const dpr = Math.min(Math.max(Number(devicePixelRatio) || s.currentDpr || 1, 1), 2);
       await s.session.send('Page.stopScreencast').catch(() => {});
-      await s.page.setViewport({ width, height, deviceScaleFactor: 1, hasTouch: false, isMobile: false });
+      await s.page.setViewport({ width, height, deviceScaleFactor: dpr, hasTouch: false, isMobile: false });
       s.currentWidth  = width;
       s.currentHeight = height;
+      s.currentDpr    = dpr;
       const meta = userSessionMeta.get(userId);
       if (meta) { meta.viewportWidth = width; meta.viewportHeight = height; }
       await s.session.send('Page.startScreencast', { format: 'png', maxWidth: width, maxHeight: height, everyNthFrame: 1 });
-      socket.emit('viewportUpdated', { width, height });
+      socket.emit('viewportUpdated', { width, height, dpr });
     } catch (err) {
       socket.emit('message', `❌ Resize error: ${err.message}`);
     }

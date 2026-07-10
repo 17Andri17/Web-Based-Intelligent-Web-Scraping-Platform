@@ -70,6 +70,31 @@ function deepResolveVars(obj, vars) {
   return obj;
 }
 
+// Write text to the local clipboard. navigator.clipboard needs a secure
+// context (https / localhost); fall back to the hidden-textarea trick so
+// copy still works when the app is served over plain http on a LAN host.
+async function writeClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
 function App() {
   const { user, token, loading: authLoading, logout } = useAuth();
 
@@ -106,6 +131,11 @@ function AppShell({ user, token, onLogout }) {
   const isStreamingRef       = useRef(false);
   const latestFrameRef       = useRef(null);
   const isRenderingRef       = useRef(false);
+  // Remote viewport size in CSS pixels (from `viewportUpdated`). The frames
+  // are captured at devicePixelRatio scale, so the canvas backing store is
+  // dpr× larger than the remote page's coordinate space — mouse positions
+  // must be mapped against THIS size, not canvas.width/height.
+  const viewportCssRef       = useRef(null);
   // While a page is loading AND the cookie-consent auto-dismiss is analysing
   // it, we pause forwarding the user's clicks to the backend so a stray click
   // can't land on a half-loaded page or fight the consent handler. Released
@@ -336,6 +366,17 @@ function AppShell({ user, token, onLogout }) {
     socket.on("viewportUpdated", (data) => {
       sessionMetaRef.current.viewportWidth  = data.width;
       sessionMetaRef.current.viewportHeight = data.height;
+      viewportCssRef.current = { width: data.width, height: data.height };
+    });
+
+    // Reply to a Ctrl/Cmd+C forwarded from the canvas: the remote page's
+    // current text selection, to be written into the LOCAL clipboard.
+    socket.on("selectionText", ({ text }) => {
+      if (!text) { setStatus("Nothing selected to copy"); return; }
+      writeClipboard(text).then((ok) => {
+        if (ok) showToast("📋 Copied selection to clipboard", "success");
+        else setStatus("Couldn't write to clipboard");
+      });
     });
 
     socket.on("browserEvent", (data) => {
@@ -562,7 +603,11 @@ function AppShell({ user, token, onLogout }) {
       isRenderingRef.current = true;
       try {
         const frame = latestFrameRef.current; latestFrameRef.current = null;
-        const bitmap = await createImageBitmap(new Blob([frame], { type: "image/png" }));
+        // Motion frames are PNG (screencast); idle hi-res refinement frames
+        // are JPEG (captureScreenshot) — sniff the magic bytes so both decode.
+        const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
+        const type = bytes[0] === 0xFF ? "image/jpeg" : "image/png";
+        const bitmap = await createImageBitmap(new Blob([bytes], { type }));
         if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
           canvas.width = bitmap.width; canvas.height = bitmap.height;
         }
@@ -607,7 +652,11 @@ function AppShell({ user, token, onLogout }) {
     resizeTimeoutRef.current = setTimeout(() => {
       const rect = canvasContainerRef.current?.getBoundingClientRect();
       if (rect?.width > 0 && rect?.height > 0)
-        socketRef.current.emit("resizeViewport", { width: Math.floor(rect.width), height: Math.floor(rect.height) });
+        socketRef.current.emit("resizeViewport", {
+          width: Math.floor(rect.width),
+          height: Math.floor(rect.height),
+          devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+        });
     }, 150);
   }, []);
 
@@ -802,7 +851,12 @@ function AppShell({ user, token, onLogout }) {
     // the workflow will do. Falls back to accept.
     const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
     const consent = pinned?.advanced?.consent || "accept";
-    socketRef.current.emit("navigate", { url, mode, consent, viewportWidth: vpW, viewportHeight: vpH, proxy: selectedProxy });
+    socketRef.current.emit("navigate", {
+      url, mode, consent,
+      viewportWidth: vpW, viewportHeight: vpH,
+      devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+      proxy: selectedProxy,
+    });
     isStreamingRef.current = true;
   }, [mode, steps, lockInteraction, selectedProxy]);
 
@@ -1209,16 +1263,20 @@ function AppShell({ user, token, onLogout }) {
     };
   }, [releaseHeldKeys]);
 
-  // Convert a browser pointer/mouse event to puppeteer-page coordinates
-  // (the canvas backing-store size, not its CSS size). Clamps to the
-  // canvas extent so drag positions outside the canvas don't go negative
-  // or run past the viewport.
+  // Convert a browser pointer/mouse event to puppeteer-page coordinates.
+  // CDP input events use CSS pixels, but the screencast frames (and thus
+  // the canvas backing store) are captured at devicePixelRatio scale — so
+  // map against the remote viewport's CSS size, not canvas.width/height.
+  // Clamps to the viewport extent so drag positions outside the canvas
+  // don't go negative or run past the page edge.
   const scaled = (e) => {
     const c = canvasRef.current, r = c.getBoundingClientRect();
-    const xRaw = (e.clientX - r.left) * (c.width  / r.width);
-    const yRaw = (e.clientY - r.top)  * (c.height / r.height);
-    const x = Math.max(0, Math.min(c.width  - 1, Math.round(xRaw)));
-    const y = Math.max(0, Math.min(c.height - 1, Math.round(yRaw)));
+    const vw = viewportCssRef.current?.width  || c.width;
+    const vh = viewportCssRef.current?.height || c.height;
+    const xRaw = (e.clientX - r.left) * (vw / r.width);
+    const yRaw = (e.clientY - r.top)  * (vh / r.height);
+    const x = Math.max(0, Math.min(vw - 1, Math.round(xRaw)));
+    const y = Math.max(0, Math.min(vh - 1, Math.round(yRaw)));
     return { x, y };
   };
   const emit = (type, extra = {}) => {
@@ -1621,6 +1679,25 @@ function AppShell({ user, token, onLogout }) {
                 onKeyDown={e => {
                   if (!isStreamingRef.current) return;
                   if (isPassthroughKey(e)) return;
+                  // Copy: the user only sees a pixel stream, so a forwarded
+                  // Ctrl+C would copy into the REMOTE browser's clipboard.
+                  // Fetch the remote selection instead and write it to the
+                  // local clipboard (handled in the selectionText listener).
+                  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "c" || e.key === "C")) {
+                    e.preventDefault();
+                    socketRef.current?.emit("getSelection");
+                    return;
+                  }
+                  // Paste: mirror image of copy — the remote browser can't
+                  // see the host clipboard, so read it here and send the
+                  // text over to be inserted at the remote caret.
+                  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === "v" || e.key === "V")) {
+                    e.preventDefault();
+                    navigator.clipboard?.readText?.()
+                      .then((text) => { if (text) emit("paste", { text }); })
+                      .catch(() => { setStatus("Clipboard read blocked — allow clipboard access to paste"); });
+                    return;
+                  }
                   e.preventDefault();
                   heldKeysRef.current.add(e.key);
                   emit("keydown", { key: e.key, code: e.code });

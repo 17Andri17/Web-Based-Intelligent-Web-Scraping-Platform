@@ -1,6 +1,7 @@
 const { executablePath } = require('puppeteer');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const { resolveChromePath } = require('./chromePath');
 puppeteer.use(StealthPlugin());
 
 const {
@@ -83,7 +84,11 @@ class BrowserManager {
             // stealthCore.js, shared with the generated workflow scripts.
             const defaultProfile = DEVICE_PROFILES[0];
             this.browser = await puppeteer.launch({
-                executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+                // Cross-platform resolution (CHROME_PATH env, the well-known
+                // Windows install, Linux system Chromium, Playwright/puppeteer
+                // caches) — see browser/chromePath.js. `undefined` lets
+                // puppeteer fall back to its own bundled download.
+                executablePath: resolveChromePath(),
                 headless: 'new',
                 defaultViewport: null,
                 args: getLaunchArgs(defaultProfile),
