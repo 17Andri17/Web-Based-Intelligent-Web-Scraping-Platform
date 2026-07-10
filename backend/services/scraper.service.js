@@ -122,6 +122,14 @@ module.exports = (io) => {
             deltaX: action.deltaX || 0,
             deltaY: action.deltaY || 0,
           });
+        } else if (action.type === "paste") {
+          // Ctrl/Cmd+V forwarded from the frontend with the HOST clipboard's
+          // text — the remote browser has its own (empty) clipboard, so a
+          // plain forwarded keystroke would paste nothing. sendCharacter
+          // inserts the text via CDP Input.insertText, no key events needed.
+          if (typeof action.text === "string" && action.text) {
+            await page.keyboard.sendCharacter(action.text);
+          }
         } else if (action.type === "keydown") {
           if (MODIFIER_KEYS.has(action.key)) heldModifiers(userId).add(action.key);
           await page.keyboard.down(action.key);

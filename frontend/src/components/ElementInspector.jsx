@@ -49,29 +49,29 @@ const CATEGORIES = [
   {
     id: "interaction", label: "Interaction", color: "#3fb950",
     actions: [
-      { type: "CLICK_ELEMENT",    icon: "▶", needsEl: true,  quickAdd: true,
+      { type: "CLICK_ELEMENT",    needsEl: true,  quickAdd: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
-      { type: "DISMISS_COOKIE_BANNER", icon: "🍪", needsEl: false,
+      { type: "DISMISS_COOKIE_BANNER", needsEl: false,
         smartDefault: (el) => el
           ? { selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }
           : { selector: "", selectorType: "css", fallbackSelectors: [] } },
-      { type: "TYPE_TEXT",        icon: "✏️", needsEl: true,
+      { type: "TYPE_TEXT",        needsEl: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], clearFirst: true, pressEnter: false }),
         showWhen: (el) => el.isInput },
-      { type: "SCROLL_PAGE",      icon: "📜", needsEl: false, smartDefault: () => ({ direction: "down", amount: 500 }) },
+      { type: "SCROLL_PAGE",      needsEl: false, smartDefault: () => ({ direction: "down", amount: 500 }) },
     ],
   },
   {
     id: "extraction", label: "Extraction", color: "#58a6ff",
     actions: [
-      { type: "EXTRACT_TEXT",      icon: "📝", needsEl: true, quickAdd: true,
+      { type: "EXTRACT_TEXT",      needsEl: true, quickAdd: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], multiple: false }) },
-      { type: "EXTRACT_ATTRIBUTE", icon: "🔗", needsEl: true,
+      { type: "EXTRACT_ATTRIBUTE", needsEl: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], attribute: el.href ? "href" : el.src ? "src" : "", multiple: false }),
         showWhen: (el) => el.isLink || el.isImg || el.href || el.src },
-      { type: "EXTRACT_HTML",      icon: "🧩", needsEl: true,
+      { type: "EXTRACT_HTML",      needsEl: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], mode: "inner" }) },
-      { type: "EXTRACT_TABLE",     icon: "📋", needsEl: true, quickAdd: true,
+      { type: "EXTRACT_TABLE",     needsEl: true, quickAdd: true,
         smartDefault: (el) => ({
           selector:          el.tableSelector?.value     || el.selector,
           selectorType:      el.tableSelector?.type      || el.selectorType || "css",
@@ -79,7 +79,7 @@ const CATEGORIES = [
           hasHeader: true,
         }),
         showWhen: (el) => el.isTable },
-      { type: "EXTRACT_LIST",      icon: "📑", needsEl: true,
+      { type: "EXTRACT_LIST",      needsEl: true,
         smartDefault: (el) => ({
           containerSelector: el.softSelector || el.selector,
           selectorType: el.selectorType || "css",
@@ -92,18 +92,49 @@ const CATEGORIES = [
   {
     id: "navigation", label: "Navigation", color: "#d29922",
     actions: [
-      { type: "NAVIGATE",          icon: "🌐", needsEl: false, smartDefault: () => ({ url: "" }) },
-      { type: "GO_BACK",           icon: "◀",  needsEl: false, smartDefault: () => ({}), quickAdd: true },
+      { type: "NAVIGATE",          needsEl: false, smartDefault: () => ({ url: "" }) },
+      { type: "GO_BACK",           needsEl: false, smartDefault: () => ({}), quickAdd: true },
     ],
   },
   {
     id: "flow", label: "Flow", color: "#a371f7",
     actions: [
-      { type: "WAIT",              icon: "⏱️", needsEl: false, smartDefault: () => ({ duration: 1000 }), quickAdd: true },
-      { type: "BREAK_LOOP",        icon: "⛔", needsEl: false, smartDefault: () => ({}), quickAdd: true },
+      { type: "WAIT",              needsEl: false, smartDefault: () => ({ duration: 1000 }), quickAdd: true },
+      { type: "BREAK_LOOP",        needsEl: false, smartDefault: () => ({}), quickAdd: true },
     ],
   },
 ];
+
+// ─── Action icons ──────────────────────────────────────────────────────────
+// Monochrome stroke icons (colored via currentColor by the category accent)
+// instead of the old emoji set, so the action cards match the rest of the
+// app's iconography.
+const ACTION_ICON_PATHS = {
+  CLICK_ELEMENT:         <><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></>,
+  DISMISS_COOKIE_BANNER: <><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"/><path d="M8.5 8.5v.01"/><path d="M16 15.5v.01"/><path d="M12 13v.01"/></>,
+  TYPE_TEXT:             <><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></>,
+  SCROLL_PAGE:           <><polyline points="8 18 12 22 16 18"/><polyline points="8 6 12 2 16 6"/><line x1="12" y1="2" x2="12" y2="22"/></>,
+  EXTRACT_TEXT:          <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></>,
+  EXTRACT_ATTRIBUTE:     <><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></>,
+  EXTRACT_HTML:          <><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></>,
+  EXTRACT_TABLE:         <><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="12" y1="3" x2="12" y2="21"/></>,
+  EXTRACT_LIST:          <><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></>,
+  EXTRACT_JSON:          <><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1"/></>,
+  NAVIGATE:              <><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></>,
+  GO_BACK:               <><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></>,
+  WAIT:                  <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
+  BREAK_LOOP:            <><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></>,
+  DEFAULT:               <><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></>,
+};
+
+export function ActionIcon({ type, size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {ACTION_ICON_PATHS[type] || ACTION_ICON_PATHS.DEFAULT}
+    </svg>
+  );
+}
 
 // Multi-selection: only the two actions that genuinely apply to a SET of
 // elements — iterate over them (For-Each loop), or extract structured
@@ -111,6 +142,75 @@ const CATEGORIES = [
 // Click / Hover / Type are deliberately hidden because they don't make
 // sense for N elements at once.
 // (Other extraction types are reachable by clicking a single element.)
+
+// ─── Small shared widgets ──────────────────────────────────────────────────
+
+// Copy-to-clipboard icon button with a brief "copied" check flash.
+function CopyButton({ text, title = "Copy selector" }) {
+  const [copied, setCopied] = useState(false);
+  if (!text) return null;
+  return (
+    <button
+      type="button"
+      className={`ei-copy-btn ${copied ? "copied" : ""}`}
+      title={title}
+      onClick={() => {
+        try { navigator.clipboard.writeText(text); } catch (_) {}
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      }}
+    >
+      {copied ? (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20,6 9,17 4,12"/></svg>
+      ) : (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+      )}
+    </button>
+  );
+}
+
+// Collapsed-by-default disclosure for fallback selectors. They're a safety
+// net, not something to study on every selection — so they only take up a
+// single toggle line until the user actually asks for them.
+function FallbackDisclosure({ count, emptyLabel = null, children }) {
+  const [open, setOpen] = useState(false);
+  if (!count && !emptyLabel) return null;
+  return (
+    <div className="ei-fallbacks">
+      <button
+        type="button"
+        className={`ei-fallbacks-toggle ${open ? "open" : ""}`}
+        onClick={() => setOpen(v => !v)}
+        title="Backup selectors — tried in order if the primary selector stops matching after a site change"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+        {count > 0 ? `${count} fallback selector${count !== 1 ? "s" : ""}` : emptyLabel}
+      </button>
+      {open && <div className="ei-fallbacks-body">{children}</div>}
+    </div>
+  );
+}
+
+// Read-only chip list for a set of fallback selectors.
+function FallbackChipList({ selectors }) {
+  return (
+    <div className="ei-fallback-list">
+      {(selectors || []).map((f, i) => {
+        const s = typeof f === "string" ? { value: f, type: "css" } : f;
+        return (
+          <div key={i} className="ei-fallback-chip">
+            <span className={`ei-sel-type-badge ${s.type || "css"}`}>{s.type === "xpath" ? "XP" : "CSS"}</span>
+            <code className="ei-fallback-value" title={s.value}>{s.value}</code>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 // ─── Main component ────────────────────────────────────────────────────────
 
@@ -202,7 +302,7 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
       <div className="ei-header">
         <div className="ei-header-info">
           <span className="ei-tag">&lt;{element.tag}&gt;</span>
-          {element.classes && <span className="ei-classes">{element.classes.slice(0, 50)}</span>}
+          {element.classes && <span className="ei-classes" title={element.classes}>{element.classes.slice(0, 50)}</span>}
         </div>
         <button className="ei-close" onClick={onClose} title="Close">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -213,8 +313,10 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
 
       {/* ── Selector pill ───────────────────────────────────────────────── */}
       <div className="ei-selector-row">
-        <span className="ei-selector-icon">🎯</span>
-        <code className="ei-selector">{element.selector}</code>
+        <span className={`ei-sel-type-badge ${element.selectorType === "xpath" ? "xpath" : "css"}`}>
+          {element.selectorType === "xpath" ? "XP" : "CSS"}
+        </span>
+        <code className="ei-selector" title={element.selector}>{element.selector}</code>
         {element.isRelativeToScope && (
           <span className="ei-relative-badge" title="Selector is relative to the ForEach iterator — works for every iterated element">
             relative
@@ -225,6 +327,7 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
             +{element.softHighlightCount} similar
           </span>
         )}
+        <CopyButton text={element.selector} />
       </div>
 
       {/* ── Interactive breadcrumb ──────────────────────────────────────── */}
@@ -305,7 +408,9 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
                 className={`ei-action-card ${isSelected ? "selected" : ""} ${isFlashing ? "flash" : ""}`}
                 style={isSelected ? { borderColor: cat.color } : {}}
                 onClick={() => setSelectedAction(actionMeta)}>
-                <div className="ei-action-icon">{actionMeta.icon}</div>
+                <div className="ei-action-icon" style={{ color: cat.color }}>
+                  <ActionIcon type={actionMeta.type} />
+                </div>
                 <div className="ei-action-label">{def.label}</div>
                 {actionMeta.quickAdd && (
                   <button className="ei-quick-add" title="Add with defaults"
@@ -503,13 +608,6 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
         </button>
       </div>
 
-      {/* ── Selector pill ───────────────────────────────────────────────── */}
-      <div className="ei-selector-row ei-multi-selector-row">
-        <span className="ei-selector-icon">🎯</span>
-        <code className="ei-selector">{selection.commonSelector}</code>
-        <span className="ei-multi-match-badge">{selection.matchCount}</span>
-      </div>
-
       {/* ── CSS Selector display ─────────────────────────────────────────── */}
       <div className="ei-multi-selector-block">
         <div className="ei-multi-selector-header">
@@ -519,15 +617,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
               {strategyLabel(selection.strategy)}
             </span>
           )}
-          <button
-            className="ei-multi-selector-copy"
-            title="Copy selector"
-            onClick={() => { try { navigator.clipboard.writeText(selection.commonSelector); } catch (_) {} }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-            </svg>
-          </button>
+          <CopyButton text={selection.commonSelector} />
         </div>
         {selection.commonSelector ? (
           <code className="ei-multi-selector-code">{selection.commonSelector}</code>
@@ -537,60 +627,40 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
         <div className="ei-multi-selector-meta">
           Matches exactly <strong>{selection.matchCount}</strong> element{selection.matchCount !== 1 ? 's' : ''}
         </div>
+        <FallbackDisclosure count={(selection.fallbackSelectors || []).length}>
+          <FallbackChipList selectors={selection.fallbackSelectors} />
+        </FallbackDisclosure>
       </div>
 
       {/* ── Hierarchical similarity-scope progress ─────────────────────────── */}
       {typeof selection.tierCount === "number" && selection.tierCount > 1 && (
-        <div className="ei-tier-progress" style={{
-          margin: "0 12px 10px", padding: "10px 12px",
-          background: "rgba(210,153,34,0.06)", border: "1px solid rgba(210,153,34,0.25)",
-          borderRadius: 8, fontSize: 12,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-            <span style={{ color: "#d29922", fontWeight: 600 }}>⬡ Similarity scope</span>
-            <span style={{ marginLeft: "auto", color: "#8b949e" }}>
+        <div className="ei-tier-progress">
+          <div className="ei-tier-progress-head">
+            <span className="ei-tier-progress-title">⬡ Similarity scope</span>
+            <span className="ei-tier-progress-step">
               step {(selection.tierIndex ?? 0) + 1} of {selection.tierCount}
             </span>
           </div>
-          <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+          <div className="ei-tier-progress-bar">
             {Array.from({ length: selection.tierCount }).map((_, i) => (
-              <div key={i} style={{
-                flex: 1, height: 4, borderRadius: 2,
-                background: i <= (selection.tierIndex ?? 0) ? "#3fb950" : "rgba(255,255,255,0.12)",
-              }} />
+              <div key={i} className={`ei-tier-progress-seg ${i <= (selection.tierIndex ?? 0) ? "filled" : ""}`} />
             ))}
           </div>
-          <div style={{ color: "#c9d1d9" }}>
+          <div className="ei-tier-progress-current">
             Currently selecting{" "}
-            <strong style={{ color: "#3fb950" }}>{selection.tierLabel || `${selection.matchCount} elements`}</strong>.
+            <strong>{selection.tierLabel || `${selection.matchCount} elements`}</strong>.
           </div>
           {selection.nextTier ? (
-            <div style={{ marginTop: 6, color: "#d29922" }}>
-              ➕ Click any <strong>amber</strong> element on the page to widen to{" "}
+            <div className="ei-tier-progress-next">
+              Click any <strong>amber</strong> element on the page to widen to{" "}
               <strong>{selection.nextTier.label}</strong> (+{selection.nextTier.added}), or click a
               green item to stop here.
             </div>
           ) : (
-            <div style={{ marginTop: 6, color: "#8b949e" }}>
+            <div className="ei-tier-progress-done">
               Widest scope reached — this is every matching element on the page.
             </div>
           )}
-        </div>
-      )}
-
-      {/* ── Fallback selectors (robustness after DOM changes) ──────────────── */}
-      {(selection.fallbackSelectors || []).length > 0 && (
-        <div style={{ margin: "0 12px 10px", fontSize: 11, color: "#8b949e" }}>
-          <div style={{ marginBottom: 4 }}>
-            Fallback selectors ({selection.fallbackSelectors.length}) — tried in order if the primary breaks:
-          </div>
-          {selection.fallbackSelectors.slice(0, 3).map((f, i) => (
-            <code key={i} style={{
-              display: "block", padding: "3px 6px", marginBottom: 3,
-              background: "rgba(255,255,255,0.04)", borderRadius: 4,
-              color: "#79c0ff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            }}>{typeof f === "string" ? f : f.value}</code>
-          ))}
         </div>
       )}
 
@@ -623,7 +693,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
         {/* ── 2. Extract List (with / without AI) ────────────────────────── */}
         <div className={`ei-extract-list-card ${["EXTRACT_LIST", "EXTRACT_LIST_AI_DONE", "EXTRACT_LIST_HEUR_DONE", "EXTRACT_LIST_MIX_DONE"].includes(addedFlash) ? "flash" : ""}`}>
           <div className="ei-extract-list-header">
-            <span className="ei-extract-list-icon">📑</span>
+            <span className="ei-extract-list-icon"><ActionIcon type="EXTRACT_LIST" size={17} /></span>
             <div className="ei-extract-list-text">
               <div className="ei-extract-list-title">Add as Extract List</div>
               <div className="ei-extract-list-desc">
@@ -926,7 +996,9 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
   return (
     <div className="ei-configurator">
       <div className="ei-config-header">
-        <span style={{ color: accentColor }}>{actionMeta.icon}</span>
+        <span className="ei-config-icon" style={{ color: accentColor }}>
+          <ActionIcon type={actionMeta.type} size={15} />
+        </span>
         <span className="ei-config-title">{def.label}</span>
         {def.description && <span className="ei-config-desc">{def.description}</span>}
       </div>
@@ -937,22 +1009,9 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
             <span className={`ei-sel-type-badge ${element.selectorType || "css"}`}>
               {element.selectorType === "xpath" ? "XP" : "CSS"}
             </span>
-            <code>{params.selector || element.selector}</code>
+            <code title={params.selector || element.selector}>{params.selector || element.selector}</code>
+            <CopyButton text={params.selector || element.selector} />
           </div>
-          {(params.fallbackSelectors || element.fallbackSelectors || []).length > 0 && (
-            <div className="ei-fallback-list">
-              <span className="ei-fallback-label">Fallbacks:</span>
-              {(params.fallbackSelectors || element.fallbackSelectors || []).slice(0, 3).map((f, i) => {
-                const s = typeof f === "string" ? { value: f, type: "css" } : f;
-                return (
-                  <div key={i} className="ei-fallback-chip">
-                    <span className={`ei-sel-type-badge ${s.type}`}>{s.type === "xpath" ? "XP" : "CSS"}</span>
-                    <code className="ei-fallback-value" title={s.value}>{s.value}</code>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       )}
 
@@ -961,11 +1020,14 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
           if (key === "selector" || key === "selectorType" || key === "containerSelector") return null;
           if (inputDef.type === "hidden") return null;
           if (key === "fallbackSelectors") {
+            // Tucked behind a disclosure — the fallbacks are a safety net
+            // that would otherwise crowd out the fields the user actually
+            // came here to fill in.
+            const count = (params[key] || []).length;
             return (
-              <div key={key} className="ei-field">
-                <label className="ei-field-label">Fallback selectors</label>
+              <FallbackDisclosure key={key} count={count} emptyLabel="Add fallback selectors…">
                 <InlineSelectorListEditor value={params[key] || []} onChange={v => setParam(key, v)} accentColor={accentColor} />
-              </div>
+              </FallbackDisclosure>
             );
           }
           return (
