@@ -366,7 +366,7 @@ function AppShell({ user, token, onLogout }) {
     socket.on("viewportUpdated", (data) => {
       sessionMetaRef.current.viewportWidth  = data.width;
       sessionMetaRef.current.viewportHeight = data.height;
-      viewportCssRef.current = { width: data.width, height: data.height };
+      viewportCssRef.current = { width: data.width, height: data.height, dpr: data.dpr || 1 };
     });
 
     // Reply to a Ctrl/Cmd+C forwarded from the canvas: the remote page's
@@ -608,10 +608,22 @@ function AppShell({ user, token, onLogout }) {
         const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
         const type = bytes[0] === 0xFF ? "image/jpeg" : "image/png";
         const bitmap = await createImageBitmap(new Blob([bytes], { type }));
-        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-          canvas.width = bitmap.width; canvas.height = bitmap.height;
+        // Hold the canvas backing store at ONE fixed size — the remote
+        // viewport at device-pixel resolution — and stretch every frame to
+        // fill it. The two streams arrive at different sizes (CSS-res PNG
+        // motion frames vs 2x JPEG hi-res frames); reassigning
+        // canvas.width/height whenever the size changes makes Chrome flash
+        // the canvas white while it reallocates the layer. Sizing once (only
+        // on an actual viewport resize) removes that flash: motion frames
+        // upscale to fill, idle hi-res frames land ~1:1 and sharpen it.
+        const vp = viewportCssRef.current;
+        const targetW = vp ? Math.round(vp.width  * (vp.dpr || 1)) : bitmap.width;
+        const targetH = vp ? Math.round(vp.height * (vp.dpr || 1)) : bitmap.height;
+        if (canvas.width !== targetW || canvas.height !== targetH) {
+          canvas.width = targetW; canvas.height = targetH;
         }
-        ctx.drawImage(bitmap, 0, 0);
+        ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height, 0, 0, canvas.width, canvas.height);
+        if (bitmap.close) bitmap.close();
       } catch (_) {}
       isRenderingRef.current = false;
     }
