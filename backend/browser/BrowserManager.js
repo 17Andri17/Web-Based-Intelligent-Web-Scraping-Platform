@@ -91,7 +91,17 @@ class BrowserManager {
                 executablePath: resolveChromePath(),
                 headless: 'new',
                 defaultViewport: null,
-                args: getLaunchArgs(defaultProfile),
+                // Render every page in this (editor-only) browser at 2x device
+                // pixels so the live-preview screencast can be captured at
+                // retina resolution — the CDP screencast is otherwise capped at
+                // CSS-pixel resolution, which is what made the stream look
+                // softer than a real browser. This flag is browser-global, but
+                // this browser serves ONLY the live editor preview; workflow
+                // runs spawn their own browsers (see workflowCodegen), so their
+                // geometry is unaffected. Per-user stream resolution is still
+                // scaled down for non-retina clients via startScreencast's
+                // maxWidth (see server.js).
+                args: [...getLaunchArgs(defaultProfile), '--force-device-scale-factor=2', '--high-dpi-support=1'],
                 ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars']
             });
 

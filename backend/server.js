@@ -27,6 +27,14 @@ const extractListHeuristics = require('./services/extractListHeuristics.service'
 
 const PORT = process.env.PORT || 3001;
 
+// Device scale the editor browser renders at (see BrowserManager's
+// --force-device-scale-factor). The live-preview screencast is captured from
+// this 2x surface and downscaled per client, so retina clients get a stream
+// as sharp as a real browser. JPEG quality for that stream — at 2x resolution
+// q80 is visually lossless while keeping frames light enough to stay smooth.
+const EDITOR_DEVICE_SCALE       = Number(process.env.EDITOR_DEVICE_SCALE) || 2;
+const SCREENCAST_JPEG_QUALITY   = Number(process.env.SCREENCAST_JPEG_QUALITY) || 80;
+
 const server     = http.createServer(app);
 const io         = new Server(server, { cors: { origin: '*' }, transports: ['websocket'] });
 const scraperService = scraperServiceFactory(io);
@@ -384,16 +392,19 @@ io.on('connection', async (socket) => {
 
       const viewportWidth  = data.viewportWidth  || 1280;
       const viewportHeight = data.viewportHeight || 720;
-      // The client's devicePixelRatio (capped at 2 to bound CPU/bandwidth).
-      // Used two ways: as the viewport's deviceScaleFactor so the page sees
-      // a HiDPI display (and serves retina-quality srcset images), and as
-      // the clip.scale of the idle hi-res refinement frames below.
-      const dpr = Math.min(Math.max(Number(data.devicePixelRatio) || 1, 1), 2);
+      // The browser renders at 2x device pixels (EDITOR_DEVICE_SCALE, forced
+      // via --force-device-scale-factor in BrowserManager). The screencast is
+      // then downscaled per client to their own devicePixelRatio: a retina
+      // client gets full 2x frames (matching a real browser), a 1x client gets
+      // frames downsampled from the 2x render (supersampled — a touch crisper
+      // than a native 1x capture) at their normal bandwidth. One uniform
+      // stream at one resolution, so the quality never visibly changes.
+      const clientDpr = Math.min(Math.max(Number(data.devicePixelRatio) || 1, 1), EDITOR_DEVICE_SCALE);
 
       await page.setViewport({
         width: viewportWidth,
         height: viewportHeight,
-        deviceScaleFactor: dpr,
+        deviceScaleFactor: EDITOR_DEVICE_SCALE,
         hasTouch: false,
         isMobile: false,
       });
@@ -496,56 +507,27 @@ io.on('connection', async (socket) => {
         streaming: true,
         currentWidth: viewportWidth,
         currentHeight: viewportHeight,
-        currentDpr: dpr,
+        currentDpr: clientDpr,
       });
 
-      // Screencast frames are capped at device-independent (CSS) pixel
-      // resolution regardless of deviceScaleFactor (verified against the
-      // bundled Chromium) — so the screencast is the fluid, low-res motion
-      // channel and the idle hi-res refinement below provides sharpness.
+      // Single stream. The page renders at 2x; maxWidth caps the frame at the
+      // client's own resolution (cssWidth × clientDpr), so a retina client
+      // gets full-resolution frames and a 1x client gets them downsampled from
+      // the 2x render. JPEG (not PNG) keeps the 2x frames light enough to stay
+      // smooth — at 2x resolution the compression is visually lossless.
       await client.send('Page.startScreencast', {
-        format: 'png',
-        maxWidth: viewportWidth,
-        maxHeight: viewportHeight,
+        format: 'jpeg',
+        quality: SCREENCAST_JPEG_QUALITY,
+        maxWidth: Math.round(viewportWidth * clientDpr),
+        maxHeight: Math.round(viewportHeight * clientDpr),
         everyNthFrame: 1,
       });
 
       socket.emit('viewportUpdated', {
         width: viewportWidth,
         height: viewportHeight,
-        dpr,
+        dpr: clientDpr,
       });
-
-      // ── HiDPI idle refinement ─────────────────────────────────────
-      // On retina displays the CSS-resolution screencast has to be
-      // upscaled ~2x by the canvas, which reads as "blurrier than a real
-      // browser". Whenever the page goes visually quiet (no screencast
-      // frame for HIRES_IDLE_MS) we send ONE Page.captureScreenshot
-      // rendered at clip.scale = devicePixelRatio — the canvas snaps to
-      // native sharpness exactly when the user is reading the page or
-      // picking elements. Real motion resumes the screencast frames
-      // automatically, and taking the screenshot does NOT provoke a
-      // screencast frame (probe-verified), so this can't ping-pong.
-      const HIRES_IDLE_MS = 300;
-      let hiResTimer = null;
-      let hiResBusy  = false;
-      const captureHiResFrame = async () => {
-        const s = userSessions.get(userId);
-        if (!s?.streaming || hiResBusy) return;
-        const scale = s.currentDpr || 1;
-        if (scale <= 1) return;   // 1:1 display — screencast is already native
-        hiResBusy = true;
-        try {
-          const shot = await client.send('Page.captureScreenshot', {
-            format: 'jpeg', quality: 92, optimizeForSpeed: true,
-            clip: { x: 0, y: 0, width: s.currentWidth, height: s.currentHeight, scale },
-          });
-          if (userSessions.get(userId)?.streaming) {
-            socket.emit('frame', Buffer.from(shot.data, 'base64'));
-          }
-        } catch (_) {}
-        hiResBusy = false;
-      };
 
       const onFrame = async (frame) => {
         const s = userSessions.get(userId);
@@ -554,9 +536,6 @@ io.on('connection', async (socket) => {
 
         try {
           socket.emit('frame', Buffer.from(frame.data, 'base64'));
-
-          clearTimeout(hiResTimer);
-          hiResTimer = setTimeout(captureHiResFrame, HIRES_IDLE_MS);
 
           await client.send('Page.screencastFrameAck', {
             sessionId: frame.sessionId,
@@ -575,7 +554,6 @@ io.on('connection', async (socket) => {
         if (!s?.streaming) return;
 
         s.streaming = false;
-        clearTimeout(hiResTimer);
 
         try {
           await client.send('Page.stopScreencast');
@@ -609,16 +587,20 @@ io.on('connection', async (socket) => {
     if (!s?.streaming) return;
     if (Math.abs(s.currentWidth - width) < 10 && Math.abs(s.currentHeight - height) < 10) return;
     try {
-      const dpr = Math.min(Math.max(Number(devicePixelRatio) || s.currentDpr || 1, 1), 2);
+      const clientDpr = Math.min(Math.max(Number(devicePixelRatio) || s.currentDpr || 1, 1), EDITOR_DEVICE_SCALE);
       await s.session.send('Page.stopScreencast').catch(() => {});
-      await s.page.setViewport({ width, height, deviceScaleFactor: dpr, hasTouch: false, isMobile: false });
+      await s.page.setViewport({ width, height, deviceScaleFactor: EDITOR_DEVICE_SCALE, hasTouch: false, isMobile: false });
       s.currentWidth  = width;
       s.currentHeight = height;
-      s.currentDpr    = dpr;
+      s.currentDpr    = clientDpr;
       const meta = userSessionMeta.get(userId);
       if (meta) { meta.viewportWidth = width; meta.viewportHeight = height; }
-      await s.session.send('Page.startScreencast', { format: 'png', maxWidth: width, maxHeight: height, everyNthFrame: 1 });
-      socket.emit('viewportUpdated', { width, height, dpr });
+      await s.session.send('Page.startScreencast', {
+        format: 'jpeg', quality: SCREENCAST_JPEG_QUALITY,
+        maxWidth: Math.round(width * clientDpr), maxHeight: Math.round(height * clientDpr),
+        everyNthFrame: 1,
+      });
+      socket.emit('viewportUpdated', { width, height, dpr: clientDpr });
     } catch (err) {
       socket.emit('message', `❌ Resize error: ${err.message}`);
     }

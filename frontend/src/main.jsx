@@ -603,26 +603,16 @@ function AppShell({ user, token, onLogout }) {
       isRenderingRef.current = true;
       try {
         const frame = latestFrameRef.current; latestFrameRef.current = null;
-        // Motion frames are PNG (screencast); idle hi-res refinement frames
-        // are JPEG (captureScreenshot) — sniff the magic bytes so both decode.
+        // The stream is a single uniform-resolution JPEG feed (the backend
+        // downscales the 2x render to the client's dpr), so every frame is
+        // the same size — sizing the canvas to the frame never oscillates,
+        // and there is no second frame type to blur/jump between.
         const bytes = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
-        const type = bytes[0] === 0xFF ? "image/jpeg" : "image/png";
-        const bitmap = await createImageBitmap(new Blob([bytes], { type }));
-        // Hold the canvas backing store at ONE fixed size — the remote
-        // viewport at device-pixel resolution — and stretch every frame to
-        // fill it. The two streams arrive at different sizes (CSS-res PNG
-        // motion frames vs 2x JPEG hi-res frames); reassigning
-        // canvas.width/height whenever the size changes makes Chrome flash
-        // the canvas white while it reallocates the layer. Sizing once (only
-        // on an actual viewport resize) removes that flash: motion frames
-        // upscale to fill, idle hi-res frames land ~1:1 and sharpen it.
-        const vp = viewportCssRef.current;
-        const targetW = vp ? Math.round(vp.width  * (vp.dpr || 1)) : bitmap.width;
-        const targetH = vp ? Math.round(vp.height * (vp.dpr || 1)) : bitmap.height;
-        if (canvas.width !== targetW || canvas.height !== targetH) {
-          canvas.width = targetW; canvas.height = targetH;
+        const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width; canvas.height = bitmap.height;
         }
-        ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(bitmap, 0, 0);
         if (bitmap.close) bitmap.close();
       } catch (_) {}
       isRenderingRef.current = false;
