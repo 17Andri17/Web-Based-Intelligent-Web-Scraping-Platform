@@ -341,8 +341,8 @@ function analyze(records, opts = {}) {
       matchedValues: match.matched,
       totalSampleValues: match.total,
       recordShape: coll
-        ? { kind: 'array', itemCount: coll.itemCount, fields: coll.fields }
-        : (Array.isArray(json) ? { kind: 'array', itemCount: json.length, fields: [] }
+        ? { kind: 'array', itemCount: coll.itemCount, fields: coll.fields, path: coll.path }
+        : (Array.isArray(json) ? { kind: 'array', itemCount: json.length, fields: [], path: '' }
           : { kind: 'object', itemCount: 1, fields: json && typeof json === 'object' ? Object.keys(json).slice(0, 24) : [] }),
       occurrences,
       confidence: Number(confidence.toFixed(3)),

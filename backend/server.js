@@ -28,6 +28,7 @@ const extractListHeuristics = require('./services/extractListHeuristics.service'
 const networkCapture     = require('./browser/networkCapture');
 const apiDiscovery       = require('./services/apiDiscovery.service');
 const apiReplay          = require('./services/apiReplay.service');
+const apiDiscoveryAI     = require('./services/apiDiscoveryAI.service');
 
 // Codegen-time dependency resolution (custom actions + subflows) lives in
 // workflow/dependencyResolver.js and is shared with the scheduler.
@@ -1806,13 +1807,27 @@ io.on('connection', async (socket) => {
         await apiReplay.verifyMany(sources, { sampleValues, cookies }).catch(() => {});
       }
 
-      socket.emit('apiSourcesDetected', { sources, capturedCount, consideredCount });
+      socket.emit('apiSourcesDetected', { sources, capturedCount, consideredCount, aiAvailable: apiDiscoveryAI.isAvailable() });
     } catch (err) {
-      socket.emit('apiSourcesDetected', { sources: [], error: err.message, capturedCount: 0 });
+      socket.emit('apiSourcesDetected', { sources: [], error: err.message, capturedCount: 0, aiAvailable: apiDiscoveryAI.isAvailable() });
     }
   });
 
   socket.on('clearApiCapture', () => { try { networkCapture.clear(userId); } catch (_) {} });
+
+  // On-demand AI enrichment for one discovered source (friendly name/summary +
+  // field labels). Optional — the deterministic detection stands on its own.
+  socket.on('enrichApiSource', async (data = {}) => {
+    const source = data && data.source;
+    if (!source || !source.id) return;
+    try {
+      const out = await apiDiscoveryAI.enrich(source, { requestId: source.id });
+      if (out.ok) socket.emit('apiSourceEnriched', { id: source.id, ai: out.ai });
+      else socket.emit('apiSourceEnriched', { id: source.id, error: out.error || out.code });
+    } catch (err) {
+      socket.emit('apiSourceEnriched', { id: source.id, error: err.message });
+    }
+  });
 
   socket.on('disconnect', () => {
     console.log(`🔌 User disconnected: ${userId}`);

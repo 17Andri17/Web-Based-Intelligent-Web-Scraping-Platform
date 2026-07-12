@@ -9,6 +9,10 @@ const { buildCodegenStealthHelper, getProxyLaunchArgs, PROXY_WEBRTC_GUARD_SCRIPT
 const EXTRACTION_TYPES = new Set([
   'EXTRACT_TEXT', 'EXTRACT_ATTRIBUTE', 'EXTRACT_HTML',
   'EXTRACT_TABLE', 'EXTRACT_LIST', 'EXTRACT_JSON', 'COLLECT_LIST',
+  // Calls the site's own data API (discovered by the API Discovery module)
+  // instead of scraping the DOM. Like EXTRACT_JSON it reads structured data,
+  // not selectors, so it's excluded from HEALABLE_EXTRACTION_TYPES below.
+  'EXTRACT_API',
 ]);
 
 // Extraction types whose "0 records / empty fields" outcome the self-healing
@@ -611,6 +615,79 @@ ${store}`.trim() + '\n';
         : '';
       return `
 const ${varName} = (await ${extractCode}.catch(() => null))${pathCode};
+${store}`.trim() + '\n';
+    }
+
+    // Calls the site's own data API directly (discovered by the API Discovery
+    // module). Emits a fetch() — with an optional pagination loop that walks a
+    // page/offset param until a page comes back empty — and plucks the JSON
+    // collection out of the response. Values support {{var}} interpolation.
+    case 'EXTRACT_API': {
+      const method  = String(params.method || 'GET').toUpperCase();
+      const headers = (params.headers && typeof params.headers === 'object') ? params.headers : {};
+      const hasBody = !['GET', 'HEAD'].includes(method) && params.body != null && params.body !== '';
+      // Build the headers object literal, running each value through q() so a
+      // captured token can be swapped for a {{secret}} the user sets later.
+      const headersLit = '{ ' + Object.entries(headers)
+        .filter(([k]) => k && k.toLowerCase() !== 'content-length')
+        .map(([k, v]) => `${JSON.stringify(k)}: ${q(String(v))}`)
+        .join(', ') + ' }';
+      const bodyLit = hasBody ? q(String(params.body)) : 'undefined';
+      // Dot-path pluck of the collection within the response (e.g. "data.items").
+      const pathArr = params.jsonPath
+        ? JSON.stringify(String(params.jsonPath).split('.').filter(Boolean))
+        : '[]';
+      const pluck = `(${pathArr}).reduce((o, k) => (o == null ? o : o[k]), _json)`;
+
+      const paginate  = !!params.paginate && !!params.pageParam;
+      const fetchInit = `{ method: ${JSON.stringify(method)}, headers: ${headersLit}${hasBody ? `, body: ${bodyLit}` : ''} }`;
+
+      if (!paginate) {
+        return `
+const ${varName} = await (async () => {
+  const _res = await fetch(${q(params.url)}, ${fetchInit});
+  if (!_res.ok) throw new Error('API request failed: ' + _res.status + ' ${method} ' + ${q(params.url)});
+  const _json = await _res.json();
+  return ${pluck};
+})();
+${store}`.trim() + '\n';
+      }
+
+      const paramIn   = params.pageParamIn === 'body' ? 'body' : 'query';
+      const startPage = num(params.startPage, 1);
+      const pageStep  = num(params.pageStep, 1);
+      const maxPages  = num(params.maxPages, 50);
+      const stopEmpty = params.stopWhenEmpty !== false;
+      // For body pagination we set the param on a parsed copy of the JSON body;
+      // for query pagination we set it on the URL's searchParams.
+      const buildReq = paramIn === 'body'
+        ? `
+    let _bodyObj = {};
+    try { _bodyObj = ${hasBody ? bodyLit : '"{}"'} ? JSON.parse(${hasBody ? bodyLit : '"{}"'}) : {}; } catch (_) { _bodyObj = {}; }
+    _bodyObj[${q(params.pageParam)}] = _p;
+    const _url = ${q(params.url)};
+    const _init = { method: ${JSON.stringify(method)}, headers: ${headersLit}, body: JSON.stringify(_bodyObj) };`
+        : `
+    const _u = new URL(${q(params.url)});
+    _u.searchParams.set(${q(params.pageParam)}, String(_p));
+    const _url = _u.href;
+    const _init = ${fetchInit};`;
+
+      return `
+const ${varName} = await (async () => {
+  const _all = [];
+  let _p = ${startPage};
+  for (let _i = 0; _i < ${maxPages}; _i++, _p += ${pageStep}) {${buildReq}
+    const _res = await fetch(_url, _init);
+    if (!_res.ok) break;
+    const _json = await _res.json();
+    const _data = ${pluck};
+    const _items = Array.isArray(_data) ? _data : (_data == null ? [] : [_data]);
+    ${stopEmpty ? 'if (_items.length === 0) break;' : ''}
+    _all.push(..._items);
+  }
+  return _all;
+})();
 ${store}`.trim() + '\n';
     }
 

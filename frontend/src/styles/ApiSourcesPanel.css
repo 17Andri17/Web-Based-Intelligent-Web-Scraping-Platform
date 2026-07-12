@@ -177,8 +177,48 @@
 }
 .as-auth-signals { font-size: 11px; color: var(--text-muted); font-style: italic; }
 
-.as-expand {
+/* AI enrichment */
+.as-ai {
+  display: flex; gap: 8px; align-items: flex-start;
+  background: rgba(163,113,247,0.08); border: 1px solid rgba(163,113,247,0.22);
+  border-radius: 8px; padding: 8px 10px;
+}
+.as-ai-icon { font-size: 13px; line-height: 1.4; }
+.as-ai-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.as-ai-title { font-size: 12.5px; font-weight: 700; color: var(--text-primary); }
+.as-ai-summary { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
+.as-ai-fields { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+.as-ai-field { font-size: 10.5px; color: var(--text-muted); }
+.as-ai-field code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--text-secondary); background: var(--bg-elevated); border-radius: 3px; padding: 0 3px;
+}
+.as-ai-btn {
   align-self: flex-start;
+  background: rgba(163,113,247,0.1); border: 1px solid rgba(163,113,247,0.3);
+  color: #a371f7; border-radius: 6px; font-size: 12px; font-weight: 600;
+  padding: 4px 11px; cursor: pointer; transition: background 130ms;
+}
+.as-ai-btn:hover:not(:disabled) { background: rgba(163,113,247,0.18); }
+.as-ai-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* Actions row */
+.as-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 2px;
+}
+.as-use-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--card-color); border: 1px solid var(--card-color);
+  color: #0d1117; font-weight: 700; font-size: 12.5px;
+  border-radius: 7px; padding: 6px 13px; cursor: pointer;
+  transition: filter 130ms, opacity 130ms;
+}
+.as-use-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.as-use-btn--done { background: transparent; color: #3fb950; border-color: rgba(63,185,80,0.4); }
+.as-use-btn:disabled { cursor: default; }
+
+.as-expand {
   background: none; border: none; padding: 2px 0;
   font-size: 12px; color: var(--accent-primary); cursor: pointer;
 }

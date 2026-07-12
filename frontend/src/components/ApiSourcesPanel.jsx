@@ -50,8 +50,9 @@ function CopyButton({ text, label }) {
 
 // ─── Source card ────────────────────────────────────────────────────────────────
 
-function SourceCard({ source }) {
+function SourceCard({ source, onUse, aiAvailable, onEnrich }) {
   const [open, setOpen] = useState(false);
+  const [used, setUsed] = useState(false);
   const auth = AUTH_INFO[source.authTier] || AUTH_INFO.unknown;
   const verif = verificationBadge(source.verification);
   const pageParams = (source.queryParams || []).filter((p) => p.role === "pagination");
@@ -100,9 +101,46 @@ function SourceCard({ source }) {
         <div className="as-auth-signals">Auth detected via: {source.authSignals.join(", ")}</div>
       )}
 
-      <button className="as-expand" onClick={() => setOpen((o) => !o)}>
-        {open ? "Hide request details" : "Show request & code"}
-      </button>
+      {/* AI enrichment — secondary, optional. Deterministic detection stands on
+          its own; this only adds a friendly name/summary and field labels. */}
+      {source.ai ? (
+        <div className="as-ai">
+          <span className="as-ai-icon">✨</span>
+          <div className="as-ai-body">
+            {source.ai.title && <div className="as-ai-title">{source.ai.title}</div>}
+            {source.ai.summary && <div className="as-ai-summary">{source.ai.summary}</div>}
+            {Array.isArray(source.ai.fieldLabels) && source.ai.fieldLabels.length > 0 && (
+              <div className="as-ai-fields">
+                {source.ai.fieldLabels.slice(0, 10).map((f) => (
+                  <span key={f.raw} className="as-ai-field"><code>{f.raw}</code>→<code>{f.label}</code></span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : aiAvailable ? (
+        <button className="as-ai-btn" disabled={source.aiLoading} onClick={() => onEnrich && onEnrich(source)}>
+          {source.aiLoading ? "✨ Thinking…" : "✨ Explain & name fields"}
+        </button>
+      ) : null}
+
+      <div className="as-actions">
+        {onUse && (
+          <button
+            className={`as-use-btn ${used ? "as-use-btn--done" : ""}`}
+            onClick={() => { onUse(source); setUsed(true); }}
+            disabled={used}
+            title={source.authTier === "signed"
+              ? "This endpoint signs requests in-browser — the captured request may not work as a standalone call."
+              : "Add a 'Call Data API' step pre-filled from this endpoint"}
+          >
+            {used ? "✓ Added to workflow" : "＋ Use this API"}
+          </button>
+        )}
+        <button className="as-expand" onClick={() => setOpen((o) => !o)}>
+          {open ? "Hide request details" : "Show request & code"}
+        </button>
+      </div>
 
       {open && (
         <div className="as-details">
@@ -126,7 +164,7 @@ function SourceCard({ source }) {
 
 // ─── Main panel ─────────────────────────────────────────────────────────────────
 
-export default function ApiSourcesPanel({ isAnalyzing, sources, error, capturedCount, consideredCount, onAnalyze, onClose }) {
+export default function ApiSourcesPanel({ isAnalyzing, sources, error, capturedCount, consideredCount, aiAvailable, onAnalyze, onClose, onUse, onEnrich }) {
   if (!isAnalyzing && sources === null) return null;
 
   return (
@@ -180,7 +218,9 @@ export default function ApiSourcesPanel({ isAnalyzing, sources, error, capturedC
               Using these directly is faster and more stable than scraping the rendered page.
             </p>
             <div className="as-cards">
-              {sources.map((s) => <SourceCard key={s.id} source={s} />)}
+              {sources.map((s) => (
+                <SourceCard key={s.id} source={s} onUse={onUse} aiAvailable={aiAvailable} onEnrich={onEnrich} />
+              ))}
             </div>
             <div className="as-footer">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
