@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import io from "socket.io-client";
 import { useWorkflow, findStepLocation } from "./workflow/useWorkflow";
 import { createAction, createControl } from "./workflow/stepFactory";
+import { ACTION_TYPES } from "./actions/actionTypes";
 import { CONTROL_TYPES } from "./workflow/controlDefinitions";
 import WorkflowPanel from "./components/WorkflowPanel";
 import ElementInspector, { ForEachContextBanner } from "./components/ElementInspector";
@@ -11,6 +12,7 @@ import DataPreviewPanel from "./components/DataPreviewPanel";
 import CompactWorkflowSidebar from "./components/CompactWorkflowSidebar";
 import HtmlInspectorPanel from "./components/HtmlInspectorPanel";
 import PaginationDetector from "./components/PaginationDetector";
+import ApiSourcesPanel from "./components/ApiSourcesPanel";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
@@ -19,6 +21,7 @@ import ProxiesMenu from "./proxies/ProxiesMenu";
 import ApiKeysMenu from "./apiKeys/ApiKeysMenu";
 import { API_BASE, customActionsApi, workflowsApi, aiApi } from "./api/client";
 import "./styles/PaginationDetector.css";
+import "./styles/ApiSourcesPanel.css";
 import "./styles/app.css";
 import "./styles/ExecutionPanel.css";
 import "./styles/DataPreviewPanel.css";
@@ -27,6 +30,47 @@ import "./styles/HtmlInspectorPanel.css";
 import "./styles/auth.css";
 
 const SERVER_URL = API_BASE;
+
+// Build a "Call Data API" (EXTRACT_API) step from a discovered API source
+// (from the API Discovery panel). Maps the endpoint, captured headers/body,
+// detected collection path, and pagination param into the step's params.
+const SIZE_PARAM_RX = /^(limit|size|per[_-]?page|page[_-]?size|count|rows|top)$/i;
+const OFFSET_PARAM_RX = /^(offset|start|skip|from)$/i;
+function buildApiStepFromSource(source) {
+  const pag = (source.queryParams || []).filter((p) => p.role === "pagination");
+  // Loop on a page/offset/cursor param, not a bare page-size param.
+  const primary = pag.find((p) => !SIZE_PARAM_RX.test(p.name)) || pag[0] || null;
+  const sizeParam = pag.find((p) => SIZE_PARAM_RX.test(p.name));
+  const isOffset = primary && OFFSET_PARAM_RX.test(primary.name);
+  const startNum = primary && /^\d+$/.test(String(primary.value))
+    ? parseInt(primary.value, 10) : (isOffset ? 0 : 1);
+  const sizeNum = sizeParam && /^\d+$/.test(String(sizeParam.value)) ? parseInt(sizeParam.value, 10) : null;
+  const pageStep = isOffset ? (sizeNum || 20) : 1;
+
+  // Prefill the JSON path only when the detected collection path is a clean
+  // dot-path (no array indices) the codegen's pluck can walk.
+  const rawPath = source.recordShape && source.recordShape.path;
+  const jsonPath = (typeof rawPath === "string" && /^[\w.]+$/.test(rawPath)) ? rawPath : "";
+
+  const step = createAction(
+    ACTION_TYPES.EXTRACT_API,
+    {
+      method: source.method || "GET",
+      url: source.url,
+      headers: source.requestHeaders || {},
+      body: source.requestBody || null,
+      jsonPath,
+      paginate: !!primary,
+      pageParam: primary ? primary.name : "",
+      pageParamIn: "query",
+    },
+    { startPage: startNum, pageStep, maxPages: 50, stopWhenEmpty: true }
+  );
+
+  const pathLast = source.path ? source.path.split("/").filter(Boolean).slice(-1)[0] : "";
+  step.label = (source.ai && source.ai.title && source.ai.title.trim()) || pathLast || "API data";
+  return step;
+}
 
 // ── Workflow-variable substitution (client-side preview path) ───────────
 // The codegen handles `{{name}}` at run time by emitting JS template
@@ -203,6 +247,50 @@ function AppShell({ user, token, onLogout }) {
   const [paginationSuggestions, setPaginationSuggestions] = useState(null);
   const [paginationError,    setPaginationError]    = useState(null);
   const [paginationManualWaiting, setPaginationManualWaiting] = useState(false); // true when waiting for element click // "inspector" | "workflow"
+
+  // API discovery — analyze captured network calls, propose the data API
+  const [apiPanelOpen,   setApiPanelOpen]   = useState(false);
+  const [apiAnalyzing,   setApiAnalyzing]   = useState(false);
+  const [apiSources,     setApiSources]     = useState(null);
+  const [apiError,       setApiError]       = useState(null);
+  const [apiCaptured,    setApiCaptured]    = useState(0);
+  const [apiConsidered,  setApiConsidered]  = useState(0);
+  const [apiAiAvailable, setApiAiAvailable] = useState(false);
+
+  // Gather the values the user is currently scraping (from step previews and
+  // the selected element) so the backend can match them against captured API
+  // responses — the strongest signal for "this endpoint returns their data".
+  // Empty is fine: discovery falls back to structure-only scoring.
+  const collectSampleValues = useCallback(() => {
+    const out = [];
+    const push = (v) => {
+      if (v == null) return;
+      const s = String(v).trim();
+      if (s && s.length >= 2 && s.length <= 120) out.push(s);
+    };
+    for (const pd of Object.values(previewData || {})) {
+      if (!pd) continue;
+      push(pd.previewValue);
+      if (Array.isArray(pd.previewValues)) pd.previewValues.slice(0, 20).forEach(push);
+      if (Array.isArray(pd.previewRows)) {
+        pd.previewRows.slice(0, 10).forEach((row) => {
+          if (row && typeof row === "object") Object.values(row).slice(0, 12).forEach(push);
+          else push(row);
+        });
+      }
+    }
+    if (selectedElement) { push(selectedElement.text); push(selectedElement.textContent); }
+    // De-dupe, cap.
+    return Array.from(new Set(out)).slice(0, 60);
+  }, [previewData, selectedElement]);
+
+  const runApiAnalysis = useCallback(() => {
+    setApiPanelOpen(true);
+    setApiAnalyzing(true);
+    setApiSources(null);
+    setApiError(null);
+    socketRef.current?.emit("analyzeApiSources", { sampleValues: collectSampleValues() });
+  }, [collectSampleValues]);
   const [reselectStepId,  setReselectStepId]  = useState(null); // step id awaiting element re-pick
   const [reselectIsLoop,  setReselectIsLoop]  = useState(false);
   // Insert target: where new steps from ElementInspector will land
@@ -567,6 +655,24 @@ function AppShell({ user, token, onLogout }) {
       // browsers don't suppress it as a duplicate-download attempt.
       if (readme) setTimeout(() => downloadTextFile(readme, "README.md", "text/markdown"), 300);
     });
+    socket.on("apiSourcesDetected", ({ sources, error, capturedCount, consideredCount, aiAvailable }) => {
+      setApiAnalyzing(false);
+      setApiSources(sources || []);
+      setApiError(error || null);
+      setApiCaptured(capturedCount || 0);
+      setApiConsidered(consideredCount || 0);
+      setApiAiAvailable(!!aiAvailable);
+    });
+
+    // AI enrichment for a single source comes back here; merge it into the
+    // matching card (or clear its loading flag on failure).
+    socket.on("apiSourceEnriched", ({ id, ai, error }) => {
+      setApiSources((prev) => (prev || []).map((s) =>
+        s.id === id ? { ...s, aiLoading: false, ...(ai ? { ai } : {}) } : s
+      ));
+      if (error) setStatus(`AI: ${error}`);
+    });
+
     socket.on("paginationDetected", ({ suggestions, error }) => {
       setPaginationDetecting(false);
       setPaginationSuggestions(suggestions || []);
@@ -1629,6 +1735,17 @@ function AppShell({ user, token, onLogout }) {
               </svg>
               Pagination
             </button>
+            {/* API discovery */}
+            <button
+              className="inspector-toggle-btn"
+              onClick={runApiAnalysis}
+              title="Analyze the page's network calls and propose its data API"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="2"/>
+              </svg>
+              API
+            </button>
           </div>
 
           {/* Stream body: canvas + inspector sidebar side by side */}
@@ -1988,6 +2105,32 @@ function AppShell({ user, token, onLogout }) {
             addStep(step);
             setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
             setPaginationOpen(false);
+          }}
+        />
+      )}
+
+      {/* ── API Discovery ────────────────────────────────────────────────── */}
+      {apiPanelOpen && (
+        <ApiSourcesPanel
+          isAnalyzing={apiAnalyzing}
+          sources={apiSources}
+          error={apiError}
+          capturedCount={apiCaptured}
+          consideredCount={apiConsidered}
+          aiAvailable={apiAiAvailable}
+          onAnalyze={runApiAnalysis}
+          onClose={() => setApiPanelOpen(false)}
+          onUse={(source) => {
+            const step = buildApiStepFromSource(source);
+            addStep(step);
+            setApiPanelOpen(false);
+            setStatus(`Added "Call Data API" step: ${step.label}`);
+          }}
+          onEnrich={(source) => {
+            setApiSources((prev) => (prev || []).map((s) =>
+              s.id === source.id ? { ...s, aiLoading: true } : s
+            ));
+            socketRef.current?.emit("enrichApiSource", { source });
           }}
         />
       )}

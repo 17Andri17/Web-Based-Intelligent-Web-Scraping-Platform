@@ -1336,6 +1336,113 @@ const ${outputVar} = JSON.parse(${outputVar}_raw)${pathCode};
     }
   },
 
+  [ACTION_TYPES.EXTRACT_API]: {
+    label: "Call Data API",
+    category: "Extraction",
+    description:
+      "Fetch data directly from the site's own JSON API (discovered by the API panel) instead of scraping the DOM — faster, cleaner, and more stable. " +
+      "Optionally paginates by incrementing a page/offset parameter until a page comes back empty. Usually added from the ✨ API panel, which pre-fills it for you.",
+    inputs: {
+      method: {
+        type: "select",
+        required: true,
+        label: "Method",
+        options: [
+          { label: "GET", value: "GET" },
+          { label: "POST", value: "POST" },
+          { label: "PUT", value: "PUT" },
+          { label: "PATCH", value: "PATCH" },
+          { label: "DELETE", value: "DELETE" }
+        ],
+        default: "GET"
+      },
+      url: {
+        type: "string",
+        required: true,
+        label: "Endpoint URL",
+        placeholder: "https://site.com/api/products?limit=20"
+      },
+      jsonPath: {
+        type: "string",
+        label: "Path to the list in the response (dot notation, optional)",
+        placeholder: "data.items"
+      },
+      paginate: {
+        type: "boolean",
+        label: "Paginate (walk pages until empty)",
+        default: false
+      },
+      pageParam: {
+        type: "string",
+        label: "Page/offset parameter name",
+        placeholder: "page  or  offset",
+        showIf: { paginate: [true] }
+      },
+      pageParamIn: {
+        type: "select",
+        label: "Parameter location",
+        options: [
+          { label: "URL query string", value: "query" },
+          { label: "JSON request body", value: "body" }
+        ],
+        default: "query",
+        showIf: { paginate: [true] }
+      },
+      // Non-editable request bits captured from the browser (auth headers,
+      // POST/GraphQL body). Hidden from the editor but carried into codegen.
+      headers: { type: "hidden", default: null, label: "Request headers" },
+      body: { type: "hidden", default: null, label: "Request body" }
+    },
+    advanced: {
+      startPage: { type: "number", label: "Start page/offset", default: 1 },
+      pageStep: { type: "number", label: "Increment per page (1 for page, page-size for offset)", default: 1 },
+      maxPages: { type: "number", label: "Max pages (safety cap)", default: 50 },
+      stopWhenEmpty: { type: "boolean", label: "Stop when a page returns no items", default: true }
+    },
+    outputs: {
+      result: { type: "array", description: "Rows returned by the API" }
+    },
+    // Real generation is on the backend (workflowCodegen.js EXTRACT_API). This
+    // mirror keeps the client-side "Download code" preview functional.
+    generateCode: ({ params, advancedOptions, outputVar }) => {
+      const { startPage = 1, pageStep = 1, maxPages = 50, stopWhenEmpty = true } = advancedOptions || {};
+      const method = String(params.method || "GET").toUpperCase();
+      const headers = (params.headers && typeof params.headers === "object") ? params.headers : {};
+      const hasBody = !["GET", "HEAD"].includes(method) && params.body != null && params.body !== "";
+      const init = `{ method: ${JSON.stringify(method)}, headers: ${JSON.stringify(headers)}${hasBody ? `, body: ${JSON.stringify(String(params.body))}` : ""} }`;
+      const pathArr = params.jsonPath ? JSON.stringify(String(params.jsonPath).split(".").filter(Boolean)) : "[]";
+      const pluck = `(${pathArr}).reduce((o, k) => (o == null ? o : o[k]), _json)`;
+      if (!params.paginate || !params.pageParam) {
+        return `
+const ${outputVar} = await (async () => {
+  const _res = await fetch(${JSON.stringify(params.url)}, ${init});
+  if (!_res.ok) throw new Error("API request failed: " + _res.status);
+  const _json = await _res.json();
+  return ${pluck};
+})();
+`;
+      }
+      return `
+const ${outputVar} = await (async () => {
+  const _all = [];
+  let _p = ${startPage};
+  for (let _i = 0; _i < ${maxPages}; _i++, _p += ${pageStep}) {
+    const _u = new URL(${JSON.stringify(params.url)});
+    _u.searchParams.set(${JSON.stringify(params.pageParam)}, String(_p));
+    const _res = await fetch(_u.href, ${init});
+    if (!_res.ok) break;
+    const _json = await _res.json();
+    const _data = ${pluck};
+    const _items = Array.isArray(_data) ? _data : (_data == null ? [] : [_data]);
+    ${stopWhenEmpty ? "if (_items.length === 0) break;" : ""}
+    _all.push(..._items);
+  }
+  return _all;
+})();
+`;
+    }
+  },
+
   // ═══════════════════════════════════════════════════════════════════════════
   // DATA HANDLING
   // ═══════════════════════════════════════════════════════════════════════════

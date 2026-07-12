@@ -40,6 +40,9 @@ export const ACTION_TYPES = {
   EXTRACT_TABLE:       "EXTRACT_TABLE",
   EXTRACT_LIST:        "EXTRACT_LIST",
   EXTRACT_JSON:        "EXTRACT_JSON",
+  // Call the site's own data API directly (discovered by API Discovery) rather
+  // than scraping the DOM — faster, cleaner pagination, more stable.
+  EXTRACT_API:         "EXTRACT_API",
   // Like EXTRACT_LIST, but harvests items *while scrolling* and de-dupes by a
   // key — for infinite-scroll AND virtualized/recycling lists where items are
   // removed from the DOM once scrolled past (so a single end-of-page query

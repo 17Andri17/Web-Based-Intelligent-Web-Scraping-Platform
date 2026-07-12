@@ -21,6 +21,14 @@ const { resolveWorkflowProxy } = require('./services/proxyResolver.service');
 const { resolveCustomActions, resolveSubflows } = require('./workflow/dependencyResolver');
 const extractListAI      = require('./services/extractListAI.service');
 const extractListHeuristics = require('./services/extractListHeuristics.service');
+// API discovery: passively capture the page's own XHR/fetch traffic while the
+// user browses, then propose the underlying data API instead of scraping the
+// DOM. See browser/networkCapture.js + services/apiDiscovery.service.js and
+// docs/API_DISCOVERY.md.
+const networkCapture     = require('./browser/networkCapture');
+const apiDiscovery       = require('./services/apiDiscovery.service');
+const apiReplay          = require('./services/apiReplay.service');
+const apiDiscoveryAI     = require('./services/apiDiscoveryAI.service');
 
 // Codegen-time dependency resolution (custom actions + subflows) lives in
 // workflow/dependencyResolver.js and is shared with the scheduler.
@@ -331,6 +339,13 @@ io.on('connection', async (socket) => {
       await browserManager.setUserProxy(userId, proxy);
 
       const page = await browserManager.getPage(userId);
+
+      // Begin (or keep) passively capturing this page's XHR/fetch traffic so
+      // the API-discovery panel has data to analyze. clear() resets the buffer
+      // on each explicit navigation so analysis reflects the current page —
+      // attach() runs before goto() below, so the page's load-time API calls
+      // are captured too. Best-effort: capture failure never blocks browsing.
+      try { await networkCapture.attach(page, userId); networkCapture.clear(userId); } catch (_) {}
 
       // Re-apply the user's last-set mode whenever the page navigates
       // (link click, redirect, history nav). evaluateOnNewDocument resets
@@ -1768,10 +1783,60 @@ io.on('connection', async (socket) => {
     } catch(err) { /* silent — preview is best-effort */ }
   });
 
+  // ── API discovery: analyze captured network traffic ──────────────────────
+  // Mirrors the detectPagination flow: run heuristics over the passively
+  // captured XHR/fetch records, verify the top candidates by replay, and emit
+  // ranked "API sources" the user could use instead of scraping the DOM.
+  //   data.sampleValues : string[]  values the user is scraping (from previews /
+  //                                  selection). Empty → structure-only scoring.
+  //   data.verify       : boolean    replay-verify the top sources (default on).
+  socket.on('analyzeApiSources', async (data = {}) => {
+    try {
+      const records = networkCapture.getRecords(userId);
+      const sampleValues = Array.isArray(data.sampleValues)
+        ? data.sampleValues.filter((v) => typeof v === 'string' && v.trim()).slice(0, 60)
+        : [];
+      const { sources, capturedCount, consideredCount } = apiDiscovery.analyze(records, { sampleValues });
+
+      // Replay-verify the top few. The session probe needs the browser's
+      // cookies for the current page; verifyMany is time-boxed and best-effort.
+      if (data.verify !== false && sources.length) {
+        let cookies = [];
+        const page = await getActivePage();
+        if (page) { try { cookies = await page.cookies(); } catch (_) {} }
+        await apiReplay.verifyMany(sources, { sampleValues, cookies }).catch(() => {});
+      }
+
+      socket.emit('apiSourcesDetected', { sources, capturedCount, consideredCount, aiAvailable: apiDiscoveryAI.isAvailable() });
+    } catch (err) {
+      socket.emit('apiSourcesDetected', { sources: [], error: err.message, capturedCount: 0, aiAvailable: apiDiscoveryAI.isAvailable() });
+    }
+  });
+
+  socket.on('clearApiCapture', () => { try { networkCapture.clear(userId); } catch (_) {} });
+
+  // On-demand AI enrichment for one discovered source (friendly name/summary +
+  // field labels). Optional — the deterministic detection stands on its own.
+  socket.on('enrichApiSource', async (data = {}) => {
+    const source = data && data.source;
+    if (!source || !source.id) return;
+    try {
+      const out = await apiDiscoveryAI.enrich(source, { requestId: source.id });
+      if (out.ok) socket.emit('apiSourceEnriched', { id: source.id, ai: out.ai });
+      else socket.emit('apiSourceEnriched', { id: source.id, error: out.error || out.code });
+    } catch (err) {
+      socket.emit('apiSourceEnriched', { id: source.id, error: err.message });
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log(`🔌 User disconnected: ${userId}`);
     userSessions.delete(userId);
     scraperService.clearUser(userId);
+    // Release the network-capture CDP session. The page can outlive the socket
+    // (SPA refresh), but the capture is cheap to re-attach on the next
+    // navigate, and detaching here avoids leaking a CDP session per reconnect.
+    networkCapture.detach(userId).catch(() => {});
     // Note: we deliberately don't touch modeReapplyListeners here — the
     // puppeteer page can outlive the socket (SPA refresh) and the hook is
     // still useful on the next navigate. The listener gets replaced cleanly
