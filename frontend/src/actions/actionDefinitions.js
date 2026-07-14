@@ -637,9 +637,9 @@ await new Promise(resolve => setTimeout(resolve, ${params.duration ?? 1000}));
   },
 
   [ACTION_TYPES.WAIT_FOR_SELECTOR]: {
-    label: "Wait for Selector",
+    label: "Wait for Element",
     category: "Flow Control",
-    description: "Pause until a CSS selector appears (or disappears) in the DOM",
+    description: "Wait until something appears (or disappears) on the page before continuing.",
     inputs: {
       selector: {
         type: "string",
@@ -701,9 +701,9 @@ const ${outputVar} = page.url();
   },
 
   [ACTION_TYPES.CONDITION]: {
-    label: "Condition (If / Else)",
+    label: "If / Else",
     category: "Flow Control",
-    description: "Branch execution based on a JavaScript expression",
+    description: "Do different steps depending on whether something is true (e.g. \"in stock\" vs \"sold out\").",
     inputs: {
       expression: {
         type: "string",
@@ -743,9 +743,9 @@ try {
   },
 
   [ACTION_TYPES.LOOP]: {
-    label: "Loop / For Each",
+    label: "Repeat / Loop",
     category: "Flow Control",
-    description: "Iterate over a list of elements or a fixed number of times",
+    description: "Repeat a set of steps — for every item in a list, a fixed number of times, or while a condition holds.",
     inputs: {
       mode: {
         type: "select",
@@ -845,9 +845,9 @@ while ((${params.whileExpression || "false"}) && _loopGuard < ${maxIterations}) 
   // ═══════════════════════════════════════════════════════════════════════════
 
   [`${ACTION_TYPES.EXTRACT_TEXT}`]: {
-    label: "Extract Text",
+    label: "Get Text",
     category: "Extraction",
-    description: "Extract text content from an element using CSS selectors",
+    description: "Grab the text of an element you pick on the page — a title, price, name, and so on.",
     inputs: {
       selector: {
         type: "string",
@@ -964,9 +964,9 @@ try {
   },
 
   [ACTION_TYPES.EXTRACT_ATTRIBUTE]: {
-    label: "Extract Attribute",
+    label: "Get Link / Image / Attribute",
     category: "Extraction",
-    description: "Get the value of an HTML attribute (e.g. href, src, data-*) from one or more elements",
+    description: "Get a link address, image address, or other hidden value from an element (href, src, data-…).",
     inputs: {
       selector: {
         type: "string",
@@ -1078,9 +1078,9 @@ try {
   },
 
   [ACTION_TYPES.EXTRACT_TABLE]: {
-    label: "Extract Table",
+    label: "Get Table",
     category: "Extraction",
-    description: "Parse an HTML <table> into an array of objects keyed by header row",
+    description: "Turn a table on the page into rows and columns you can download.",
     inputs: {
       selector: {
         type: "string",
@@ -1130,9 +1130,9 @@ const ${outputVar} = await page.$eval(${sel}, (table, opts) => {
   },
 
   [ACTION_TYPES.EXTRACT_LIST]: {
-    label: "Extract List",
+    label: "Get List of Items",
     category: "Extraction",
-    description: "Extract repeated structured items. Each field has its own selector (relative to the container) and an extraction kind — text, attribute, or innerHTML. ✨ AI can auto-detect fields from a sample item.",
+    description: "Pull a repeating list into a table — products, jobs, listings — one row per item, with a column for each detail. ✨ AI can auto-detect the columns from one sample item.",
     inputs: {
       containerSelector: {
         type: "string",

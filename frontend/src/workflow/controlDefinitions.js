@@ -50,7 +50,7 @@ export const controlDefinitions = {
 
   [CONTROL_TYPES.IF]: {
     label:       'If / Else',
-    description: 'Branch execution based on a JavaScript expression',
+    description: 'Do different steps depending on whether a condition is true.',
     color:       '#a371f7',   // purple
     bgColor:     'rgba(163, 113, 247, 0.08)',
     icon:        'IF',
@@ -98,8 +98,8 @@ export const controlDefinitions = {
   },
 
   [CONTROL_TYPES.FOR_EACH_ELEMENTS]: {
-    label:       'For Each Element',
-    description: 'Query all elements matching a CSS selector and iterate over each one',
+    label:       'For Each Matching Item',
+    description: 'Repeat steps for every matching item on the page (e.g. every product card).',
     color:       '#58a6ff',   // blue
     bgColor:     'rgba(88, 166, 255, 0.08)',
     icon:        '⟳',

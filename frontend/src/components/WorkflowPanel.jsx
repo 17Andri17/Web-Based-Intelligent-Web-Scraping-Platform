@@ -8,12 +8,16 @@ import { findStepLocation } from "../workflow/useWorkflow";
 import ExtractListFieldsEditor from "./ExtractListFieldsEditor";
 import WorkflowVariables from "./WorkflowVariables";
 import VariablePicker from "./VariablePicker";
+import ConditionBuilder from "./ConditionBuilder";
+import { WPCtx } from "./workflowPanelContext";
 import "../styles/ExtractListFieldsEditor.css";
 import "../styles/WorkflowVariables.css";
 import "../styles/VariablePicker.css";
+import "../styles/ConditionBuilder.css";
 
-// Context shared across all step components (avoids prop drilling)
-const WPCtx = React.createContext(null);
+// Context shared across all step components (avoids prop drilling).
+// Defined in ./workflowPanelContext so helper components can consume it
+// without importing WorkflowPanel (which would be circular).
 
 // Custom collision: only fire on dz: drop zones; pick nearest by center distance
 function dzCollision(args) {
@@ -1236,6 +1240,10 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
               // on this step and the parent step id to fetch live preview.
               step={local}
               fieldKey={k}
+              // Flag the JS-expression condition fields (If/Else, While, Loop)
+              // so the renderer offers the no-code Condition Builder above the
+              // code box. Detected by the well-known param keys.
+              conditionBuilder={k === "expression" || k === "whileExpression"}
               // EXTRACT_LIST auto-detect proposes a Title Case table name;
               // apply it as the step label, but never clobber a name the user
               // already typed.
@@ -1469,7 +1477,7 @@ function expectedKindForField(stepType, fieldKey) {
 }
 
 /* ── Field Renderer ── */
-function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey, onName }) {
+function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey, onName, conditionBuilder }) {
   // hidden fields are stored in params but not shown in UI
   if (type === "hidden") return null;
 
@@ -1536,6 +1544,9 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
   return (
     <div className="form-group">
       <label>{label}</label>
+      {type === "string" && conditionBuilder && (
+        <ConditionBuilder onApply={onChange} />
+      )}
       {type === "string"  && (
         <ScopedTextInput
           value={value}
