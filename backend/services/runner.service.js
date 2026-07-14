@@ -8,6 +8,47 @@ const path = require('path');
 
 const { generateCode } = require('../workflow/workflowCodegen');
 
+// Where SAVE_DATA writes relative destinations (see workflowCodegen's
+// SAVE_DATA case). Kept under backend/data so it sits beside the SQLite file
+// and is easy to find. Created on boot.
+const EXPORT_DIR = process.env.WS_EXPORT_DIR
+  || path.join(__dirname, '..', 'data', 'exports');
+try { fs.mkdirSync(EXPORT_DIR, { recursive: true }); } catch (_) {}
+
+// Global cap on concurrently-running generated scripts (each spawns its own
+// headless Chrome). Without this, the scheduler (concurrency 3) and the API
+// worker (concurrency 2) could launch 5 Chromes at once and thrash a laptop.
+// A tiny FIFO semaphore; 0/negative disables the cap.
+const MAX_CONCURRENT_RUNS = (() => {
+  const n = Number(process.env.WS_MAX_CONCURRENT_RUNS);
+  return Number.isFinite(n) && n > 0 ? n : 3;
+})();
+let activeRuns = 0;
+const runWaiters = [];
+function acquireRunSlot() {
+  if (activeRuns < MAX_CONCURRENT_RUNS) { activeRuns++; return Promise.resolve(); }
+  return new Promise((resolve) => runWaiters.push(resolve));
+}
+function releaseRunSlot() {
+  const next = runWaiters.shift();
+  if (next) next();          // hand the slot straight to the next waiter
+  else activeRuns = Math.max(0, activeRuns - 1);
+}
+
+// Remove stale generated scripts left behind by a previous crash (they're
+// normally unlinked on child exit). Runs once at startup; best-effort.
+function cleanupTempScripts() {
+  try {
+    const dir = os.tmpdir();
+    for (const f of fs.readdirSync(dir)) {
+      if (/^ws_workflow_\d+_[a-z0-9]+\.js$/.test(f)) {
+        try { fs.unlinkSync(path.join(dir, f)); } catch (_) {}
+      }
+    }
+  } catch (_) {}
+}
+cleanupTempScripts();
+
 const RESULTS_MARKER = 'WORKFLOW_RESULTS:';
 const STEP_BEGIN     = 'STEP_BEGIN:';
 const STEP_ERROR     = 'STEP_ERROR:';
@@ -45,15 +86,25 @@ function runChild(workflow, { signal } = {}) {
   const tmpFile = path.join(tmpDir, `ws_workflow_${Date.now()}_${Math.random().toString(36).slice(2,8)}.js`);
   fs.writeFileSync(tmpFile, code, 'utf8');
 
-  const promise = new Promise((resolve) => {
+  const promise = (async () => {
+    // Wait for a global run slot before launching Chrome, so concurrent
+    // scheduled/API runs can't exceed MAX_CONCURRENT_RUNS. Released on child
+    // exit / error below. The events emitter is already returned to the
+    // caller, so listeners are attached before any output can arrive.
+    await acquireRunSlot();
+    let slotReleased = false;
+    const releaseOnce = () => { if (!slotReleased) { slotReleased = true; releaseRunSlot(); } };
+
+    return await new Promise((resolve) => {
     let child;
     try {
       child = spawn('node', [tmpFile], {
-        env: { ...process.env, NODE_PATH: path.join(__dirname, '..', 'node_modules') },
+        env: { ...process.env, NODE_PATH: path.join(__dirname, '..', 'node_modules'), WS_EXPORT_DIR: EXPORT_DIR },
         cwd: path.dirname(tmpFile),
       });
     } catch (err) {
       try { fs.unlinkSync(tmpFile); } catch (_) {}
+      releaseOnce();
       resolve({ success: false, exitCode: -1, results: null, errorInfo: { message: err.message, step: null } });
       return;
     }
@@ -166,6 +217,7 @@ function runChild(workflow, { signal } = {}) {
 
     child.on('error', (err) => {
       try { fs.unlinkSync(tmpFile); } catch (_) {}
+      releaseOnce();
       events.emit('log', { line: `❌ Failed to start runner: ${err.message}`, level: 'error' });
       resolve({ success: false, exitCode: -1, results: null,
                 errorInfo: errorInfo || { message: err.message, step: null },
@@ -175,6 +227,7 @@ function runChild(workflow, { signal } = {}) {
     child.on('close', (exitCode) => {
       if (buffer.trim()) handleLine(buffer, false);
       try { fs.unlinkSync(tmpFile); } catch (_) {}
+      releaseOnce();
       const success = exitCode === 0 && !errorInfo;
       if (cancelled && !errorInfo) {
         errorInfo = { message: 'Run cancelled by user', step: null, cancelled: true };
@@ -197,7 +250,8 @@ function runChild(workflow, { signal } = {}) {
       }
       resolve({ success, exitCode, results: resultsObj, errorInfo, stepResults, stepSnapshots, captchaEvents });
     });
-  });
+    });
+  })();
 
   return { events, promise };
 }

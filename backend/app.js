@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 
 const authRoutes = require('./routes/auth.routes');
 const workflowsRoutes = require('./routes/workflows.routes');
@@ -34,7 +36,32 @@ app.use('/api/api-keys', apiKeysRoutes);
 // programs (docs/API_ARCHITECTURE.md). Internal frontend routes stay /api/*.
 app.use('/v1', v1Routes);
 
-app.get('/', (req, res) => res.send('Scraper API running'));
+// Liveness/readiness probe for a process manager (pm2/systemd/Docker). Reports
+// DB reachability; a plain 200 means the HTTP server is up.
+const db = require('./db/client');
+app.get('/healthz', async (req, res) => {
+  let dbOk = false;
+  try { await db.get('SELECT 1 AS ok'); dbOk = true; } catch (_) {}
+  res.status(dbOk ? 200 : 503).json({ status: dbOk ? 'ok' : 'degraded', db: dbOk, uptime: process.uptime() });
+});
+
+// Serve the built frontend when present (npm run build in frontend/), so a
+// single process serves both the API and the UI in production. In dev the
+// Vite server runs separately and this block is simply skipped.
+const DIST_DIR = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
+  app.use(express.static(DIST_DIR));
+  // SPA fallback: any non-API GET that didn't match a static file returns
+  // index.html so client-side routing works on refresh/deep-link.
+  app.use((req, res, next) => {
+    if (req.method !== 'GET') return next();
+    if (req.path.startsWith('/api') || req.path.startsWith('/v1') || req.path === '/healthz') return next();
+    res.sendFile(path.join(DIST_DIR, 'index.html'));
+  });
+  console.log('[app] serving built frontend from frontend/dist');
+} else {
+  app.get('/', (req, res) => res.send('Scraper API running'));
+}
 
 // Errors under /v1 must keep the public API's one JSON error shape — this
 // also catches body-parser failures (malformed JSON, oversized payloads)

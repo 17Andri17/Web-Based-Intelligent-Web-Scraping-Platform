@@ -73,7 +73,7 @@ function ConfidenceBar({ value, color }) {
 // container with one "run on each page" body and a handful of simple
 // parameters — no While + If/Break + click/wait machinery to untangle.
 
-function generatePaginationSteps(suggestion) {
+export function generatePaginationSteps(suggestion) {
   const { type, selector, containerSelector, hasNextButton } = suggestion;
 
   // URL-based pagination → PAGINATE_URL. Stitch the detected before/after

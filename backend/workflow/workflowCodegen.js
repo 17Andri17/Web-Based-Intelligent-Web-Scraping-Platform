@@ -722,17 +722,30 @@ ${params.listName}.push(${params.item || 'null'});
 await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(${params.source || 'null'}) });
 `.trim() + '\n';
       }
-      if (params.format === 'csv') {
-        return `
+      // Resolve a relative destination against WS_EXPORT_DIR (set by the
+      // platform runner to backend/data/exports) or the current working
+      // directory (for a downloaded standalone script). Create the parent
+      // directory first — the previous code did a bare writeFileSync, so a
+      // relative path like "./output/results.json" threw ENOENT (no output/
+      // in the tmp cwd) and a bare "./results.json" vanished into the OS temp
+      // dir. Log the absolute path so the file is always findable.
+      const saveResolved = (contentExpr) => `
 {
-  const _rows = Array.isArray(${params.source}) ? ${params.source} : [${params.source}];
-  const _headers = Object.keys(_rows[0] || {});
-  const _csv = [_headers.join(','), ..._rows.map(r => _headers.map(h => JSON.stringify(r[h] ?? '')).join(','))].join('\\n');
-  require('fs').writeFileSync(${q(params.destination)}, _csv, 'utf8');
+  const _p = require('path'), _fs = require('fs');
+  const _dest = _p.isAbsolute(${q(params.destination)}) ? ${q(params.destination)} : _p.resolve(process.env.WS_EXPORT_DIR || process.cwd(), ${q(params.destination)});
+  _fs.mkdirSync(_p.dirname(_dest), { recursive: true });
+  _fs.writeFileSync(_dest, ${contentExpr}, 'utf8');
+  console.log('💾 Saved data to ' + _dest);
 }
 `.trim() + '\n';
+      if (params.format === 'csv') {
+        return saveResolved(`(() => {
+    const _rows = Array.isArray(${params.source}) ? ${params.source} : [${params.source}];
+    const _headers = Object.keys(_rows[0] || {});
+    return [_headers.join(','), ..._rows.map(r => _headers.map(h => JSON.stringify(r[h] ?? '')).join(','))].join('\\n');
+  })()`);
       }
-      return `require('fs').writeFileSync(${q(params.destination)}, JSON.stringify(${params.source || 'null'}, null, 2), 'utf8');\n`;
+      return saveResolved(`JSON.stringify(${params.source || 'null'}, null, 2)`);
     }
 
     // ── Custom action (user-defined) ─────────────────────────────────────

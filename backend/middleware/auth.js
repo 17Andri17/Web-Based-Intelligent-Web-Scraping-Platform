@@ -1,8 +1,46 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+/* ===========================================================================
+   JWT secret resolution — no insecure fallback constant.
+
+   Order of precedence:
+     1. JWT_SECRET env var (recommended for real deployments).
+     2. A persisted random secret at backend/data/.jwt-secret — generated on
+        first boot if absent. Persisting it (rather than a per-process random)
+        keeps already-issued login tokens valid across restarts.
+
+   The previous hard-coded 'dev-secret-change-me' meant anyone who read the
+   source could forge tokens; this removes that while staying zero-config for
+   a local run.
+   ========================================================================= */
+function resolveJwtSecret() {
+  if (process.env.JWT_SECRET && process.env.JWT_SECRET.trim()) {
+    return process.env.JWT_SECRET.trim();
+  }
+  const secretPath = path.join(__dirname, '..', 'data', '.jwt-secret');
+  try {
+    if (fs.existsSync(secretPath)) {
+      const s = fs.readFileSync(secretPath, 'utf8').trim();
+      if (s) return s;
+    }
+  } catch (_) {}
+  const generated = crypto.randomBytes(48).toString('base64url');
+  try {
+    fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+    fs.writeFileSync(secretPath, generated, { mode: 0o600 });
+    console.warn('[auth] JWT_SECRET not set — generated a persistent secret at backend/data/.jwt-secret. Set JWT_SECRET in the environment to override.');
+  } catch (err) {
+    console.warn('[auth] JWT_SECRET not set and could not persist a generated one (' + err.message + '); using an in-memory secret (tokens will not survive a restart).');
+  }
+  return generated;
+}
+
+const JWT_SECRET = resolveJwtSecret();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 
 function signToken(payload) {

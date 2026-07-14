@@ -145,6 +145,15 @@ io.on('connection', async (socket) => {
     try { return await browserManager.getPage(userId); } catch (_) { return null; }
   };
 
+  // Current screencast teardown for THIS connection. `navigate` reassigns it
+  // on every call; a single 'stopStreaming' listener (below) and the
+  // 'disconnect' handler at the bottom invoke whatever the latest one is.
+  // Registering the listeners once — instead of once per navigate — is what
+  // prevents the per-navigation listener stacking (MaxListenersExceeded +
+  // stale-closure leak) that the previous code caused.
+  let stopStreaming = null;
+  socket.on('stopStreaming', () => { if (stopStreaming) stopStreaming(); });
+
   // ── ForEach scope ────────────────────────────────────────────────────────
   socket.on('setForEachScope', async ({ iteratorSelector }) => {
     try {
@@ -563,7 +572,11 @@ io.on('connection', async (socket) => {
       // ─────────────────────────────────────────────────────────────
       // Stop streaming
       // ─────────────────────────────────────────────────────────────
-      const stopStreaming = async () => {
+      // Reassign the connection-scoped handler (declared once at the top of
+      // the connection). The single 'stopStreaming' listener + the
+      // 'disconnect' handler call through to this latest closure, so no new
+      // socket listeners are added per navigation.
+      stopStreaming = async () => {
         const s = userSessions.get(userId);
 
         if (!s?.streaming) return;
@@ -583,9 +596,6 @@ io.on('connection', async (socket) => {
 
         userSessions.delete(userId);
       };
-
-      socket.on('disconnect', stopStreaming);
-      socket.on('stopStreaming', stopStreaming);
 
       socket.emit('message', '✅ Navigation + streaming started');
 
@@ -1541,7 +1551,7 @@ io.on('connection', async (socket) => {
     });
   });
 
-  socket.on('downloadCode', (data) => {
+  socket.on('downloadCode', async (data) => {
     /*
       data = { steps, meta? }
       Response: codeReady { code: string }
@@ -1549,8 +1559,12 @@ io.on('connection', async (socket) => {
     try {
       const meta = data.meta || userSessionMeta.get(userId) || {};
       const steps = data.steps || [];
-      const customActions = resolveCustomActions(steps, socket.user.id);
-      const subflows = resolveSubflows(steps, socket.user.id, data.workflowId || null);
+      // resolveCustomActions / resolveSubflows are async (DB-backed) — they
+      // MUST be awaited. Passing the unresolved Promises to generateCode made
+      // every custom-action step emit a "not available" throw and silently
+      // dropped subflows from the downloaded script.
+      const customActions = await resolveCustomActions(steps, socket.user.id);
+      const subflows = await resolveSubflows(steps, socket.user.id, data.workflowId || null);
       // clean: true → strip platform-only instrumentation (step/iteration
       // log markers + self-healing snapshots) so the downloaded script is
       // short and readable.
@@ -1831,6 +1845,7 @@ io.on('connection', async (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`🔌 User disconnected: ${userId}`);
+    if (stopStreaming) { try { stopStreaming(); } catch (_) {} }
     userSessions.delete(userId);
     scraperService.clearUser(userId);
     // Release the network-capture CDP session. The page can outlive the socket
@@ -1850,6 +1865,8 @@ const scheduler = require('./services/scheduler.service');
 // Background executor for API-triggered runs: picks up runs enqueued by the
 // public POST /v1/workflows/:id/runs endpoint. See apiWorker.service.js.
 const apiWorker = require('./services/apiWorker.service');
+// Periodic retention/pruning so run_logs + results_json don't grow forever.
+const maintenance = require('./services/maintenance.service');
 const dbClient  = require('./db/client');
 
 // Provision the schema / apply migrations on the async data layer before we
@@ -1866,7 +1883,11 @@ dbClient.init()
     }
     scheduler.start();
     apiWorker.start();
-    server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+    maintenance.start();
+    // Bind to localhost by default so a fresh local install isn't reachable
+    // from the LAN. Set HOST=0.0.0.0 to expose it deliberately.
+    const HOST = process.env.HOST || '127.0.0.1';
+    server.listen(PORT, HOST, () => console.log(`🚀 Server running on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`));
   })
   .catch((err) => {
     console.error('[db] initialisation failed — server not started:', err);

@@ -13,6 +13,8 @@ import CompactWorkflowSidebar from "./components/CompactWorkflowSidebar";
 import HtmlInspectorPanel from "./components/HtmlInspectorPanel";
 import PaginationDetector from "./components/PaginationDetector";
 import ApiSourcesPanel from "./components/ApiSourcesPanel";
+import Dashboard from "./components/Dashboard";
+import QuickScrapeWizard from "./components/QuickScrapeWizard";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
@@ -29,7 +31,9 @@ import "./styles/CompactWorkflowSidebar.css";
 import "./styles/HtmlInspectorPanel.css";
 import "./styles/auth.css";
 
-const SERVER_URL = API_BASE;
+// Empty API_BASE (production, same-origin) → connect Socket.IO to the current
+// origin by passing undefined.
+const SERVER_URL = API_BASE || undefined;
 
 // Build a "Call Data API" (EXTRACT_API) step from a discovered API source
 // (from the API Discovery panel). Maps the endpoint, captured headers/body,
@@ -352,6 +356,13 @@ function AppShell({ user, token, onLogout }) {
   const [currentWorkflowId, setCurrentWorkflowId] = useState(null);
   const [currentWorkflowName, setCurrentWorkflowName] = useState("");
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+
+  // ── Dashboard home + Quick Scrape wizard ─────────────────────────────────
+  // The dashboard is the landing screen after login: workflows, their run
+  // status, and a "needs attention" inbox. The wizard is the guided
+  // point-and-click flow for building a list scraper from scratch.
+  const [dashboardOpen, setDashboardOpen] = useState(true);
+  const [wizardOpen,    setWizardOpen]    = useState(false);
 
   // ── Proxy servers ──────────────────────────────────────────────────────
   const [proxiesOpen, setProxiesOpen] = useState(false);
@@ -968,6 +979,44 @@ function AppShell({ user, token, onLogout }) {
     isStreamingRef.current = true;
   }, [mode, steps, lockInteraction, selectedProxy]);
 
+  // Load a full workflow object into the editor. Shared by the Workflows menu
+  // (onLoaded) and the Dashboard's "Open" action so both behave identically.
+  // Declared after performNavigate — it references it in its dependency array.
+  const loadWorkflowIntoEditor = useCallback((wf) => {
+    // Normalise: mark the first NAVIGATE step as the pinned start URL. Older
+    // workflows saved before pinning won't have this flag.
+    const loadedSteps = (wf.steps || []).map((s, i) =>
+      i === 0 && s.type === "NAVIGATE" && !s.pinned ? { ...s, pinned: true } : s
+    );
+    setSteps(loadedSteps);
+    setCurrentWorkflowId(wf.id);
+    setCurrentWorkflowName(wf.name);
+    if (wf.meta) sessionMetaRef.current = { ...sessionMetaRef.current, ...wf.meta };
+    setWorkflowVariables(Array.isArray(wf.meta?.variables) ? wf.meta.variables : []);
+    setSelectedProxy(wf.meta?.proxy || (wf.meta?.proxyId ? { mode: "single", id: wf.meta.proxyId } : null));
+    setExecResults(null);
+    setExecLogs([]);
+    setExecStatus("idle");
+    const startUrl = loadedSteps[0]?.type === "NAVIGATE"
+      ? loadedSteps[0]?.params?.url || ""
+      : wf.meta?.startUrl || "";
+    setUrlInput(startUrl);
+    if (startUrl) performNavigate(startUrl);
+  }, [performNavigate, setSteps]);
+
+  // Open a workflow by id from the Dashboard: fetch the full record, load it,
+  // and leave the dashboard.
+  const openWorkflowById = useCallback(async (id) => {
+    try {
+      const wf = await workflowsApi.get(id);
+      loadWorkflowIntoEditor(wf);
+      setDashboardOpen(false);
+      setActiveTab("stream");
+    } catch (err) {
+      showToast(`✗ Couldn't open workflow: ${err?.response?.data?.error || err.message}`, "error");
+    }
+  }, [loadWorkflowIntoEditor, showToast]);
+
   // ── Navigate ──────────────────────────────────────────────────────────────
   // Three paths:
   //   1) Empty workflow → create a pinned NAVIGATE step and navigate.
@@ -1538,6 +1587,13 @@ function AppShell({ user, token, onLogout }) {
           </div>
         </div>
         <div className="header-right">
+          <button className="header-btn secondary" onClick={() => setDashboardOpen(true)}
+            title="Back to the dashboard">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 9.5L12 3l9 6.5"/><path d="M5 10v10h14V10"/>
+            </svg>
+            Home
+          </button>
           <button className="header-btn secondary"
             onClick={() => {
               if (steps.length > 0 && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
@@ -2244,6 +2300,50 @@ function AppShell({ user, token, onLogout }) {
       />
 
       {/* ── Workflows menu (save / open / delete) ───────────────────────── */}
+      {/* ── Dashboard (landing screen) ──────────────────────────────────────── */}
+      <Dashboard
+        open={dashboardOpen}
+        userName={user.username}
+        onNewScrape={() => {
+          if (steps.length > 0 && !confirm("Start a new scrape? Unsaved changes to the current workflow will be lost.")) return;
+          resetWorkflow();
+          setDashboardOpen(false);
+          setActiveTab("stream");
+          setWizardOpen(true);
+        }}
+        onNewBlank={() => {
+          if (steps.length > 0 && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+          resetWorkflow();
+          setDashboardOpen(false);
+          setActiveTab("stream");
+        }}
+        onOpenWorkflow={openWorkflowById}
+        onManageWorkflows={() => setWorkflowsOpen(true)}
+        showToast={showToast}
+        reloadKey={dashboardOpen ? currentWorkflowId : null}
+      />
+
+      {/* ── Quick Scrape wizard (guided list scraping) ──────────────────────── */}
+      <QuickScrapeWizard
+        open={wizardOpen}
+        socket={socket}
+        currentPageUrl={currentPageUrl}
+        selection={selectedElement}
+        onClose={() => setWizardOpen(false)}
+        onSetMode={changeMode}
+        onNavigate={(url) => { setUrlInput(url); performNavigate(url); }}
+        onApplySteps={(newSteps, meta) => {
+          // Append the wizard's generated steps to the workflow and jump to
+          // the Workflow tab so the user can review/edit them.
+          for (const s of newSteps) addStep(s, [], null);
+          if (meta && meta.startUrl) sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: meta.startUrl };
+          setWizardOpen(false);
+          setActiveTab("workflow");
+          showToast("✓ Scraper built — review the steps, then Run", "success");
+        }}
+        showToast={showToast}
+      />
+
       <WorkflowsMenu
         open={workflowsOpen}
         onClose={() => setWorkflowsOpen(false)}
@@ -2257,33 +2357,7 @@ function AppShell({ user, token, onLogout }) {
           setCurrentWorkflowName(wf.name);
           refreshAvailableWorkflows();   // make the new/updated workflow pickable as a subflow
         }}
-        onLoaded={(wf) => {
-          // Normalise: mark the first NAVIGATE step as the pinned start URL.
-          // Older workflows saved before the pinning feature won't have this flag.
-          const loadedSteps = (wf.steps || []).map((s, i) =>
-            i === 0 && s.type === "NAVIGATE" && !s.pinned ? { ...s, pinned: true } : s
-          );
-          setSteps(loadedSteps);
-          setCurrentWorkflowId(wf.id);
-          setCurrentWorkflowName(wf.name);
-          if (wf.meta) sessionMetaRef.current = { ...sessionMetaRef.current, ...wf.meta };
-          setWorkflowVariables(Array.isArray(wf.meta?.variables) ? wf.meta.variables : []);
-          // New format is meta.proxy = {mode, id/poolId}; fall back to the
-          // legacy bare meta.proxyId from before pools existed so workflows
-          // saved with the previous single-proxy feature still restore.
-          setSelectedProxy(wf.meta?.proxy || (wf.meta?.proxyId ? { mode: "single", id: wf.meta.proxyId } : null));
-          setExecResults(null);
-          setExecLogs([]);
-          setExecStatus("idle");
-
-          // Populate the URL bar with the workflow's start URL and auto-navigate
-          // so the user can immediately see the page they built the workflow on.
-          const startUrl = loadedSteps[0]?.type === "NAVIGATE"
-            ? loadedSteps[0]?.params?.url || ""
-            : wf.meta?.startUrl || "";
-          setUrlInput(startUrl);
-          if (startUrl) performNavigate(startUrl);
-        }}
+        onLoaded={(wf) => { loadWorkflowIntoEditor(wf); setDashboardOpen(false); }}
       />
 
       {/* ── Toast notification ────────────────────────────────────────────── */}
