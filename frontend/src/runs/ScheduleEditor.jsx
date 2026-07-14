@@ -15,14 +15,14 @@ import { schedulesApi } from "../api/client";
    ===================================================================== */
 
 const PRESETS = [
-  { minutes: 15,    label: "Every 15 min" },
-  { minutes: 30,    label: "Every 30 min" },
-  { minutes: 60,    label: "Hourly"       },
-  { minutes: 180,   label: "Every 3 hr"   },
-  { minutes: 360,   label: "Every 6 hr"   },
-  { minutes: 720,   label: "Every 12 hr"  },
-  { minutes: 1440,  label: "Daily"        },
-  { minutes: 10080, label: "Weekly"       },
+  { minutes: 15,    label: "Every 15 minutes" },
+  { minutes: 30,    label: "Every 30 minutes" },
+  { minutes: 60,    label: "Every hour"       },
+  { minutes: 180,   label: "Every 3 hours"    },
+  { minutes: 360,   label: "Every 6 hours"    },
+  { minutes: 720,   label: "Twice a day"      },
+  { minutes: 1440,  label: "Once a day"       },
+  { minutes: 10080, label: "Once a week"      },
 ];
 
 export default function ScheduleEditor({ open, onClose, workflowId, workflowName, showToast }) {
@@ -144,12 +144,27 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
             <div className="wf-empty">Loading…</div>
           ) : (
             <>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, fontSize: 14 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, fontSize: 14 }}>
                 <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
                 <span>Run this workflow automatically on a schedule</span>
               </label>
 
-              <div className="wf-section-title">Interval</div>
+              {/* Plain-English summary so a non-technical user sees exactly
+                  what the settings below will do, without doing minutes math. */}
+              <div style={{
+                marginBottom: 16, padding: "10px 12px", borderRadius: 8, fontSize: 13,
+                background: enabled ? "rgba(79,156,249,0.08)" : "var(--surface-2, rgba(255,255,255,0.03))",
+                border: `1px solid ${enabled ? "rgba(79,156,249,0.28)" : "var(--border-soft, #2a2a2a)"}`,
+                color: enabled ? "var(--text-primary, #e6e6e6)" : "var(--text-secondary, #999)",
+              }}>
+                {enabled
+                  ? (startTime
+                      ? <>This workflow will run <strong>at {startTime} {tzLabel()}</strong>, then <strong>every {prettyMin(Number(minutes))}</strong>.</>
+                      : <>This workflow will run <strong>every {prettyMin(Number(minutes))}</strong>, starting when you save.</>)
+                  : <>Automatic runs are <strong>off</strong>. Turn on the switch above to schedule this workflow.</>}
+              </div>
+
+              <div className="wf-section-title">How often</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6, marginBottom: 10 }}>
                 {PRESETS.map(p => (
                   <button
