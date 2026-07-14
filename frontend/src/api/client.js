@@ -1,6 +1,14 @@
 import axios from "axios";
 
-export const API_BASE = "http://localhost:3001";
+// API origin. In dev, Vite serves the UI on a different port than the API, so
+// default to the local backend. In a production build the backend serves the
+// built UI from the same origin, so VITE_API_BASE is normally left empty and
+// requests go to relative paths. Override with VITE_API_BASE at build time to
+// point at a remote backend.
+export const API_BASE =
+  (import.meta.env && import.meta.env.VITE_API_BASE !== undefined)
+    ? import.meta.env.VITE_API_BASE
+    : (import.meta.env && import.meta.env.DEV ? "http://localhost:3001" : "");
 const TOKEN_KEY = "ws_auth_token";
 
 export function getToken() {

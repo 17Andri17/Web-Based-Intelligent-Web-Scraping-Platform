@@ -10,7 +10,16 @@ const router = express.Router();
 
 const USERNAME_RE = /^[a-zA-Z0-9_.-]{3,32}$/;
 
+// Registration can be closed once the owner's account exists (ALLOW_REGISTRATION=false),
+// so a LAN-reachable instance can't have new accounts minted against it.
+function registrationAllowed() {
+  return String(process.env.ALLOW_REGISTRATION || 'true').toLowerCase() !== 'false';
+}
+
 router.post('/register', async (req, res) => {
+  if (!registrationAllowed()) {
+    return res.status(403).json({ error: 'Registration is disabled on this instance.' });
+  }
   const { username, password } = req.body || {};
   if (typeof username !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ error: 'Username and password are required' });

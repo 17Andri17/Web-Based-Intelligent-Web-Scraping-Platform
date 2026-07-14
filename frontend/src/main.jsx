@@ -29,7 +29,9 @@ import "./styles/CompactWorkflowSidebar.css";
 import "./styles/HtmlInspectorPanel.css";
 import "./styles/auth.css";
 
-const SERVER_URL = API_BASE;
+// Empty API_BASE (production, same-origin) → connect Socket.IO to the current
+// origin by passing undefined.
+const SERVER_URL = API_BASE || undefined;
 
 // Build a "Call Data API" (EXTRACT_API) step from a discovered API source
 // (from the API Discovery panel). Maps the endpoint, captured headers/body,
