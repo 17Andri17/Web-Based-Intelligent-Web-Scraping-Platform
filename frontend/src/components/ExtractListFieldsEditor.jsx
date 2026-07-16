@@ -40,6 +40,7 @@ export default function ExtractListFieldsEditor({
   onStartPick,
   onStopPick,
   onName,            // (titleCaseName) → set the step label (no-op if already named)
+  aiBusyExternal = false, // an AI request started elsewhere (inspector) is in flight for this step
 }) {
   // ── Normalise the incoming value once so the rest of the component sees
   // a single uniform shape. We never persist this normalised form back
@@ -66,6 +67,13 @@ export default function ExtractListFieldsEditor({
   // transient pending-pick + name here.
   const [pendingPick, setPendingPick] = useState(null); // field info from browser
   const [pickName, setPickName]       = useState("");
+  // Extractable choices for the pending pick (text / attributes / html) and
+  // the one currently selected. Clicking a link doesn't always mean "give me
+  // the href" — the user decides what to extract before confirming.
+  const [pickOptions, setPickOptions] = useState([]);
+  const [pickOption,  setPickOption]  = useState(null);
+  // True once the user typed in the name input — stop auto-suggesting then.
+  const pickNameEditedRef             = useRef(false);
   // Which field's clean/split pipeline editor is expanded.
   const [openClean, setOpenClean]     = useState(null);
   const pickNameRef                   = useRef(null);
@@ -78,7 +86,10 @@ export default function ExtractListFieldsEditor({
   useEffect(() => {
     if (!socket) return;
     const onResult = (payload) => {
-      if (pendingRequestId.current && payload.requestId !== pendingRequestId.current) return;
+      // Only handle responses to OUR request — other requesters (e.g. the
+      // element inspector's "Add with AI prompt") apply their own results;
+      // processing them here too would double-merge the fields.
+      if (payload.requestId !== pendingRequestId.current) return;
       pendingRequestId.current = null;
       setAiBusy(false);
 
@@ -137,7 +148,18 @@ export default function ExtractListFieldsEditor({
     const onBrowserEvent = (data) => {
       if (data.type !== 'listFieldPicked') return;
       if (!pickActiveRef.current) return; // not this editor's pick session
+      // Build the what-to-extract choices. Older payloads (no options array)
+      // degrade to a single choice — the inferred default.
+      const options = Array.isArray(data.options) && data.options.length
+        ? data.options
+        : [{ kind: data.kind || 'text', attribute: data.attribute || null, sample: data.sampleValue }];
+      const defKind = data.kind || 'text';
+      const defAttr = data.attribute || null;
+      const def = options.find(o => (o.kind || 'text') === defKind && (o.attribute || null) === defAttr) || options[0];
       setPendingPick(data);
+      setPickOptions(options);
+      setPickOption(def);
+      pickNameEditedRef.current = false;
       setPickName(uniqueName(sanitiseFieldName(data.suggestedName || data.tag || "field"), normalised));
       setTimeout(() => { pickNameRef.current?.focus(); pickNameRef.current?.select(); }, 40);
     };
@@ -245,17 +267,31 @@ export default function ExtractListFieldsEditor({
     onStopPick && onStopPick();
   };
 
+  // Switch what the pending pick extracts (text vs a specific attribute vs
+  // html). Re-suggests the field name unless the user already typed one.
+  const choosePickOption = (opt) => {
+    setPickOption(opt);
+    if (!pickNameEditedRef.current) {
+      setPickName(uniqueName(suggestNameForOption(opt, pendingPick), normalised));
+    }
+  };
+
   const confirmPickedField = () => {
     if (!pendingPick) return;
+    const opt = pickOption
+      || { kind: pendingPick.kind || "text", attribute: pendingPick.attribute || null, sample: pendingPick.sampleValue };
     const raw  = sanitiseFieldName(pickName) || sanitiseFieldName(pendingPick.suggestedName) || "field";
     const name = uniqueName(raw, normalised);
     const spec = {
-      selector:  pendingPick.relativeSelector,
-      kind:      pendingPick.kind || "text",
-      attribute: pendingPick.kind === "attr" ? (pendingPick.attribute || null) : null,
+      // An option can target a different element than the one clicked (e.g.
+      // the enclosing <a> for its href) — then it carries its own selector.
+      // '' is valid and means "the container element itself".
+      selector:  typeof opt.selector === "string" ? opt.selector : pendingPick.relativeSelector,
+      kind:      opt.kind === "attr" || opt.kind === "html" ? opt.kind : "text",
+      attribute: opt.kind === "attr" ? (opt.attribute || null) : null,
     };
     onChange({ ...normalised, [name]: spec });
-    setAiSamples(prev => ({ ...prev, [name]: pendingPick.sampleValue ?? null }));
+    setAiSamples(prev => ({ ...prev, [name]: opt.sample ?? pendingPick.sampleValue ?? null }));
     setPendingPick(null);
     setPickName("");
     // Stay in pick mode so the user can keep picking more fields.
@@ -266,6 +302,15 @@ export default function ExtractListFieldsEditor({
 
   return (
     <div className="elfe-root">
+      {/* AI request kicked off from the element inspector is still running —
+          fields will appear here the moment it answers. */}
+      {aiBusyExternal && (
+        <div className="elfe-ai-external-busy">
+          <span className="elfe-ai-spinner" />
+          ✨ AI is analysing a sample item and detecting fields… they'll appear below shortly.
+        </div>
+      )}
+
       {/* AI panel */}
       <div className="elfe-ai">
         <div className="elfe-ai-header">
@@ -351,19 +396,48 @@ export default function ExtractListFieldsEditor({
           </div>
         )}
 
-        {/* Pending pick — name + confirm */}
+        {/* Pending pick — choose what to extract, name it, confirm */}
         {pendingPick && (
           <div className="elfe-pick-pending">
             <div className="elfe-pick-meta">
-              <code className="elfe-pick-sel">{pendingPick.relativeSelector}</code>
-              <span className={`elfe-pick-kind-tag ${pendingPick.kind}`}>
-                {pendingPick.kind === "attr" ? `@${pendingPick.attribute}` : "text"}
+              <span className="elfe-pick-tag-name">&lt;{pendingPick.tag || "el"}&gt;</span>
+              <code className="elfe-pick-sel">
+                {typeof pickOption?.selector === "string"
+                  ? (pickOption.selector || "(the item itself)")
+                  : pendingPick.relativeSelector}
+              </code>
+            </div>
+            {pickOptions.length > 1 && (
+              <div className="elfe-pick-options">
+                <span className="elfe-pick-opt-label">Extract:</span>
+                <div className="elfe-pick-opt-chips">
+                  {pickOptions.map((o, i) => {
+                    const selected = pickOption === o;
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        className={`elfe-pick-opt ${o.kind}${selected ? " is-selected" : ""}`}
+                        onClick={() => choosePickOption(o)}
+                        title={(o.fromAncestor ? "From the enclosing link. " : "")
+                          + (o.sample ? `Sample: ${truncate(o.sample, 120)}` : "No value in the clicked item")}
+                      >
+                        {o.kind === "text" ? "text" : o.kind === "html" ? "HTML" : `@${o.attribute}`}
+                        {o.fromAncestor ? " ↖" : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div className="elfe-pick-sample-row">
+              <span className={`elfe-pick-kind-tag ${pickOption?.kind || pendingPick.kind || "text"}`}>
+                {pickOption?.kind === "attr" ? `@${pickOption.attribute}`
+                  : pickOption?.kind === "html" ? "HTML" : "text"}
               </span>
-              {pendingPick.sampleValue && (
-                <span className="elfe-pick-sample-val">
-                  {truncate(pendingPick.sampleValue, 60)}
-                </span>
-              )}
+              <span className="elfe-pick-sample-val">
+                {pickOption?.sample ? truncate(pickOption.sample, 90) : <em>(empty in the clicked item)</em>}
+              </span>
             </div>
             <div className="elfe-pick-name-row">
               <span className="elfe-pick-name-label">Field name:</span>
@@ -371,7 +445,7 @@ export default function ExtractListFieldsEditor({
                 ref={pickNameRef}
                 className="elfe-pick-name-input"
                 value={pickName}
-                onChange={e => setPickName(e.target.value)}
+                onChange={e => { pickNameEditedRef.current = true; setPickName(e.target.value); }}
                 onKeyDown={e => {
                   if (e.key === "Enter") confirmPickedField();
                   if (e.key === "Escape") setPendingPick(null);
@@ -524,6 +598,23 @@ function pickSpec(f) {
     kind:     f.kind === "attr" || f.kind === "html" ? f.kind : "text",
     attribute: f.kind === "attr" && typeof f.attribute === "string" ? f.attribute : null,
   };
+}
+
+// Suggest a field name for a pick option — mirrors the injected script's
+// heuristics so switching options re-suggests something sensible.
+function suggestNameForOption(opt, pick) {
+  if (opt?.kind === "attr" && opt.attribute) {
+    if (opt.attribute === "href") return "link";
+    if (opt.attribute === "src" || opt.attribute === "srcset") return "image";
+    return opt.attribute.replace(/-/g, "_");
+  }
+  // text / html — reuse the page's suggestion when it was text-based,
+  // otherwise fall back to tag semantics.
+  if (pick && (pick.kind || "text") === "text" && pick.suggestedName) return pick.suggestedName;
+  const semantics = { h1: "title", h2: "title", h3: "title", h4: "subtitle",
+                      p: "description", time: "date", span: "value",
+                      img: "image", a: "link", button: "button" };
+  return semantics[pick?.tag] || pick?.tag || "field";
 }
 
 function sanitiseFieldName(raw) {

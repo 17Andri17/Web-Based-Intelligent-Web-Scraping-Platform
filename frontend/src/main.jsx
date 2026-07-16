@@ -200,6 +200,12 @@ function AppShell({ user, token, onLogout }) {
   // EXTRACT_LIST step is currently picking; null = not picking.
   const [listPickStepId,      setListPickStepId]      = useState(null);
   const [sidebarExpandStepId, setSidebarExpandStepId] = useState(null);
+  // AI extract-list-fields request in flight, owned here (not by the
+  // inspector) so the answer still lands after the sidebar switches to the
+  // workflow tab and the inspector unmounts. { requestId, stepId } | null.
+  const pendingAiListRef = useRef(null);
+  const aiListTimeoutRef = useRef(null);
+  const [aiListBusyStepId, setAiListBusyStepId] = useState(null);
 
   const canvasRef            = useRef(null);
   const canvasContainerRef   = useRef(null);
@@ -347,6 +353,7 @@ function AppShell({ user, token, onLogout }) {
   // Stable refs for reselect (avoid stale closures in socket handler)
   const reselectStepIdRef            = useRef(null);
   const updateParamsByIdRef          = useRef(null);
+  const handleUpdateParamsRef        = useRef(null);
   const paginationManualWaitingRef   = useRef(false);
   useEffect(() => { reselectStepIdRef.current          = reselectStepId; },          [reselectStepId]);
   useEffect(() => { updateParamsByIdRef.current         = updateParamsById; },         [updateParamsById]);
@@ -729,6 +736,58 @@ function AppShell({ user, token, onLogout }) {
       setPaginationDetecting(false);
       setPaginationSuggestions(suggestions || []);
       setPaginationError(error || null);
+    });
+
+    // AI extract-list fields requested from the element inspector ("Add with
+    // AI prompt"). Handled here — not in the inspector — because adding the
+    // step immediately opens its editor in the workflow sidebar, which
+    // unmounts the inspector before the answer arrives.
+    socket.on("aiExtractListFieldsResult", (payload) => {
+      const pending = pendingAiListRef.current;
+      if (!pending || payload.requestId !== pending.requestId) return;
+      pendingAiListRef.current = null;
+      clearTimeout(aiListTimeoutRef.current);
+      setAiListBusyStepId(null);
+
+      if (!payload.ok) {
+        const code = payload.code || "";
+        const msg =
+          code === "NO_API_KEY" ? "AI is not configured on the server (set LLM_API_KEY) — add fields manually" :
+          code === "NO_PAGE"    ? "No active browser page — navigate to the target URL first" :
+          code === "NO_SAMPLE"  ? (payload.error || "No matching element on the live page") :
+          payload.error || "AI couldn't detect fields — add them in the editor";
+        showToast(`✨ ${msg}`, "error");
+        return;
+      }
+      // Convert the verified array [{name, selector, kind, attribute}] into
+      // the params.fields object shape expected by the editor + codegen. An
+      // empty selector is VALID — it means "the container element itself".
+      const fieldsObj = {};
+      for (const f of payload.fields || []) {
+        if (!f || !f.name) continue;
+        if (typeof f.selector !== "string") continue;
+        const kind = f.kind === "attr" || f.kind === "html" ? f.kind : "text";
+        if (kind === "attr" && !f.attribute) continue;
+        fieldsObj[f.name] = {
+          selector: f.selector,
+          kind,
+          attribute: kind === "attr" ? f.attribute : null,
+        };
+      }
+      const count = Object.keys(fieldsObj).length;
+      if (count === 0) {
+        showToast("✨ AI found no usable fields — add them manually below", "error");
+        return;
+      }
+      // Route through handleUpdateParams (not the raw hook fn) so the
+      // empty→non-empty fields transition still triggers auto-naming when
+      // the AI response carries no table name of its own.
+      (handleUpdateParamsRef.current || updateParamsByIdRef.current)(pending.stepId, { fields: fieldsObj });
+      // Auto-name the step with the AI's Title Case table name ("Product
+      // Listings") — it was just created here, so there's no label to clobber.
+      if (payload.name) updateLabelById(pending.stepId, payload.name);
+      const via = payload.source === "heuristic" ? " (via built-in detector)" : "";
+      showToast(`✨ AI added ${count} field${count === 1 ? "" : "s"}${via} — review them in the editor`, "success");
     });
     socket.on("previewResult", ({ stepId, previewValue, previewValues, previewElements, previewRows, previewTable, totalMatched, previewError, notFound }) => {
       setPreviewData(prev => ({
@@ -1192,10 +1251,54 @@ function AppShell({ user, token, onLogout }) {
       maybeAutoNameStep({ ...prev, params: { ...prev.params, ...patch } });
     }
   }, [updateParamsById, maybeAutoNameStep]);
+  useEffect(() => { handleUpdateParamsRef.current = handleUpdateParams; }, [handleUpdateParams]);
+
+  // ── AI extract-list fields (from the inspector's "Add with AI prompt") ──
+  // Fires the request and tracks it here; the result listener in the socket
+  // effect applies the fields/label to the step whenever the answer lands.
+  const requestAiExtractListFields = useCallback((stepId, containerSelector, hint) => {
+    if (!socketRef.current || !containerSelector) return;
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    pendingAiListRef.current = { requestId, stepId };
+    setAiListBusyStepId(stepId);
+    clearTimeout(aiListTimeoutRef.current);
+    aiListTimeoutRef.current = setTimeout(() => {
+      if (pendingAiListRef.current?.requestId !== requestId) return;
+      pendingAiListRef.current = null;
+      setAiListBusyStepId(null);
+      showToast("✨ AI request timed out — add fields manually or retry from the editor", "error");
+    }, 60000);
+    socketRef.current.emit("aiExtractListFields", {
+      containerSelector,
+      selectorType: "css",
+      hint: hint || "",
+      existingFields: {},
+      requestId,
+    });
+  }, [showToast]);
+
+  // Open an EXTRACT_LIST step's editor in the workflow sidebar. Used right
+  // after the step is added (manually or with AI) so the user immediately
+  // sees the fields, can adjust them, or pick more from the still-selected
+  // elements on the page.
+  const openListStepEditor = useCallback((stepId) => {
+    setActiveTab("stream");
+    setShowSidebar(true);
+    setSidebarTab("workflow");
+    setSidebarExpandStepId(stepId);
+  }, []);
 
   // ── Add step from inspector ───────────────────────────────────────────────
   const handleAddStep = useCallback((step, opts = {}) => {
     const { isForEach = false } = opts;
+
+    // An Extract List should never be "added and nothing else happens":
+    // open its editor in the workflow sidebar right away so the user sees
+    // the fields (AI-filled or empty), can adjust them, or keep picking —
+    // the elements stay selected on the page.
+    if (step.type === "EXTRACT_LIST" && !isForEach) {
+      openListStepEditor(step.id);
+    }
 
     if (isForEach) {
       // ForEach loops always go to insertTarget or root, then activate forEach context
@@ -1283,7 +1386,16 @@ function AppShell({ user, token, onLogout }) {
       showToast(`✓ ${label} added to workflow`, "success");
     }
     maybeAutoNameStep(step);
-  }, [addStep, addStepAt, forEachCtx, showToast, insertTarget, maybeAutoNameStep]);
+  }, [addStep, addStepAt, forEachCtx, showToast, insertTarget, maybeAutoNameStep, openListStepEditor]);
+
+  // Delete any step by id — used by the compact workflow sidebar so steps
+  // can be removed without leaving the Live Browser view.
+  const handleDeleteStepById = useCallback((id) => {
+    const loc = findStepLocation(stepsRef.current, id);
+    if (!loc) return;
+    deleteStep(loc.containerPath, loc.index);
+    showToast("✓ Step removed", "success");
+  }, [deleteStep, showToast]);
 
   // ── Breadcrumb navigation ─────────────────────────────────────────────────
   const handleSelectAncestor = useCallback((levelsUp) => {
@@ -2019,7 +2131,7 @@ function AppShell({ user, token, onLogout }) {
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
                     </svg>
-                    Inspector
+                    <span className="sidebar-tab-label">Inspector</span>
                   </button>
                   <button
                     className={`sidebar-tab-btn ${sidebarTab === "workflow" ? "active" : ""}`}
@@ -2029,7 +2141,7 @@ function AppShell({ user, token, onLogout }) {
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
                     </svg>
-                    Workflow
+                    <span className="sidebar-tab-label">Workflow</span>
                   </button>
                   <button
                     className={`sidebar-tab-btn ${sidebarTab === "html" ? "active" : ""}`}
@@ -2039,7 +2151,7 @@ function AppShell({ user, token, onLogout }) {
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
                     </svg>
-                    HTML
+                    <span className="sidebar-tab-label">HTML</span>
                   </button>
                   <button className="sidebar-tab-close" onClick={() => setShowSidebar(false)} title="Hide sidebar">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -2066,6 +2178,7 @@ function AppShell({ user, token, onLogout }) {
                       onClearForEachCtx={handleClearForEachCtx}
                       socket={socket}
                       onUpdateParams={handleUpdateParams}
+                      onAiExtractList={requestAiExtractListFields}
                     />
                   ) : (
                     <div className="sidebar-no-element">
@@ -2097,6 +2210,8 @@ function AppShell({ user, token, onLogout }) {
                     listPickStepId={listPickStepId}
                     onStartListPick={handleStartListPick}
                     onStopListPick={handleStopListPick}
+                    aiListBusyStepId={aiListBusyStepId}
+                    onDeleteStep={handleDeleteStepById}
                     expandStepId={sidebarExpandStepId}
                     onExpandHandled={handleSidebarExpandHandled}
                     reselectStepId={reselectStepId}

@@ -53,6 +53,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 .elfe-ai-note {
   font-size: 11px;
@@ -125,18 +126,22 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;   /* narrow sidebars: controls wrap instead of overflowing */
+  min-width: 0;
 }
 .elfe-name {
-  flex: 0 0 30%;
+  flex: 1 1 110px;
+  min-width: 0;
   font-family: 'SF Mono', Menlo, monospace;
   font-size: 12px;
 }
 .elfe-kind {
-  flex: 0 0 90px;
+  flex: 0 0 auto;
   font-size: 12px;
 }
 .elfe-attr {
-  flex: 1;
+  flex: 1 1 90px;
+  min-width: 0;
   font-size: 12px;
   font-family: 'SF Mono', Menlo, monospace;
 }
@@ -224,11 +229,40 @@
 }
 
 /* ── Fields header — two-button row ──────────────────────────────────── */
+.elfe-fields-header {
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .elfe-fields-header-btns {
   display: flex;
   gap: 6px;
   align-items: center;
+  flex-wrap: wrap;
 }
+
+/* ── External AI request in flight (started from the inspector) ──────── */
+.elfe-ai-external-busy {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: #79c0ff;
+  background: rgba(88, 166, 255, 0.08);
+  border: 1px dashed rgba(88, 166, 255, 0.4);
+  line-height: 1.4;
+}
+.elfe-ai-spinner {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(88, 166, 255, 0.25);
+  border-top-color: #58a6ff;
+  border-radius: 50%;
+  animation: elfeSpin 0.8s linear infinite;
+}
+@keyframes elfeSpin { to { transform: rotate(360deg); } }
 
 /* ── Pick-mode instruction banner ────────────────────────────────────── */
 .elfe-pick-banner {
@@ -263,6 +297,13 @@
   align-items: center;
   gap: 7px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+.elfe-pick-tag-name {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-family: 'SF Mono', Menlo, monospace;
+  color: #7ee787;
 }
 .elfe-pick-sel {
   font-size: 12px;
@@ -271,6 +312,11 @@
   border-radius: 4px;
   color: #e6edf3;
   font-family: 'SF Mono', Menlo, monospace;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 .elfe-pick-kind-tag {
   font-size: 10px;
@@ -281,6 +327,7 @@
 }
 .elfe-pick-kind-tag.text { background: rgba(63,185,80,0.12);  color: #3fb950; }
 .elfe-pick-kind-tag.attr { background: rgba(88,166,255,0.12); color: #58a6ff; }
+.elfe-pick-kind-tag.html { background: rgba(163,113,247,0.12); color: #a371f7; }
 .elfe-pick-sample-val {
   font-size: 11px;
   color: #8b949e;
@@ -288,14 +335,66 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 200px;
+  min-width: 0;
 }
+
+/* ── What-to-extract chooser (text / @attr / HTML chips) ─────────────── */
+.elfe-pick-options {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.elfe-pick-opt-label {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #8b949e;
+  padding-top: 3px;
+}
+.elfe-pick-opt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+.elfe-pick-opt {
+  font-size: 11px;
+  font-family: 'SF Mono', Menlo, monospace;
+  padding: 3px 9px;
+  border-radius: 20px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.03);
+  color: #8b949e;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms, background 120ms;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.elfe-pick-opt:hover { border-color: rgba(88,166,255,0.5); color: #c9d1d9; }
+.elfe-pick-opt.is-selected.text { background: rgba(63,185,80,0.14);  border-color: rgba(63,185,80,0.55);  color: #3fb950; font-weight: 600; }
+.elfe-pick-opt.is-selected.attr { background: rgba(88,166,255,0.14); border-color: rgba(88,166,255,0.55); color: #58a6ff; font-weight: 600; }
+.elfe-pick-opt.is-selected.html { background: rgba(163,113,247,0.14); border-color: rgba(163,113,247,0.55); color: #a371f7; font-weight: 600; }
+
+.elfe-pick-sample-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 8px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 5px;
+}
+.elfe-pick-sample-row em { color: #6e7681; font-size: 11px; }
 
 .elfe-pick-name-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
+.elfe-pick-name-row .elfe-pick-name-input { flex: 1 1 120px; }
 .elfe-pick-name-label {
   font-size: 11px;
   color: #8b949e;

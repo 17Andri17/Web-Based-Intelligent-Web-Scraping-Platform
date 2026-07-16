@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { writeClipboard } from "../utils/clipboard";
 
 // Void / self-closing elements — rendered as a single tag with no
 // expand arrow and no children, mirroring how Chrome DevTools shows them.
@@ -37,7 +38,10 @@ function buildTree(domNode, path) {
         }
       });
     }
-    return { id: nextId(), type: "element", tag, attrs, path, isVoid, children };
+    // Keep a reference to the parsed DOM element — powers the DevTools-style
+    // copy actions (outerHTML / CSS selector / XPath / text) without having
+    // to reconstruct markup from the lightweight tree.
+    return { id: nextId(), type: "element", tag, attrs, path, isVoid, children, el: domNode };
   }
   if (domNode.nodeType === Node.TEXT_NODE) {
     const text = domNode.textContent.replace(/\s+/g, " ").trim();
@@ -62,6 +66,60 @@ function nodeMatches(node, query) {
     return node.attrs.some(([k, v]) => k.toLowerCase().includes(query) || v.toLowerCase().includes(query));
   }
   return (node.text || "").toLowerCase().includes(query);
+}
+
+/* ── DevTools-style locators, computed from the parsed DOM element ────── */
+
+// Unique-ish CSS selector: nearest #id anchor, then tag:nth-child steps —
+// same shape Chrome's "Copy selector" produces.
+function cssPath(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE) return "";
+  const parts = [];
+  let cur = el;
+  while (cur && cur.nodeType === Node.ELEMENT_NODE) {
+    if (cur.id) {
+      parts.unshift(`#${window.CSS?.escape ? CSS.escape(cur.id) : cur.id}`);
+      break;
+    }
+    let selector = cur.nodeName.toLowerCase();
+    const parent = cur.parentElement;
+    if (parent) {
+      const sameTag = Array.from(parent.children).filter(c => c.nodeName === cur.nodeName);
+      if (sameTag.length > 1) {
+        selector += `:nth-child(${Array.from(parent.children).indexOf(cur) + 1})`;
+      }
+    }
+    parts.unshift(selector);
+    cur = parent;
+  }
+  return parts.join(" > ");
+}
+
+// XPath anchored on the nearest #id ancestor (like Chrome's "Copy XPath"),
+// falling back to an absolute /html/... path.
+function xPath(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE) return "";
+  if (el.id) return `//*[@id="${el.id}"]`;
+  const parts = [];
+  let cur = el;
+  while (cur && cur.nodeType === Node.ELEMENT_NODE) {
+    if (cur.id && cur !== el) {
+      parts.unshift(`/*[@id="${cur.id}"]`);
+      return "/" + parts.join("/");
+    }
+    let idx = 1;
+    let sib = cur.previousElementSibling;
+    while (sib) { if (sib.nodeName === cur.nodeName) idx++; sib = sib.previousElementSibling; }
+    let needsIndex = idx > 1;
+    if (!needsIndex) {
+      sib = cur.nextElementSibling;
+      while (sib) { if (sib.nodeName === cur.nodeName) { needsIndex = true; break; } sib = sib.nextElementSibling; }
+    }
+    const tag = cur.nodeName.toLowerCase();
+    parts.unshift(needsIndex ? `${tag}[${idx}]` : tag);
+    cur = cur.parentElement;
+  }
+  return "/" + parts.join("/");
 }
 
 function AttrSpan({ name, value }) {
@@ -105,7 +163,8 @@ function HtmlNode({ node, depth, collapsed, onToggle, onSelect, onHover, onUnhov
         data-node-id={node.id}
         className={`hi-line hi-tag-line${isActive ? " hi-active" : ""}${isMatch ? " hi-match" : ""}`}
         style={{ paddingLeft: indent }}
-        onClick={() => onSelect(node)}
+        onClick={(e) => onSelect(node, e)}
+        onContextMenu={(e) => { e.preventDefault(); onSelect(node, e); }}
         onMouseEnter={() => onHover(node)}
         onMouseLeave={onUnhover}
       >
@@ -303,13 +362,68 @@ export default function HtmlInspectorPanel({ socket, active, refreshKey, selecte
   };
   const expandAll = () => setCollapsed(new Set());
 
-  const onSelect = (node) => {
+  // DevTools-style copy menu — opened by clicking an element line.
+  // { node, x, y } | null. Closes on outside click / Escape / tree scroll.
+  const [copyMenu, setCopyMenu] = useState(null);
+  const [copiedKey, setCopiedKey] = useState(null);
+  const copyCloseTimerRef = useRef(null);
+
+  const onSelect = (node, e) => {
     setActiveId(node.id);
     onBeforeSelect?.();
     socket?.emit("selectElementByPath", { path: node.path });
+    // Offer the copy actions right where the user clicked.
+    if (e && node.el) {
+      const panel = containerRef.current?.closest(".hi-panel");
+      const rect = panel?.getBoundingClientRect();
+      setCopiedKey(null);
+      setCopyMenu({
+        node,
+        x: rect ? e.clientX - rect.left : e.clientX,
+        y: rect ? e.clientY - rect.top : e.clientY,
+      });
+    }
   };
   const onHover = (node) => socket?.emit("highlightElementByPath", { path: node.path });
   const onUnhover = () => socket?.emit("unhoverPickerChild");
+
+  const closeCopyMenu = useCallback(() => {
+    clearTimeout(copyCloseTimerRef.current);
+    setCopyMenu(null);
+    setCopiedKey(null);
+  }, []);
+  useEffect(() => () => clearTimeout(copyCloseTimerRef.current), []);
+
+  useEffect(() => {
+    if (!copyMenu) return;
+    const onKey = (e) => { if (e.key === "Escape") closeCopyMenu(); };
+    const onDocPointer = (e) => {
+      if (!e.target.closest?.(".hi-copy-menu")) closeCopyMenu();
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDocPointer, true);
+    const tree = containerRef.current;
+    tree?.addEventListener("scroll", closeCopyMenu, { passive: true });
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDocPointer, true);
+      tree?.removeEventListener("scroll", closeCopyMenu);
+    };
+  }, [copyMenu, closeCopyMenu]);
+
+  const handleCopy = async (key, text) => {
+    const ok = await writeClipboard(text ?? "");
+    setCopiedKey(ok ? key : null);
+    clearTimeout(copyCloseTimerRef.current);
+    copyCloseTimerRef.current = setTimeout(closeCopyMenu, 650);
+  };
+
+  const copyMenuItems = copyMenu ? [
+    { key: "element",  label: "Copy element",  hint: "outerHTML", value: () => copyMenu.node.el.outerHTML },
+    { key: "selector", label: "Copy selector", hint: "CSS",       value: () => cssPath(copyMenu.node.el) },
+    { key: "xpath",    label: "Copy XPath",    hint: "",          value: () => xPath(copyMenu.node.el) },
+    { key: "text",     label: "Copy text",     hint: "",          value: () => (copyMenu.node.el.textContent || "").trim() },
+  ] : [];
 
   return (
     <div className="hi-panel">
@@ -373,6 +487,32 @@ export default function HtmlInspectorPanel({ socket, active, refreshKey, selecte
           />
         )}
       </div>
+
+      {/* DevTools-style copy menu */}
+      {copyMenu && (
+        <div
+          className="hi-copy-menu"
+          // Clamp inside the panel so the menu never spills out of view.
+          style={{
+            left: Math.max(8, Math.min(copyMenu.x, (containerRef.current?.closest(".hi-panel")?.clientWidth || 360) - 198)),
+            top:  Math.max(8, Math.min(copyMenu.y, (containerRef.current?.closest(".hi-panel")?.clientHeight || 500) - 158)),
+          }}
+        >
+          <div className="hi-copy-menu-title">
+            &lt;{copyMenu.node.tag}&gt;
+          </div>
+          {copyMenuItems.map(item => (
+            <button
+              key={item.key}
+              className={`hi-copy-menu-item${copiedKey === item.key ? " is-copied" : ""}`}
+              onClick={() => handleCopy(item.key, item.value())}
+            >
+              <span>{copiedKey === item.key ? "✓ Copied!" : item.label}</span>
+              {item.hint && copiedKey !== item.key && <span className="hi-copy-menu-hint">{item.hint}</span>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

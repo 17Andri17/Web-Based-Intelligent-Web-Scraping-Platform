@@ -427,6 +427,44 @@
     return ((el.textContent || el.innerText || '').trim()).slice(0, 200);
   }
 
+  // Every extractable thing on the element — the user picks which one they
+  // meant (clicking a link doesn't always mean "give me the href"). Text
+  // first, then each non-empty attribute (class/style are selector noise,
+  // not data), then the enclosing link's href when the click landed on
+  // something nested inside an <a> (a very common "I want the link" case),
+  // innerHTML last. Options may carry their own `selector` when they target
+  // a different element than the one clicked (the ancestor <a>).
+  function _collectFieldOptions(el, containerEl) {
+    var opts = [];
+    opts.push({ kind: 'text', attribute: null,
+                sample: ((el.textContent || el.innerText || '').trim()).slice(0, 200) });
+    var attrs = Array.prototype.slice.call(el.attributes || []);
+    for (var i = 0; i < attrs.length; i++) {
+      var name = attrs[i].name;
+      var val  = (attrs[i].value || '').trim();
+      if (!val || name === 'class' || name === 'style') continue;
+      opts.push({ kind: 'attr', attribute: name, sample: val.slice(0, 200) });
+    }
+    try {
+      if (containerEl && el.closest && !el.getAttribute('href')) {
+        var linkEl = el.closest('a[href]');
+        if (linkEl && linkEl !== el && containerEl.contains(linkEl)) {
+          // '' means "the container element itself" — same convention the
+          // AI-detected fields use.
+          var linkSel = linkEl === containerEl ? '' : buildRelativeSelector(linkEl, containerEl);
+          if (linkSel !== null) {
+            opts.push({ kind: 'attr', attribute: 'href',
+                        sample: (linkEl.getAttribute('href') || '').slice(0, 200),
+                        selector: linkSel, fromAncestor: true });
+          }
+        }
+      }
+    } catch (_) {}
+    var html = (el.innerHTML || '').trim();
+    if (html) opts.push({ kind: 'html', attribute: null, sample: html.slice(0, 200) });
+    return opts;
+  }
+
   function _suggestFieldName(tag, relSel, kind, attribute) {
     if (kind === 'attr' && attribute) {
       if (attribute === 'href') return 'link';
@@ -942,6 +980,9 @@
         suggestedName:    suggested,
         tag:              tgt.tagName.toLowerCase(),
         worksInSiblings:  worksInSiblings,
+        // All extractable choices (text / attributes / html) so the editor
+        // can let the user pick — kind/attribute above are just the default.
+        options:          _collectFieldOptions(tgt, containerEl),
       });
 
       // Brief green flash to confirm
