@@ -44,24 +44,17 @@ export function findStepLocation(steps, stepId, containerPath = []) {
   return null;
 }
 
-/** Remove a step by ID from the tree, returning [newSteps, removedStep] */
-function removeStepById(steps, id) {
-  let removed = null;
-  const newSteps = (steps || []).filter((step, i) => {
-    if (step.id === id) { removed = step; return false; }
-    return true;
-  }).map(step => {
-    const s = { ...step };
-    for (const key of BRANCH_KEYS) {
-      if (Array.isArray(s[key])) {
-        const [newBranch, r] = removeStepById(s[key], id);
-        s[key] = newBranch;
-        if (r) removed = r;
-      }
-    }
-    return s;
-  });
-  return [newSteps, removed];
+/** How many steps move together when `stepId` is dragged: the step itself
+    plus every CONTIGUOUS following sibling flagged `attach` ("stuck to the
+    previous step" — e.g. a Close Cookie Banner right after its Navigate). */
+export function attachedGroupSize(rootSteps, stepId) {
+  const loc = findStepLocation(rootSteps, stepId);
+  if (!loc) return 1;
+  const container = getContainer(rootSteps, loc.containerPath);
+  if (!container || !Array.isArray(container)) return 1;
+  let n = 1;
+  while (loc.index + n < container.length && container[loc.index + n]?.attach) n++;
+  return n;
 }
 
 // Read: navigate to the nested array at containerPath inside rootSteps.
@@ -104,6 +97,52 @@ function updateStepAt(rootSteps, containerPath, index, mapper) {
   return updateContainer(rootSteps, containerPath, (arr) =>
     arr.map((s, i) => (i === index ? mapper(s) : s))
   );
+}
+
+/** Pure move: relocate the step with `stepId` (plus `count - 1` following
+    siblings, moved as one block) to (targetContainerPath, targetIndex).
+    Returns the new tree, or `prev` unchanged when the move is invalid
+    (unknown step, target inside the moved block, stale path). Exported for
+    tests; the hook's moveStepById wraps it in setSteps. */
+export function moveStepInTree(prev, stepId, targetContainerPath, targetIndex, count = 1) {
+  try {
+    const srcLoc = findStepLocation(prev, stepId);
+    if (!srcLoc) return prev;
+
+    const clone = JSON.parse(JSON.stringify(prev));
+    const srcContainer = getContainer(clone, srcLoc.containerPath);
+    if (!srcContainer || !Array.isArray(srcContainer)) return prev;
+    const n = Math.max(1, Math.min(count, srcContainer.length - srcLoc.index));
+    const removed = srcContainer.splice(srcLoc.index, n);
+    if (removed.length === 0) return prev;
+
+    // After removing the block, any path that traverses the same array
+    // PAST it gets that index shifted down by n. A path THROUGH the
+    // removed block means "drop the group inside itself" — abort.
+    const adj = [...targetContainerPath];
+    let samePrefix = true;
+    for (let i = 0; i < srcLoc.containerPath.length; i++) {
+      if (adj[i] !== srcLoc.containerPath[i]) { samePrefix = false; break; }
+    }
+    const levelIdx = srcLoc.containerPath.length; // slot in adj holding the src array's step-index
+    if (samePrefix && levelIdx < adj.length && typeof adj[levelIdx] === 'number') {
+      if (adj[levelIdx] >= srcLoc.index && adj[levelIdx] < srcLoc.index + n) return prev;
+      if (adj[levelIdx] >= srcLoc.index + n) adj[levelIdx] -= n;
+    }
+
+    const container = getContainer(clone, adj);
+    if (!container || !Array.isArray(container)) return prev;
+
+    let idx = (targetIndex !== null && targetIndex !== undefined) ? targetIndex : container.length;
+    if (container === srcContainer && idx > srcLoc.index) {
+      // Same-array move: slots past the removed block shift down by n;
+      // a slot inside the (now removed) block collapses to its old spot.
+      idx = idx >= srcLoc.index + n ? idx - n : srcLoc.index;
+    }
+    idx = Math.max(0, Math.min(idx, container.length));
+    container.splice(idx, 0, ...removed);
+    return clone;
+  } catch (e) { console.warn('moveStepInTree failed:', e); return prev; }
 }
 
 /* =====================================================================
@@ -193,47 +232,23 @@ export function useWorkflow() {
     });
   };
 
-  // Move a step (by ID) to a new location — remove then insert
-  const moveStepById = (stepId, targetContainerPath, targetIndex) => {
-    setSteps(prev => {
-      try {
-        // Snapshot the source location BEFORE removal (indices are still valid)
-        const srcLoc = findStepLocation(prev, stepId);
-        if (!srcLoc) return prev;
+  // Move a step (by ID) to a new location — remove then insert. `count` > 1
+  // moves the step plus its (count - 1) following siblings as one block:
+  // that's how attached steps (step.attach) travel with their leader.
+  // Handles same-container moves too (indices past the removed block shift
+  // down by `count`), so drag & drop can route every move through here.
+  const moveStepById = (stepId, targetContainerPath, targetIndex, count = 1) => {
+    setSteps(prev => moveStepInTree(prev, stepId, targetContainerPath, targetIndex, count));
+  };
 
-        const [withoutStep, removed] = removeStepById(JSON.parse(JSON.stringify(prev)), stepId);
-        if (!removed) return prev;
-
-        // After removing the source step, any path that traverses the same
-        // array at an index GREATER than srcLoc.index gets that index shifted down by 1.
-        // Example: removing root[0] shifts root[1] → root[0], root[2] → root[1], etc.
-        const adjustPath = (path) => {
-          const adj = [...path];
-          // The src array is identified by srcLoc.containerPath.
-          // Its elements are accessed at position srcLoc.containerPath.length in adj.
-          const levelIdx = srcLoc.containerPath.length; // index in adj where src array's step-index lives
-          // Verify adj shares the same prefix as srcLoc.containerPath
-          for (let i = 0; i < srcLoc.containerPath.length; i++) {
-            if (adj[i] !== srcLoc.containerPath[i]) return adj; // diverges before reaching the src array
-          }
-          // Adjust the step-index at the src array's level
-          if (levelIdx < adj.length && typeof adj[levelIdx] === 'number' && adj[levelIdx] > srcLoc.index) {
-            adj[levelIdx]--;
-          }
-          return adj;
-        };
-
-        const adjustedPath = adjustPath(targetContainerPath);
-        const container = getContainer(withoutStep, adjustedPath);
-        if (!container || !Array.isArray(container)) return prev;
-
-        const idx = (targetIndex !== null && targetIndex !== undefined)
-          ? Math.max(0, Math.min(targetIndex, container.length))
-          : container.length;
-        container.splice(idx, 0, removed);
-        return withoutStep;
-      } catch(e) { console.warn('moveStepById failed:', e); return prev; }
-    });
+  // Toggle the "stuck to the previous step" flag (see attachedGroupSize).
+  const setAttachById = (id, attach) => {
+    setSteps(prev => updateStepById(prev, id, step => {
+      const next = { ...step };
+      if (attach) next.attach = true;
+      else delete next.attach;
+      return next;
+    }));
   };
 
   // ── REPLACE ALL (DnD at root level via arrayMove) ────────────────────
@@ -268,5 +283,6 @@ export function useWorkflow() {
     updateParamsById,
     addStepAt,
     moveStepById,
+    setAttachById,
   };
 }

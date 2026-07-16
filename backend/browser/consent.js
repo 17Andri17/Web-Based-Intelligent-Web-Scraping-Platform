@@ -112,6 +112,18 @@ var __consentU = (function () {
     'ablehnen','verweigern','refuser','rechazar','rifiuta','recusar','odrzuc','weigeren',
     'avvisa','avsla','afvis','hylkaa','odmitnout','elutasit','respinge','reddet','otkloni'
   ];
+  /* Bare yes/no button wording ("Tak" / "Nie" / "Ja" / "Oui" …). These are
+     matched ONLY against the FULL normalized button text — prefix/substring
+     matching of 2-3 letter words would misfire wildly ('si' → 'sign in',
+     'ja' → 'javascript'). Like WEAK words they additionally require explicit
+     cookie evidence, so a lone "Yes" on a newsletter popup is never touched.
+     Covers question-style banners: "Do you consent to cookies? [No] [Yes]". */
+  var EXACT_ACCEPT = [
+    'yes','ok','tak','ja','oui','si','sim','da','ano','igen','evet','kylla','taip','jah','aye'
+  ];
+  var EXACT_REJECT = [
+    'no','nie','nein','non','nej','nee','ne','nem','hayir','ei'
+  ];
   /* Words that must NEVER be auto-clicked (they open settings panels or
      navigate away). Authoritative — checked before want-lists. */
   var BLOCK_WORDS = [
@@ -124,6 +136,7 @@ var __consentU = (function () {
     'preferenze','personalizza','gestisci','maggiori informazioni','impostazioni',
     'definicoes','gerir','saiba mais','mais informacoes',
     'ustawienia','zarzadzaj','preferencje','dostosuj','wiecej informacji','szczegoly','dowiedz sie wiecej',
+    'chce wybrac','wybierz','wybieram','zmien ustawienia',
     'instellingen','beheren','aanpassen','meer informatie','voorkeuren',
     'installningar','hantera','anpassa','las mer','indstillinger','tilpas','laes mere',
     'asetukset','lisatietoja',
@@ -190,6 +203,14 @@ var __consentU = (function () {
         for (var j = 0; j < toks.length; j++) { if (toks[j].indexOf(w) === 0) return w; }
       }
     }
+    return null;
+  }
+
+  // Full-text equality against a word list (see EXACT_ACCEPT/EXACT_REJECT).
+  // The text must BE the word, not merely contain or start with it.
+  function matchExact(text, words) {
+    if (!text) return null;
+    for (var i = 0; i < words.length; i++) { if (text === words[i]) return words[i]; }
     return null;
   }
 
@@ -266,9 +287,10 @@ var __consentU = (function () {
   return {
     STRONG_ACCEPT: STRONG_ACCEPT, WEAK_ACCEPT: WEAK_ACCEPT,
     STRONG_REJECT: STRONG_REJECT, WEAK_REJECT: WEAK_REJECT,
+    EXACT_ACCEPT: EXACT_ACCEPT, EXACT_REJECT: EXACT_REJECT,
     BLOCK_WORDS: BLOCK_WORDS,
     IDCLASS_RX: IDCLASS_RX, COOKIE_TEXT_RX: COOKIE_TEXT_RX,
-    isVisible: isVisible, norm: norm, matchAny: matchAny,
+    isVisible: isVisible, norm: norm, matchAny: matchAny, matchExact: matchExact,
     clickableText: clickableText, regionEvidence: regionEvidence,
     isCloseControl: isCloseControl
   };
@@ -435,7 +457,16 @@ function __consentApplyOnce(preference, registryOnly) {
     { name: 'Axeptio',
       sig: function () { return !!document.querySelector('#axeptio_overlay, .axeptio_mount'); },
       accept: ['#axeptio_btn_acceptAll', 'button[aria-label="Accept all"]'],
-      reject: ['#axeptio_btn_dismiss', '#axeptio_btn_rejectAll'] }
+      reject: ['#axeptio_btn_dismiss', '#axeptio_btn_rejectAll'] },
+    { name: 'StimulusCookiebox',
+      // Stimulus-controller cookie form (e.g. lock.me): buttons carry
+      // data-action="cookiebox#saveAndClose" with a bitmask value param —
+      // 7 = all consents, 1 = essential only. Wording is often a bare
+      // localized yes/no ("Tak"/"Nie"), so the registry match is far more
+      // reliable than text scoring here.
+      sig: function () { return !!document.querySelector('[data-controller~="cookiebox"], #cookiebox[data-controller]'); },
+      accept: ['[data-controller~="cookiebox"] button[data-cookiebox-value-param="7"]', '#cookiebox button[data-cookiebox-value-param="7"]', '[data-controller~="cookiebox"] button.btn-primary[data-action*="saveAndClose"]'],
+      reject: ['[data-controller~="cookiebox"] button[data-cookiebox-value-param="1"]', '#cookiebox button[data-cookiebox-value-param="1"]'] }
   ];
 
   for (var r = 0; r < REGISTRY.length; r++) {
@@ -503,9 +534,11 @@ function __consentApplyOnce(preference, registryOnly) {
   // ── Methods 2+3: scored heuristic (covers the long tail) ─────────────────
   var wantStrong = preference === 'reject' ? U.STRONG_REJECT : U.STRONG_ACCEPT;
   var wantWeak   = preference === 'reject' ? U.WEAK_REJECT   : U.WEAK_ACCEPT;
+  var wantExact  = preference === 'reject' ? U.EXACT_REJECT  : U.EXACT_ACCEPT;
   var avoid      = preference === 'reject'
     ? U.BLOCK_WORDS.concat(U.STRONG_ACCEPT, U.WEAK_ACCEPT)
     : U.BLOCK_WORDS.concat(U.STRONG_REJECT, U.WEAK_REJECT);
+  var avoidExact = preference === 'reject' ? U.EXACT_ACCEPT : U.EXACT_REJECT;
 
   var best = null;
   function consider(el, containerBoost) {
@@ -513,8 +546,10 @@ function __consentApplyOnce(preference, registryOnly) {
     var txt = U.norm(U.clickableText(el));
     if (!txt || txt.length > 80) return;
     if (U.matchAny(txt, avoid)) return;
+    if (U.matchExact(txt, avoidExact)) return;
     var strong = U.matchAny(txt, wantStrong);
-    var weak   = strong ? null : U.matchAny(txt, wantWeak);
+    // Bare yes/no wording counts as WEAK evidence (full-text match only).
+    var weak   = strong ? null : (U.matchAny(txt, wantWeak) || U.matchExact(txt, wantExact));
     if (!strong && !weak) return;
     var ev = U.regionEvidence(el);
     // STRONG wording clicks on any single evidence signal; WEAK wording
@@ -568,8 +603,9 @@ function __consentApplyOnce(preference, registryOnly) {
 
   // Reject preference with no reject control anywhere → fall back to accept.
   if (!best && preference === 'reject') {
-    wantStrong = U.STRONG_ACCEPT; wantWeak = U.WEAK_ACCEPT;
+    wantStrong = U.STRONG_ACCEPT; wantWeak = U.WEAK_ACCEPT; wantExact = U.EXACT_ACCEPT;
     avoid = U.BLOCK_WORDS.concat(U.STRONG_REJECT, U.WEAK_REJECT);
+    avoidExact = U.EXACT_REJECT;
     for (var c2 = 0; c2 < containers.length; c2++) {
       var kids2;
       try { kids2 = containers[c2].querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]'); }
@@ -631,6 +667,8 @@ function __consentClassifyClick(target) {
   else if (U.matchAny(txt, U.STRONG_REJECT)) { kind = 'reject'; strong = true; }
   else if (U.matchAny(txt, U.WEAK_ACCEPT)) kind = 'accept';
   else if (U.matchAny(txt, U.WEAK_REJECT)) kind = 'reject';
+  else if (U.matchExact(txt, U.EXACT_ACCEPT)) kind = 'accept';
+  else if (U.matchExact(txt, U.EXACT_REJECT)) kind = 'reject';
   else if (U.isCloseControl(el, txt)) kind = 'close';
   if (!kind) return null;
 
@@ -672,6 +710,35 @@ function buildInjectedConsentScript() {
   var _isTop = false;
   try { _isTop = (window.top === window); } catch (_) { _isTop = false; }
 
+  // Deliver a payload over the sendToNode binding, retrying until the node
+  // side ACKNOWLEDGES receipt. Right after a navigation the binding can be
+  // half-alive: the page-side call "succeeds" but the CDP event is dropped
+  // before the node side has re-acquired the new document's context id (see
+  // BrowserManager.ensureBinding). The exposed function returns a promise
+  // that only resolves once the node callback actually ran — that's the ack.
+  // Duplicate deliveries are possible and fine: receivers are idempotent.
+  function __reportToNode(payload) {
+    var tries = 0, acked = false, timer = null;
+    function attempt() {
+      tries++;
+      try {
+        if (typeof window.sendToNode !== 'function') return;
+        var p = window.sendToNode(payload);
+        if (p && typeof p.then === 'function') {
+          p.then(function () { acked = true; if (timer) clearInterval(timer); }, function () {});
+        } else {
+          acked = true;
+          if (timer) clearInterval(timer);
+        }
+      } catch (_) {}
+    }
+    attempt();
+    timer = setInterval(function () {
+      if (acked || tries >= 20) { clearInterval(timer); return; }
+      attempt();
+    }, 700);
+  }
+
   // Run the FULL cascade (registry + heuristic) in every frame — many CMPs
   // (Sourcepoint, TrustArc, Google Funding Choices, …) render their banner
   // inside a cross-origin iframe with a non-registry button, so a
@@ -703,7 +770,7 @@ function buildInjectedConsentScript() {
       // if its getter fires), regardless of whether a visible DevTools panel
       // is open. addBinding never touches the Runtime domain, so it can't
       // trip that signal.
-      try { if (typeof window.sendToNode === 'function') window.sendToNode({ type: 'consent', text: '🍪 Consent handled: ' + name }); } catch (_) {}
+      __reportToNode({ type: 'consent', name: name, text: '🍪 Consent handled: ' + name });
     }
   }
 
@@ -759,20 +826,16 @@ function buildInjectedConsentScript() {
       } catch (_) {}
       if (!primary) return;
       window.__consentTeachSent__ = true;
-      try {
-        if (typeof window.sendToNode === 'function') {
-          window.sendToNode({
-            type: 'consentClickCandidate',
-            selector: primary,
-            selectorType: primaryType,
-            fallbackSelectors: fallbacks,
-            text: res.text,
-            kind: res.kind,
-            autoHandled: !!window.__consentHandled__,
-            inIframe: !_isTop
-          });
-        }
-      } catch (_) {}
+      __reportToNode({
+        type: 'consentClickCandidate',
+        selector: primary,
+        selectorType: primaryType,
+        fallbackSelectors: fallbacks,
+        text: res.text,
+        kind: res.kind,
+        autoHandled: !!window.__consentHandled__,
+        inIframe: !_isTop
+      });
     } catch (_) {}
   }, true);
 })();`;

@@ -4,7 +4,7 @@ import { actionDefinitions } from "../actions/actionDefinitions";
 import { controlDefinitions, isControlStep, isPaginationStep, PAGINATION_CONTROL_TYPES } from "../workflow/controlDefinitions";
 import { createAction, createControl } from "../workflow/stepFactory";
 import { DndContext, DragOverlay, useDroppable, useDraggable, closestCenter } from "@dnd-kit/core";
-import { findStepLocation } from "../workflow/useWorkflow";
+import { findStepLocation, attachedGroupSize } from "../workflow/useWorkflow";
 import ExtractListFieldsEditor from "./ExtractListFieldsEditor";
 import WorkflowVariables from "./WorkflowVariables";
 import VariablePicker from "./VariablePicker";
@@ -259,6 +259,18 @@ function ActionIcon({ type }) {
 }
 
 /* ── Helpers ── */
+// Find a step object anywhere in the tree by id (branches included).
+function findStepById(arr, id) {
+  for (const s of arr || []) {
+    if (!s || typeof s !== "object") continue;
+    if (s.id === id) return s;
+    for (const k of ["body", "then", "else", "try", "catch"]) {
+      if (Array.isArray(s[k])) { const f = findStepById(s[k], id); if (f) return f; }
+    }
+  }
+  return null;
+}
+
 function buildDefaultParams(def) {
   const p = {};
   for (const [k, v] of Object.entries(def.inputs || {})) {
@@ -315,6 +327,13 @@ function summariseParams(step, ctx = {}) {
       out.push(["url", String(step.params.url)]);
     }
     return out;
+  }
+  // The cookie-banner step's params are mostly plumbing (selectorType,
+  // fallbacks) — say what it will actually do instead.
+  if (step.type === "DISMISS_COOKIE_BANNER") {
+    return step.params?.selector
+      ? [["selector", String(step.params.selector)]]
+      : [["detection", "automatic"]];
   }
   // EXTRACT_LIST cards summarise specially: show the container selector
   // plus the comma-separated field names, so the user can see "what
@@ -398,7 +417,7 @@ function buildCustomActionStep(action) {
 /* =====================================================================  MAIN PANEL */
 export default function WorkflowPanel({
   steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps,
-  insertTarget, onSetInsertTarget, onMoveStep, customActions = [],
+  insertTarget, onSetInsertTarget, onMoveStep, onToggleAttach, customActions = [],
   offStartUrl = false, pinnedUrl = "", currentPageUrl = "", onReturnToStart,
   socket = null, previewData = {},
   variables = [], onVariablesChange,
@@ -418,21 +437,22 @@ export default function WorkflowPanel({
     if (!overStr.startsWith('dz:')) return; // only InsertRow zones are valid drop targets
     const srcLoc = findStepLocation(steps, activeStr);
     if (!srcLoc) return;
+    // Attached followers (step.attach — e.g. Close Cookie Banner stuck to
+    // its Navigate) travel with the dragged step as one block.
+    const groupSize = attachedGroupSize(steps, activeStr);
     try {
       const { cp, idx } = JSON.parse(overStr.slice(3));
-      // No-op: same container, adjacent position
+      // No-op: dropping onto any slot the group already occupies or borders.
       const sameContainer = JSON.stringify(srcLoc.containerPath) === JSON.stringify(cp);
-      if (sameContainer && (idx === srcLoc.index || idx === srcLoc.index + 1)) return;
-      if (sameContainer) {
-        // Reorder within same list
-        const targetIdx = idx > srcLoc.index ? idx - 1 : idx;
-        onReorder(srcLoc.containerPath, srcLoc.index, targetIdx);
-      } else {
-        // Cross-level move
-        onMoveStep && onMoveStep(activeStr, cp, idx !== null && idx !== undefined ? idx : undefined);
-      }
+      if (sameContainer && idx >= srcLoc.index && idx <= srcLoc.index + groupSize) return;
+      // moveStepById handles both same-container reorders and cross-level
+      // moves (with block-aware index adjustment).
+      onMoveStep && onMoveStep(activeStr, cp, idx !== null && idx !== undefined ? idx : undefined, groupSize);
+      // A dragged step that was itself attached has left its leader — detach.
+      const srcStep = findStepById(steps, activeStr);
+      if (srcStep?.attach && onToggleAttach) onToggleAttach(activeStr, false);
     } catch(e) { console.error('DnD error', e); }
-  }, [steps, onReorder, onMoveStep]);
+  }, [steps, onMoveStep, onToggleAttach]);
 
   const flatAll = React.useMemo(() => {
     const out = [];
@@ -440,10 +460,12 @@ export default function WorkflowPanel({
     walk(steps); return out;
   }, [steps]);
   const activeStep = activeId ? flatAll.find(s => s.id === activeId) : null;
+  // "+N attached" badge on the drag ghost when the dragged step carries followers.
+  const activeGroupExtra = activeId ? attachedGroupSize(steps, activeId) - 1 : 0;
   const capturedOutputs = React.useMemo(() => collectCapturedOutputs(steps), [steps]);
 
   return (
-    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId, variables, availableCapturedOutputs: capturedOutputs, steps, listPickStepId, onStartListPick, onStopListPick }}>
+    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, onToggleAttach, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId, variables, availableCapturedOutputs: capturedOutputs, steps, listPickStepId, onStartListPick, onStopListPick }}>
     <div className="workflow-designer">
       <div className="workflow-header">
         <div className="workflow-title">
@@ -530,6 +552,11 @@ export default function WorkflowPanel({
                             : (actionDefinitions[activeStep.type]?.label || activeStep.type?.replace(/_/g,' '))
                         }</div>
                       </div>
+                      {activeGroupExtra > 0 && (
+                        <span className="drag-ghost-attach-badge" title="Attached steps move along">
+                          +{activeGroupExtra} attached
+                        </span>
+                      )}
                     </div>
                   </div>
                 ) : null}
@@ -647,6 +674,10 @@ function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, o
   const isRoot = containerPath.length === 0;
   const blockedBefore = (zoneIdx) => isRoot && zoneIdx === 0 && steps[0]?.pinned;
 
+  // No insertion INSIDE an attached group either: the zone between a step
+  // and an `attach` follower would split what's meant to move as one block.
+  const insideGroup = (zoneIdx) => zoneIdx > 0 && zoneIdx < steps.length && !!steps[zoneIdx]?.attach;
+
   return (
     <div className="step-list">
       {/* Drop zone BEFORE first step */}
@@ -656,7 +687,11 @@ function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, o
 
       {steps.map((step, index) => (
         <React.Fragment key={step.id}>
-          {!isDragging && <div className="flow-connector" />}
+          {!isDragging && (
+            index > 0 && step.attach
+              ? <AttachLink />
+              : <div className="flow-connector" />
+          )}
           {isControlStep(step) ? (
             <DraggableControlBlock step={step} index={index} containerPath={containerPath} depth={depth}
               onPickerOpen={onPickerOpen} onEditOpen={onEditOpen} onDelete={onDelete} onReorder={onReorder} />
@@ -682,12 +717,26 @@ function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, o
               </span>
             </div>
           )}
-          {/* Drop zone AFTER each step — hidden for the two positions adjacent to the dragged item */}
-          {!isNoOp(index + 1) && (
+          {/* Drop zone AFTER each step — hidden for the two positions adjacent
+              to the dragged item and for slots inside an attached group */}
+          {!isNoOp(index + 1) && !insideGroup(index + 1) && (
             <InsertRow containerPath={containerPath} index={index + 1} onPickerOpen={onPickerOpen} />
           )}
         </React.Fragment>
       ))}
+    </div>
+  );
+}
+
+/* Connector between a step and its attached follower — a chain link instead
+   of the plain flow line, signalling "these move together". */
+function AttachLink() {
+  return (
+    <div className="flow-attach-link" title="Attached — moves together with the step above">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      </svg>
     </div>
   );
 }
@@ -720,7 +769,8 @@ function DraggableControlBlock({ step, index, containerPath, depth, onPickerOpen
 /* ── ActionCard ── */
 function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit, onDelete }) {
   const wp  = useContext(WPCtx) || {};
-  const { insertTarget, onSetInsertTarget, onMoveStep, customActions = [] } = wp;
+  const { insertTarget, onSetInsertTarget, onMoveStep, onToggleAttach, customActions = [] } = wp;
+  const isAttached = !!step.attach && index > 0;
   const isCustom = step.type === "CUSTOM_ACTION";
   const customDef = isCustom ? customActions.find(a => a.id === step.params?.actionId) : null;
   const def = isCustom
@@ -734,7 +784,7 @@ function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit
   const canMoveOut = depth > 0;
 
   return (
-    <div className={`step-card ${isTarget ? "step-card--insert-target" : ""} ${step.pinned ? "step-card--pinned" : ""}`}>
+    <div className={`step-card ${isTarget ? "step-card--insert-target" : ""} ${step.pinned ? "step-card--pinned" : ""} ${isAttached ? "step-card--attached" : ""}`}>
       <div className="step-card-header">
         {step.pinned ? (
           <div className="step-pin-marker" title="Start URL — edit via the URL bar at the top">
@@ -753,6 +803,20 @@ function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit
             <div className="step-label-badge" title="Named result — will appear in exported data">
               <span>◈</span> {step.label}
             </div>
+          )}
+          {onToggleAttach && !step.pinned && index > 0 && (
+            <button
+              className={`step-action-btn attach-toggle ${isAttached ? "active" : ""}`}
+              title={isAttached
+                ? "Attached to the step above — click to detach (move separately again)"
+                : "Attach to the step above so they move together when dragging"}
+              onClick={() => onToggleAttach(step.id, !step.attach)}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+              </svg>
+            </button>
           )}
           {onSetInsertTarget && (
             <button

@@ -353,6 +353,30 @@ class BrowserManager {
             try { return holder.fn(...args); } catch (_) {}
         });
         perUser.set(name, holder);
+
+        // rebrowser-patches compatibility: with Runtime.enable intentionally
+        // avoided (bot-detection evasion), the raw CDP binding behind
+        // exposeFunction is NOT re-installed into documents created after
+        // registration — window.<name> then throws "globalThis[(prefix +
+        // name)] is not a function" and every page→node event (element
+        // selection, consent, captcha) silently dies after the first real
+        // navigation. Re-adding the binding by name on each navigation fixes
+        // that; the call is idempotent and harmless on unpatched puppeteer.
+        // 'puppeteer_' must match puppeteer-core's CDP_BINDING_PREFIX.
+        const rebind = async (frame) => {
+            try {
+                const client = typeof frame._client === 'function' ? frame._client() : (frame.client || null);
+                if (client) await client.send('Runtime.addBinding', { name: 'puppeteer_' + name });
+                // Force main-world context-id acquisition: the patched
+                // ExecutionContext keeps a placeholder id until its first
+                // evaluate, and Runtime.bindingCalled events that arrive
+                // before then are filtered out (dropped) on the node side.
+                await frame.evaluate(() => true);
+            } catch (_) {}
+        };
+        page.on('framenavigated', (frame) => { rebind(frame); });
+        page.on('domcontentloaded', () => { rebind(page.mainFrame()); });
+        await rebind(page.mainFrame());
     }
 
     async closeContext(userId) {

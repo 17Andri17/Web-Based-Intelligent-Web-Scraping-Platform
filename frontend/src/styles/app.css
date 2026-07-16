@@ -705,6 +705,45 @@ body {
     border-top: 6px solid var(--border-default);
 }
 
+/* Chain-link connector between a step and its attached follower — shorter
+   than the flow connector so the pair reads as one glued block. */
+.flow-attach-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: 16px;
+    color: var(--accent-primary);
+    opacity: 0.75;
+}
+.flow-attach-link::before,
+.flow-attach-link::after {
+    content: '';
+    width: 2px;
+    height: 100%;
+    background: var(--accent-primary);
+    opacity: 0.45;
+}
+
+.step-card--attached {
+    border-left: 2px solid var(--accent-primary);
+}
+
+.step-action-btn.attach-toggle.active {
+    color: var(--accent-primary);
+}
+
+.drag-ghost-attach-badge {
+    margin-left: auto;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--accent-primary);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
 
 /* ==================== STEP CARD ==================== */
 
@@ -1780,6 +1819,48 @@ body {
     border-bottom: 1px solid var(--border-muted);
     flex-shrink: 0;
 }
+
+/* ── Collapsible inspector sections ─────────────────────────────────────
+   Wraps the informational blocks (structure breadcrumb, content preview,
+   raw selector details) so users who find them noisy can fold them away —
+   the open/closed choice is remembered per section (localStorage). */
+.ei-section {
+    border-bottom: 1px solid var(--border-muted);
+    flex-shrink: 0;
+}
+.ei-section-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 14px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    text-align: left;
+}
+.ei-section-head:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+.ei-section-badge {
+    margin-left: auto;
+    padding: 0 7px;
+    border-radius: 9px;
+    background: var(--bg-elevated);
+    font-size: 10px;
+    color: var(--text-muted);
+}
+.ei-section-body { padding-bottom: 2px; }
+/* Blocks nested in a section already sit under the section head — drop
+   their own outer border so the group reads as one unit. */
+.ei-section-body .ei-preview,
+.ei-section-body .ei-breadcrumb { border-bottom: none; }
 
 .ei-preview-text {
     font-size: 12px;
@@ -3424,6 +3505,21 @@ body {
 .ei-multi-selector-meta strong {
     color: var(--accent-warning);
     font-weight: 700;
+}
+
+/* Section nested inside the multi-selector card: bleed to the card edges
+   so the fold line spans the card, and align padding with the card's. */
+.ei-multi-selector-block .ei-section {
+    border-bottom: none;
+    border-top: 1px solid var(--border-muted);
+    margin: 2px -11px -9px;
+}
+.ei-multi-selector-block .ei-section-head { padding: 6px 11px; }
+.ei-multi-selector-block .ei-section-body {
+    padding: 0 11px 9px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
 }
 
 

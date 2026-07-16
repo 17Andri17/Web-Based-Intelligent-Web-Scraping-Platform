@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import io from "socket.io-client";
-import { useWorkflow, findStepLocation } from "./workflow/useWorkflow";
+import { useWorkflow, findStepLocation, getContainer } from "./workflow/useWorkflow";
 import { createAction, createControl } from "./workflow/stepFactory";
 import { ACTION_TYPES } from "./actions/actionTypes";
 import { CONTROL_TYPES } from "./workflow/controlDefinitions";
@@ -118,6 +118,41 @@ function deepResolveVars(obj, vars) {
   return obj;
 }
 
+// Depth-first scan for a step type anywhere in the workflow tree (branches
+// included). Used to avoid double-adding singleton-ish steps like
+// DISMISS_COOKIE_BANNER / SOLVE_CAPTCHA.
+function treeHasStepType(arr, type) {
+  for (const s of arr || []) {
+    if (!s || typeof s !== "object") continue;
+    if (s.type === type) return true;
+    for (const key of ["body", "then", "else", "try", "catch"]) {
+      if (Array.isArray(s[key]) && treeHasStepType(s[key], type)) return true;
+    }
+  }
+  return false;
+}
+
+// Root index where a page-setup step (close cookie banner, solve CAPTCHA)
+// should land: right after the start NAVIGATE, behind any setup steps already
+// attached there — so they stack in arrival order and stay glued to the
+// navigation they belong to.
+function stickyInsertIndex(root) {
+  if (!root?.length || root[0]?.type !== "NAVIGATE") return 0;
+  let i = 1;
+  while (i < root.length && root[i]?.attach) i++;
+  return i;
+}
+
+// Index for inserting "after" a step, skipping past any followers attached
+// to it — a new step must not split an attached group (e.g. land between a
+// Navigate and its stuck Close Cookie Banner).
+function insertIndexAfter(rootSteps, loc) {
+  const container = getContainer(rootSteps, loc.containerPath) || [];
+  let i = loc.index + 1;
+  while (i < container.length && container[i]?.attach) i++;
+  return i;
+}
+
 // Write text to the local clipboard. navigator.clipboard needs a secure
 // context (https / localhost); fall back to the hidden-textarea trick so
 // copy still works when the app is served over plain http on a LAN host.
@@ -156,7 +191,7 @@ function App() {
 }
 
 function AppShell({ user, token, onLogout }) {
-  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById, addStepAt, moveStepById } = useWorkflow();
+  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById, addStepAt, moveStepById, setAttachById } = useWorkflow();
   const [activeTab, setActiveTab] = useState("stream");
 
   // List-field pick coordination — lifted here so pick mode survives the
@@ -227,6 +262,10 @@ function AppShell({ user, token, onLogout }) {
   // { captchaType, sitekey, action, url, provider, solverConfigured, solving } | null
   const [captchaPrompt, setCaptchaPrompt] = useState(null);
   const captchaPromptTimerRef = useRef(null);
+  // True once this session auto-recorded a "Close Cookie Banner" step from
+  // the auto-dismiss cascade. Also stays true if the user deletes that step
+  // — we shouldn't keep re-adding something they removed on purpose.
+  const cookieStepAutoAddedRef = useRef(false);
 
   // Preview data: separate from steps so updates don't re-trigger emission
   const [previewData,     setPreviewData]     = useState({});
@@ -428,16 +467,7 @@ function AppShell({ user, token, onLogout }) {
     // auto-solve it (when a server-side solver is configured), or add a
     // "Solve CAPTCHA" step so unattended runs handle it too.
     socket.on("captchaDetected", (data) => {
-      const hasSolveStep = (function scan(arr) {
-        for (const s of arr || []) {
-          if (!s || typeof s !== "object") continue;
-          if (s.type === "SOLVE_CAPTCHA") return true;
-          for (const key of ["body", "then", "else", "try", "catch"]) {
-            if (Array.isArray(s[key]) && scan(s[key])) return true;
-          }
-        }
-        return false;
-      })(stepsRef.current);
+      const hasSolveStep = treeHasStepType(stepsRef.current, "SOLVE_CAPTCHA");
       clearTimeout(captchaPromptTimerRef.current);
       setCaptchaPrompt({
         captchaType:      data.captchaType || "unknown",
@@ -462,6 +492,26 @@ function AppShell({ user, token, onLogout }) {
         setCaptchaPrompt(p => (p ? { ...p, solving: false } : p));
       }
     });
+    // ── Cookie banner auto-dismissed (see browser/consent.js) ───────────────
+    // The cascade just clicked a consent banner on the live page. Record it
+    // as a real workflow step so unattended runs do the same — stuck right
+    // after the start NAVIGATE (attach = moves together with it in DnD).
+    // With no selector the step uses the same automatic detection cascade.
+    socket.on("consentAutoHandled", ({ name }) => {
+      if (cookieStepAutoAddedRef.current) return;
+      if (treeHasStepType(stepsRef.current, "DISMISS_COOKIE_BANNER")) return;
+      cookieStepAutoAddedRef.current = true;
+      const step = createAction("DISMISS_COOKIE_BANNER", {
+        selector: "", selectorType: "css", fallbackSelectors: [],
+      });
+      step.attach = true;
+      step.label = name && name !== "heuristic" && name !== "close-button"
+        ? `Close cookie banner (${name})`
+        : "Close cookie banner";
+      addStep(step, [], stickyInsertIndex(stepsRef.current));
+      showToast("🍪 Cookie banner closed — recorded as a step after Navigate", "success");
+    });
+
     socket.on("viewportUpdated", (data) => {
       sessionMetaRef.current.viewportWidth  = data.width;
       sessionMetaRef.current.viewportHeight = data.height;
@@ -489,16 +539,7 @@ function AppShell({ user, token, onLogout }) {
       // one or the user declined this selector before.
       if (data.type === "consentClickCandidate") {
         const sel = data.selector || "";
-        const hasDismissStep = (function scan(arr) {
-          for (const s of arr || []) {
-            if (!s || typeof s !== "object") continue;
-            if (s.type === "DISMISS_COOKIE_BANNER") return true;
-            for (const key of ["body", "then", "else", "try", "catch"]) {
-              if (Array.isArray(s[key]) && scan(s[key])) return true;
-            }
-          }
-          return false;
-        })(stepsRef.current);
+        const hasDismissStep = treeHasStepType(stepsRef.current, "DISMISS_COOKIE_BANNER");
         if (sel && !hasDismissStep && !declinedCookieSelectorsRef.current.has(sel)) {
           clearTimeout(cookiePromptTimerRef.current);
           setCookiePrompt({
@@ -806,6 +847,7 @@ function AppShell({ user, token, onLogout }) {
   // Clears steps, closes the backend page, resets URL bar, drops run results.
   const resetWorkflow = useCallback(() => {
     setSteps([]);
+    cookieStepAutoAddedRef.current = false;
     setCurrentWorkflowId(null);
     setCurrentWorkflowName("");
     setExecResults(null);
@@ -897,8 +939,9 @@ function AppShell({ user, token, onLogout }) {
       selectorType:      cookiePrompt.selectorType || "css",
       fallbackSelectors: cookiePrompt.fallbackSelectors || [],
     });
-    const root = stepsRef.current || [];
-    addStep(step, [], root[0]?.type === "NAVIGATE" ? 1 : 0);
+    step.attach = true;   // stays glued to the Navigate it belongs to
+    step.label  = cookiePrompt.text ? `Close cookie banner (“${cookiePrompt.text}”)` : "Close cookie banner";
+    addStep(step, [], stickyInsertIndex(stepsRef.current));
     showToast("🍪 Added \"Close Cookie Banner\" step", "success");
     clearTimeout(cookiePromptTimerRef.current);
     setCookiePrompt(null);
@@ -926,8 +969,8 @@ function AppShell({ user, token, onLogout }) {
   // Record a "Solve CAPTCHA" step so unattended runs handle this challenge too.
   const addSolveCaptchaStep = () => {
     const step = createAction("SOLVE_CAPTCHA", {});
-    const root = stepsRef.current || [];
-    addStep(step, [], root[0]?.type === "NAVIGATE" ? 1 : 0);
+    step.attach = true;   // stays glued to the Navigate it belongs to
+    addStep(step, [], stickyInsertIndex(stepsRef.current));
     showToast("🧩 Added \"Solve CAPTCHA\" step", "success");
     clearTimeout(captchaPromptTimerRef.current);
     setCaptchaPrompt(null);
@@ -989,6 +1032,9 @@ function AppShell({ user, token, onLogout }) {
       i === 0 && s.type === "NAVIGATE" && !s.pinned ? { ...s, pinned: true } : s
     );
     setSteps(loadedSteps);
+    // A loaded workflow speaks for itself: if it already has a dismiss step
+    // the scan blocks re-adds; if it doesn't, allow the auto-record again.
+    cookieStepAutoAddedRef.current = false;
     setCurrentWorkflowId(wf.id);
     setCurrentWorkflowName(wf.name);
     if (wf.meta) sessionMetaRef.current = { ...sessionMetaRef.current, ...wf.meta };
@@ -1158,7 +1204,7 @@ function AppShell({ user, token, onLogout }) {
         const loc = findStepLocation(stepsRef.current, target.stepId);
         if (loc) {
           if (target.type === 'inside') addStepAt(step, [...loc.containerPath, loc.index, 'body'], null);
-          else addStepAt(step, loc.containerPath, loc.index + 1);
+          else addStepAt(step, loc.containerPath, insertIndexAfter(stepsRef.current, loc));
         } else addStep(step, [], null);
       } else {
         addStep(step, [], null);
@@ -1203,7 +1249,7 @@ function AppShell({ user, token, onLogout }) {
           maybeAutoNameStep(step);
           return;
         } else {
-          addStepAt(step, loc.containerPath, loc.index + 1);
+          addStepAt(step, loc.containerPath, insertIndexAfter(stepsRef.current, loc));
           showToast(`✓ Step added after target`, "success");
           // Advance the target so a follow-up step lands after THIS new
           // one rather than re-inserting at the same slot (which would
@@ -1774,6 +1820,18 @@ function AppShell({ user, token, onLogout }) {
               </svg>
               Source
             </button>
+            {/* Quick Scrape wizard — openable at any moment; it syncs to
+                whatever has already happened (page loaded, list picked). */}
+            <button
+              className={`inspector-toggle-btn quick-scrape-btn ${wizardOpen ? "active" : ""}`}
+              onClick={() => setWizardOpen(v => !v)}
+              title="Guided list scraping — picks up from what you've already done"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/>
+              </svg>
+              Quick Scrape
+            </button>
             {/* Pagination detector */}
             <button
               className="inspector-toggle-btn"
@@ -2083,6 +2141,7 @@ function AppShell({ user, token, onLogout }) {
             insertTarget={insertTarget}
             onSetInsertTarget={setInsertTarget}
             onMoveStep={moveStepById}
+            onToggleAttach={setAttachById}
             customActions={customActions}
             offStartUrl={onDifferentPage}
             pinnedUrl={pinnedUrl}
@@ -2334,7 +2393,17 @@ function AppShell({ user, token, onLogout }) {
         onNavigate={(url) => { setUrlInput(url); performNavigate(url); }}
         onApplySteps={(newSteps, meta) => {
           // Append the wizard's generated steps to the workflow and jump to
-          // the Workflow tab so the user can review/edit them.
+          // the Workflow tab so the user can review/edit them. If the
+          // workflow doesn't have a start NAVIGATE yet (the wizard drives
+          // navigation directly), pin one first so the workflow is
+          // self-contained — and so page-setup steps (cookie banner,
+          // CAPTCHA) have a navigation to attach to.
+          const startUrl = meta?.startUrl || currentPageUrl;
+          if ((stepsRef.current || [])[0]?.type !== "NAVIGATE" && startUrl) {
+            const nav = createAction("NAVIGATE", { url: startUrl });
+            nav.pinned = true;
+            addStep(nav, [], 0);
+          }
           for (const s of newSteps) addStep(s, [], null);
           if (meta && meta.startUrl) sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: meta.startUrl };
           setWizardOpen(false);

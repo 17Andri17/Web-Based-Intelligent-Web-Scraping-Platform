@@ -346,3 +346,21 @@
   background: color-mix(in srgb, var(--accent-success) 10%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--accent-success) 22%, transparent);
 }
+/* ── Attached-step chain link (replaces the insert line inside a group) ── */
+.cws-attach-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 12px;
+  color: var(--accent-primary);
+  opacity: 0.7;
+}
+.cws-attach-link::before,
+.cws-attach-link::after {
+  content: '';
+  flex: 0 0 14px;
+  height: 1px;
+  background: var(--accent-primary);
+  opacity: 0.4;
+}

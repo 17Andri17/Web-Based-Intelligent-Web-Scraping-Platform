@@ -15,6 +15,12 @@ import "../styles/QuickScrapeWizard.css";
    Deliberately NON-modal: it docks in a corner so the streamed page
    stays clickable (the user picks the list by clicking it).
 
+   Openable at ANY moment (toolbar button) and state-aware: it syncs to
+   what's already going on — a page that's already loaded marks the
+   navigation step as done, an existing multi-selection is picked up as
+   the list. Columns can be renamed or added manually, and several lists
+   can be captured in one run ("Add another list").
+
    Props:
      open, onClose
      socket                   Socket.IO handle (emit/listen)
@@ -27,7 +33,7 @@ import "../styles/QuickScrapeWizard.css";
      showToast(msg, type)
    ===================================================================== */
 
-const STEPS = ["Page", "Pick the list", "Columns", "More pages", "Done"];
+const STEPS = ["Page", "Pick the list", "Columns", "More pages"];
 
 export default function QuickScrapeWizard({
   open, onClose, socket, currentPageUrl, selection,
@@ -36,21 +42,45 @@ export default function QuickScrapeWizard({
   const [idx, setIdx]           = useState(0);
   const [url, setUrl]           = useState("");
   const [listName, setListName] = useState("");
-  const [fields, setFields]     = useState([]);      // [{name, selector, kind, attribute, sampleValue, include}]
+  const [fields, setFields]     = useState([]);      // [{name, selector, kind, attribute, sampleValue, include, manual}]
+  // Lists already completed in this run ("Add another list").
+  // [{ name, containerSelector, selectorType, fallbackSelectors, fields }]
+  const [lists, setLists]       = useState([]);
   const [aiBusy, setAiBusy]     = useState(false);
   const [aiError, setAiError]   = useState(null);
   const [pgBusy, setPgBusy]     = useState(false);
   const [pgSuggestion, setPgSuggestion] = useState(null);
   const [includePg, setIncludePg]       = useState(true);
+  // Manual "add column" mini-form on the Columns step.
+  const [newCol, setNewCol] = useState(null); // { name, selector, kind, attribute } | null
   const reqRef = useRef(null);
+  // Which page the wizard state was built against + whether the last run
+  // was applied. Both trigger a fresh start on reopen; otherwise reopening
+  // resumes exactly where the user left off ("update to what's going on").
+  const lastPageRef = useRef(null);
+  const appliedRef  = useRef(false);
 
-  // Reset everything each time the wizard opens.
+  // Sync to the live session each time the wizard opens.
   useEffect(() => {
-    if (open) {
-      setIdx(0); setUrl(currentPageUrl || ""); setListName("");
-      setFields([]); setAiBusy(false); setAiError(null);
+    if (!open) return;
+    const pageChanged = (currentPageUrl || "") !== (lastPageRef.current ?? "");
+    lastPageRef.current = currentPageUrl || "";
+    if (appliedRef.current || pageChanged) {
+      appliedRef.current = false;
+      setLists([]); setFields([]); setListName("");
+      setAiBusy(false); setAiError(null);
       setPgBusy(false); setPgSuggestion(null); setIncludePg(true);
+      setNewCol(null);
+      // Already on a page → navigation is done, jump straight to picking
+      // (and put the toolbar in Select mode so clicking picks the list).
+      setIdx(currentPageUrl ? 1 : 0);
+      if (currentPageUrl) setTimeout(() => onSetMode && onSetMode("selection"), 0);
+    } else if (currentPageUrl) {
+      // Resuming on the same page: keep everything, just never show the
+      // URL step again for a navigation that already happened.
+      setIdx(i => (i === 0 ? 1 : i));
     }
+    setUrl(currentPageUrl || "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -68,18 +98,23 @@ export default function QuickScrapeWizard({
       if (!reqRef.current || payload.requestId !== reqRef.current) return;
       setAiBusy(false);
       if (!payload.ok || !Array.isArray(payload.fields) || payload.fields.length === 0) {
-        setAiError(payload.error || "Couldn't detect columns automatically. You can still add them in the editor.");
+        setAiError(payload.error || "Couldn't detect columns automatically — add them below.");
         return;
       }
       setAiError(null);
-      setFields(payload.fields.map(f => ({
-        name: f.name,
-        selector: f.selector || "",
-        kind: f.kind || "text",
-        attribute: f.attribute || null,
-        sampleValue: f.sampleValue != null ? String(f.sampleValue) : "",
-        include: true,
-      })));
+      // Keep any manually added columns; AI results fill in around them.
+      setFields(prev => {
+        const manual = prev.filter(f => f.manual);
+        const detected = payload.fields.map(f => ({
+          name: f.name,
+          selector: f.selector || "",
+          kind: f.kind || "text",
+          attribute: f.attribute || null,
+          sampleValue: f.sampleValue != null ? String(f.sampleValue) : "",
+          include: true,
+        }));
+        return [...detected, ...manual];
+      });
       if (payload.name && !listName) setListName(payload.name);
     };
     socket.on("aiExtractListFieldsResult", onResult);
@@ -122,52 +157,124 @@ export default function QuickScrapeWizard({
     });
   }, [socket, container]);
 
+  // Skip the AI: land on the Columns step with whatever's there (usually
+  // empty) and let the user add columns by hand.
+  const manualFields = useCallback(() => {
+    if (!container) return;
+    setAiError(null);
+    setIdx(2);
+  }, [container]);
+
   const detectPagination = useCallback(() => {
     if (!socket) { setIdx(3); return; }
     setPgBusy(true); setPgSuggestion(null); setIdx(3);
     socket.emit("detectPagination");
   }, [socket]);
 
-  const finish = useCallback(() => {
-    if (!container) return;
-    const chosen = fields.filter(f => f.include && f.name);
+  // Freeze the in-progress list (selection + chosen columns) into a plain
+  // config object — the live selection gets cleared when picking the next one.
+  const buildCurrentListConfig = useCallback(() => {
+    if (!container) return null;
+    const chosen = fields.filter(f => f.include && f.name && f.name.trim());
     const fieldsObj = {};
     for (const f of chosen) {
-      fieldsObj[f.name] = { selector: f.selector || "", kind: f.kind || "text", attribute: f.kind === "attr" ? (f.attribute || null) : null };
+      fieldsObj[f.name.trim()] = {
+        selector: f.selector || "",
+        kind: f.kind || "text",
+        attribute: f.kind === "attr" ? (f.attribute || null) : null,
+      };
     }
-    const listStep = createAction(ACTION_TYPES.EXTRACT_LIST, {
+    return {
+      name: (listName && listName.trim()) || `Items ${lists.length + 1}`,
       containerSelector: container.commonSelector,
       selectorType: "css",
       fallbackSelectors: container.fallbackSelectors || [],
       fields: fieldsObj,
-    }, {});
-    listStep.label = (listName && listName.trim()) || "Items";
+    };
+  }, [container, fields, listName, lists.length]);
+
+  // "Add another list": save the current one, clear the selection and go
+  // back to picking. All saved lists are built together at the end.
+  const addAnotherList = useCallback(() => {
+    const cfg = buildCurrentListConfig();
+    if (!cfg) return;
+    setLists(ls => [...ls, cfg]);
+    setListName(""); setFields([]); setAiError(null); setNewCol(null);
+    socket?.emit("resetSelection");
+    onSetMode && onSetMode("selection");
+    setIdx(1);
+    showToast && showToast(`✓ "${cfg.name}" saved — pick the next list`, "success");
+  }, [buildCurrentListConfig, socket, onSetMode, showToast]);
+
+  const removeSavedList = useCallback((i) => {
+    setLists(ls => ls.filter((_, j) => j !== i));
+  }, []);
+
+  const finish = useCallback(() => {
+    const cfgs = [...lists];
+    const current = buildCurrentListConfig();
+    if (current) cfgs.push(current);
+    if (cfgs.length === 0) return;
+
+    const listSteps = cfgs.map(cfg => {
+      const step = createAction(ACTION_TYPES.EXTRACT_LIST, {
+        containerSelector: cfg.containerSelector,
+        selectorType: cfg.selectorType,
+        fallbackSelectors: cfg.fallbackSelectors,
+        fields: cfg.fields,
+      }, {});
+      step.label = cfg.name;
+      return step;
+    });
 
     let steps;
     if (includePg && pgSuggestion) {
       const pgStep = generatePaginationSteps(pgSuggestion);
       if (pgStep) {
-        pgStep.body = [listStep];   // run the extraction on every page
+        pgStep.body = listSteps;   // run every extraction on every page
         steps = [pgStep];
       } else {
-        steps = [listStep];
+        steps = listSteps;
       }
     } else {
-      steps = [listStep];
+      steps = listSteps;
     }
+    appliedRef.current = true;
     onApplySteps(steps, { startUrl: currentPageUrl || url });
-  }, [container, fields, listName, includePg, pgSuggestion, onApplySteps, currentPageUrl, url]);
+  }, [lists, buildCurrentListConfig, includePg, pgSuggestion, onApplySteps, currentPageUrl, url]);
 
   if (!open) return null;
 
   const includedCount = fields.filter(f => f.include).length;
+  const totalLists = lists.length + (container ? 1 : 0);
+  const railDone = (i) => i < idx || (i === 0 && !!currentPageUrl);
+
+  // Compact "page is set" banner reused on steps 1-3.
+  const pageLine = currentPageUrl ? (
+    <div className="qsw-pageline">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#3fb950" strokeWidth="2.5"><polyline points="20,6 9,17 4,12"/></svg>
+      <span className="qsw-pageline-url" title={currentPageUrl}>{currentPageUrl}</span>
+      <button className="qsw-linkbtn" onClick={() => setIdx(0)}>change</button>
+    </div>
+  ) : null;
+
+  const savedChips = lists.length > 0 && (
+    <div className="qsw-listchips">
+      {lists.map((l, i) => (
+        <span key={i} className="qsw-listchip" title={`${Object.keys(l.fields).length} columns · ${l.containerSelector}`}>
+          {l.name}
+          <button onClick={() => removeSavedList(i)} title="Remove this list" aria-label={`Remove ${l.name}`}>×</button>
+        </span>
+      ))}
+    </div>
+  );
 
   return (
     <div className="qsw">
       <div className="qsw-head">
         <div className="qsw-title">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            <polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/>
           </svg>
           Quick Scrape
         </div>
@@ -181,8 +288,8 @@ export default function QuickScrapeWizard({
       {/* Progress rail */}
       <div className="qsw-rail">
         {STEPS.map((s, i) => (
-          <div key={s} className={`qsw-rail-step ${i === idx ? "active" : ""} ${i < idx ? "done" : ""}`}>
-            <span className="qsw-rail-dot">{i < idx ? "✓" : i + 1}</span>
+          <div key={s} className={`qsw-rail-step ${i === idx ? "active" : ""} ${railDone(i) ? "done" : ""}`}>
+            <span className="qsw-rail-dot">{railDone(i) ? "✓" : i + 1}</span>
             <span className="qsw-rail-label">{s}</span>
           </div>
         ))}
@@ -202,6 +309,9 @@ export default function QuickScrapeWizard({
               autoFocus
             />
             <div className="qsw-actions">
+              {currentPageUrl && (
+                <button className="qsw-btn ghost" onClick={() => setIdx(1)}>Stay on this page</button>
+              )}
               <button className="qsw-btn primary" onClick={goToPage} disabled={!url.trim()}>Go to page</button>
             </div>
           </>
@@ -210,7 +320,9 @@ export default function QuickScrapeWizard({
         {/* Step 1 — pick the list */}
         {idx === 1 && (
           <>
-            <p className="qsw-lead">Click one item in the list you want.</p>
+            <p className="qsw-lead">{lists.length > 0 ? "Click one item of the next list." : "Click one item in the list you want."}</p>
+            {pageLine}
+            {savedChips}
             <ol className="qsw-hints">
               <li>Make sure the toolbar is on <strong>Select</strong> mode.</li>
               <li>Click a single item — one product, job, or row.</li>
@@ -221,11 +333,18 @@ export default function QuickScrapeWizard({
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3fb950" strokeWidth="2.5"><polyline points="20,6 9,17 4,12"/></svg>
                 Found <strong>{container.matchCount}</strong> similar items.
               </div>
+            ) : selection ? (
+              <div className="qsw-waiting">
+                One item selected — now click one of the <strong>amber-highlighted</strong> items to grab the whole list.
+              </div>
             ) : (
               <div className="qsw-waiting">Waiting for you to click an item…</div>
             )}
             <div className="qsw-actions">
-              <button className="qsw-btn ghost" onClick={() => setIdx(0)}>Back</button>
+              {!currentPageUrl && <button className="qsw-btn ghost" onClick={() => setIdx(0)}>Back</button>}
+              <button className="qsw-btn ghost" onClick={manualFields} disabled={!container} title="Skip auto-detection and add columns by hand">
+                Choose columns myself
+              </button>
               <button className="qsw-btn primary" onClick={detectFields} disabled={!container}>Detect columns →</button>
             </div>
           </>
@@ -234,29 +353,94 @@ export default function QuickScrapeWizard({
         {/* Step 2 — columns */}
         {idx === 2 && (
           <>
-            <p className="qsw-lead">These are the columns we found.</p>
+            <p className="qsw-lead">Pick and name the columns for this table.</p>
+            {savedChips}
             <label className="qsw-namelabel">Table name
               <input className="qsw-input" value={listName} onChange={e => setListName(e.target.value)} placeholder="e.g. Products" />
             </label>
             {aiBusy ? (
               <div className="qsw-waiting">✨ Detecting columns…</div>
-            ) : aiError ? (
-              <div className="qsw-error">{aiError}</div>
             ) : (
-              <div className="qsw-fields">
-                {fields.length === 0 && <div className="qsw-waiting">No columns detected — you can add them in the editor.</div>}
-                {fields.map((f, i) => (
-                  <label key={i} className="qsw-field">
-                    <input type="checkbox" checked={f.include}
-                      onChange={e => setFields(fs => fs.map((x, j) => j === i ? { ...x, include: e.target.checked } : x))} />
-                    <span className="qsw-field-name">{f.name}</span>
-                    {f.sampleValue && <span className="qsw-field-sample" title={f.sampleValue}>{f.sampleValue.slice(0, 40)}</span>}
-                  </label>
-                ))}
-              </div>
+              <>
+                {aiError && <div className="qsw-error">{aiError}</div>}
+                <div className="qsw-fields">
+                  {fields.length === 0 && !aiError && (
+                    <div className="qsw-waiting">No columns yet — add one below.</div>
+                  )}
+                  {fields.map((f, i) => (
+                    <div key={i} className="qsw-field">
+                      <input type="checkbox" checked={f.include}
+                        onChange={e => setFields(fs => fs.map((x, j) => j === i ? { ...x, include: e.target.checked } : x))} />
+                      <input
+                        className="qsw-field-nameinput"
+                        value={f.name}
+                        onChange={e => setFields(fs => fs.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
+                        placeholder="column name"
+                        title={f.selector ? `Selector: ${f.selector}` : "Uses the item itself"}
+                      />
+                      {f.sampleValue
+                        ? <span className="qsw-field-sample" title={f.sampleValue}>{f.sampleValue.slice(0, 40)}</span>
+                        : f.manual && <span className="qsw-field-sample qsw-field-sample--manual" title={f.selector || "the item itself"}>manual</span>}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Manual column mini-form */}
+                {newCol ? (
+                  <div className="qsw-addcol">
+                    <div className="qsw-addcol-row">
+                      <input className="qsw-input" value={newCol.name} placeholder="Column name (e.g. price)"
+                        autoFocus
+                        onChange={e => setNewCol(c => ({ ...c, name: e.target.value }))} />
+                    </div>
+                    <div className="qsw-addcol-row">
+                      <input className="qsw-input qsw-mono" value={newCol.selector}
+                        placeholder="Selector inside the item — e.g. .price (empty = the item itself)"
+                        onChange={e => setNewCol(c => ({ ...c, selector: e.target.value }))} />
+                    </div>
+                    <div className="qsw-addcol-row">
+                      <select className="qsw-select" value={newCol.kind}
+                        onChange={e => setNewCol(c => ({ ...c, kind: e.target.value }))}>
+                        <option value="text">Text</option>
+                        <option value="attr">Attribute (href, src…)</option>
+                      </select>
+                      {newCol.kind === "attr" && (
+                        <input className="qsw-input qsw-mono" value={newCol.attribute} placeholder="attribute, e.g. href"
+                          onChange={e => setNewCol(c => ({ ...c, attribute: e.target.value }))} />
+                      )}
+                    </div>
+                    <div className="qsw-addcol-row qsw-addcol-actions">
+                      <button className="qsw-btn ghost" onClick={() => setNewCol(null)}>Cancel</button>
+                      <button className="qsw-btn primary"
+                        disabled={!newCol.name.trim() || (newCol.kind === "attr" && !newCol.attribute.trim())}
+                        onClick={() => {
+                          setFields(fs => [...fs, {
+                            name: newCol.name.trim(),
+                            selector: newCol.selector.trim(),
+                            kind: newCol.kind,
+                            attribute: newCol.kind === "attr" ? newCol.attribute.trim() : null,
+                            sampleValue: "",
+                            include: true,
+                            manual: true,
+                          }]);
+                          setNewCol(null);
+                        }}>Add column</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button className="qsw-linkbtn qsw-addcol-open"
+                    onClick={() => setNewCol({ name: "", selector: "", kind: "text", attribute: "" })}>
+                    + Add a column manually
+                  </button>
+                )}
+              </>
             )}
             <div className="qsw-actions">
               <button className="qsw-btn ghost" onClick={() => setIdx(1)}>Back</button>
+              <button className="qsw-btn ghost" onClick={addAnotherList} disabled={aiBusy || !container}
+                title="Save this table and pick another list on the same page">
+                + Another list
+              </button>
               <button className="qsw-btn primary" onClick={detectPagination} disabled={aiBusy}>Next: more pages →</button>
             </div>
           </>
@@ -266,6 +450,7 @@ export default function QuickScrapeWizard({
         {idx === 3 && (
           <>
             <p className="qsw-lead">Does the list continue over more pages?</p>
+            {savedChips}
             {pgBusy ? (
               <div className="qsw-waiting">Checking for pagination…</div>
             ) : pgSuggestion ? (
@@ -286,7 +471,9 @@ export default function QuickScrapeWizard({
             )}
             <div className="qsw-actions">
               <button className="qsw-btn ghost" onClick={() => setIdx(2)}>Back</button>
-              <button className="qsw-btn primary" onClick={finish} disabled={!container}>Build scraper</button>
+              <button className="qsw-btn primary" onClick={finish} disabled={!container && lists.length === 0}>
+                Build scraper{totalLists > 1 ? ` (${totalLists} tables)` : ""}
+              </button>
             </div>
           </>
         )}
@@ -294,7 +481,14 @@ export default function QuickScrapeWizard({
 
       <div className="qsw-foot">
         {idx >= 2 && container && (
-          <span>{includedCount} column{includedCount !== 1 ? "s" : ""} · {container.matchCount} items{includePg && pgSuggestion ? " · multi-page" : ""}</span>
+          <span>
+            {includedCount} column{includedCount !== 1 ? "s" : ""} · {container.matchCount} items
+            {lists.length > 0 ? ` · ${lists.length + 1} tables` : ""}
+            {includePg && pgSuggestion ? " · multi-page" : ""}
+          </span>
+        )}
+        {idx >= 2 && !container && lists.length > 0 && (
+          <span>{lists.length} table{lists.length !== 1 ? "s" : ""} saved{includePg && pgSuggestion ? " · multi-page" : ""}</span>
         )}
       </div>
     </div>
