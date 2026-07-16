@@ -212,6 +212,37 @@ function FallbackChipList({ selectors }) {
   );
 }
 
+// Collapsible inspector section with a persisted open/closed state, so a
+// user who prefers a leaner panel collapses it ONCE and it stays that way.
+// The details are all still there — one click away — but the action cards
+// (the reason the inspector exists) keep the prime real estate.
+function Section({ id, title, badge, defaultOpen = true, children }) {
+  const storageKey = `ei.sec.${id}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      const v = localStorage.getItem(storageKey);
+      return v === null ? defaultOpen : v === "1";
+    } catch (_) { return defaultOpen; }
+  });
+  const toggle = () => setOpen(o => {
+    try { localStorage.setItem(storageKey, o ? "0" : "1"); } catch (_) {}
+    return !o;
+  });
+  return (
+    <div className={`ei-section ${open ? "open" : ""}`}>
+      <button type="button" className="ei-section-head" onClick={toggle}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+          style={{ transform: open ? "rotate(90deg)" : "rotate(0)", transition: "120ms" }}>
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+        <span className="ei-section-title">{title}</span>
+        {badge != null && <span className="ei-section-badge">{badge}</span>}
+      </button>
+      {open && <div className="ei-section-body">{children}</div>}
+    </div>
+  );
+}
+
 // ─── Main component ────────────────────────────────────────────────────────
 
 export default function ElementInspector({
@@ -330,28 +361,31 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
         <CopyButton text={element.selector} />
       </div>
 
-      {/* ── Interactive breadcrumb ──────────────────────────────────────── */}
+      {/* ── Details — collapsible so the actions keep the prime space ───── */}
       {element.breadcrumb?.length > 0 && (
-        <InteractiveBreadcrumb
-          breadcrumb={element.breadcrumb}
-          element={element}
-          childrenList={childrenList}
-          onSelectAncestor={onSelectAncestor}
-          onGetChildren={onGetChildren}
-          onSelectChild={onSelectChild}
-          onHoverAncestor={onHoverAncestor}
-          onHoverPickerChild={onHoverPickerChild}
-          onUnhoverPickerChild={onUnhoverPickerChild}
-        />
+        <Section id="structure" title="Page structure" badge={element.breadcrumb.length}>
+          <InteractiveBreadcrumb
+            breadcrumb={element.breadcrumb}
+            element={element}
+            childrenList={childrenList}
+            onSelectAncestor={onSelectAncestor}
+            onGetChildren={onGetChildren}
+            onSelectChild={onSelectChild}
+            onHoverAncestor={onHoverAncestor}
+            onHoverPickerChild={onHoverPickerChild}
+            onUnhoverPickerChild={onUnhoverPickerChild}
+          />
+        </Section>
       )}
 
-      {/* ── Element preview ──────────────────────────────────────────────── */}
       {(element.text || element.href || element.src) && (
-        <div className="ei-preview">
-          {element.text && <div className="ei-preview-text">"{element.text}"</div>}
-          {element.href && <div className="ei-preview-attr"><span className="ei-attr-name">href</span> {element.href}</div>}
-          {element.src  && <div className="ei-preview-attr"><span className="ei-attr-name">src</span> {element.src}</div>}
-        </div>
+        <Section id="content" title="Content preview">
+          <div className="ei-preview">
+            {element.text && <div className="ei-preview-text">"{element.text}"</div>}
+            {element.href && <div className="ei-preview-attr"><span className="ei-attr-name">href</span> {element.href}</div>}
+            {element.src  && <div className="ei-preview-attr"><span className="ei-attr-name">src</span> {element.src}</div>}
+          </div>
+        </Section>
       )}
 
       {/* ── Subtle hint when similar elements are soft-highlighted ──────── */}
@@ -608,28 +642,31 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
         </button>
       </div>
 
-      {/* ── CSS Selector display ─────────────────────────────────────────── */}
+      {/* ── Selector details — the match count is what matters day-to-day;
+             the raw CSS + strategy + fallbacks live one click away ───────── */}
       <div className="ei-multi-selector-block">
-        <div className="ei-multi-selector-header">
-          <span className="ei-multi-selector-label">CSS Selector</span>
-          {selection.strategy && (
-            <span className="ei-multi-strategy-badge" title={`Detection strategy: ${selection.strategy}`}>
-              {strategyLabel(selection.strategy)}
-            </span>
-          )}
-          <CopyButton text={selection.commonSelector} />
-        </div>
-        {selection.commonSelector ? (
-          <code className="ei-multi-selector-code">{selection.commonSelector}</code>
-        ) : (
-          <span className="ei-multi-selector-empty">No selector generated — elements selected by position</span>
-        )}
         <div className="ei-multi-selector-meta">
           Matches exactly <strong>{selection.matchCount}</strong> element{selection.matchCount !== 1 ? 's' : ''}
         </div>
-        <FallbackDisclosure count={(selection.fallbackSelectors || []).length}>
-          <FallbackChipList selectors={selection.fallbackSelectors} />
-        </FallbackDisclosure>
+        <Section id="multisel" title="Selector details" defaultOpen={false}>
+          <div className="ei-multi-selector-header">
+            <span className="ei-multi-selector-label">CSS Selector</span>
+            {selection.strategy && (
+              <span className="ei-multi-strategy-badge" title={`Detection strategy: ${selection.strategy}`}>
+                {strategyLabel(selection.strategy)}
+              </span>
+            )}
+            <CopyButton text={selection.commonSelector} />
+          </div>
+          {selection.commonSelector ? (
+            <code className="ei-multi-selector-code">{selection.commonSelector}</code>
+          ) : (
+            <span className="ei-multi-selector-empty">No selector generated — elements selected by position</span>
+          )}
+          <FallbackDisclosure count={(selection.fallbackSelectors || []).length}>
+            <FallbackChipList selectors={selection.fallbackSelectors} />
+          </FallbackDisclosure>
+        </Section>
       </div>
 
       {/* ── Hierarchical similarity-scope progress ─────────────────────────── */}
@@ -665,13 +702,6 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
       )}
 
       <div className="ei-body">
-        <div className="ei-multi-notice">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-          </svg>
-          For a set of elements there are two useful actions — pick one below.
-        </div>
-
         {/* ── 1. For-Each loop ───────────────────────────────────────────── */}
         {!forEachCtx && (
           <div className="ei-foreach-banner">

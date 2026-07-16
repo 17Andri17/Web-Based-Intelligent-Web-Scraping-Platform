@@ -200,3 +200,104 @@
   color: var(--text-secondary, #8b949e);
   min-height: 16px;
 }
+
+/* "Page is set" line — shown once navigation already happened */
+.qsw-pageline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  margin-bottom: 10px;
+  border-radius: 6px;
+  background: rgba(63,185,80,0.07);
+  border: 1px solid rgba(63,185,80,0.22);
+  font-size: 11.5px;
+}
+.qsw-pageline-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary, #8b949e);
+}
+.qsw-linkbtn {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-primary, #58a6ff);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.qsw-linkbtn:hover { text-decoration: underline; }
+
+/* Chips for lists already saved in this run */
+.qsw-listchips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.qsw-listchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  background: rgba(88,166,255,0.1);
+  border: 1px solid rgba(88,166,255,0.3);
+  color: var(--accent-primary, #58a6ff);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.qsw-listchip button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.qsw-listchip button:hover { opacity: 1; }
+
+/* Editable column names */
+.qsw-field-nameinput {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary, #f0f6fc);
+}
+.qsw-field-nameinput:hover { border-color: var(--border-soft, #21262d); }
+.qsw-field-nameinput:focus {
+  outline: none;
+  border-color: var(--accent-primary, #58a6ff);
+  background: var(--bg-primary, #0d1117);
+}
+.qsw-field-sample--manual { font-style: italic; }
+
+/* Manual add-column form */
+.qsw-addcol {
+  margin-top: 8px;
+  padding: 9px;
+  border-radius: 7px;
+  border: 1px dashed var(--border-default, #30363d);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.qsw-addcol-row { display: flex; gap: 6px; }
+.qsw-addcol-row .qsw-input { flex: 1; padding: 6px 9px; font-size: 12px; }
+.qsw-addcol-actions { justify-content: flex-end; }
+.qsw-addcol-actions .qsw-btn { padding: 5px 11px; font-size: 12px; }
+.qsw-addcol-open { display: inline-block; margin: 8px 0 0; }
+.qsw-mono { font-family: var(--font-mono, monospace); }
+.qsw-select {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-primary, #f0f6fc);
+  background: var(--bg-primary, #0d1117);
+  border: 1px solid var(--border-default, #30363d);
+  border-radius: 7px;
+}

@@ -78,6 +78,8 @@ function flattenSteps(steps, depth=0, path=[], forEachCtxStepId=null, parentLoop
       inActiveLoop: !!forEachCtxStepId && parentLoopId === forEachCtxStepId,
       isActiveLoop: step.id === forEachCtxStepId,
       containerSelector: parentLoopSelector,
+      // Stuck to the sibling above (step.attach) — they move as one block.
+      attachPrev: i > 0 && !!step.attach,
     });
     const isLoop = LOOP_TYPES.has(step.type);
     const childLoopSelector = isLoop
@@ -428,7 +430,17 @@ export default function CompactWorkflowSidebar({
 
             return (
               <div key={step.id}>
-                {/* Insert AFTER previous step line */}
+                {/* Insert AFTER previous step line — replaced by a chain-link
+                    marker when this step is attached to the one above (no
+                    inserting into the middle of an attached group). */}
+                {item.attachPrev ? (
+                  <div className="cws-attach-link" title="Attached — moves together with the step above">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                    </svg>
+                  </div>
+                ) : (
                 <InsertLine
                   stepId={step.id}
                   type="after"
@@ -436,6 +448,7 @@ export default function CompactWorkflowSidebar({
                   label="Insert after this step"
                   onSet={onSetInsertTarget}
                 />
+                )}
 
                 <div
                   className={[

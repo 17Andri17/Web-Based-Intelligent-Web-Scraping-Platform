@@ -110,8 +110,14 @@ io.on('connection', async (socket) => {
       await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
         // Cookie-consent auto-dismiss status (see browser/consent.js) rides
         // this same binding rather than its own page.on('console', ...)
-        // listener — see the comment there for why.
-        if (event && event.type === 'consent') { socket.emit('message', event.text); return; }
+        // listener — see the comment there for why. Besides the status
+        // message, a dedicated event lets the frontend record the dismissal
+        // as a workflow step so unattended runs repeat it.
+        if (event && event.type === 'consent') {
+          socket.emit('message', event.text);
+          socket.emit('consentAutoHandled', { name: event.name || null });
+          return;
+        }
         // CAPTCHA detection (see browser/captcha.js) rides the same binding.
         if (event && event.type === 'captcha') { socket.emit('captchaDetected', { ...event, solverConfigured: captchaSolver.isConfigured(), provider: captchaSolver.getProviderName() }); return; }
         socket.emit('browserEvent', event);
@@ -401,8 +407,13 @@ io.on('connection', async (socket) => {
       await browserManager.ensureBinding(userId, 'sendToNode', (event) => {
         // Cookie-consent auto-dismiss status (see browser/consent.js) rides
         // this same binding rather than its own page.on('console', ...)
-        // listener — see the comment there for why.
-        if (event && event.type === 'consent') { socket.emit('message', event.text); return; }
+        // listener — see the comment there for why. The dedicated event lets
+        // the frontend record the dismissal as a workflow step.
+        if (event && event.type === 'consent') {
+          socket.emit('message', event.text);
+          socket.emit('consentAutoHandled', { name: event.name || null });
+          return;
+        }
         // CAPTCHA detection (see browser/captcha.js) rides the same binding.
         // We tag whether a solver is configured so the frontend can decide
         // between offering "auto-solve" and "solve it yourself in the preview".
