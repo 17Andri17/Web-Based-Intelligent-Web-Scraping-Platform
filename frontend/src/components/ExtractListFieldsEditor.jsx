@@ -392,7 +392,9 @@ export default function ExtractListFieldsEditor({
               <line x1="12" y1="3" x2="12" y2="1"/><line x1="12" y1="21" x2="12" y2="23"/>
               <line x1="3" y1="12" x2="1" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
             </svg>
-            Click any element <strong>inside</strong> the highlighted containers on the page — it will be added as a field here.
+            <span className="elfe-pick-banner-text">
+              Click any element <strong>inside</strong> the highlighted containers on the page — it will be added as a field here.
+            </span>
           </div>
         )}
 
@@ -479,40 +481,43 @@ export default function ExtractListFieldsEditor({
               const sample = aiSamples[name];
               return (
                 <div key={name} className="elfe-row">
+                  {/* Row header: name grows/shrinks, controls stay pinned right
+                      so nothing wraps awkwardly at narrow widths. */}
                   <div className="elfe-row-top">
                     <FieldNameInput name={name} onRename={renameField} />
                     <select
                       className="elfe-kind"
                       value={f.kind}
                       onChange={e => updateField(name, { kind: e.target.value })}
+                      title="What to extract from the matched element"
                     >
                       <option value="text">text</option>
                       <option value="attr">attribute</option>
                       <option value="html">innerHTML</option>
                     </select>
-                    {f.kind === "attr" && (
-                      <input
-                        className="elfe-attr"
-                        value={f.attribute || ""}
-                        placeholder="href / src / data-id"
-                        onChange={e => updateField(name, { attribute: e.target.value })}
-                      />
-                    )}
                     <button
                       type="button"
                       className={`elfe-clean-toggle ${hasPipeline(f) ? "is-active" : ""} ${openClean === name ? "is-open" : ""}`}
                       onClick={() => setOpenClean(openClean === name ? null : name)}
                       title="Clean / split this field"
                     >
-                      ✨ Clean{hasPipeline(f) ? " ●" : ""}
+                      ✨<span className="elfe-clean-word"> Clean</span>{hasPipeline(f) ? " ●" : ""}
                     </button>
                     <button
                       type="button"
                       className="elfe-row-remove"
                       onClick={() => removeField(name)}
-                      title="Remove"
+                      title="Remove this field"
                     >×</button>
                   </div>
+                  {f.kind === "attr" && (
+                    <input
+                      className="elfe-attr"
+                      value={f.attribute || ""}
+                      placeholder="attribute name — href / src / data-id"
+                      onChange={e => updateField(name, { attribute: e.target.value })}
+                    />
+                  )}
                   <input
                     className="elfe-selector"
                     value={f.selector || ""}

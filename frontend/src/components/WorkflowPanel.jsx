@@ -4,7 +4,7 @@ import { actionDefinitions } from "../actions/actionDefinitions";
 import { controlDefinitions, isControlStep, isPaginationStep, PAGINATION_CONTROL_TYPES } from "../workflow/controlDefinitions";
 import { createAction, createControl } from "../workflow/stepFactory";
 import { DndContext, DragOverlay, useDroppable, useDraggable, closestCenter } from "@dnd-kit/core";
-import { findStepLocation, attachedGroupSize } from "../workflow/useWorkflow";
+import { findStepLocation, attachedGroupSize, attachedGroupLeader, getContainer } from "../workflow/useWorkflow";
 import ExtractListFieldsEditor from "./ExtractListFieldsEditor";
 import WorkflowVariables from "./WorkflowVariables";
 import VariablePicker from "./VariablePicker";
@@ -259,18 +259,6 @@ function ActionIcon({ type }) {
 }
 
 /* ── Helpers ── */
-// Find a step object anywhere in the tree by id (branches included).
-function findStepById(arr, id) {
-  for (const s of arr || []) {
-    if (!s || typeof s !== "object") continue;
-    if (s.id === id) return s;
-    for (const k of ["body", "then", "else", "try", "catch"]) {
-      if (Array.isArray(s[k])) { const f = findStepById(s[k], id); if (f) return f; }
-    }
-  }
-  return null;
-}
-
 function buildDefaultParams(def) {
   const p = {};
   for (const [k, v] of Object.entries(def.inputs || {})) {
@@ -435,34 +423,42 @@ export default function WorkflowPanel({
     const activeStr = String(active.id);
     const overStr   = String(over.id);
     if (!overStr.startsWith('dz:')) return; // only InsertRow zones are valid drop targets
-    const srcLoc = findStepLocation(steps, activeStr);
-    if (!srcLoc) return;
-    // Attached followers (step.attach — e.g. Close Cookie Banner stuck to
-    // its Navigate) travel with the dragged step as one block.
-    const groupSize = attachedGroupSize(steps, activeStr);
+    // An attached group moves as ONE block, no matter which member was
+    // grabbed: resolve to the group's leader and move the whole span.
+    const leader = attachedGroupLeader(steps, activeStr);
+    if (!leader) return;
+    const srcLoc = { containerPath: leader.containerPath, index: leader.index };
+    const groupSize = attachedGroupSize(steps, leader.step.id);
     try {
       const { cp, idx } = JSON.parse(overStr.slice(3));
       // No-op: dropping onto any slot the group already occupies or borders.
       const sameContainer = JSON.stringify(srcLoc.containerPath) === JSON.stringify(cp);
       if (sameContainer && idx >= srcLoc.index && idx <= srcLoc.index + groupSize) return;
       // moveStepById handles both same-container reorders and cross-level
-      // moves (with block-aware index adjustment).
-      onMoveStep && onMoveStep(activeStr, cp, idx !== null && idx !== undefined ? idx : undefined, groupSize);
-      // A dragged step that was itself attached has left its leader — detach.
-      const srcStep = findStepById(steps, activeStr);
-      if (srcStep?.attach && onToggleAttach) onToggleAttach(activeStr, false);
+      // moves (with block-aware index adjustment). The group's attach flags
+      // travel with it, so it stays glued together after the move.
+      onMoveStep && onMoveStep(leader.step.id, cp, idx !== null && idx !== undefined ? idx : undefined, groupSize);
     } catch(e) { console.error('DnD error', e); }
-  }, [steps, onMoveStep, onToggleAttach]);
+  }, [steps, onMoveStep]);
 
-  const flatAll = React.useMemo(() => {
-    const out = [];
-    function walk(arr) { (arr||[]).forEach(s => { out.push(s); ['body','then','else','try','catch'].forEach(k => { if(Array.isArray(s[k])) walk(s[k]); }); }); }
-    walk(steps); return out;
-  }, [steps]);
-  const activeStep = activeId ? flatAll.find(s => s.id === activeId) : null;
-  // "+N attached" badge on the drag ghost when the dragged step carries followers.
-  const activeGroupExtra = activeId ? attachedGroupSize(steps, activeId) - 1 : 0;
+  // The dragged step's whole attached group (leader first) — the ghost shows
+  // every member so it's obvious the block travels as one.
+  const activeGroup = React.useMemo(() => {
+    if (!activeId) return [];
+    const leader = attachedGroupLeader(steps, activeId);
+    if (!leader) return [];
+    const container = getContainer(steps, leader.containerPath) || [];
+    const size = attachedGroupSize(steps, leader.step.id);
+    return container.slice(leader.index, leader.index + size);
+  }, [steps, activeId]);
   const capturedOutputs = React.useMemo(() => collectCapturedOutputs(steps), [steps]);
+
+  const ghostLabel = (s) =>
+    s.type === "CUSTOM_ACTION"
+      ? (customActions.find(a => a.id === s.params?.actionId)?.name || s.label || "Custom action")
+      : (actionDefinitions[s.type]?.label
+          || controlDefinitions[s.type]?.label
+          || s.type?.replace(/_/g, ' '));
 
   return (
     <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, onToggleAttach, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId, variables, availableCapturedOutputs: capturedOutputs, steps, listPickStepId, onStartListPick, onStopListPick }}>
@@ -541,25 +537,32 @@ export default function WorkflowPanel({
                 </>
               )}
               <DragOverlay dropAnimation={null}>
-                {activeStep ? (
-                  <div className="step-card drag-ghost" style={{opacity:0.85,pointerEvents:'none'}}>
-                    <div className="step-card-header">
-                      <div className="step-icon"><ActionIcon type={activeStep.type} /></div>
-                      <div className="step-info">
-                        <div className="step-label">{
-                          activeStep.type === "CUSTOM_ACTION"
-                            ? (customActions.find(a => a.id === activeStep.params?.actionId)?.name || activeStep.label || "Custom action")
-                            : (actionDefinitions[activeStep.type]?.label || activeStep.type?.replace(/_/g,' '))
-                        }</div>
+                {activeGroup.length > 0 && (
+                  <div
+                    className={`drag-ghost-stack${activeGroup.length > 1 ? " drag-ghost-stack--group" : ""}`}
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    {activeGroup.length > 1 && (
+                      <div className="drag-ghost-group-tag">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                        </svg>
+                        {activeGroup.length} attached steps move together
                       </div>
-                      {activeGroupExtra > 0 && (
-                        <span className="drag-ghost-attach-badge" title="Attached steps move along">
-                          +{activeGroupExtra} attached
-                        </span>
-                      )}
-                    </div>
+                    )}
+                    {activeGroup.map(s => (
+                      <div key={s.id} className="step-card drag-ghost">
+                        <div className="step-card-header">
+                          <div className="step-icon"><ActionIcon type={s.type} /></div>
+                          <div className="step-info">
+                            <div className="step-label">{ghostLabel(s)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ) : null}
+                )}
               </DragOverlay>
             </DndContext>
           )}
@@ -658,16 +661,26 @@ function InsertRow({ containerPath, index, onPickerOpen, isEnd = false }) {
 
 /* ── StepList (recursive) ── */
 function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, onDelete, onReorder }) {
-  const { activeId } = useContext(WPCtx) || {};
+  const { activeId, steps: rootSteps } = useContext(WPCtx) || {};
   const isDragging = !!activeId;
 
-  // Index of the dragged step within THIS container (-1 if from another container)
-  const draggedIdx = isDragging ? steps.findIndex(s => s.id === activeId) : -1;
+  // Span of the dragged step's WHOLE attached group within THIS container
+  // ([-1, 0] when it lives elsewhere) — the group moves as one block, so
+  // no-op zones and dimming are computed against the full span.
+  let groupStart = -1, groupSize = 0;
+  if (isDragging && rootSteps) {
+    const leader = attachedGroupLeader(rootSteps, activeId);
+    if (leader && JSON.stringify(leader.containerPath) === JSON.stringify(containerPath)) {
+      groupStart = leader.index;
+      groupSize  = attachedGroupSize(rootSteps, leader.step.id);
+    }
+  }
 
-  // A drop zone at position `zoneIdx` is redundant ONLY if it's immediately
-  // before the dragged step (Zone[idx] and Zone[idx-1] are visually adjacent).
-  // Zone[draggedIdx+1] stays visible — dropping there returns the step to its original position.
-  const isNoOp = (zoneIdx) => draggedIdx >= 0 && zoneIdx === draggedIdx;
+  // A drop zone is redundant only if it's immediately before the dragged
+  // group (visually adjacent to it). The zone right after the group stays —
+  // dropping there just returns the block to its original position.
+  const isNoOp = (zoneIdx) => groupStart >= 0 && zoneIdx === groupStart;
+  const inDraggedGroup = (idx) => groupStart >= 0 && idx >= groupStart && idx < groupStart + groupSize;
 
   // Don't allow ANY insertion above a pinned step (currently only the root-level
   // pinned NAVIGATE qualifies). The pinned step must always be first.
@@ -677,6 +690,12 @@ function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, o
   // No insertion INSIDE an attached group either: the zone between a step
   // and an `attach` follower would split what's meant to move as one block.
   const insideGroup = (zoneIdx) => zoneIdx > 0 && zoneIdx < steps.length && !!steps[zoneIdx]?.attach;
+
+  // Steps glued (directly or transitively) to the pinned start NAVIGATE
+  // can't be dragged — the start of the workflow stays put. Detaching via
+  // the chain toggle makes them movable again.
+  const groupLeaderIdx = (idx) => { let i = idx; while (i > 0 && steps[i]?.attach) i--; return i; };
+  const isStartAttached = (idx) => isRoot && idx > 0 && !!steps[idx]?.attach && !!steps[groupLeaderIdx(idx)]?.pinned;
 
   return (
     <div className="step-list">
@@ -694,9 +713,11 @@ function StepList({ steps, containerPath, depth = 0, onPickerOpen, onEditOpen, o
           )}
           {isControlStep(step) ? (
             <DraggableControlBlock step={step} index={index} containerPath={containerPath} depth={depth}
+              dragLocked={isStartAttached(index)} inDraggedGroup={inDraggedGroup(index)}
               onPickerOpen={onPickerOpen} onEditOpen={onEditOpen} onDelete={onDelete} onReorder={onReorder} />
           ) : (
             <DraggableActionCard step={step} index={index} containerPath={containerPath} depth={depth}
+              dragLocked={isStartAttached(index)} inDraggedGroup={inDraggedGroup(index)}
               onEdit={() => onEditOpen({ containerPath, index, step })}
               onDelete={() => onDelete(containerPath, index)} />
           )}
@@ -742,32 +763,36 @@ function AttachLink() {
 }
 
 /* ── Draggable wrappers — drag handle only, NO drop target on the card itself ── */
-function DraggableActionCard({ step, index, containerPath, depth, onEdit, onDelete }) {
-  // Pinned steps (the workflow's start NAVIGATE) are not draggable — short-circuit
+function DraggableActionCard({ step, index, containerPath, depth, dragLocked = false, inDraggedGroup = false, onEdit, onDelete }) {
+  // Pinned steps (the workflow's start NAVIGATE) are not draggable, and
+  // neither are steps attached to one (dragLocked) — short-circuit
   // useDraggable by disabling it. We still render the card so users can edit it.
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: step.id, disabled: !!step.pinned });
+  const disabled = !!step.pinned || dragLocked;
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: step.id, disabled });
   return (
-    <div ref={setNodeRef} style={{ opacity: isDragging ? 0.25 : 1 }}>
+    <div ref={setNodeRef} style={{ opacity: isDragging || inDraggedGroup ? 0.25 : 1 }}>
       <ActionCard step={step} containerPath={containerPath} index={index} depth={depth}
-        dragHandleProps={step.pinned ? null : { ...attributes, ...listeners }}
+        dragHandleProps={disabled ? null : { ...attributes, ...listeners }}
+        dragLocked={dragLocked}
         onEdit={onEdit}
         onDelete={step.pinned ? null : onDelete} />
     </div>
   );
 }
-function DraggableControlBlock({ step, index, containerPath, depth, onPickerOpen, onEditOpen, onDelete, onReorder }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: step.id });
+function DraggableControlBlock({ step, index, containerPath, depth, dragLocked = false, inDraggedGroup = false, onPickerOpen, onEditOpen, onDelete, onReorder }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: step.id, disabled: dragLocked });
   return (
-    <div ref={setNodeRef} style={{ opacity: isDragging ? 0.25 : 1 }}>
+    <div ref={setNodeRef} style={{ opacity: isDragging || inDraggedGroup ? 0.25 : 1 }}>
       <ControlBlock step={step} index={index} containerPath={containerPath} depth={depth}
-        dragHandleProps={{ ...attributes, ...listeners }}
+        dragHandleProps={dragLocked ? null : { ...attributes, ...listeners }}
+        dragLocked={dragLocked}
         onPickerOpen={onPickerOpen} onEditOpen={onEditOpen} onDelete={onDelete} onReorder={onReorder} />
     </div>
   );
 }
 
 /* ── ActionCard ── */
-function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit, onDelete }) {
+function ActionCard({ step, containerPath, index, depth, dragHandleProps, dragLocked = false, onEdit, onDelete }) {
   const wp  = useContext(WPCtx) || {};
   const { insertTarget, onSetInsertTarget, onMoveStep, onToggleAttach, customActions = [] } = wp;
   const isAttached = !!step.attach && index > 0;
@@ -789,6 +814,13 @@ function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit
         {step.pinned ? (
           <div className="step-pin-marker" title="Start URL — edit via the URL bar at the top">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>
+          </div>
+        ) : dragLocked ? (
+          <div className="step-drag-handle step-drag-handle--locked"
+               title="Attached to the start URL, so it stays at the top — detach (chain icon) to move it">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+            </svg>
           </div>
         ) : (
           <div className="step-drag-handle" {...(dragHandleProps || {})}><DragDotsIcon /></div>
@@ -857,7 +889,7 @@ function ActionCard({ step, containerPath, index, depth, dragHandleProps, onEdit
 }
 
 /* ── ControlBlock ── */
-function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPickerOpen, onEditOpen, onDelete, onReorder }) {
+function ControlBlock({ step, index, containerPath, depth, dragHandleProps, dragLocked = false, onPickerOpen, onEditOpen, onDelete, onReorder }) {
   const [collapsed, setCollapsed] = useState(false);
   // Pagination loops default to a "simple" view that hides the
   // auto-generated IF/BREAK/click/wait machinery behind an "Advanced
@@ -903,7 +935,16 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, onPi
     <div className={`control-block ${isPagination ? 'control-block--pagination' : ''} ${isNativePagination ? 'control-block--native-pagination' : ''} ${isAfterTarget ? 'control-block--insert-target' : ''}`}
          style={{ "--ctrl-color": headerColor, "--ctrl-bg": headerBg }}>
       <div className="control-block-header">
-        <div className="step-drag-handle" {...(dragHandleProps || {})}><DragDotsIcon /></div>
+        {dragLocked ? (
+          <div className="step-drag-handle step-drag-handle--locked"
+               title="Attached to the start URL, so it stays at the top — detach to move it">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+            </svg>
+          </div>
+        ) : (
+          <div className="step-drag-handle" {...(dragHandleProps || {})}><DragDotsIcon /></div>
+        )}
         <div className="control-type-badge">{headerIcon}</div>
         <div className="control-info">
           <span className="control-label">{headerLabel}</span>

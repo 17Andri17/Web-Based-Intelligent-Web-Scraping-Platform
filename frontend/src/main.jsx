@@ -1594,17 +1594,36 @@ function AppShell({ user, token, onLogout }) {
     const y = Math.max(0, Math.min(vh - 1, Math.round(yRaw)));
     return { x, y };
   };
+  // Whether the last mousedown was actually forwarded to the backend. A
+  // mouseup must mirror its mousedown: if the interaction lock flips
+  // between the two, forwarding only half of the pair desyncs the remote
+  // mouse-button state ("'left' is already pressed") and from then on
+  // every other click is silently dropped.
+  const mouseDownForwardedRef = useRef(false);
   const emit = (type, extra = {}) => {
     // Don't send mouse/keyboard events to the backend when there's no active
     // page — e.g. after "New workflow" before the next navigate. Otherwise
     // hover events race against a torn-down execution context.
     if (!isStreamingRef.current) return;
     // While the page is loading and the consent banner is being analysed,
-    // swallow click events (mouse button down/up) so a stray click can't hit a
-    // half-loaded page or race the auto-dismiss. Hover/scroll/keys still flow.
-    if (interactionLockedRef.current && (type === "mousedown" || type === "mouseup")) {
-      setStatus("Loading… clicks paused");
-      return;
+    // swallow clicks so a stray click can't hit a half-loaded page or race
+    // the auto-dismiss. Hover/scroll/keys still flow.
+    if (type === "mousedown") {
+      if (interactionLockedRef.current) {
+        mouseDownForwardedRef.current = false;
+        setStatus("Loading… clicks paused");
+        return;
+      }
+      mouseDownForwardedRef.current = true;
+    } else if (type === "mouseup") {
+      // Paired with a swallowed mousedown → swallow too. Paired with a
+      // forwarded mousedown → always forward, even if the lock has engaged
+      // in the meantime.
+      if (!mouseDownForwardedRef.current) {
+        if (interactionLockedRef.current) setStatus("Loading… clicks paused");
+        return;
+      }
+      mouseDownForwardedRef.current = false;
     }
     socketRef.current?.emit("userAction", { type, ...extra });
   };
