@@ -57,6 +57,20 @@ export function attachedGroupSize(rootSteps, stepId) {
   return n;
 }
 
+/** The LEADER of stepId's attached group — the first step of the contiguous
+    block it belongs to (walk back while the current step carries `attach`).
+    A step with no attach flag is its own leader. Returns
+    { containerPath, index, step } or null when the step can't be found. */
+export function attachedGroupLeader(rootSteps, stepId) {
+  const loc = findStepLocation(rootSteps, stepId);
+  if (!loc) return null;
+  const container = getContainer(rootSteps, loc.containerPath);
+  if (!container || !Array.isArray(container)) return null;
+  let i = loc.index;
+  while (i > 0 && container[i]?.attach) i--;
+  return { containerPath: loc.containerPath, index: i, step: container[i] };
+}
+
 // Read: navigate to the nested array at containerPath inside rootSteps.
 // Returns null (never throws) when path is stale/invalid.
 export function getContainer(rootSteps, containerPath) {

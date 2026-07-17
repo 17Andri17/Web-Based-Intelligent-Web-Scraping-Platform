@@ -733,14 +733,29 @@ body {
     color: var(--accent-primary);
 }
 
-.drag-ghost-attach-badge {
-    margin-left: auto;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: var(--accent-primary);
-    color: #fff;
+/* Drag ghost for an attached group — every member card is stacked under a
+   "move together" tag so it's obvious the whole block travels as one. */
+.drag-ghost-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    opacity: 0.9;
+}
+.drag-ghost-stack--group {
+    padding: 8px;
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+    border: 1px dashed color-mix(in srgb, var(--accent-primary) 55%, transparent);
+    box-shadow: var(--shadow-lg);
+}
+.drag-ghost-group-tag {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 11px;
     font-weight: 600;
+    color: var(--accent-primary);
+    padding: 0 2px 4px;
     white-space: nowrap;
 }
 
@@ -820,6 +835,18 @@ body {
 
 .step-drag-handle:active {
     cursor: grabbing;
+}
+
+/* Non-draggable handle: the step is attached to the pinned start URL and
+   stays put until it's detached via the chain toggle. */
+.step-drag-handle--locked {
+    cursor: not-allowed;
+    color: var(--accent-primary);
+    opacity: 0.65;
+}
+.step-drag-handle--locked:hover {
+    background: none;
+    color: var(--accent-primary);
 }
 
 .step-icon {
