@@ -147,7 +147,7 @@ function InlineInput({ value, placeholder, mono, onSave }) {
 
 // ─── Step editor ─────────────────────────────────────────────────────────────
 
-function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onReselect, onCancelReselect }) {
+function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onReselect, onCancelReselect, onDelete }) {
   const cws = useContext(CWSCtx) || {};
   const selector  = step.params?.selector || step.params?.containerSelector || "";
   const attribute = step.params?.attribute || "";
@@ -212,6 +212,7 @@ function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onRes
             onStartPick={() => cws.onStartListPick && cws.onStartListPick(step.id, step.params?.containerSelector || "")}
             onStopPick={() => cws.onStopListPick && cws.onStopListPick()}
             onName={(n) => { if (!(step.label && step.label.trim())) onUpdateLabel(step.id, n); }}
+            aiBusyExternal={cws.aiListBusyStepId === step.id}
           />
         </div>
       )}
@@ -236,79 +237,20 @@ function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onRes
           <InlineInput value={step.params?.text||""} placeholder="Text to type…" onSave={v=>onUpdateParams(step.id,{text:v})} />
         </div>
       )}
-    </div>
-  );
-}
 
-// ─── Step card ───────────────────────────────────────────────────────────────
-
-function StepCard({ item, isSelected, reselectStepId, onToggle, onHover, onLeave, onReselect, onCancelReselect, onUpdateParams, onUpdateLabel }) {
-  const { step, depth, inActiveLoop, isActiveLoop, containerSelector } = item;
-  const meta = getMeta(step.type);
-  const ownSelector = step.params?.selector || step.params?.containerSelector || "";
-  // Resolve to a selector that the page can actually query: a child of a
-  // ForEach loop usually has ":scope" or a relative selector that's only
-  // meaningful relative to the loop iterator.
-  const hoverSelector = composeScopedSelector(containerSelector, ownSelector);
-  const displayName = step.label || step.params?.url || step.type?.replace(/_/g," ").toLowerCase() || "step";
-
-  return (
-    <div
-      className={[
-        "cws-step",
-        isSelected     ? "cws-step--selected"  : "",
-        isActiveLoop   ? "cws-step--active-loop": "",
-        inActiveLoop   ? "cws-step--in-loop"    : "",
-      ].filter(Boolean).join(" ")}
-      style={{ paddingLeft: 10 + depth * 14 }}
-      onMouseEnter={() => hoverSelector && onHover(hoverSelector)}
-      onMouseLeave={onLeave}
-    >
-      <div className="cws-step-row" onClick={onToggle}>
-        {/* Indent bar — highlighted when inside active forEach */}
-        {depth > 0 && (
-          <span className={`cws-indent-bar ${inActiveLoop ? "cws-indent-bar--active" : ""}`}/>
-        )}
-
-        {/* Type badge */}
-        <span className="cws-badge" style={{background:meta.color.bg, color:meta.color.text}}>
-          {meta.short}
-        </span>
-
-        <div className="cws-step-info">
-          <span className="cws-step-name">{displayName.length>26 ? displayName.slice(0,26)+"…":displayName}</span>
-          {ownSelector && !isSelected && (
-            <span className="cws-step-sel">{ownSelector.length>30 ? ownSelector.slice(0,30)+"…":ownSelector}</span>
-          )}
-        </div>
-
-        {/* Re-select icon (on hover) */}
-        {HAS_SELECTOR.has(step.type) && (
+      {onDelete && (
+        <div className="cws-editor-footer">
           <button
-            className="cws-pick-btn"
-            title="Pick new element"
-            onClick={e=>{ e.stopPropagation(); onReselect(step.id, LOOP_TYPES.has(step.type)); }}
+            className="cws-delete-btn"
+            onClick={() => onDelete(step.id)}
+            title="Remove this step from the workflow"
           >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
             </svg>
+            Delete step
           </button>
-        )}
-
-        <svg className={`cws-chevron ${isSelected?"open":""}`} width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-          <polyline points="6,9 12,15 18,9"/>
-        </svg>
-      </div>
-
-      {isSelected && (
-        <StepEditor
-          step={step}
-          reselectStepId={reselectStepId}
-          onUpdateParams={onUpdateParams}
-          onUpdateLabel={onUpdateLabel}
-          onReselect={onReselect}
-          onCancelReselect={onCancelReselect}
-        />
+        </div>
       )}
     </div>
   );
@@ -339,6 +281,8 @@ export default function CompactWorkflowSidebar({
   insertTarget, onSetInsertTarget, onMoveStep,
   socket, previewData,
   listPickStepId = null, onStartListPick, onStopListPick,
+  aiListBusyStepId = null,
+  onDeleteStep,
   expandStepId = null, onExpandHandled,
 }) {
   const [selectedId, setSelectedId] = useState(null);
@@ -360,10 +304,8 @@ export default function CompactWorkflowSidebar({
   const isTargetActive = (stepId, type) =>
     insertTarget && insertTarget.stepId === stepId && insertTarget.type === type;
 
-  const isRootEnd = insertTarget?.type === 'root_end' || (!insertTarget && true); // default
-
   return (
-    <CWSCtx.Provider value={{ socket, previewData, listPickStepId, onStartListPick, onStopListPick }}>
+    <CWSCtx.Provider value={{ socket, previewData, listPickStepId, onStartListPick, onStopListPick, aiListBusyStepId }}>
     <div className="cws-content">
       {/* ForEach context banner */}
       {forEachCtxStepId && (
@@ -410,10 +352,18 @@ export default function CompactWorkflowSidebar({
             <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
           </svg>
           <p>No steps yet</p>
+          <span className="cws-empty-hint">
+            Navigate to a page and click elements in selection mode to start building your workflow.
+          </span>
         </div>
       ) : (
+        <>
+        <div className="cws-list-header">
+          <span className="cws-list-title">Steps</span>
+          <span className="cws-list-count">{flat.length}</span>
+        </div>
         <div className="cws-list">
-          {flat.map((item, idx) => {
+          {flat.map((item) => {
             const { step, depth, inActiveLoop, isActiveLoop, containerSelector } = item;
             const meta = getMeta(step.type);
             const ownSelector  = step.params?.selector || step.params?.containerSelector || "";
@@ -421,12 +371,6 @@ export default function CompactWorkflowSidebar({
             const displayName = step.label || step.params?.url || step.type?.replace(/_/g," ").toLowerCase() || "step";
             const isLoop = LOOP_TYPES.has(step.type);
             const isSelected = selectedId === step.id;
-            const isReselectingMe = reselectStepId === step.id;
-
-            // Find the flat item's container path for move buttons
-            const prevItem = flat[idx - 1];
-            const canMoveInto = prevItem && LOOP_TYPES.has(prevItem.step.type); // prev sibling is a loop
-            const canMoveOut  = depth > 0;
 
             return (
               <div key={step.id}>
@@ -457,7 +401,7 @@ export default function CompactWorkflowSidebar({
                     isActiveLoop ? "cws-step--active-loop" : "",
                     inActiveLoop ? "cws-step--in-loop" : "",
                   ].filter(Boolean).join(" ")}
-                  style={{ paddingLeft: 10 + depth * 14 }}
+                  style={{ marginLeft: depth * 12 }}
                   onMouseEnter={() => hoverSelector && handleHover(hoverSelector)}
                   onMouseLeave={handleLeave}
                 >
@@ -469,9 +413,9 @@ export default function CompactWorkflowSidebar({
                       {meta.short}
                     </span>
                     <div className="cws-step-info">
-                      <span className="cws-step-name">{displayName.length>26 ? displayName.slice(0,26)+"…":displayName}</span>
+                      <span className="cws-step-name" title={displayName}>{displayName}</span>
                       {ownSelector && !isSelected && (
-                        <span className="cws-step-sel">{ownSelector.length>30 ? ownSelector.slice(0,30)+"…":ownSelector}</span>
+                        <span className="cws-step-sel" title={ownSelector}>{ownSelector}</span>
                       )}
                     </div>
                     {HAS_SELECTOR.has(step.type) && (
@@ -509,6 +453,7 @@ export default function CompactWorkflowSidebar({
                       onUpdateLabel={onUpdateLabel}
                       onReselect={onReselect}
                       onCancelReselect={onCancelReselect}
+                      onDelete={onDeleteStep}
                     />
                   )}
                 </div>
@@ -525,6 +470,7 @@ export default function CompactWorkflowSidebar({
             onSet={onSetInsertTarget}
           />
         </div>
+        </>
       )}
     </div>
     </CWSCtx.Provider>

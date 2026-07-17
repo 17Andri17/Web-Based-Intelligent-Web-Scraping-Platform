@@ -5,35 +5,54 @@
 .sidebar-tab-bar {
   flex-shrink: 0;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-default);
-  padding: 0 4px;
+  padding: 0 6px;
   gap: 2px;
-  height: 38px;
+  height: 40px;
 }
 
 .sidebar-tab-btn {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
+  gap: 6px;
+  padding: 0 11px;
   background: none;
   border: none;
-  border-radius: 6px;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-muted);
   cursor: pointer;
-  transition: background 130ms, color 130ms;
+  transition: color 130ms;
   white-space: nowrap;
+  min-width: 0;
 }
-.sidebar-tab-btn:hover { background: var(--bg-elevated); color: var(--text-secondary); }
-.sidebar-tab-btn.active { background: var(--bg-elevated); color: var(--text-primary); font-weight: 600; }
+.sidebar-tab-btn::after {
+  content: "";
+  position: absolute;
+  left: 8px; right: 8px; bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  transition: background 130ms;
+}
+.sidebar-tab-btn:hover { color: var(--text-secondary); }
+.sidebar-tab-btn.active { color: var(--text-primary); font-weight: 600; }
+.sidebar-tab-btn.active::after { background: var(--accent-primary); }
 .sidebar-tab-btn svg { flex-shrink: 0; }
+
+/* When the sidebar gets narrow, drop the tab captions — icons carry it */
+@container sidebar (max-width: 330px) {
+  .sidebar-tab-btn { gap: 0; }
+  .sidebar-tab-btn span,
+  .sidebar-tab-btn .sidebar-tab-label { display: none; }
+}
 
 .sidebar-tab-close {
   margin-left: auto;
+  align-self: center;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -43,6 +62,7 @@
   border-radius: 5px;
   color: var(--text-muted);
   cursor: pointer;
+  flex-shrink: 0;
   transition: background 130ms, color 130ms;
 }
 .sidebar-tab-close:hover { background: var(--bg-elevated); color: var(--text-primary); }
@@ -60,7 +80,7 @@
   text-align: center;
 }
 .sidebar-no-element svg { opacity: 0.4; }
-.sidebar-no-element p { font-size: 13px; line-height: 1.5; max-width: 200px; }
+.sidebar-no-element p { font-size: 13px; line-height: 1.5; max-width: 220px; }
 
 /* ============================================================
    COMPACT WORKFLOW CONTENT
@@ -70,36 +90,44 @@
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
+  background: var(--bg-primary);
 }
 
-/* ForEach mode banner */
-.cws-foreach-banner {
+/* ── Status banners (forEach / reselect / insert target) ────── */
+.cws-foreach-banner,
+.cws-reselect-banner,
+.cws-target-banner {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 7px 12px;
+  gap: 8px;
+  padding: 8px 12px;
   font-size: 11px;
   font-weight: 600;
+  line-height: 1.35;
+}
+.cws-foreach-banner {
   color: var(--accent-primary);
   background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--accent-primary) 22%, transparent);
 }
-
-/* Re-select banner */
 .cws-reselect-banner {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 7px 12px;
-  font-size: 11px;
   font-weight: 500;
   color: var(--accent-warning);
   background: color-mix(in srgb, var(--accent-warning) 10%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--accent-warning) 22%, transparent);
 }
+.cws-target-banner {
+  font-weight: 500;
+  color: var(--accent-success);
+  background: color-mix(in srgb, var(--accent-success) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-success) 22%, transparent);
+}
+.cws-foreach-banner svg,
+.cws-reselect-banner svg,
+.cws-target-banner svg { flex-shrink: 0; }
 
 /* Empty state */
 .cws-empty {
@@ -113,53 +141,93 @@
   text-align: center;
   padding: 32px 20px;
 }
-.cws-empty p { font-size: 12px; }
+.cws-empty svg { opacity: 0.45; }
+.cws-empty p { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.cws-empty-hint { font-size: 12px; line-height: 1.5; max-width: 230px; }
+
+/* ── List header ──────────────────────────────────────────── */
+.cws-list-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px 7px;
+}
+.cws-list-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.cws-list-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  padding: 1px 7px;
+  line-height: 1.5;
+}
 
 /* Scrollable list */
 .cws-list {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 8px 14px;
 }
-.cws-list::-webkit-scrollbar { width: 4px; }
+.cws-list::-webkit-scrollbar { width: 5px; }
 .cws-list::-webkit-scrollbar-track { background: transparent; }
-.cws-list::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 2px; }
+.cws-list::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 3px; }
 
 /* ── Step card ────────────────────────────────────────────── */
 .cws-step {
-  border-bottom: 1px solid var(--border-muted);
   position: relative;
-  transition: background 120ms;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-muted);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: background 120ms, border-color 120ms, box-shadow 120ms;
 }
-.cws-step:hover { background: var(--bg-secondary); }
-.cws-step--selected { background: var(--bg-secondary); }
+.cws-step:hover {
+  border-color: var(--border-default);
+  box-shadow: var(--shadow-sm);
+}
+.cws-step--selected {
+  background: var(--bg-secondary);
+  border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-default));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-primary) 25%, transparent), var(--shadow-sm);
+}
 
 /* Active loop step (the loop itself that's selected via forEachCtx) */
 .cws-step--active-loop {
-  background: color-mix(in srgb, var(--accent-primary) 6%, transparent);
+  background: color-mix(in srgb, var(--accent-primary) 7%, var(--bg-secondary));
+  border-color: color-mix(in srgb, var(--accent-primary) 35%, var(--border-muted));
 }
 
 /* Steps INSIDE the active loop */
 .cws-step--in-loop {
-  background: color-mix(in srgb, var(--accent-primary) 3%, transparent);
+  background: color-mix(in srgb, var(--accent-primary) 3%, var(--bg-secondary));
 }
 
 .cws-step-row {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 7px 8px 7px 0;
+  gap: 8px;
+  padding: 8px 9px;
   cursor: pointer;
   position: relative;
+  min-width: 0;
 }
 
-/* Indent bar — vertical line for nested steps */
+/* Indent bar — vertical accent for nested steps */
 .cws-indent-bar {
-  position: absolute;
-  left: -8px;
-  top: 0; bottom: 0;
-  width: 2px;
+  flex-shrink: 0;
+  align-self: stretch;
+  width: 3px;
+  margin: -8px 0;
   background: var(--border-default);
-  border-radius: 1px;
   transition: background 150ms;
 }
 /* Highlighted when inside active ForEach loop */
@@ -172,10 +240,11 @@
   flex-shrink: 0;
   font-size: 9px;
   font-weight: 800;
-  font-family: 'SFMono-Regular', Consolas, monospace;
-  padding: 2px 5px;
-  border-radius: 4px;
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  padding: 3px 6px;
+  border-radius: 5px;
   letter-spacing: 0.03em;
+  line-height: 1.2;
 }
 
 .cws-step-info {
@@ -188,7 +257,7 @@
 }
 .cws-step-sel {
   font-size: 10px;
-  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
   color: var(--text-muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -196,30 +265,31 @@
 /* Re-select icon button — appears on hover */
 .cws-pick-btn {
   display: flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px;
-  background: none; border: none; border-radius: 4px;
+  width: 22px; height: 22px;
+  background: none; border: none; border-radius: 5px;
   color: var(--text-muted); cursor: pointer;
-  opacity: 0; transition: opacity 120ms, color 120ms;
+  opacity: 0; transition: opacity 120ms, color 120ms, background 120ms;
   flex-shrink: 0;
 }
 .cws-step-row:hover .cws-pick-btn { opacity: 1; }
-.cws-pick-btn:hover { color: var(--accent-primary); }
+.cws-pick-btn:hover { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 12%, transparent); }
 
 .cws-chevron { color: var(--text-muted); flex-shrink: 0; transition: transform 150ms; }
 .cws-chevron.open { transform: rotate(180deg); }
 
 /* ── Step editor ──────────────────────────────────────────── */
 .cws-editor {
-  padding: 8px 10px 10px 10px;
-  display: flex; flex-direction: column; gap: 7px;
+  padding: 10px 11px 11px;
+  display: flex; flex-direction: column; gap: 9px;
   border-top: 1px solid var(--border-muted);
   background: var(--bg-tertiary);
+  min-width: 0;
 }
 
-.cws-field { display: flex; flex-direction: column; gap: 3px; }
+.cws-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .cws-label {
-  font-size: 10px; font-weight: 600;
-  letter-spacing: 0.06em; text-transform: uppercase;
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.07em; text-transform: uppercase;
   color: var(--text-muted);
 }
 
@@ -227,46 +297,50 @@
   width: 100%; box-sizing: border-box;
   background: var(--bg-primary);
   border: 1px solid var(--border-default);
-  border-radius: 5px; padding: 5px 8px;
+  border-radius: 6px; padding: 6px 9px;
   font-size: 12px; color: var(--text-primary);
   font-family: inherit; outline: none;
-  transition: border-color 120ms;
+  transition: border-color 120ms, box-shadow 120ms;
 }
-.cws-input:focus { border-color: var(--accent-primary); }
-.cws-input--mono { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 11px; }
+.cws-input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 20%, transparent);
+}
+.cws-input--mono { font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; }
 
 .cws-val {
-  width: 100%; box-sizing: border-box; min-height: 28px;
+  width: 100%; box-sizing: border-box; min-height: 29px;
   display: flex; align-items: center;
   background: var(--bg-primary);
-  border: 1px solid var(--border-default); border-radius: 5px;
-  padding: 5px 8px; font-size: 12px; color: var(--text-primary);
+  border: 1px solid var(--border-default); border-radius: 6px;
+  padding: 6px 9px; font-size: 12px; color: var(--text-primary);
   font-family: inherit; text-align: left; cursor: text;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: border-color 120ms;
 }
+.cws-val > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cws-val:hover { border-color: var(--text-muted); }
-.cws-val--mono { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 11px; }
+.cws-val--mono { font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 11px; }
 .cws-placeholder { color: var(--text-muted); font-style: italic; font-size: 11px; }
 
-.cws-sel-row { display: flex; align-items: center; gap: 5px; }
+.cws-sel-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .cws-sel-row .cws-val,
-.cws-sel-row .cws-input { flex: 1; }
+.cws-sel-row .cws-input { flex: 1; min-width: 0; }
 
 .cws-reselect-btn {
   flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px;
+  width: 29px; height: 29px;
   background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, transparent);
-  border-radius: 5px; color: var(--accent-primary); cursor: pointer;
+  border-radius: 6px; color: var(--accent-primary); cursor: pointer;
   transition: background 120ms;
 }
 .cws-reselect-btn:hover { background: color-mix(in srgb, var(--accent-primary) 18%, transparent); }
 
 .cws-reselect-active {
   display: flex; align-items: center; gap: 7px;
-  padding: 6px 8px; border-radius: 6px; font-size: 11px;
+  padding: 7px 9px; border-radius: 6px; font-size: 11px;
   color: var(--accent-primary); font-weight: 500;
   background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent);
@@ -277,6 +351,32 @@
   font-size: 12px; color: var(--text-secondary); cursor: pointer;
 }
 .cws-checkbox-row input[type="checkbox"] { accent-color: var(--accent-primary); }
+
+/* Editor footer — destructive actions kept apart from the fields */
+.cws-editor-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+  border-top: 1px dashed var(--border-muted);
+  margin-top: 2px;
+}
+.cws-delete-btn {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 6px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11px; font-weight: 500;
+  padding: 4px 9px;
+  cursor: pointer;
+  transition: color 120ms, background 120ms, border-color 120ms;
+}
+.cws-delete-btn:hover {
+  color: var(--accent-danger);
+  background: color-mix(in srgb, var(--accent-danger) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent-danger) 30%, transparent);
+}
 
 /* Shared pulse + cancel */
 .cws-pulse {
@@ -300,11 +400,11 @@
 
 /* ── Insert target zone (thin accent line) ─────────── */
 .cws-insert-zone {
-  height: 10px;
+  height: 12px;
   display: flex;
   align-items: center;
   cursor: pointer;
-  padding: 0 10px;
+  padding: 0 8px;
   opacity: 0;
   transition: opacity 160ms;
 }
@@ -333,19 +433,6 @@
   animation: cwsPulse 1.5s ease-in-out infinite;
 }
 
-/* ── Insert target status banner ──────────────────────────── */
-.cws-target-banner {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 7px 12px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--accent-success);
-  background: color-mix(in srgb, var(--accent-success) 10%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--accent-success) 22%, transparent);
-}
 /* ── Attached-step chain link (replaces the insert line inside a group) ── */
 .cws-attach-link {
   display: flex;
@@ -363,4 +450,15 @@
   height: 1px;
   background: var(--accent-primary);
   opacity: 0.4;
+}
+
+/* ── Narrow-sidebar adjustments — everything must fit without
+      horizontal scrolling even at the 300px minimum width ────── */
+@container sidebar (max-width: 340px) {
+  .cws-list { padding: 0 5px 12px; }
+  .cws-step-row { gap: 6px; padding: 7px 7px; }
+  .cws-editor { padding: 9px 8px 10px; }
+  /* Reselect button always visible on touch-tight layouts is noise —
+     keep it hover-revealed, but shrink paddings instead. */
+  .cws-badge { font-size: 8px; padding: 2px 4px; }
 }

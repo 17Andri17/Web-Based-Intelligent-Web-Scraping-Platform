@@ -252,6 +252,7 @@ export default function ElementInspector({
   onHoverPickerChild, onHoverAncestor, onUnhoverPickerChild,
   onClearForEachCtx,
   socket, onUpdateParams, onUpdateLabel,
+  onAiExtractList,
 }) {
   if (!element) return null;
 
@@ -264,9 +265,7 @@ export default function ElementInspector({
         onClose={onClose}
         onAddStep={onAddStep}
         onClearForEachCtx={onClearForEachCtx}
-        socket={socket}
-        onUpdateParams={onUpdateParams}
-        onUpdateLabel={onUpdateLabel}
+        onAiExtractList={onAiExtractList}
       />
     );
   }
@@ -481,86 +480,22 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
 
 // ─── Multi-element inspector ───────────────────────────────────────────────
 
-function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForEachCtx, socket, onUpdateParams, onUpdateLabel }) {
+function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForEachCtx, onAiExtractList }) {
   // For multi-selection only two actions make sense:
   //   1. Add a ForEach loop that iterates over the matched elements
   //   2. Add an Extract List step that pulls structured fields out of each
   //      element — optionally with an AI prompt that auto-populates the
   //      field mappings on add.
-  const [addedFlash, setAddedFlash]       = useState(null);     // 'FOREACH' | 'EXTRACT_LIST' | 'EXTRACT_LIST_AI'
+  //
+  // Adding an Extract List (either way) immediately opens the step's editor
+  // in the workflow sidebar — which unmounts this inspector — so the AI
+  // request itself is owned by the AppShell (onAiExtractList): the fields
+  // land on the step and show up in the open editor whenever the answer
+  // arrives.
+  const [addedFlash, setAddedFlash]       = useState(null);     // 'FOREACH'
   const [aiMode, setAiMode]               = useState(false);    // is the AI prompt panel open?
   const [aiHint, setAiHint]               = useState("");
-  const [aiBusy, setAiBusy]               = useState(false);
   const [aiError, setAiError]             = useState(null);
-  // Track the ID we asked the AI to fill so we ignore stale responses
-  // (e.g. user adds two AI-Extract steps back to back).
-  const pendingRef = useRef(null);
-
-  // Subscribe to the AI response once. Each request carries a unique
-  // requestId so we know which step's params to patch when the answer
-  // returns. The inspector may have been closed in the meantime — that's
-  // fine, we still hold a reference to onUpdateParams.
-  useEffect(() => {
-    if (!socket) return;
-    const onResult = (payload) => {
-      const pending = pendingRef.current;
-      if (!pending || payload.requestId !== pending.requestId) return;
-      pendingRef.current = null;
-      setAiBusy(false);
-
-      if (!payload.ok) {
-        setAiError(formatAiError(payload));
-        return;
-      }
-
-      // Convert the verified array [{name, selector, kind, attribute}] into
-      // the params.fields object shape expected by the editor + codegen.
-      // An empty selector is VALID — it means "use the container element
-      // itself" (e.g. for an anchor container, exam_url has selector="" and
-      // attribute="href"). Only drop entries that lack a name or a usable
-      // selector string (we keep "" but reject undefined/null).
-      const fieldsObj = {};
-      for (const f of payload.fields || []) {
-        if (!f || !f.name) continue;
-        if (typeof f.selector !== "string") continue;
-        const kind = f.kind === "attr" || f.kind === "html" ? f.kind : "text";
-        // For attribute-kind, we still need an attribute name
-        if (kind === "attr" && !f.attribute) continue;
-        fieldsObj[f.name] = {
-          selector: f.selector,
-          kind,
-          attribute: kind === "attr" ? f.attribute : null,
-        };
-      }
-
-      if (Object.keys(fieldsObj).length === 0) {
-        setAiError("The AI didn't return any usable fields. Add some manually from the step's editor.");
-        return;
-      }
-
-      onUpdateParams?.(pending.stepId, { fields: fieldsObj });
-      // Auto-name the whole Extract List step with the AI's Title Case table
-      // name ("Product Listings"). Mirrors the editor's auto-detect path so
-      // both entry points behave the same. (The step was just created here,
-      // so it has no user-typed label to clobber.)
-      if (payload.name) onUpdateLabel?.(pending.stepId, payload.name);
-      setAiError(null);
-      setAiHint("");
-      setAiMode(false);
-      // Surface useful provenance: heuristic-only / mixed / pure AI. This
-      // helps the user understand that "✨ Added!" might mean the AI
-      // failed and we fell back to the built-in detector.
-      const source = payload.source || 'ai';
-      const flash =
-        source === 'heuristic' ? 'EXTRACT_LIST_HEUR_DONE' :
-        source === 'mixed'     ? 'EXTRACT_LIST_MIX_DONE'  :
-                                 'EXTRACT_LIST_AI_DONE';
-      setAddedFlash(flash);
-      setTimeout(() => setAddedFlash(null), 1600);
-    };
-    socket.on("aiExtractListFieldsResult", onResult);
-    return () => socket.off("aiExtractListFieldsResult", onResult);
-  }, [socket, onUpdateParams, onUpdateLabel]);
 
   const handleAddForEach = () => {
     const control = createControl(CONTROL_TYPES.FOR_EACH_ELEMENTS, {
@@ -592,36 +527,20 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
 
   const handleAddExtractList = () => {
     const step = buildExtractListStep();
-    onAddStep(step);
-    setAddedFlash("EXTRACT_LIST");
-    setTimeout(() => setAddedFlash(null), 800);
+    onAddStep(step);   // opens the step's editor in the workflow sidebar
   };
 
   const handleAddExtractListWithAI = () => {
     setAiError(null);
-    if (!socket) {
-      setAiError("Not connected to the backend.");
-      return;
-    }
     if (!selection.commonSelector) {
       setAiError("No selector available for this selection.");
       return;
     }
-    // Create the step first so the user sees it in the workflow and the
-    // editor can land on it. The fields will fill in when the AI answers.
+    // Create the step first so its editor can open in the sidebar, then hand
+    // the AI request to the AppShell — it outlives this inspector.
     const step = buildExtractListStep();
     onAddStep(step);
-
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-    pendingRef.current = { requestId, stepId: step.id };
-    setAiBusy(true);
-    socket.emit("aiExtractListFields", {
-      containerSelector: selection.commonSelector,
-      selectorType: "css",
-      hint: aiHint,
-      existingFields: {},
-      requestId,
-    });
+    onAiExtractList?.(step.id, selection.commonSelector, aiHint);
   };
 
   return (
@@ -721,13 +640,13 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
         )}
 
         {/* ── 2. Extract List (with / without AI) ────────────────────────── */}
-        <div className={`ei-extract-list-card ${["EXTRACT_LIST", "EXTRACT_LIST_AI_DONE", "EXTRACT_LIST_HEUR_DONE", "EXTRACT_LIST_MIX_DONE"].includes(addedFlash) ? "flash" : ""}`}>
+        <div className="ei-extract-list-card">
           <div className="ei-extract-list-header">
             <span className="ei-extract-list-icon"><ActionIcon type="EXTRACT_LIST" size={17} /></span>
             <div className="ei-extract-list-text">
               <div className="ei-extract-list-title">Add as Extract List</div>
               <div className="ei-extract-list-desc">
-                Pull structured fields (text or attributes) out of each item. Add it now and configure fields later, or let the AI propose them from a sample.
+                Pull structured fields (text or attributes) out of each item. The step's editor opens right away — review the fields, adjust them, or pick more straight from the page.
               </div>
             </div>
           </div>
@@ -737,14 +656,12 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
             <div className="ei-extract-list-actions">
               <button
                 className="ei-foreach-btn"
-                onClick={handleAddExtractList}
-                disabled={aiBusy}>
-                {addedFlash === "EXTRACT_LIST" ? <><CheckIcon /> Added!</> : <><PlusIcon /> Add (configure later)</>}
+                onClick={handleAddExtractList}>
+                <PlusIcon /> Add & pick fields
               </button>
               <button
                 className="ei-extract-list-ai-btn"
                 onClick={() => setAiMode(true)}
-                disabled={aiBusy}
                 title="Open AI prompt and add with auto-detected fields">
                 ✨ Add with AI prompt…
               </button>
@@ -759,36 +676,23 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
                 value={aiHint}
                 placeholder={'Describe what to extract — e.g. "product title, price, image URL and link. Ignore the rating stars."'}
                 onChange={e => setAiHint(e.target.value)}
-                disabled={aiBusy}
               />
               <div className="ei-extract-list-ai-actions">
                 <button
                   className="ei-foreach-btn"
-                  onClick={handleAddExtractListWithAI}
-                  disabled={aiBusy}>
-                  {aiBusy
-                    ? "Analysing…"
-                    : addedFlash === "EXTRACT_LIST_AI_DONE"   ? <><CheckIcon /> Fields added!</>
-                    : addedFlash === "EXTRACT_LIST_MIX_DONE"  ? <><CheckIcon /> AI + heuristics added!</>
-                    : addedFlash === "EXTRACT_LIST_HEUR_DONE" ? <><CheckIcon /> Fallback fields added!</>
-                    : <>✨ Add with AI</>}
+                  onClick={handleAddExtractListWithAI}>
+                  ✨ Add with AI
                 </button>
                 <button
                   className="ei-extract-list-cancel"
-                  onClick={() => { setAiMode(false); setAiError(null); }}
-                  disabled={aiBusy}>
+                  onClick={() => { setAiMode(false); setAiError(null); }}>
                   Cancel
                 </button>
               </div>
               {aiError && <div className="ei-extract-list-ai-error">{aiError}</div>}
-              {!aiError && aiBusy && (
-                <div className="ei-extract-list-ai-busy">
-                  Analysing a sample item and verifying selectors on the live page…
-                </div>
-              )}
-              {!aiError && !aiBusy && (
+              {!aiError && (
                 <div className="ei-extract-list-ai-hint">
-                  AI proposes field mappings (text or attribute). Every selector is verified live before being added — you can edit them in the step's editor afterwards.
+                  AI proposes field mappings (text or attribute), each verified on the live page. The step's editor opens immediately — the fields appear there as soon as the AI answers.
                 </div>
               )}
             </div>
@@ -797,21 +701,6 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
       </div>
     </div>
   );
-}
-
-// ── AI error → friendly message ──────────────────────────────────────────
-function formatAiError(payload) {
-  if (!payload) return "Unknown AI error";
-  const code = payload.code || "";
-  switch (code) {
-    case "NO_API_KEY":   return "AI is not configured on the server (set LLM_API_KEY). Add fields manually from the step's editor.";
-    case "NO_PAGE":      return "No active browser page — navigate to the target URL first.";
-    case "NO_SAMPLE":    return payload.error || "No matching element on the live page.";
-    case "BAD_JSON":
-    case "BAD_FIELDS":   return "The AI didn't return a usable suggestion. Add fields manually or try a more specific hint.";
-    case "LLM_FAIL":
-    default:             return payload.error || `AI request failed (${code || "unknown"}).`;
-  }
 }
 
 // ─── ForEach context banner ───────────────────────────────────────────────
