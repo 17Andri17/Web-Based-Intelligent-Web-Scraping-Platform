@@ -1623,7 +1623,7 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
           socket={socket}
           previewRows={previewRows}
           pickActive={pickActive}
-          onStartPick={() => onStartListPick && onStartListPick(step.id, containerSelector)}
+          onStartPick={(fields) => onStartListPick && onStartListPick(step.id, containerSelector, fields)}
           onStopPick={() => onStopListPick && onStopListPick()}
           onName={onName}
         />

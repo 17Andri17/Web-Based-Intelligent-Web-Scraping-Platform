@@ -1449,10 +1449,10 @@ function AppShell({ user, token, onLogout }) {
   }, [forEachCtx]);
 
   // ── List-field pick (click elements in the page to add EXTRACT_LIST fields) ─
-  const handleStartListPick = useCallback((stepId, containerSelector) => {
+  const handleStartListPick = useCallback((stepId, containerSelector, fields = []) => {
     if (!socketRef.current || !containerSelector) return;
     setListPickStepId(stepId);
-    socketRef.current.emit("startListFieldPick", { containerSelector });
+    socketRef.current.emit("startListFieldPick", { containerSelector, fields });
     // Bring the live browser into view with this step's editor open in the
     // workflow sidebar, so the page is clickable AND the fields editor (which
     // receives the picks) stays mounted.
@@ -2524,7 +2524,25 @@ function AppShell({ user, token, onLogout }) {
         selection={selectedElement}
         onClose={() => setWizardOpen(false)}
         onSetMode={changeMode}
-        onNavigate={(url) => { setUrlInput(url); performNavigate(url); }}
+        onNavigate={(url) => {
+          setUrlInput(url);
+          // The wizard drives navigation directly (not through the URL bar's
+          // handleNavigate), so make sure the workflow still gets its pinned
+          // start NAVIGATE — otherwise page-setup steps recorded during the
+          // load (e.g. Close Cookie Banner) attach to nothing and the built
+          // workflow starts with no navigation.
+          const cur = stepsRef.current || [];
+          if (cur[0]?.type === "NAVIGATE") {
+            if (cur[0].pinned && cur[0].params?.url !== url) {
+              updateParamsById(cur[0].id, { url });
+            }
+          } else {
+            const nav = createAction("NAVIGATE", { url });
+            nav.pinned = true;
+            addStep(nav, [], 0);
+          }
+          performNavigate(url);
+        }}
         onApplySteps={(newSteps, meta) => {
           // Append the wizard's generated steps to the workflow and jump to
           // the Workflow tab so the user can review/edit them. If the

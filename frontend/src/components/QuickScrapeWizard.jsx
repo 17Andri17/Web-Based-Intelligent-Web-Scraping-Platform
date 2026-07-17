@@ -273,9 +273,11 @@ export default function QuickScrapeWizard({
     <div className="qsw">
       <div className="qsw-head">
         <div className="qsw-title">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/>
-          </svg>
+          <span className="qsw-title-badge">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/>
+            </svg>
+          </span>
           Quick Scrape
         </div>
         <button className="qsw-close" onClick={onClose} aria-label="Close">
@@ -378,6 +380,12 @@ export default function QuickScrapeWizard({
                         placeholder="column name"
                         title={f.selector ? `Selector: ${f.selector}` : "Uses the item itself"}
                       />
+                      {f.kind === "attr" && f.attribute && (
+                        <span className="qsw-field-kind attr" title={`Extracts the ${f.attribute} attribute`}>@{f.attribute}</span>
+                      )}
+                      {f.kind === "html" && (
+                        <span className="qsw-field-kind html" title="Extracts the inner HTML">&lt;/&gt;</span>
+                      )}
                       {f.sampleValue
                         ? <span className="qsw-field-sample" title={f.sampleValue}>{f.sampleValue.slice(0, 40)}</span>
                         : f.manual && <span className="qsw-field-sample qsw-field-sample--manual" title={f.selector || "the item itself"}>manual</span>}

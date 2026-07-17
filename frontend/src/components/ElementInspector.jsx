@@ -360,6 +360,16 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
         <CopyButton text={element.selector} />
       </div>
 
+      {/* Backup selectors for the single element — same safety net the
+          multi-selection inspector surfaces. */}
+      {(element.fallbackSelectors || []).length > 0 && (
+        <div className="ei-single-fallbacks">
+          <FallbackDisclosure count={element.fallbackSelectors.length}>
+            <FallbackChipList selectors={element.fallbackSelectors} />
+          </FallbackDisclosure>
+        </div>
+      )}
+
       {/* ── Details — collapsible so the actions keep the prime space ───── */}
       {element.breadcrumb?.length > 0 && (
         <Section id="structure" title="Page structure" badge={element.breadcrumb.length}>
