@@ -209,7 +209,7 @@ function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onRes
             socket={cws.socket}
             previewRows={cws.previewData && cws.previewData[step.id]?.previewRows}
             pickActive={cws.listPickStepId === step.id}
-            onStartPick={() => cws.onStartListPick && cws.onStartListPick(step.id, step.params?.containerSelector || "")}
+            onStartPick={(fields) => cws.onStartListPick && cws.onStartListPick(step.id, step.params?.containerSelector || "", fields)}
             onStopPick={() => cws.onStopListPick && cws.onStopListPick()}
             onName={(n) => { if (!(step.label && step.label.trim())) onUpdateLabel(step.id, n); }}
             aiBusyExternal={cws.aiListBusyStepId === step.id}

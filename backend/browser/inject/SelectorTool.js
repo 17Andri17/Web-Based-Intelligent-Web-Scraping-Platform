@@ -30,6 +30,12 @@
   let _listPickContainers = [];
   let _listPickHoverEl    = null;
   let _listPickOverlay    = null;
+  // Markers for fields that are ALREADY defined on the list: outlined
+  // elements + small name chips, painted on every matching container item
+  // so the user sees at a glance what's captured and what's still free.
+  let _listPickFieldEls   = [];
+  let _listPickChips      = [];
+  let _listPickLastFields = null;
 
   const originalStyles = new Map();
   // Every element we've ever applied a highlight style to. Used as a
@@ -44,12 +50,19 @@
   const HARD_OUTLINE  = '2px solid #3fb950';
   const HOVER_OUTLINE = '2px solid #58a6ff';
 
-  const CONTAINER_PICK_OUTLINE     = '2px solid rgba(163,113,247,0.55)';
-  const CONTAINER_PICK_SHADOW      = 'inset 0 0 0 9999px rgba(163,113,247,0.06)';
+  const CONTAINER_PICK_OUTLINE     = '2px solid #a371f7';
+  const CONTAINER_PICK_SHADOW      = 'inset 0 0 0 9999px rgba(163,113,247,0.05)';
   const FIELD_PICK_HOVER_OUTLINE   = '2px solid #58a6ff';
   const FIELD_PICK_HOVER_SHADOW    = 'inset 0 0 0 9999px rgba(88,166,255,0.11)';
   const FIELD_PICK_CONFIRM_OUTLINE = '2px solid #3fb950';
   const FIELD_PICK_CONFIRM_SHADOW  = 'inset 0 0 0 9999px rgba(63,185,80,0.13)';
+  // Already-captured field markers (see __updateListFieldMarkers__)
+  const FIELD_MARK_OUTLINE         = '1.5px dashed #3fb950';
+  const FIELD_MARK_COLORS = {
+    text: '#3fb950',
+    attr: '#58a6ff',
+    html: '#a371f7',
+  };
 
   /* =========================================================================
      STYLE HELPERS
@@ -498,7 +511,7 @@
     ].join(';');
     document.body.appendChild(_listPickOverlay);
     requestAnimationFrame(function() {
-      if (_listPickOverlay) _listPickOverlay.style.background = 'rgba(0,0,0,0.40)';
+      if (_listPickOverlay) _listPickOverlay.style.background = 'rgba(0,0,0,0.55)';
     });
   }
 
@@ -516,7 +529,125 @@
     _listPickHoverEl = null;
     restoreStyle(el, 'outline');
     restoreStyle(el, 'box-shadow');
+    // If the element carries an already-captured-field marker, put the
+    // marker outline back — the restore above reverted to the page's own.
+    if (_listPickFieldEls.indexOf(el) !== -1) {
+      el.style.setProperty('outline', FIELD_MARK_OUTLINE, 'important');
+      el.style.setProperty('outline-offset', '-1px', 'important');
+    }
   }
+
+  /* ── Already-captured field markers ──────────────────────────────────────
+     Outline + tiny name chip on every element (in every container) that an
+     existing field of the EXTRACT_LIST step resolves to, so while picking
+     the user always sees what's captured — attribute fields are labelled
+     with their @attr, html ones with </>. Chips use absolute page
+     coordinates so they scroll with the content. */
+
+  function _clearListFieldMarkers() {
+    _listPickFieldEls.forEach(function(el) {
+      restoreStyle(el, 'outline');
+      restoreStyle(el, 'outline-offset');
+    });
+    _listPickFieldEls = [];
+    _listPickChips.forEach(function(c) { if (c.parentNode) c.parentNode.removeChild(c); });
+    _listPickChips = [];
+  }
+
+  function _applyListFieldMarkers(fields) {
+    _clearListFieldMarkers();
+    if (!_listPickMode || !Array.isArray(fields) || fields.length === 0) return;
+    var MAX_CHIPS = 400; // keep huge lists from flooding the DOM
+    var made = 0;
+    for (var ci = 0; ci < _listPickContainers.length && made < MAX_CHIPS; ci++) {
+      var cont = _listPickContainers[ci];
+      var placed = []; // chips already laid out in this container ({top,left,w})
+      for (var fi = 0; fi < fields.length && made < MAX_CHIPS; fi++) {
+        var f = fields[fi];
+        if (!f || !f.name) continue;
+        var sel = (f.selector || '').trim();
+        var el = null;
+        if (!sel || sel === ':scope') {
+          el = cont;
+        } else {
+          try { el = cont.querySelector(sel); } catch (_) { el = null; }
+        }
+        if (!el) continue;
+        var r = el.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) continue;
+
+        // Dashed outline on the captured element (the container itself
+        // already has the purple container outline — chip alone is enough).
+        if (el !== cont && _listPickFieldEls.indexOf(el) === -1) {
+          _markStyled(el);
+          storeOriginalStyle(el, 'outline');
+          storeOriginalStyle(el, 'outline-offset');
+          el.style.setProperty('outline', FIELD_MARK_OUTLINE, 'important');
+          el.style.setProperty('outline-offset', '-1px', 'important');
+          _listPickFieldEls.push(el);
+        }
+
+        // Tiny name chip at the element's top-left corner.
+        var color = FIELD_MARK_COLORS[f.kind] || FIELD_MARK_COLORS.text;
+        var label = f.kind === 'attr' && f.attribute ? f.name + ' @' + f.attribute
+                  : f.kind === 'html' ? f.name + ' </>'
+                  : f.name;
+        var chip = document.createElement('div');
+        chip.textContent = label;
+        chip.style.cssText = [
+          'position:absolute',
+          'z-index:2147483643',
+          'pointer-events:none',
+          'font:600 10px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace',
+          'color:' + color,
+          'background:rgba(13,17,23,0.92)',
+          'border:1px solid ' + color,
+          'border-radius:3px',
+          'padding:0 5px',
+          'white-space:nowrap',
+          'max-width:170px',
+          'overflow:hidden',
+          'text-overflow:ellipsis',
+          'box-shadow:0 1px 4px rgba(0,0,0,0.5)',
+        ].join(';');
+        var top  = r.top + window.scrollY - 16;
+        if (top < 0) top = r.top + window.scrollY + 2;
+        var left = Math.max(0, r.left + window.scrollX);
+        chip.style.top  = top + 'px';
+        chip.style.left = left + 'px';
+        document.body.appendChild(chip);
+        // Fields anchored to the same corner (e.g. a link and the title
+        // inside it) would stack invisibly — slide overlapping chips right.
+        var w = chip.offsetWidth || 40;
+        var moved = true;
+        while (moved) {
+          moved = false;
+          for (var pi = 0; pi < placed.length; pi++) {
+            var p = placed[pi];
+            if (Math.abs(p.top - top) < 14 && left < p.left + p.w + 4 && left + w > p.left) {
+              left = p.left + p.w + 4;
+              moved = true;
+            }
+          }
+        }
+        chip.style.left = left + 'px';
+        placed.push({ top: top, left: left, w: w });
+        _listPickChips.push(chip);
+        made++;
+      }
+    }
+  }
+
+  // Layout can shift under absolute chips (images loading, viewport resize)
+  // — re-anchor them from the last field set.
+  function _onListPickRelayout() {
+    if (_listPickMode && _listPickLastFields) _applyListFieldMarkers(_listPickLastFields);
+  }
+
+  window.__updateListFieldMarkers__ = function(fields) {
+    _listPickLastFields = Array.isArray(fields) ? fields : null;
+    _applyListFieldMarkers(_listPickLastFields || []);
+  };
 
   /* =========================================================================
      ELEMENT INFO
@@ -1161,7 +1292,7 @@
 
   window.__resetSelection__ = function() { fullReset(); };
 
-  window.__startListFieldPick__ = function(containerSelector) {
+  window.__startListFieldPick__ = function(containerSelector, fields) {
     window.__stopListFieldPick__(); // idempotent — clear any previous state
     fullReset();                    // clear any normal element selection
     _listPickMode = true;
@@ -1199,11 +1330,21 @@
       tooltip.style.left = '50%';
       tooltip.style.setProperty('transform', 'translateX(-50%)');
     }
+    // Mark the fields that are already captured, and keep the chips
+    // anchored through layout shifts.
+    window.addEventListener('resize', _onListPickRelayout);
+    if (Array.isArray(fields) && fields.length) {
+      _listPickLastFields = fields;
+      _applyListFieldMarkers(fields);
+    }
   };
 
   window.__stopListFieldPick__ = function() {
     if (!_listPickMode) return;
     _listPickMode = false;
+    window.removeEventListener('resize', _onListPickRelayout);
+    _clearListFieldMarkers();
+    _listPickLastFields = null;
     _clearListPickHover();
     _listPickContainers.forEach(function(el) {
       restoreStyle(el, 'outline');

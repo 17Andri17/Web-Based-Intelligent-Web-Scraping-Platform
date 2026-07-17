@@ -259,8 +259,16 @@ export default function ExtractListFieldsEditor({
   const startPicking = () => {
     if (!containerSelector) return;
     setPendingPick(null);
-    onStartPick && onStartPick();
+    onStartPick && onStartPick(serialiseMarkerFields(normalised));
   };
+
+  // While picking, keep the on-page "already captured" markers in sync with
+  // the field list (confirming a pick, renaming or deleting a field all
+  // update the badges on every container item immediately).
+  useEffect(() => {
+    if (!socket || !pickActive) return;
+    socket.emit("updateListFieldMarkers", { fields: serialiseMarkerFields(normalised) });
+  }, [socket, pickActive, normalised]);
 
   const stopPicking = () => {
     setPendingPick(null);
@@ -603,6 +611,16 @@ function pickSpec(f) {
     kind:     f.kind === "attr" || f.kind === "html" ? f.kind : "text",
     attribute: f.kind === "attr" && typeof f.attribute === "string" ? f.attribute : null,
   };
+}
+
+// Flatten the fields map into what the page-side marker painter needs.
+function serialiseMarkerFields(map) {
+  return Object.entries(map || {}).map(([name, f]) => ({
+    name,
+    selector:  f.selector || "",
+    kind:      f.kind || "text",
+    attribute: f.attribute || null,
+  }));
 }
 
 // Suggest a field name for a pick option — mirrors the injected script's

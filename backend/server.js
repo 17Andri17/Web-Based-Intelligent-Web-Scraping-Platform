@@ -180,12 +180,23 @@ io.on('connection', async (socket) => {
   });
 
   // ── List-field pick mode ──────────────────────────────────────────────────
-  socket.on('startListFieldPick', async ({ containerSelector }) => {
+  socket.on('startListFieldPick', async ({ containerSelector, fields }) => {
     try {
       const page = await getActivePage();
-      if (page) await page.evaluate((sel) => {
-        if (typeof window.__startListFieldPick__ === 'function') window.__startListFieldPick__(sel);
-      }, containerSelector || '');
+      if (page) await page.evaluate((sel, flds) => {
+        if (typeof window.__startListFieldPick__ === 'function') window.__startListFieldPick__(sel, flds);
+      }, containerSelector || '', Array.isArray(fields) ? fields : []);
+    } catch (_) {}
+  });
+
+  // Refresh the "already captured" field markers while pick mode is active
+  // (fires whenever the step's fields change — add/remove/rename/confirm).
+  socket.on('updateListFieldMarkers', async ({ fields }) => {
+    try {
+      const page = await getActivePage();
+      if (page) await page.evaluate((flds) => {
+        if (typeof window.__updateListFieldMarkers__ === 'function') window.__updateListFieldMarkers__(flds);
+      }, Array.isArray(fields) ? fields : []);
     } catch (_) {}
   });
 

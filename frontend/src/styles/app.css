@@ -1537,6 +1537,14 @@ body {
     margin-top: 1px;
 }
 
+/* Fallback disclosure under the single-element selector pill */
+.ei-single-fallbacks {
+    padding: 6px 14px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-muted);
+    flex-shrink: 0;
+}
+
 .ei-selector {
     font-family: ui-monospace, monospace;
     font-size: 11px;
