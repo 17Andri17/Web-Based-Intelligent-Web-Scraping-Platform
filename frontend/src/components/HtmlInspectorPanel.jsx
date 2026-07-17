@@ -387,6 +387,12 @@ export default function HtmlInspectorPanel({ socket, active, refreshKey, selecte
   const onHover = (node) => socket?.emit("highlightElementByPath", { path: node.path });
   const onUnhover = () => socket?.emit("unhoverPickerChild");
 
+  // mouseleave never fires when a hovered line is unmounted with this panel
+  // (tab switch, sidebar close) — clear any hover highlight left on the page.
+  const socketRef2 = useRef(socket);
+  useEffect(() => { socketRef2.current = socket; }, [socket]);
+  useEffect(() => () => { socketRef2.current?.emit("unhoverPickerChild"); }, []);
+
   const closeCopyMenu = useCallback(() => {
     clearTimeout(copyCloseTimerRef.current);
     setCopyMenu(null);

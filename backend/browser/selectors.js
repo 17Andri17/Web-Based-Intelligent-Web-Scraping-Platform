@@ -1154,6 +1154,27 @@
       }
     }
 
+    // 2.5) Parent-class-anchored positional selector — cousins sitting at
+    // the same child slot inside similar cards: `article.card > div:nth-child(2)`.
+    // Far more robust than a per-element id union for card listings.
+    if (allSameTag) {
+      var idxs = els.map(function(e) {
+        return e.parentElement ? Array.prototype.indexOf.call(e.parentElement.children, e) + 1 : -1;
+      });
+      var sameIdx = idxs.length > 0 && idxs.every(function(i) { return i === idxs[0] && i > 0; });
+      var parents = els.map(function(e) { return e.parentElement; }).filter(Boolean);
+      if (sameIdx && parents.length === els.length) {
+        var pShared  = sharedStableClasses(parents);
+        var pTag     = parents[0].tagName.toLowerCase();
+        var pSameTag = parents.every(function(p) { return p.tagName.toLowerCase() === pTag; });
+        for (var pn = Math.min(pShared.length, 2); pn >= 1; pn--) {
+          var pCls = pShared.slice(0, pn).map(function(c) { return '.' + cssEscape(c); }).join('');
+          if (pSameTag) consider(pTag + pCls + ' > ' + tag + ':nth-child(' + idxs[0] + ')', 62 + pn, 'parent-class-child');
+          consider(pCls + ' > ' + tag + ':nth-child(' + idxs[0] + ')', 61 + pn, 'parent-class-child');
+        }
+      }
+    }
+
     // 3) Guaranteed-exact per-element union (last resort)
     consider(perElementCssUnion(els), 8, 'per-element-union');
 
@@ -1404,24 +1425,26 @@
     };
   }
 
-  function findSimilarTiers(seed) {
-    if (!seed || isBoundary(seed)) return { tiers: [], strategy: 'none' };
-
-    var classPool = classPoolForSeed(seed);
-
-    // ── No stable classes → a single nearest-siblings tier (structural) ─────
-    if (!classPool) {
-      var direct = strategyDirectSiblings(seed);
-      if (direct && direct.els.length > 1) {
-        var t = decorateTier(direct.els, seed.parentElement, true, 0, 1);
-        t.strategy = 'structural';
-        return { tiers: [t], strategy: 'structural-tiers' };
-      }
-      return { tiers: [], strategy: 'none' };
+  // "Cousins": elements at the same relative position inside similar
+  // ancestor cards (e.g. `article.card > div:nth-child(2)` across a listing
+  // of cards). This is what makes classless wrapper elements selectable as
+  // a group — their own siblings are dissimilar, but their card-mates are
+  // structural twins.
+  function cousinPoolForSeed(seed) {
+    var groups = strategyAncestorGroups(seed);
+    var best = null;
+    for (var gi = 0; gi < groups.length; gi++) {
+      var g = groups[gi];
+      if (g.strategy.indexOf('B:') !== 0) continue;
+      if (!g.els || g.els.length < 2 || g.els.indexOf(seed) === -1) continue;
+      if (!best || g.els.length > best.els.length) best = g;
     }
+    return best ? best.els : null;
+  }
 
-    // ── Stable classes → climb ancestors building nested cumulative tiers ───
-    var pool      = classPool.els;
+  // Climb ancestors over a pool of similar elements, building nested
+  // cumulative tiers (nearest ring → whole pool).
+  function buildTiersFromPool(seed, pool) {
     var rawTiers  = [];
     var seenSizes = {};
     var anc       = seed.parentElement;
@@ -1440,12 +1463,33 @@
     }
 
     var total = rawTiers.length;
-    var tiers = rawTiers.map(function(rt, i) {
+    return rawTiers.map(function(rt, i) {
       var isGlobal = (rt.scope === null) || (rt.els.length === pool.length);
       return decorateTier(rt.els, rt.scope, isGlobal, i, total);
     });
+  }
 
-    return { tiers: tiers, strategy: 'class-tiers' };
+  function findSimilarTiers(seed) {
+    if (!seed || isBoundary(seed)) return { tiers: [], strategy: 'none' };
+
+    var classPool = classPoolForSeed(seed);
+
+    // ── No stable classes → structural similarity: nearest similar
+    // siblings, else cousins (same slot inside similar ancestor cards) ─────
+    if (!classPool) {
+      var pool = null;
+      var direct = strategyDirectSiblings(seed);
+      if (direct && direct.els.length > 1) pool = direct.els;
+      if (!pool) pool = cousinPoolForSeed(seed);
+      if (!pool) return { tiers: [], strategy: 'none' };
+
+      var tiers = buildTiersFromPool(seed, pool);
+      if (tiers.length === 1) tiers[0].strategy = 'structural';
+      return { tiers: tiers, strategy: 'structural-tiers' };
+    }
+
+    // ── Stable classes → climb ancestors building nested cumulative tiers ───
+    return { tiers: buildTiersFromPool(seed, classPool.els), strategy: 'class-tiers' };
   }
 
   /* =========================================================================

@@ -81,6 +81,15 @@ export default function ExtractListFieldsEditor({
   useEffect(() => { pickActiveRef.current = pickActive; }, [pickActive]);
   // Clear any stale pending-pick card when picking is turned off.
   useEffect(() => { if (!pickActive) setPendingPick(null); }, [pickActive]);
+  // This editor is the pick session's only receiver — if it unmounts while
+  // picking (sidebar tab switched, step collapsed, another step expanded),
+  // end the session so the page isn't left intercepting clicks that go
+  // nowhere.
+  const onStopPickRef = useRef(onStopPick);
+  useEffect(() => { onStopPickRef.current = onStopPick; }, [onStopPick]);
+  useEffect(() => () => {
+    if (pickActiveRef.current) onStopPickRef.current && onStopPickRef.current();
+  }, []);
 
   // Listen for the AI response from the backend.
   useEffect(() => {

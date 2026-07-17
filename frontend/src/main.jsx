@@ -896,6 +896,10 @@ function AppShell({ user, token, onLogout }) {
     if (newMode !== "selection" && forEachCtx) return;
     setMode(newMode);
     if (newMode !== "selection") {
+      // Leaving selection mode tears down every page-side highlight
+      // subsystem (the injected script does this on setMode) — mirror the
+      // list-field pick state here so the editor's pick UI can't go stale.
+      if (listPickStepId) handleStopListPick();
       socketRef.current?.emit("resetSelection");
       setSelectedElement(null);
     }
@@ -906,6 +910,9 @@ function AppShell({ user, token, onLogout }) {
   // Clears steps, closes the backend page, resets URL bar, drops run results.
   const resetWorkflow = useCallback(() => {
     setSteps([]);
+    // End any in-flight list-field pick — the page it targeted is going away.
+    setListPickStepId(null);
+    socketRef.current?.emit("stopListFieldPick");
     cookieStepAutoAddedRef.current = false;
     setCurrentWorkflowId(null);
     setCurrentWorkflowName("");
@@ -1503,6 +1510,22 @@ function AppShell({ user, token, onLogout }) {
   useEffect(() => {
     if (listPickStepId && activeTab !== "stream") handleStopListPick();
   }, [activeTab, listPickStepId, handleStopListPick]);
+
+  // A page navigation destroys the injected pick mode with the old page —
+  // mirror it here so the editor's pick UI doesn't stay "active" against a
+  // page that is no longer picking.
+  const lastPickUrlRef = useRef(currentPageUrl);
+  useEffect(() => {
+    if (lastPickUrlRef.current !== currentPageUrl) {
+      lastPickUrlRef.current = currentPageUrl;
+      if (listPickStepId) handleStopListPick();
+    }
+  }, [currentPageUrl, listPickStepId, handleStopListPick]);
+
+  // Deleting the step that owns the pick session ends the session.
+  useEffect(() => {
+    if (listPickStepId && !findStepLocation(steps, listPickStepId)) handleStopListPick();
+  }, [steps, listPickStepId, handleStopListPick]);
 
   // ── Run / Download / Cancel ───────────────────────────────────────────────
   const handleRun = () => {
@@ -2235,6 +2258,9 @@ function AppShell({ user, token, onLogout }) {
                     onExpandHandled={handleSidebarExpandHandled}
                     reselectStepId={reselectStepId}
                     onReselect={(id, isLoop) => {
+                      // Re-selecting an element and list-field picking are
+                      // mutually exclusive page modes — end the pick first.
+                      if (listPickStepId) handleStopListPick();
                       setReselectStepId(id);
                       setReselectIsLoop(!!isLoop);
                       if (isLoop) socketRef.current?.emit("startForEachSelection");
