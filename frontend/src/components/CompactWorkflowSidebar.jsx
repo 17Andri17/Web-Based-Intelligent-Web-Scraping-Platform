@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useContext, createContext } from "react";
+import { useState, useCallback, useEffect, useContext, useRef, createContext } from "react";
 import ExtractListFieldsEditor from "./ExtractListFieldsEditor";
 import "../styles/ExtractListFieldsEditor.css";
 
@@ -300,6 +300,12 @@ export default function CompactWorkflowSidebar({
 
   const handleHover = useCallback((sel) => { if (sel) onHighlight(sel); }, [onHighlight]);
   const handleLeave = useCallback(() => { onClearHighlight(); }, [onClearHighlight]);
+
+  // mouseleave never fires when the hovered row is unmounted with the
+  // sidebar — clear any hover highlight left on the page.
+  const clearHighlightRef = useRef(onClearHighlight);
+  useEffect(() => { clearHighlightRef.current = onClearHighlight; }, [onClearHighlight]);
+  useEffect(() => () => { clearHighlightRef.current && clearHighlightRef.current(); }, []);
 
   const isTargetActive = (stepId, type) =>
     insertTarget && insertTarget.stepId === stepId && insertTarget.type === type;
