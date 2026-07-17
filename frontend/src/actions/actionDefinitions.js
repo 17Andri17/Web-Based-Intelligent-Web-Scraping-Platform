@@ -66,6 +66,11 @@ export const actionDefinitions = {
           { label: "Off (ignore CAPTCHAs)", value: "off" }
         ],
         default: "auto"
+      },
+      skipOnRun: {
+        type: "boolean",
+        label: "Editor only — don't navigate when the workflow runs (the run is driven entirely by the other steps)",
+        default: false
       }
     },
     outputs: {

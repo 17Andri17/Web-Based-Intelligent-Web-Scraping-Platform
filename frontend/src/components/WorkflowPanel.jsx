@@ -827,7 +827,13 @@ function ActionCard({ step, containerPath, index, depth, dragHandleProps, dragLo
         )}
         <div className="step-icon"><ActionIcon type={step.type} /></div>
         <div className="step-info">
-          <div className="step-label">{def.label}{step.pinned ? <span className="step-pin-tag"> · start URL</span> : null}</div>
+          <div className="step-label">
+            {def.label}
+            {step.pinned ? <span className="step-pin-tag"> · start URL</span> : null}
+            {step.type === "NAVIGATE" && step.advanced?.skipOnRun ? (
+              <span className="step-pin-tag" title="Marked editor-only — the run skips this navigation"> · editor only</span>
+            ) : null}
+          </div>
           <div className="step-type">{def.category || "Action"}</div>
         </div>
         <div className="step-actions">

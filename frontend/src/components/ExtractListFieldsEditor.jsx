@@ -270,17 +270,33 @@ export default function ExtractListFieldsEditor({
     socket.emit("updateListFieldMarkers", { fields: serialiseMarkerFields(normalised) });
   }, [socket, pickActive, normalised]);
 
+  // The pending pick resolved without a field change (discarded / Escape) —
+  // re-send the markers so the page drops the spotlight on the clicked
+  // element. (Confirms re-send via the normalised effect above anyway.)
+  useEffect(() => {
+    if (pendingPick || !socket || !pickActive) return;
+    socket.emit("updateListFieldMarkers", { fields: serialiseMarkerFields(normalised) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPick]);
+
   const stopPicking = () => {
     setPendingPick(null);
     onStopPick && onStopPick();
   };
 
   // Switch what the pending pick extracts (text vs a specific attribute vs
-  // html). Re-suggests the field name unless the user already typed one.
+  // html). Re-suggests the field name unless the user already typed one,
+  // and moves the on-page spotlight to the element this option targets
+  // (e.g. the enclosing <a> when its href is chosen).
   const choosePickOption = (opt) => {
     setPickOption(opt);
     if (!pickNameEditedRef.current) {
       setPickName(uniqueName(suggestNameForOption(opt, pendingPick), normalised));
+    }
+    if (socket && pendingPick) {
+      socket.emit("previewListPickOption", {
+        selector: typeof opt.selector === "string" ? opt.selector : (pendingPick.relativeSelector || ""),
+      });
     }
   };
 

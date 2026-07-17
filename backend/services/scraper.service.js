@@ -106,9 +106,26 @@ module.exports = (io) => {
           // Alt/Ctrl/Shift+click (which would download the link or open a new
           // tab instead of navigating).
           await reconcileModifiers(userId, page, action);
-          await page.mouse.down(action.x, action.y);
+          try {
+            await page.mouse.down();
+          } catch (err) {
+            // Self-heal a desynced button state ("'left' is already
+            // pressed" — e.g. an earlier mouseup was lost to a navigation
+            // teardown). Without this every other click is silently
+            // dropped until the session restarts.
+            if (/already pressed/i.test(err.message || '')) {
+              try { await page.mouse.up(); } catch (_) {}
+              await page.mouse.down();
+            } else { throw err; }
+          }
         } else if (action.type === "mouseup") {
-          await page.mouse.up(action.x, action.y);
+          try {
+            await page.mouse.up();
+          } catch (err) {
+            // Mouseup for a press we never saw — the state is already
+            // "up"; swallowing keeps the NEXT click intact.
+            if (!/not pressed/i.test(err.message || '')) throw err;
+          }
         } else if (action.type === "leave") {
           await page.mouse.move(-1, -1);
           socket.emit("cursorType", { cursor: "default" });

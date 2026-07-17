@@ -243,6 +243,12 @@ function genAction(step, ctx) {
 
     // ── Navigation ───────────────────────────────────────────────────────
     case 'NAVIGATE': {
+      // "Editor only" navigation: the step exists to anchor the live editor
+      // on a page (start URL) but the actual run is driven entirely by the
+      // other workflow steps — emit nothing but a note.
+      if (advanced.skipOnRun) {
+        return `// Navigation to ${params.url || '(unset)'} skipped — marked editor-only\n`;
+      }
       // Per-step cookie-consent preference: 'accept' (default) | 'reject' | 'off'.
       const consentPref = advanced.consent || 'accept';
       const consentCall = consentPref === 'off'
@@ -1802,6 +1808,25 @@ function stripDownloadInstrumentation(code) {
   return code.split('\n').filter(l => !DROP.some(rx => rx.test(l))).join('\n');
 }
 
+/* A NAVIGATE immediately followed by another NAVIGATE has no observable
+   effect — nothing runs between the two page loads. The classic shape is
+   the pinned start-URL step plus the user's own first navigation right
+   after it. Drop the redundant leading one(s) so runs and downloaded
+   scripts navigate once. Conservative on purpose: only root-level leading
+   pairs, and never across an attached follower (e.g. a Close Cookie
+   Banner glued to the first navigation still runs before the second). */
+function pruneRedundantLeadingNavigations(steps) {
+  const out = [...(steps || [])];
+  while (
+    out.length >= 2 &&
+    out[0]?.type === 'NAVIGATE' && !out[0]?.advanced?.skipOnRun &&
+    out[1]?.type === 'NAVIGATE' && !out[1]?.attach
+  ) {
+    out.shift();
+  }
+  return out;
+}
+
 /* =========================================================================
    MAIN EXPORT: generateCode(workflow) → string
    workflow = { steps: [...], meta: { startUrl, viewport } }
@@ -1810,7 +1835,7 @@ function generateCode(workflow, options = {}) {
   // clean = "download" mode: strip platform-only instrumentation so the
   // standalone script is short and readable.
   const clean    = !!options.clean;
-  const steps    = workflow.steps   || [];
+  const steps    = pruneRedundantLeadingNavigations(workflow.steps || []);
   const startUrl = workflow.meta?.startUrl || null;
   const vpW      = workflow.meta?.viewportWidth  || 1280;
   const vpH      = workflow.meta?.viewportHeight || 720;

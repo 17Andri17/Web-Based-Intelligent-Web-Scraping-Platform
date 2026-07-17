@@ -71,7 +71,24 @@ class BrowserManager {
     }
 
     async initBrowser() {
-        if (this.browser) return;
+        if (this.browser) {
+            // The shared browser process can die under us (crash, OOM kill,
+            // external kill). Detect the dead handle and relaunch instead of
+            // failing every subsequent call with "Connection closed" until
+            // the whole server restarts.
+            const alive = typeof this.browser.connected === 'boolean'
+                ? this.browser.connected
+                : (typeof this.browser.isConnected === 'function' ? this.browser.isConnected() : true);
+            if (alive) return;
+            console.warn('⚠️ Shared browser process died — relaunching');
+            try { this.browser.close().catch(() => {}); } catch (_) {}
+            this.browser = null;
+            this.contexts.clear();
+            this.pages.clear();
+            this.pagePromises.clear();
+            this.exposedBindings.clear();
+            this.workerListeners.clear();
+        }
 
         if (this.browserLaunching) {
             await this.browserLaunching;
