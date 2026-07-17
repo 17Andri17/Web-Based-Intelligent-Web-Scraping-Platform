@@ -36,6 +36,16 @@
   let _listPickFieldEls   = [];
   let _listPickChips      = [];
   let _listPickLastFields = null;
+  // The element the user just clicked and is now naming/configuring in the
+  // editor — spotlighted on the page until the pick is confirmed/discarded.
+  let _listPickPendingEl   = null;
+  let _listPickPendingCont = null;
+  let _listPickPendingBox  = null;   // positioned highlight box (outline alone
+                                     // collapses on inline elements wrapping blocks)
+  // Periodic layout watchdog: re-anchors overlay holes + marker chips when
+  // the page reflows (lazy images, infinite lists).
+  let _listPickLayoutTimer = null;
+  let _listPickLayoutSig   = '';
 
   const originalStyles = new Map();
   // Every element we've ever applied a highlight style to. Used as a
@@ -58,11 +68,15 @@
   const FIELD_PICK_CONFIRM_SHADOW  = 'inset 0 0 0 9999px rgba(63,185,80,0.13)';
   // Already-captured field markers (see __updateListFieldMarkers__)
   const FIELD_MARK_OUTLINE         = '1.5px dashed #3fb950';
+  const FIELD_MARK_OUTLINE_MUTED   = '1.5px dashed rgba(63,185,80,0.18)';
   const FIELD_MARK_COLORS = {
     text: '#3fb950',
     attr: '#58a6ff',
     html: '#a371f7',
   };
+  // Spotlight for the pick being configured in the editor right now.
+  const FIELD_PENDING_OUTLINE = '3px solid #58a6ff';
+  const FIELD_PENDING_SHADOW  = '0 0 0 4px rgba(88,166,255,0.35), inset 0 0 0 9999px rgba(88,166,255,0.14)';
 
   /* =========================================================================
      STYLE HELPERS
@@ -500,16 +514,51 @@
     return semantics[tag] || tag;
   }
 
+  function _docSize() {
+    var d = document.documentElement, b = document.body;
+    return {
+      w: Math.max(d.scrollWidth, b ? b.scrollWidth : 0, d.clientWidth),
+      h: Math.max(d.scrollHeight, b ? b.scrollHeight : 0, d.clientHeight),
+    };
+  }
+
+  // The dim overlay is a document-sized sheet with a HOLE punched over each
+  // container (clip-path, evenodd) — the containers show through at full
+  // brightness no matter what stacking contexts their ancestors create.
+  // (The old approach lifted containers with z-index, which silently failed
+  // whenever a parent was itself a stacking context and dimmed the list
+  // together with the rest of the page.)
+  function _updateListPickOverlayHoles() {
+    if (!_listPickOverlay) return;
+    var s = _docSize();
+    _listPickOverlay.style.width  = s.w + 'px';
+    _listPickOverlay.style.height = s.h + 'px';
+    var PAD = 4; // keep the container outline outside the dim
+    var parts = ['M0 0H' + s.w + 'V' + s.h + 'H0Z'];
+    for (var i = 0; i < _listPickContainers.length; i++) {
+      var r;
+      try { r = _listPickContainers[i].getBoundingClientRect(); } catch (_) { continue; }
+      if (r.width === 0 && r.height === 0) continue;
+      var x = Math.max(0, r.left + window.scrollX - PAD);
+      var y = Math.max(0, r.top + window.scrollY - PAD);
+      var w = r.width + PAD * 2;
+      var h = r.height + PAD * 2;
+      parts.push('M' + x + ' ' + y + 'h' + w + 'v' + h + 'h-' + w + 'Z');
+    }
+    _listPickOverlay.style.clipPath = 'path(evenodd, "' + parts.join(' ') + '")';
+  }
+
   function _createListPickOverlay() {
     if (_listPickOverlay) return;
     _listPickOverlay = document.createElement('div');
     _listPickOverlay.style.cssText = [
-      'position:fixed', 'inset:0', 'pointer-events:none',
+      'position:absolute', 'top:0', 'left:0', 'pointer-events:none',
       'z-index:2147483640',
       'background:rgba(0,0,0,0)',
       'transition:background 200ms ease',
     ].join(';');
     document.body.appendChild(_listPickOverlay);
+    _updateListPickOverlayHoles();
     requestAnimationFrame(function() {
       if (_listPickOverlay) _listPickOverlay.style.background = 'rgba(0,0,0,0.55)';
     });
@@ -529,12 +578,88 @@
     _listPickHoverEl = null;
     restoreStyle(el, 'outline');
     restoreStyle(el, 'box-shadow');
-    // If the element carries an already-captured-field marker, put the
-    // marker outline back — the restore above reverted to the page's own.
+    // The restore reverted to the page's own styles — put back whatever
+    // pick-mode decoration the element carries.
+    if (el === _listPickPendingEl) {
+      el.style.setProperty('outline',    FIELD_PENDING_OUTLINE, 'important');
+      el.style.setProperty('box-shadow', FIELD_PENDING_SHADOW,  'important');
+    } else if (_listPickFieldEls.indexOf(el) !== -1) {
+      el.style.setProperty('outline', _listPickPendingEl ? FIELD_MARK_OUTLINE_MUTED : FIELD_MARK_OUTLINE, 'important');
+      el.style.setProperty('outline-offset', '-1px', 'important');
+    }
+  }
+
+  /* ── Pending-pick spotlight ──────────────────────────────────────────────
+     After the user clicks an element they configure its name / what to
+     extract in the editor. While that's open, the exact element being
+     edited gets a strong spotlight and the existing field markers step
+     back, so it's unambiguous what the form refers to. */
+
+  function _muteListFieldMarkers(mute) {
+    for (var i = 0; i < _listPickChips.length; i++) {
+      _listPickChips[i].style.opacity = mute ? '0.12' : '1';
+    }
+    for (var j = 0; j < _listPickFieldEls.length; j++) {
+      var fe = _listPickFieldEls[j];
+      if (fe === _listPickPendingEl || fe === _listPickHoverEl) continue;
+      fe.style.setProperty('outline', mute ? FIELD_MARK_OUTLINE_MUTED : FIELD_MARK_OUTLINE, 'important');
+    }
+  }
+
+  function _clearListPickPendingStyles() {
+    if (_listPickPendingBox) {
+      if (_listPickPendingBox.parentNode) _listPickPendingBox.parentNode.removeChild(_listPickPendingBox);
+      _listPickPendingBox = null;
+    }
+    if (!_listPickPendingEl) return;
+    var el = _listPickPendingEl;
+    restoreStyle(el, 'outline');
+    restoreStyle(el, 'box-shadow');
     if (_listPickFieldEls.indexOf(el) !== -1) {
       el.style.setProperty('outline', FIELD_MARK_OUTLINE, 'important');
       el.style.setProperty('outline-offset', '-1px', 'important');
     }
+  }
+
+  // Anchor the spotlight box on the pending element's page rect. Re-run on
+  // relayout so it tracks the element through reflows.
+  function _positionPendingBox() {
+    if (!_listPickPendingBox || !_listPickPendingEl) return;
+    var r;
+    try { r = _listPickPendingEl.getBoundingClientRect(); } catch (_) { return; }
+    _listPickPendingBox.style.top    = (r.top  + window.scrollY - 3) + 'px';
+    _listPickPendingBox.style.left   = (r.left + window.scrollX - 3) + 'px';
+    _listPickPendingBox.style.width  = (r.width  + 6) + 'px';
+    _listPickPendingBox.style.height = (r.height + 6) + 'px';
+  }
+
+  function _setListPickPending(el, containerEl) {
+    _clearListPickPendingStyles();
+    _listPickPendingEl = el || null;
+    if (containerEl !== undefined) _listPickPendingCont = containerEl;
+    if (!el) { _muteListFieldMarkers(false); return; }
+    _markStyled(el);
+    storeOriginalStyle(el, 'outline');
+    storeOriginalStyle(el, 'box-shadow');
+    el.style.setProperty('outline',    FIELD_PENDING_OUTLINE, 'important');
+    el.style.setProperty('box-shadow', FIELD_PENDING_SHADOW,  'important');
+    // Positioned box on top — outlines collapse to slivers on inline
+    // elements that wrap block children (a common shape for card links),
+    // so the spotlight can't rely on element styles alone.
+    _listPickPendingBox = document.createElement('div');
+    _listPickPendingBox.style.cssText = [
+      'position:absolute',
+      'z-index:2147483642',
+      'pointer-events:none',
+      'box-sizing:border-box',
+      'border:3px solid #58a6ff',
+      'border-radius:4px',
+      'background:rgba(88,166,255,0.13)',
+      'box-shadow:0 0 0 4px rgba(88,166,255,0.30)',
+    ].join(';');
+    document.body.appendChild(_listPickPendingBox);
+    _positionPendingBox();
+    _muteListFieldMarkers(true);
   }
 
   /* ── Already-captured field markers ──────────────────────────────────────
@@ -636,17 +761,55 @@
         made++;
       }
     }
+    // A pick is being configured right now → freshly painted markers step
+    // back immediately so they don't compete with the spotlight.
+    if (_listPickPendingEl) _muteListFieldMarkers(true);
   }
 
-  // Layout can shift under absolute chips (images loading, viewport resize)
-  // — re-anchor them from the last field set.
+  // Layout can shift under the absolute overlay/chips (images loading,
+  // viewport resize, infinite lists) — re-anchor everything.
   function _onListPickRelayout() {
-    if (_listPickMode && _listPickLastFields) _applyListFieldMarkers(_listPickLastFields);
+    if (!_listPickMode) return;
+    _updateListPickOverlayHoles();
+    _applyListFieldMarkers(_listPickLastFields || []);
+    _positionPendingBox();
+  }
+
+  // Cheap signature of the containers' geometry; when it changes, the page
+  // reflowed under us and the overlay holes + chips need re-anchoring.
+  function _listPickLayoutSignature() {
+    var n = _listPickContainers.length;
+    if (!n) return '0';
+    try {
+      var a = _listPickContainers[0].getBoundingClientRect();
+      var b = _listPickContainers[n - 1].getBoundingClientRect();
+      return n + '|' + Math.round(a.top + window.scrollY) + ',' + Math.round(a.left) + ',' + Math.round(a.height)
+               + '|' + Math.round(b.top + window.scrollY) + ',' + Math.round(b.height)
+               + '|' + _docSize().h;
+    } catch (_) { return 'err'; }
   }
 
   window.__updateListFieldMarkers__ = function(fields) {
+    // Any marker update from the editor means the pending pick resolved
+    // (confirmed or discarded) — drop the spotlight.
+    _setListPickPending(null);
     _listPickLastFields = Array.isArray(fields) ? fields : null;
     _applyListFieldMarkers(_listPickLastFields || []);
+  };
+
+  // The editor's "Extract:" chooser targets a specific element (the clicked
+  // one, or e.g. the enclosing <a> for its href) — move the spotlight so the
+  // user sees exactly what the selected option refers to.
+  window.__previewListPickOption__ = function(sel) {
+    if (!_listPickMode || !_listPickPendingCont) return;
+    var s = (sel == null ? '' : String(sel)).trim();
+    var el = null;
+    if (!s || s === ':scope') {
+      el = _listPickPendingCont;
+    } else {
+      try { el = _listPickPendingCont.querySelector(s); } catch (_) { el = null; }
+    }
+    if (el) _setListPickPending(el);
   };
 
   /* =========================================================================
@@ -1116,15 +1279,11 @@
         options:          _collectFieldOptions(tgt, containerEl),
       });
 
-      // Brief green flash to confirm
+      // Spotlight the clicked element while the user names/configures the
+      // field in the editor — cleared when the pick is confirmed/discarded
+      // (the editor re-sends the field markers either way).
       _clearListPickHover();
-      setStyle(tgt, 'outline',    FIELD_PICK_CONFIRM_OUTLINE, true);
-      setStyle(tgt, 'box-shadow', FIELD_PICK_CONFIRM_SHADOW,  true);
-      var flashEl = tgt;
-      setTimeout(function() {
-        restoreStyle(flashEl, 'outline');
-        restoreStyle(flashEl, 'box-shadow');
-      }, 700);
+      _setListPickPending(tgt, containerEl);
       return;
     }
 
@@ -1313,14 +1472,12 @@
       _markStyled(el);
       storeOriginalStyle(el, 'outline');
       storeOriginalStyle(el, 'box-shadow');
-      storeOriginalStyle(el, 'position');
-      storeOriginalStyle(el, 'z-index');
       el.style.setProperty('outline',    CONTAINER_PICK_OUTLINE, 'important');
       el.style.setProperty('box-shadow', CONTAINER_PICK_SHADOW,  'important');
-      if (getComputedStyle(el).position === 'static') {
-        el.style.setProperty('position', 'relative', 'important');
-      }
-      el.style.setProperty('z-index', '2147483641', 'important');
+      // NOTE: no position/z-index lifting here — the overlay has holes cut
+      // over the containers instead, which works regardless of ancestor
+      // stacking contexts (lifting silently failed inside them and dimmed
+      // the containers together with the rest of the page).
     });
     _createListPickOverlay();
     if (tooltip) {
@@ -1330,9 +1487,19 @@
       tooltip.style.left = '50%';
       tooltip.style.setProperty('transform', 'translateX(-50%)');
     }
-    // Mark the fields that are already captured, and keep the chips
-    // anchored through layout shifts.
+    // Mark the fields that are already captured, and keep the overlay holes
+    // + chips anchored through layout shifts.
     window.addEventListener('resize', _onListPickRelayout);
+    _listPickLayoutSig = _listPickLayoutSignature();
+    clearInterval(_listPickLayoutTimer);
+    _listPickLayoutTimer = setInterval(function() {
+      if (!_listPickMode) return;
+      var sig = _listPickLayoutSignature();
+      if (sig !== _listPickLayoutSig) {
+        _listPickLayoutSig = sig;
+        _onListPickRelayout();
+      }
+    }, 900);
     if (Array.isArray(fields) && fields.length) {
       _listPickLastFields = fields;
       _applyListFieldMarkers(fields);
@@ -1343,14 +1510,16 @@
     if (!_listPickMode) return;
     _listPickMode = false;
     window.removeEventListener('resize', _onListPickRelayout);
+    clearInterval(_listPickLayoutTimer);
+    _listPickLayoutTimer = null;
+    _setListPickPending(null);
+    _listPickPendingCont = null;
     _clearListFieldMarkers();
     _listPickLastFields = null;
     _clearListPickHover();
     _listPickContainers.forEach(function(el) {
       restoreStyle(el, 'outline');
       restoreStyle(el, 'box-shadow');
-      restoreStyle(el, 'position');
-      restoreStyle(el, 'z-index');
     });
     _listPickContainers = [];
     _removeListPickOverlay();

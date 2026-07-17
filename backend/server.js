@@ -200,6 +200,17 @@ io.on('connection', async (socket) => {
     } catch (_) {}
   });
 
+  // Move the pending-pick spotlight to the element the currently selected
+  // "Extract:" option targets (e.g. the enclosing <a> for its href).
+  socket.on('previewListPickOption', async ({ selector }) => {
+    try {
+      const page = await getActivePage();
+      if (page) await page.evaluate((sel) => {
+        if (typeof window.__previewListPickOption__ === 'function') window.__previewListPickOption__(sel);
+      }, typeof selector === 'string' ? selector : '');
+    } catch (_) {}
+  });
+
   socket.on('stopListFieldPick', async () => {
     try {
       const page = await getActivePage();
