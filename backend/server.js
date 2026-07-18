@@ -1371,6 +1371,14 @@ io.on('connection', async (socket) => {
     const verifyOnLivePage = async (fields) => {
       if (!fields || fields.length === 0) return { verified: [], rejected: [], totalMatched: sample.count };
       return page.evaluate((containerSel, type, fieldsIn) => {
+        // A field selector may be CSS or a container-relative XPath (leading
+        // '/', './', '//', './/' or '('). Resolve either against a root.
+        const fieldIsXPath = (s) => { if (typeof s !== 'string') return false; s = s.replace(/^\s+/, ''); return s[0] === '/' || s[0] === '(' || (s[0] === '.' && s[1] === '/'); };
+        const relTarget = (root, s) => {
+          if (!s) return root;
+          if (fieldIsXPath(s)) return document.evaluate(s, root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+          return root.querySelector(s);
+        };
         const isXPath = type === 'xpath' || containerSel.startsWith('/') || containerSel.startsWith('(');
         let containers = [];
         if (isXPath) {
@@ -1389,8 +1397,10 @@ io.on('connection', async (socket) => {
             if (!f.selector) {
               target0 = c0;
             } else {
-              target0 = c0.querySelector(f.selector);
-              if (!target0 && c0.matches && c0.matches(f.selector)) {
+              target0 = relTarget(c0, f.selector);
+              // The "container is itself the target" rescue only applies to CSS
+              // (an XPath is already free to select the container via `.`).
+              if (!target0 && !fieldIsXPath(f.selector) && c0.matches && c0.matches(f.selector)) {
                 // Selector targets a descendant of the same shape as the
                 // container itself — rescue by treating the container as
                 // the target. Common with anchor-container scrape lists.
@@ -1399,7 +1409,7 @@ io.on('connection', async (socket) => {
               }
             }
           } catch (e) {
-            rejected.push({ ...f, reason: 'invalid CSS selector: ' + e.message });
+            rejected.push({ ...f, reason: 'invalid selector: ' + e.message });
             continue;
           }
           if (!target0) {
@@ -1421,7 +1431,7 @@ io.on('connection', async (socket) => {
           for (const c of containers.slice(0, 5)) {
             try {
               const candidate = f.selector
-                ? (c.querySelector(f.selector) || (c.matches && c.matches(f.selector) ? c : null))
+                ? (relTarget(c, f.selector) || (!fieldIsXPath(f.selector) && c.matches && c.matches(f.selector) ? c : null))
                 : c;
               if (candidate) hitCount++;
             } catch (_) {}
@@ -1650,6 +1660,14 @@ io.on('connection', async (socket) => {
         if (!sel) return;
         const fields = params?.fields && typeof params.fields === 'object' ? params.fields : {};
         const rows = await page.evaluate((containerSel, fieldsObj) => {
+          // Field selectors (and the container) may be CSS or XPath. XPath is
+          // recognised by a leading '/', './', '//', './/' or '('.
+          const fieldIsXPath = (s) => { if (typeof s !== 'string') return false; s = s.replace(/^\s+/, ''); return s[0] === '/' || s[0] === '(' || (s[0] === '.' && s[1] === '/'); };
+          const relTarget = (root, s) => {
+            if (!s) return root;
+            if (fieldIsXPath(s)) return document.evaluate(s, root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            return root.querySelector(s);
+          };
           const isXPath = containerSel.startsWith('/') || containerSel.startsWith('(');
           const getEls = (s) => {
             if (isXPath) {
@@ -1668,7 +1686,7 @@ io.on('connection', async (socket) => {
                   ? { selector: spec, kind: 'text', attribute: null }
                   : { selector: spec.selector || '', kind: spec.kind || 'text', attribute: spec.attribute || null };
                 const childSel = normalized.selector;
-                const target = childSel ? c.querySelector(childSel) : c;
+                const target = relTarget(c, childSel);
                 if (!target) { row[name] = null; continue; }
                 if (normalized.kind === 'attr' && normalized.attribute) {
                   row[name] = target.getAttribute(normalized.attribute);

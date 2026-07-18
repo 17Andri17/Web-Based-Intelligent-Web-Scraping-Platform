@@ -41,7 +41,7 @@ const SYSTEM_PROMPT = [
   '- The text BEFORE { and AFTER } must be empty.',
   '',
   'Shape:',
-  '{"name":"<Title Case name for the whole list>","fields":[{"name":"<snake_case>","selector":"<CSS relative to container>","kind":"text"|"attr"|"html","attribute":"<only when kind=attr>"}],"explanation":"<one short sentence>"}',
+  '{"name":"<Title Case name for the whole list>","fields":[{"name":"<snake_case>","selector":"<CSS or container-relative XPath>","kind":"text"|"attr"|"html","attribute":"<only when kind=attr>"}],"explanation":"<one short sentence>"}',
 ].join('\n');
 
 function buildUserPrompt({ sampleHtml, sampleHtmls, userHint, existingFields }) {
@@ -64,7 +64,7 @@ function buildUserPrompt({ sampleHtml, sampleHtmls, userHint, existingFields }) 
     lines.push('');
     lines.push('Rules:');
     lines.push('- All items have IDENTICAL structure. Propose ONE set of fields whose selectors work for EVERY item.');
-    lines.push('- Each "selector" is CSS RELATIVE TO A SINGLE item container (one of the items above). Never include the "<!-- ITEM n -->" markers, and never start with html / body.');
+    lines.push('- Each "selector" is CSS (or a container-relative XPath) RELATIVE TO A SINGLE item container (one of the items above). Never include the "<!-- ITEM n -->" markers, and never start with html / body.');
   } else {
     lines.push('Sample HTML of ONE list item (the rest of the items have the same structure):');
     lines.push('```html');
@@ -72,12 +72,16 @@ function buildUserPrompt({ sampleHtml, sampleHtmls, userHint, existingFields }) 
     lines.push('```');
     lines.push('');
     lines.push('Rules:');
-    lines.push('- "selector" is CSS, relative to the container above. Never start with html / body.');
+    lines.push('- "selector" is CSS (or a container-relative XPath), relative to the container above. Never start with html / body.');
   }
   lines.push('- If the value lives ON THE CONTAINER ITSELF (e.g. the container is an <a> and you want its href, or it carries data-* attributes), set "selector" to "" (empty string) and read from the container directly.');
   lines.push('- Otherwise the selector targets a DESCENDANT of the container.');
   lines.push('- Use stable anchors when possible: data-* attributes, aria-label, role, semantic tags.');
   lines.push('- NEVER use CSS-module / build-time hashed class names as selectors. These are short, random-looking class names like ._8Lp2Q, ._3xK9m, .sc-7bLkzJ, or any class that mixes uppercase letters, lowercase letters, and digits in a short string (3-10 chars) — they regenerate on every build and will immediately break the scraper. Instead use tag names, nth-child(), data-* attributes, aria-label/role, or other stable structural selectors.');
+  // Label/text-anchored XPath — the reliable choice for values that only a
+  // neighbouring boilerplate label tells apart (the "Ocena ogólna:" case).
+  lines.push('- A "selector" may be CSS or a container-relative XPath (write XPath starting with ".//"). Prefer CSS when a stable class, id or structural path pins the value down.');
+  lines.push('- LABEL/TEXT ANCHOR (powerful when nothing else is stable): if a value has no stable class/id and is distinguished ONLY by a fixed neighbouring LABEL that repeats verbatim on every item — e.g. a `<strong>Ocena ogólna:</strong>` sitting before the value, or a "Location:" caption — anchor a relative XPath on that label text instead of a fragile position. Example: for `<p><strong>Ocena ogólna:</strong><span>10/10</span></p>` use selector `.//strong[normalize-space(.)="Ocena ogólna:"]/following-sibling::span[1]`. This beats an nth-child path when sibling rows share the same tags/classes and only the label differs. Use it ONLY when the label is boilerplate present on EVERY item (never per-item data like a username or date), and keep "kind":"text" (the value element, not the label).');
   lines.push('- "kind":"text" → extract textContent (default for visible text).');
   lines.push('- "kind":"attr" → extract an attribute, and you MUST include "attribute" (e.g. "href" for links, "src" for images).');
   lines.push('- "kind":"html" → innerHTML (rarely needed).');
