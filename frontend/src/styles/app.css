@@ -144,6 +144,38 @@ body {
     border-color: var(--text-muted);
 }
 
+/* Undo / redo icon buttons in the header */
+.header-undo-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+}
+.header-icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+.header-icon-btn:hover:not(:disabled) {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+}
+.header-icon-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
 
 /* ==================== TAB BAR ==================== */
 

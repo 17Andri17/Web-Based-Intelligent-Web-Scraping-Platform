@@ -12,6 +12,86 @@
   padding: 40px 28px 60px;
 }
 
+/* Currently-open scraper — resume banner */
+.dash-resume {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 22px;
+  padding: 13px 16px;
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--accent-primary) 12%, var(--bg-secondary)),
+    color-mix(in srgb, var(--accent-purple, #a371f7) 10%, var(--bg-secondary)));
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 32%, var(--border-default));
+  border-radius: var(--radius-lg, 12px);
+  cursor: pointer;
+  transition: border-color 130ms, transform 130ms, box-shadow 130ms;
+}
+.dash-resume:hover {
+  border-color: color-mix(in srgb, var(--accent-primary) 55%, var(--border-default));
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0,0,0,0.4));
+}
+.dash-resume-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-purple, #a371f7));
+}
+.dash-resume-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.dash-resume-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-primary);
+}
+.dash-resume-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-resume-tag {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-warning, #d29922);
+  background: color-mix(in srgb, var(--accent-warning, #d29922) 15%, transparent);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.dash-resume-meta {
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-resume-cta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-primary);
+}
+
 /* Hero */
 .dash-hero {
   display: flex;

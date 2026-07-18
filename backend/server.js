@@ -200,6 +200,26 @@ io.on('connection', async (socket) => {
     } catch (_) {}
   });
 
+  // Passive marker preview: show the captured-field markers on every similar
+  // item while the EXTRACT_LIST editor is open (no dim, no click interception).
+  socket.on('showListFieldMarkers', async ({ containerSelector, fields }) => {
+    try {
+      const page = await getActivePage();
+      if (page) await page.evaluate((sel, flds) => {
+        if (typeof window.__showListFieldMarkers__ === 'function') window.__showListFieldMarkers__(sel, flds);
+      }, containerSelector || '', Array.isArray(fields) ? fields : []);
+    } catch (_) {}
+  });
+
+  socket.on('hideListFieldMarkers', async () => {
+    try {
+      const page = await getActivePage();
+      if (page) await page.evaluate(() => {
+        if (typeof window.__hideListFieldMarkers__ === 'function') window.__hideListFieldMarkers__();
+      });
+    } catch (_) {}
+  });
+
   // Move the pending-pick spotlight to the element the currently selected
   // "Extract:" option targets (e.g. the enclosing <a> for its href).
   socket.on('previewListPickOption', async ({ selector }) => {

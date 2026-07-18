@@ -33,6 +33,7 @@ const STATUS_META = {
 
 export default function Dashboard({
   open, userName, onNewScrape, onNewBlank, onOpenWorkflow, onManageWorkflows, showToast, reloadKey,
+  openWorkflow = null, onResumeEditing,
 }) {
   const [workflows, setWorkflows] = useState([]);
   const [runs, setRuns]           = useState([]);
@@ -91,6 +92,34 @@ export default function Dashboard({
   return (
     <div className="dash">
       <div className="dash-inner">
+        {/* Currently-open scraper — quick way back into the editor */}
+        {openWorkflow && onResumeEditing && (
+          <button className="dash-resume" onClick={onResumeEditing}>
+            <span className="dash-resume-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>
+            </span>
+            <span className="dash-resume-body">
+              <span className="dash-resume-label">Currently editing</span>
+              <span className="dash-resume-name">
+                {openWorkflow.name}
+                {!openWorkflow.saved && <span className="dash-resume-tag">unsaved</span>}
+              </span>
+              <span className="dash-resume-meta">
+                {openWorkflow.stepCount} step{openWorkflow.stepCount === 1 ? "" : "s"}
+                {openWorkflow.url ? ` · ${prettyUrl(openWorkflow.url)}` : ""}
+              </span>
+            </span>
+            <span className="dash-resume-cta">
+              Back to editor
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <polyline points="9,18 15,12 9,6"/>
+              </svg>
+            </span>
+          </button>
+        )}
+
         {/* Hero / primary CTA */}
         <div className="dash-hero">
           <div>
@@ -188,6 +217,16 @@ export default function Dashboard({
       </div>
     </div>
   );
+}
+
+// Host + short path for the resume banner ("example.com/products").
+function prettyUrl(u) {
+  if (!u) return "";
+  try {
+    const x = new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`);
+    const p = x.pathname.replace(/\/$/, "");
+    return (x.hostname.replace(/^www\./, "") + p).slice(0, 48);
+  } catch { return String(u).slice(0, 48); }
 }
 
 // Compact relative time ("3m ago", "2h ago", "just now", or a date).

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 
 /* =====================================================================
    PATH SYSTEM
@@ -165,6 +165,69 @@ export function moveStepInTree(prev, stepId, targetContainerPath, targetIndex, c
 export function useWorkflow() {
   const [steps, setSteps] = useState([]);
 
+  // ── UNDO / REDO HISTORY ──────────────────────────────────────────────
+  // Every step-tree edit (add/delete/move/param/label/attach) flows through
+  // the React setSteps, so we record history with an effect on `steps`
+  // rather than instrumenting each mutation. A burst of rapid edits (e.g.
+  // typing a selector) coalesces into a single undo step via a short time
+  // window, so one Ctrl+Z reverts the whole burst instead of one keystroke.
+  const pastRef       = useRef([]);   // snapshots older than the present
+  const futureRef     = useRef([]);   // snapshots undone (available to redo)
+  const prevRef       = useRef([]);   // the present snapshot (== steps)
+  const lastCommitRef = useRef(0);
+  const travelRef     = useRef(false); // true while applying an undo/redo
+  const mountedRef    = useRef(false);
+  const [histTick, setHistTick] = useState(0);
+  const COALESCE_MS = 500;
+  const HISTORY_CAP = 100;
+
+  useEffect(() => {
+    if (!mountedRef.current) { mountedRef.current = true; prevRef.current = steps; return; }
+    if (travelRef.current) { travelRef.current = false; prevRef.current = steps; return; }
+    const now = Date.now();
+    // First edit of a burst records the pre-edit snapshot; rapid follow-ups
+    // within the window don't add more entries (they collapse into one undo).
+    if (now - lastCommitRef.current > COALESCE_MS) {
+      pastRef.current.push(prevRef.current);
+      if (pastRef.current.length > HISTORY_CAP) pastRef.current.shift();
+    }
+    lastCommitRef.current = now;
+    prevRef.current = steps;
+    if (futureRef.current.length) futureRef.current = [];
+    setHistTick(t => t + 1);
+  }, [steps]);
+
+  const undo = useCallback(() => {
+    if (pastRef.current.length === 0) return;
+    const prevSnap = pastRef.current.pop();
+    futureRef.current.unshift(prevRef.current);
+    travelRef.current = true;
+    prevRef.current = prevSnap;
+    setSteps(prevSnap);
+    setHistTick(t => t + 1);
+  }, []);
+
+  const redo = useCallback(() => {
+    if (futureRef.current.length === 0) return;
+    const nextSnap = futureRef.current.shift();
+    pastRef.current.push(prevRef.current);
+    travelRef.current = true;
+    prevRef.current = nextSnap;
+    setSteps(nextSnap);
+    setHistTick(t => t + 1);
+  }, []);
+
+  // Wipe history — used when a whole workflow is loaded or reset, so an undo
+  // can't cross that boundary back into an unrelated workflow.
+  const resetHistory = useCallback(() => {
+    pastRef.current = [];
+    futureRef.current = [];
+    lastCommitRef.current = 0;
+    setHistTick(t => t + 1);
+  }, []);
+
+  void histTick; // re-render trigger only
+
   // ── ADD ─────────────────────────────────────────────────────────────
   // If index is null / undefined, step is appended; otherwise inserted before index.
   const addStep = (step, containerPath = [], index = null) => {
@@ -265,8 +328,18 @@ export function useWorkflow() {
     }));
   };
 
-  // ── REPLACE ALL (DnD at root level via arrayMove) ────────────────────
-  const setAllSteps = (newSteps) => setSteps(newSteps);
+  // ── REPLACE ALL (workflow load / reset) ──────────────────────────────
+  // A bulk replacement is a load or a "new workflow" — not an undoable edit.
+  // Clear history so undo can't reach back across the boundary. The history
+  // effect still runs for this change; travelRef suppresses recording it.
+  const setAllSteps = (newSteps) => {
+    travelRef.current = true;
+    pastRef.current = [];
+    futureRef.current = [];
+    lastCommitRef.current = 0;
+    setSteps(newSteps);
+    setHistTick(t => t + 1);
+  };
 
   // Count total steps recursively (for the badge in the tab bar).
   // Only walk the known control branches — Object.values picks up
@@ -298,5 +371,11 @@ export function useWorkflow() {
     addStepAt,
     moveStepById,
     setAttachById,
+    // Undo / redo
+    undo,
+    redo,
+    resetHistory,
+    canUndo: pastRef.current.length > 0,
+    canRedo: futureRef.current.length > 0,
   };
 }
