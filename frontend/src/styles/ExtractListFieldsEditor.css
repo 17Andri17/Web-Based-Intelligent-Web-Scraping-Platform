@@ -551,6 +551,16 @@
   line-height: 1.45;
 }
 
+.elfe-pick-note {
+  font-size: 11px;
+  color: var(--accent-success, #3fb950);
+  background: color-mix(in srgb, var(--accent-success, #3fb950) 8%, transparent);
+  border-left: 2px solid var(--accent-success, #3fb950);
+  padding: 4px 8px;
+  border-radius: 3px;
+  line-height: 1.45;
+}
+
 /* ── Per-field Clean / split toggle + panel ─────────────────────────── */
 .elfe-clean-toggle {
   flex-shrink: 0;

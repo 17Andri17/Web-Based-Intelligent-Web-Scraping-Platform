@@ -548,6 +548,179 @@
   }
 
   /* =========================================================================
+     LABEL-ANCHORED (TEXT) RELATIVE SELECTOR
+     ─────────────────────────────────────────────────────────────────────────
+     Some fields can't be pinned down structurally. The value sits at a
+     position that shifts from item to item (optional blocks appear above it)
+     and it shares its tag/classes with sibling values, so ONLY its position
+     tells it apart — and that position isn't stable. Example: a review card's
+     "Ocena ogólna" (overall rating) is one of four identical
+     `<p><strong>label:</strong><span>value</span></p>` rows; nothing but the
+     label text distinguishes it, and `.scores` floats around because the
+     blocks above it are optional.
+
+     What IS stable is the boilerplate LABEL next to the value — "Ocena
+     ogólna:", "Location:", "Price". It repeats verbatim on every item, so a
+     relative XPath anchored on that label text is the most robust option
+     available. We look for such a label among the target's (and its
+     ancestors') preceding siblings, build `label → value` XPath, and ACCEPT
+     it only after verifying it resolves to EXACTLY the target in the seed
+     item and to at most one element in every other item (a handful of items
+     legitimately missing the field is fine; 2+ matches anywhere is not).
+
+     The result is a container-relative XPath (starts with `.//`); downstream
+     field resolution recognises XPath by that prefix, so no per-field type
+     flag has to be threaded through the workflow model.
+     ========================================================================= */
+
+  function _normText(s) {
+    return (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim();
+  }
+
+  // A container-relative selector is XPath when it starts with `/`, `//`,
+  // `./`, `.//` or `(`. Plain CSS (`.cls`, `#id`, `:scope > …`, `tag`) never
+  // does, so this prefix test unambiguously tells the two apart.
+  function _isXPathSel(sel) {
+    return typeof sel === 'string' && /^\s*(\.?\/\/|\.?\/|\()/.test(sel);
+  }
+
+  function _xpathNodes(root, xp) {
+    try {
+      var r = document.evaluate(xp, root, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      var out = [];
+      for (var i = 0; i < r.snapshotLength; i++) out.push(r.snapshotItem(i));
+      return out;
+    } catch (_) { return null; }
+  }
+
+  // Resolve a container-relative field selector (CSS or XPath) to its first
+  // matching element. '' / ':scope' mean "the container itself".
+  function _relResolveOne(root, sel) {
+    if (!sel || sel === ':scope') return root;
+    if (_isXPathSel(sel)) {
+      try {
+        return document.evaluate(sel, root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+      } catch (_) { return null; }
+    }
+    try { return root.querySelector(sel); } catch (_) { return null; }
+  }
+
+  // How many elements a relative selector matches inside `root` (-1 = invalid
+  // selector). Used for the "resolves to exactly one in every sibling" check.
+  function _relCount(root, sel) {
+    if (_isXPathSel(sel)) {
+      var nodes = _xpathNodes(root, sel);
+      return nodes === null ? -1 : nodes.length;
+    }
+    try { return root.querySelectorAll(sel).length; } catch (_) { return -1; }
+  }
+
+  // A quoted XPath 1.0 string literal (no escape sequences in XPath 1.0 — mix
+  // quotes with concat() when the text contains both).
+  function _xpLiteral(s) {
+    if (s.indexOf('"') === -1) return '"' + s + '"';
+    if (s.indexOf("'") === -1) return "'" + s + "'";
+    return 'concat("' + s.split('"').join('", \'"\', "') + '")';
+  }
+
+  // "Label-like": short, non-empty, and containing at least one letter (Latin
+  // + common accented ranges so Polish/German/… labels qualify). Pure numbers,
+  // dates and punctuation are values, not labels.
+  function _isLabelText(t) {
+    return !!t && t.length >= 1 && t.length <= 60 && /[A-Za-z\u00C0-\u024F]/.test(t);
+  }
+
+  // XPath steps from `fromNode` (exclusive) down to `toEl` (inclusive), each a
+  // tag + 1-based same-tag index, e.g. "/span[1]/b[2]". '' when toEl===fromNode.
+  function _relXPathSteps(fromNode, toEl) {
+    var steps = [];
+    var cur = toEl;
+    while (cur && cur !== fromNode) {
+      var parent = cur.parentElement;
+      if (!parent) return null;
+      var idx = 0, seen = 0;
+      for (var i = 0; i < parent.children.length; i++) {
+        if (parent.children[i].tagName === cur.tagName) {
+          seen++;
+          if (parent.children[i] === cur) { idx = seen; break; }
+        }
+      }
+      steps.unshift('/' + cur.tagName.toLowerCase() + '[' + idx + ']');
+      cur = parent;
+    }
+    return cur === fromNode ? steps.join('') : null;
+  }
+
+  // Verify a candidate XPath is unambiguous AND generalises across items:
+  //   • seed container   → resolves to EXACTLY the target,
+  //   • any container    → never 2+ matches (ambiguous ⇒ reject outright),
+  //   • across items      → exactly one match in a strong majority.
+  // Returns true/false.
+  function _labelSelectorVerifies(xp, el, scopeEl, containers) {
+    var seed = _xpathNodes(scopeEl, xp);
+    if (!seed || seed.length !== 1 || seed[0] !== el) return false;
+
+    var pool = (containers && containers.length) ? containers : [scopeEl];
+    var total = 0, hits = 0;
+    for (var i = 0; i < pool.length && total < 30; i++) {
+      var c = pool[i];
+      if (!c) continue;
+      total++;
+      if (c === scopeEl) { hits++; continue; }
+      var nodes = _xpathNodes(c, xp);
+      if (nodes === null) return false;      // invalid in some item
+      if (nodes.length > 1) return false;    // ambiguous somewhere
+      if (nodes.length === 1) hits++;
+    }
+    return total >= 1 && (hits / total) >= 0.6;
+  }
+
+  // Build a label-anchored relative XPath for `el` within `scopeEl`, verified
+  // across `containers` (the full set of similar items). Returns
+  // { value, labelText } or null.
+  function buildLabelAnchoredSelector(el, scopeEl, containers) {
+    if (!el || !scopeEl || el === scopeEl || !scopeEl.contains(el)) return null;
+    var elText = _normText(el.textContent);
+
+    // Walk from the target up to (not including) the container. At every level
+    // scan preceding siblings for a boilerplate label sitting next to us.
+    var node = el;
+    while (node && node !== scopeEl) {
+      var suffix = _relXPathSteps(node, el);
+      if (suffix === null) { node = node.parentElement; continue; }
+      var nodeTag = node.tagName.toLowerCase();
+
+      for (var sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+        var labelText = _normText(sib.textContent);
+        if (!_isLabelText(labelText) || labelText === elText) continue;
+        var sibTag = sib.tagName.toLowerCase();
+        var lit = _xpLiteral(labelText);
+        // Nearest label first, most-specific (label tag pinned) first.
+        var candidates = [
+          './/' + sibTag + '[normalize-space(.)=' + lit + ']/following-sibling::' + nodeTag + '[1]' + suffix,
+          './/*[normalize-space(.)=' + lit + ']/following-sibling::' + nodeTag + '[1]' + suffix,
+        ];
+        for (var ci = 0; ci < candidates.length; ci++) {
+          if (_labelSelectorVerifies(candidates[ci], el, scopeEl, containers)) {
+            return { value: candidates[ci], labelText: labelText };
+          }
+        }
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  // Derive a snake_case field name from a label ("Ocena ogólna:" →
+  // "ocena_ogolna"). Diacritics are folded where NFD allows.
+  function _nameFromLabel(t) {
+    var s = String(t == null ? '' : t);
+    try { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch (_) {}
+    s = s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30);
+    return s || 'value';
+  }
+
+  /* =========================================================================
      LIST-FIELD PICK HELPERS
      ========================================================================= */
 
@@ -826,12 +999,7 @@
         var f = fields[fi];
         if (!f || !f.name) continue;
         var sel = (f.selector || '').trim();
-        var el = null;
-        if (!sel || sel === ':scope') {
-          el = cont;
-        } else {
-          try { el = cont.querySelector(sel); } catch (_) { el = null; }
-        }
+        var el = _relResolveOne(cont, sel);
         if (!el) continue;
         var r = el.getBoundingClientRect();
         if (r.width === 0 && r.height === 0) continue;
@@ -1451,25 +1619,55 @@
         }
       }
 
-      var relSel = buildRelativeSelector(tgt, containerEl);
-      if (!relSel) return;
+      var structuralSel = buildRelativeSelector(tgt, containerEl);
 
-      // Verify selector resolves to exactly one element in each sibling container
-      var worksInSiblings = _listPickContainers
-        .filter(function(c) { return c !== containerEl; })
-        .slice(0, 8)
-        .every(function(c) {
-          try { return c.querySelectorAll(relSel).length === 1; }
-          catch (_) { return false; }
-        });
+      // Does a candidate resolve to exactly one element in each OTHER similar
+      // container? (Sampled — that's what "the field is defined the same way
+      // on every row" means.)
+      var otherContainers = _listPickContainers.filter(function(c) { return c !== containerEl; });
+      function worksEverywhere(sel) {
+        if (!sel) return false;
+        return otherContainers.slice(0, 8).every(function(c) { return _relCount(c, sel) === 1; });
+      }
+
+      var relSel          = structuralSel;
+      var worksInSiblings = worksEverywhere(structuralSel);
+      var labelInfo       = null;
+
+      // A structural selector is "fragile" when it's missing, purely
+      // positional (:nth-child/:nth-of-type — rides on per-item DOM shape), or
+      // simply doesn't generalise across the other items. In that case reach
+      // for a label/text anchor: the boilerplate label next to the value
+      // ("Ocena ogólna:", "Location:") repeats verbatim on every item, so a
+      // selector anchored on it is more reliable than a shifting position.
+      // We only switch to it once it's VERIFIED to resolve across the items —
+      // i.e. genuinely better than the structural option, never worse.
+      var structuralFragile = !structuralSel ||
+        /:nth-(child|of-type)/.test(structuralSel) || !worksInSiblings;
+      if (structuralFragile) {
+        labelInfo = buildLabelAnchoredSelector(tgt, containerEl, _listPickContainers);
+        if (labelInfo) {
+          relSel          = labelInfo.value;   // container-relative XPath (.//…)
+          worksInSiblings = true;
+        }
+      }
+      if (!relSel) return;
 
       var kindInfo   = _inferFieldKind(tgt);
       var sampleVal  = _extractPickSample(tgt, kindInfo.kind, kindInfo.attribute);
-      var suggested  = _suggestFieldName(tgt.tagName.toLowerCase(), relSel, kindInfo.kind, kindInfo.attribute);
+      // Name a label-anchored field after its label ("Ocena ogólna:" →
+      // ocena_ogolna); otherwise fall back to the class/tag heuristic.
+      var suggested  = (labelInfo && labelInfo.labelText)
+        ? _nameFromLabel(labelInfo.labelText)
+        : _suggestFieldName(tgt.tagName.toLowerCase(), relSel, kindInfo.kind, kindInfo.attribute);
 
       window.sendToNode({
         type:             'listFieldPicked',
         relativeSelector: relSel,
+        // 'css' | 'xpath' — for the editor's information; downstream field
+        // resolution also auto-detects XPath from the selector's prefix.
+        selectorType:     _isXPathSel(relSel) ? 'xpath' : 'css',
+        anchoredOnLabel:  labelInfo ? labelInfo.labelText : null,
         kind:             kindInfo.kind,
         attribute:        kindInfo.attribute || null,
         sampleValue:      sampleVal,

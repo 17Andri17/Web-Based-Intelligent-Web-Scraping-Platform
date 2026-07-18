@@ -140,6 +140,28 @@ function jsExpr(s, fallback) {
 const q = (s) => JSON.stringify(s || '');
 const num = (n, fallback = 0) => (typeof n === 'number' ? n : fallback);
 
+// A container-relative FIELD selector may be CSS or XPath. XPath is
+// recognised by a leading '/', '//', './', './/' or '(' — plain CSS never
+// starts that way, so no per-field type flag is needed anywhere. Kept in sync
+// with _isXPathSel() in browser/inject/SelectorTool.js.
+function isXPathSelector(sel) {
+  if (typeof sel !== 'string') return false;
+  const s = sel.replace(/^\s+/, '');
+  return s[0] === '/' || s[0] === '(' || (s[0] === '.' && s[1] === '/');
+}
+
+// In-page resolver injected into EXTRACT_LIST / COLLECT_LIST evaluate closures
+// so a per-item field selector resolves whether it is CSS or a container-
+// relative XPath. `__relChild('', el)` / a falsy selector means "the container
+// itself". Emitted as source text — it runs in the browser, not in Node.
+const REL_CHILD_FN = `
+      const __isX = (s) => { if (typeof s !== 'string') return false; s = s.replace(/^\\s+/, ''); return s[0] === '/' || s[0] === '(' || (s[0] === '.' && s[1] === '/'); };
+      const __relChild = (root, s) => {
+        if (!s) return root;
+        if (__isX(s)) { try { return document.evaluate(s, root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (_) { return null; } }
+        try { return root.querySelector(s); } catch (_) { return null; }
+      };`;
+
 /* =========================================================================
    ACTION CODE GENERATORS
    Each returns a string of JS (no surrounding async wrapper).
@@ -167,26 +189,36 @@ function genAction(step, ctx) {
     const fieldKey = (label && label.trim()) ? label : type.toLowerCase().replace('extract_', '');
     const sel = params.selector || '';
     const isSelf = sel === ':scope' || sel === '';
+    const isX = isXPathSelector(sel);
+    // Resolve a relative XPath field against the loop element (context node),
+    // returning null when it doesn't match. `${feCtx.elVar}` is an ElementHandle.
+    const xpChild = `(e, s) => { try { return document.evaluate(s, e, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (_) { return null; } }`;
 
     switch (type) {
       case 'EXTRACT_TEXT': {
         const expr = isSelf
           ? `await ${feCtx.elVar}.evaluate(e => (e.textContent || '').trim()).catch(() => '')`
-          : `await ${feCtx.elVar}.$eval(${q(sel)}, e => (e.textContent || '').trim()).catch(() => '')`;
+          : isX
+            ? `await ${feCtx.elVar}.evaluate((e, s) => { const n = (${xpChild})(e, s); return n ? (n.textContent || '').trim() : ''; }, ${q(sel)}).catch(() => '')`
+            : `await ${feCtx.elVar}.$eval(${q(sel)}, e => (e.textContent || '').trim()).catch(() => '')`;
         return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${expr};\n`;
       }
       case 'EXTRACT_ATTRIBUTE': {
         const attr = params.attribute || '';
         const expr = isSelf
           ? `await ${feCtx.elVar}.evaluate((e, a) => e.getAttribute(a) || '', ${q(attr)}).catch(() => '')`
-          : `await ${feCtx.elVar}.$eval(${q(sel)}, (e, a) => e.getAttribute(a) || '', ${q(attr)}).catch(() => '')`;
+          : isX
+            ? `await ${feCtx.elVar}.evaluate((e, s, a) => { const n = (${xpChild})(e, s); return n ? (n.getAttribute(a) || '') : ''; }, ${q(sel)}, ${q(attr)}).catch(() => '')`
+            : `await ${feCtx.elVar}.$eval(${q(sel)}, (e, a) => e.getAttribute(a) || '', ${q(attr)}).catch(() => '')`;
         return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${expr};\n`;
       }
       case 'EXTRACT_HTML': {
         const prop = params.mode === 'outer' ? 'outerHTML' : 'innerHTML';
         const expr = isSelf
           ? `await ${feCtx.elVar}.evaluate(e => e.${prop}).catch(() => '')`
-          : `await ${feCtx.elVar}.$eval(${q(sel)}, e => e.${prop}).catch(() => '')`;
+          : isX
+            ? `await ${feCtx.elVar}.evaluate((e, s) => { const n = (${xpChild})(e, s); return n ? n.${prop} : ''; }, ${q(sel)}).catch(() => '')`
+            : `await ${feCtx.elVar}.$eval(${q(sel)}, e => e.${prop}).catch(() => '')`;
         return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${expr};\n`;
       }
       default:
@@ -532,13 +564,14 @@ ${store}`.trim() + '\n';
 const ${varName} = await (async () => {
   const _containers = await resolveElements(page, ${sels});
   return Promise.all(_containers.map(container =>
-    page.evaluate((el, fields) => {
+    page.evaluate((el, fields) => {${REL_CHILD_FN}
       const item = {};
       for (const [name, spec] of Object.entries(fields)) {
         const sel = spec.selector || '';
         // Empty selector means "use the container itself" (useful for
-        // attribute extraction off the row element).
-        const child = sel ? el.querySelector(sel) : el;
+        // attribute extraction off the row element). A selector starting with
+        // '/', './' or '(' is treated as a container-relative XPath.
+        const child = __relChild(el, sel);
         if (!child) { item[name] = null; continue; }
         if (spec.kind === 'attr' && spec.attribute) {
           item[name] = child.getAttribute(spec.attribute);
@@ -1684,11 +1717,17 @@ async function harvestWhileScrolling(page, containerSel, fields, keyField, scrol
   let noNew  = 0;
 
   const extractVisible = () => page.evaluate((sel, fieldMap) => {
+    const __isX = (s) => { if (typeof s !== 'string') return false; s = s.replace(/^\s+/, ''); return s[0] === '/' || s[0] === '(' || (s[0] === '.' && s[1] === '/'); };
+    const __relChild = (root, s) => {
+      if (!s) return root;
+      if (__isX(s)) { try { return document.evaluate(s, root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (_) { return null; } }
+      try { return root.querySelector(s); } catch (_) { return null; }
+    };
     return Array.from(document.querySelectorAll(sel)).map(el => {
       const item = {};
       for (const [name, spec] of Object.entries(fieldMap)) {
         const s = spec.selector || '';
-        const child = s ? el.querySelector(s) : el;
+        const child = __relChild(el, s);
         if (!child) { item[name] = null; continue; }
         if (spec.kind === 'attr' && spec.attribute) item[name] = child.getAttribute(spec.attribute);
         else if (spec.kind === 'html') item[name] = (child.innerHTML || '').trim();

@@ -152,6 +152,14 @@ async function verifySingleSelector(page, { selector, type = 'css', kind = 'text
  */
 async function verifyListFields(page, { containerSelector, type = 'css', fields = [], sampleSize = 8 }) {
   return page.evaluate((containerSel, t, fieldsIn, n) => {
+    // A field selector may be CSS or a container-relative XPath (leading
+    // '/', './', '//', './/' or '('). Resolve either against a root.
+    const fieldIsXPath = (s) => { if (typeof s !== 'string') return false; s = s.replace(/^\s+/, ''); return s[0] === '/' || s[0] === '(' || (s[0] === '.' && s[1] === '/'); };
+    const relTarget = (root, s) => {
+      if (!s) return root;
+      if (fieldIsXPath(s)) return document.evaluate(s, root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+      return root.querySelector(s);
+    };
     const isXPath = t === 'xpath' || (typeof containerSel === 'string' && (containerSel.startsWith('/') || containerSel.startsWith('(')));
     let containers = [];
     try {
@@ -171,9 +179,10 @@ async function verifyListFields(page, { containerSelector, type = 'css', fields 
       const rec = { selector: f.selector, kind: f.kind || 'text', attribute: f.attribute || null,
                     samples: [], hitCount: 0, surveyed: survey.length, rescuedToSelf: false };
       // Decide once (on the first container) whether the field reads from a
-      // descendant or the container itself.
+      // descendant or the container itself. (The self-rescue is CSS-only — an
+      // XPath can already target the container via `.`.)
       let useSelf = !f.selector;
-      if (f.selector && survey[0]) {
+      if (f.selector && survey[0] && !fieldIsXPath(f.selector)) {
         try {
           if (!survey[0].querySelector(f.selector) && survey[0].matches && survey[0].matches(f.selector)) {
             useSelf = true; rec.rescuedToSelf = true; rec.selector = '';
@@ -182,7 +191,7 @@ async function verifyListFields(page, { containerSelector, type = 'css', fields 
       }
       for (const c of survey) {
         let target = null;
-        try { target = useSelf ? c : c.querySelector(f.selector); }
+        try { target = useSelf ? c : relTarget(c, f.selector); }
         catch (_) { target = null; }
         if (!target) { rec.samples.push(null); continue; }
         rec.hitCount++;

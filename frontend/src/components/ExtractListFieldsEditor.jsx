@@ -516,6 +516,12 @@ export default function ExtractListFieldsEditor({
                 ⚠ This selector may not resolve in all containers — review and adjust the selector if needed.
               </div>
             )}
+            {pendingPick.anchoredOnLabel && (
+              <div className="elfe-pick-note">
+                🔗 Anchored on the repeating label “{truncate(pendingPick.anchoredOnLabel, 40)}” — a text-based
+                selector that stays reliable even when this value moves around between items.
+              </div>
+            )}
           </div>
         )}
 
@@ -570,7 +576,7 @@ export default function ExtractListFieldsEditor({
                   <input
                     className="elfe-selector"
                     value={f.selector || ""}
-                    placeholder="CSS selector relative to the container, e.g. .price"
+                    placeholder='CSS or XPath relative to the container, e.g. .price or .//strong[.="Price:"]/following-sibling::span[1]'
                     onChange={e => updateField(name, { selector: e.target.value })}
                   />
                   {openClean === name && (
