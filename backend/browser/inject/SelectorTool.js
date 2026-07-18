@@ -93,10 +93,110 @@
      STYLE HELPERS
      ========================================================================= */
 
+  // ── "Is this value one of OUR highlight decorations?" ───────────────────
+  // Two teardown mechanisms depend on recognising a style WE applied:
+  //   1. storeOriginalStyle must never mistake our own decoration for the
+  //      page's real style — recording it as the "original" makes a later
+  //      restore RE-ASSERT the highlight, leaking it permanently (the exact
+  //      "the border won't go away" bug).
+  //   2. the stray-highlight sweep strips any of our outlines that slipped
+  //      through untracked.
+  // The browser re-serialises inline CSS (hex → rgb(), shorthand re-ordering),
+  // so a raw string compare against our constants is unreliable. We therefore
+  // build the set of forms the browser actually produces for each constant by
+  // round-tripping them through a probe element once, and match against that.
+  // The late-declared SCOPE_*/HOVER_PICK_* consts are only read at call-time
+  // (long after their declarations run), so referencing them here is safe.
+  function _normCss(v) {
+    return String(v == null ? '' : v).toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+  var _hlOutlineSet = null;
+  function _hlOutlines() {
+    if (_hlOutlineSet) return _hlOutlineSet;
+    _hlOutlineSet = {};
+    var list = [
+      SOFT_OUTLINE, HARD_OUTLINE, HOVER_OUTLINE,
+      CONTAINER_PICK_OUTLINE, FIELD_PICK_HOVER_OUTLINE, FIELD_PICK_CONFIRM_OUTLINE,
+      CONTAINER_PREVIEW_OUTLINE, FIELD_MARK_OUTLINE, FIELD_MARK_OUTLINE_MUTED,
+      FIELD_PENDING_OUTLINE,
+      (typeof SCOPE_OUTLINE      !== 'undefined' ? SCOPE_OUTLINE      : null),
+      (typeof HOVER_PICK_OUTLINE !== 'undefined' ? HOVER_PICK_OUTLINE : null),
+    ];
+    var probe = null;
+    try { probe = document.createElement('div'); } catch (_) {}
+    list.forEach(function(v) {
+      if (!v) return;
+      _hlOutlineSet[_normCss(v)] = true;              // raw form
+      if (probe) {
+        try {
+          probe.style.setProperty('outline', '');
+          probe.style.setProperty('outline', v, 'important');
+          var ser = probe.style.outline || probe.style.getPropertyValue('outline');
+          if (ser) _hlOutlineSet[_normCss(ser)] = true; // browser-serialised form
+        } catch (_) {}
+      }
+    });
+    return _hlOutlineSet;
+  }
+  var _hlShadowSet = null;
+  function _hlShadows() {
+    if (_hlShadowSet) return _hlShadowSet;
+    _hlShadowSet = {};
+    var list = [
+      (typeof SCOPE_SHADOW         !== 'undefined' ? SCOPE_SHADOW         : null),
+      (typeof FIELD_PENDING_SHADOW !== 'undefined' ? FIELD_PENDING_SHADOW : null),
+    ];
+    var probe = null;
+    try { probe = document.createElement('div'); } catch (_) {}
+    list.forEach(function(v) {
+      if (!v) return;
+      _hlShadowSet[_normCss(v)] = true;
+      if (probe) {
+        try {
+          probe.style.setProperty('box-shadow', '');
+          probe.style.setProperty('box-shadow', v, 'important');
+          var ser = probe.style.boxShadow || probe.style.getPropertyValue('box-shadow');
+          if (ser) _hlShadowSet[_normCss(ser)] = true;
+        } catch (_) {}
+      }
+    });
+    return _hlShadowSet;
+  }
+  function _isOurOutlineValue(v) { return !!v && !!_hlOutlines()[_normCss(v)]; }
+  function _isOurShadowValue(v) {
+    var n = _normCss(v);
+    if (!n) return false;
+    // Every full-page "dim" shadow we use is an inset 9999px spread — match it
+    // order-independently (serialisation can move `inset` to the end).
+    if (n.indexOf('9999px') !== -1 && n.indexOf('inset') !== -1) return true;
+    return !!_hlShadows()[n];
+  }
+  function _readStyleValue(el, prop) {
+    try {
+      if (prop === 'box-shadow')     return el.style.boxShadow     || el.style.getPropertyValue('box-shadow');
+      if (prop === 'outline-offset') return el.style.outlineOffset || el.style.getPropertyValue('outline-offset');
+      return el.style[prop] || el.style.getPropertyValue(prop);
+    } catch (_) { return (el && el.style && el.style[prop]) || ''; }
+  }
+  // True when `el`'s current inline `prop` holds a decoration this tool applied.
+  function _isOurDecoration(el, prop) {
+    if (!el || !el.style) return false;
+    if (prop === 'outline')        return _isOurOutlineValue(_readStyleValue(el, 'outline'));
+    if (prop === 'box-shadow')     return _isOurShadowValue(_readStyleValue(el, 'box-shadow'));
+    if (prop === 'outline-offset') return _normCss(_readStyleValue(el, 'outline-offset')) === '-1px';
+    return false;
+  }
+
   function storeOriginalStyle(el, prop) {
     if (!originalStyles.has(el)) originalStyles.set(el, {});
     const s = originalStyles.get(el);
-    if (!(prop in s)) s[prop] = el.style[prop] || '';
+    if (!(prop in s)) {
+      // Guard: never capture one of OUR OWN highlight decorations as the
+      // page's original. If it slipped in untracked (a re-apply that bypassed
+      // this bookkeeping), recording it would make a later restore re-assert
+      // the highlight and leak it forever — so treat it as "no original".
+      s[prop] = _isOurDecoration(el, prop) ? '' : (el.style[prop] || '');
+    }
   }
 
   function setStyle(el, prop, value, important) {
@@ -181,21 +281,15 @@
   // site's own inline outline/box-shadow is left untouched. Catches styles
   // applied via direct setProperty that originalStyles never tracked.
   function _sweepStrayHighlights() {
-    var ourOutlines = [
-      SOFT_OUTLINE, HARD_OUTLINE, HOVER_OUTLINE,
-      CONTAINER_PICK_OUTLINE, FIELD_PICK_HOVER_OUTLINE, FIELD_PICK_CONFIRM_OUTLINE,
-      (typeof SCOPE_OUTLINE     !== 'undefined' ? SCOPE_OUTLINE     : null),
-      (typeof HOVER_PICK_OUTLINE !== 'undefined' ? HOVER_PICK_OUTLINE : null),
-    ];
+    // Match against every outline/shadow/offset THIS tool paints — including
+    // the marker-family decorations (field markers, container preview, pending
+    // spotlight) that the old list missed, so a stray one can't survive here.
     _styledEls.forEach(function(el) {
       try {
         if (!el || !el.style) return;
-        if (ourOutlines.indexOf(el.style.outline) !== -1) el.style.removeProperty('outline');
-        var bs = el.style.boxShadow || el.style.getPropertyValue('box-shadow');
-        if (bs && (bs.indexOf('inset 0 0 0 9999px') !== -1 ||
-                   (typeof SCOPE_SHADOW !== 'undefined' && bs === SCOPE_SHADOW))) {
-          el.style.removeProperty('box-shadow');
-        }
+        if (_isOurDecoration(el, 'outline'))        el.style.removeProperty('outline');
+        if (_isOurDecoration(el, 'outline-offset')) el.style.removeProperty('outline-offset');
+        if (_isOurDecoration(el, 'box-shadow'))     el.style.removeProperty('box-shadow');
       } catch (_) {}
     });
     _styledEls.clear();
@@ -603,13 +697,16 @@
     restoreStyle(el, 'outline');
     restoreStyle(el, 'box-shadow');
     // The restore reverted to the page's own styles — put back whatever
-    // pick-mode decoration the element carries.
+    // pick-mode decoration the element carries. Use setStyle (not a raw
+    // setProperty) so the re-applied decoration stays TRACKED: a raw
+    // re-apply here left the style untracked, which poisoned the next
+    // storeOriginalStyle and leaked the outline permanently.
     if (el === _listPickPendingEl) {
-      el.style.setProperty('outline',    FIELD_PENDING_OUTLINE, 'important');
-      el.style.setProperty('box-shadow', FIELD_PENDING_SHADOW,  'important');
+      setStyle(el, 'outline',    FIELD_PENDING_OUTLINE, true);
+      setStyle(el, 'box-shadow', FIELD_PENDING_SHADOW,  true);
     } else if (_listPickFieldEls.indexOf(el) !== -1) {
-      el.style.setProperty('outline', _listPickPendingEl ? FIELD_MARK_OUTLINE_MUTED : FIELD_MARK_OUTLINE, 'important');
-      el.style.setProperty('outline-offset', '-1px', 'important');
+      setStyle(el, 'outline', _listPickPendingEl ? FIELD_MARK_OUTLINE_MUTED : FIELD_MARK_OUTLINE, true);
+      setStyle(el, 'outline-offset', '-1px', true);
     }
   }
 
@@ -626,7 +723,9 @@
     for (var j = 0; j < _listPickFieldEls.length; j++) {
       var fe = _listPickFieldEls[j];
       if (fe === _listPickPendingEl || fe === _listPickHoverEl) continue;
-      fe.style.setProperty('outline', mute ? FIELD_MARK_OUTLINE_MUTED : FIELD_MARK_OUTLINE, 'important');
+      // setStyle keeps the true page-original tracked (it was captured when the
+      // marker was first painted), so muting can never poison the teardown.
+      setStyle(fe, 'outline', mute ? FIELD_MARK_OUTLINE_MUTED : FIELD_MARK_OUTLINE, true);
     }
   }
 
@@ -639,9 +738,21 @@
     var el = _listPickPendingEl;
     restoreStyle(el, 'outline');
     restoreStyle(el, 'box-shadow');
+    // Re-assert the resting decoration this element should still carry, TRACKED
+    // via setStyle (a raw re-apply left it untracked and leaked). A field
+    // element keeps its dashed marker; a container picked as a whole-item field
+    // (the '' selector / enclosing-link case) keeps its container outline
+    // instead of being left bare.
     if (_listPickFieldEls.indexOf(el) !== -1) {
-      el.style.setProperty('outline', FIELD_MARK_OUTLINE, 'important');
-      el.style.setProperty('outline-offset', '-1px', 'important');
+      setStyle(el, 'outline', FIELD_MARK_OUTLINE, true);
+      setStyle(el, 'outline-offset', '-1px', true);
+    } else if (_listPickContainers.indexOf(el) !== -1) {
+      if (_listPickMode) {
+        setStyle(el, 'outline',    CONTAINER_PICK_OUTLINE, true);
+        setStyle(el, 'box-shadow', CONTAINER_PICK_SHADOW,  true);
+      } else if (_listPreviewActive) {
+        setStyle(el, 'outline', CONTAINER_PREVIEW_OUTLINE, true);
+      }
     }
   }
 
