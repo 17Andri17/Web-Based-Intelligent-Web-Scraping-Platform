@@ -191,7 +191,7 @@ function App() {
 }
 
 function AppShell({ user, token, onLogout }) {
-  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById, addStepAt, moveStepById, setAttachById } = useWorkflow();
+  const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById, addStepAt, moveStepById, setAttachById, undo, redo, canUndo, canRedo } = useWorkflow();
   const [activeTab, setActiveTab] = useState("stream");
 
   // List-field pick coordination — lifted here so pick mode survives the
@@ -887,6 +887,27 @@ function AppShell({ user, token, onLogout }) {
     window.addEventListener("resize", handleResize);
     return () => { ro.disconnect(); window.removeEventListener("resize", handleResize); clearTimeout(resizeTimeoutRef.current); };
   }, [handleResize]);
+
+  // ── Undo / redo keyboard shortcuts ─────────────────────────────────────────
+  // Ctrl/Cmd+Z = undo, Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z = redo — for workflow
+  // edits. Skipped when focus is in a text field (native text undo wins) or on
+  // the streamed canvas (that forwards keys to the remote page).
+  const undoRef = useRef(undo), redoRef = useRef(redo);
+  useEffect(() => { undoRef.current = undo; redoRef.current = redo; }, [undo, redo]);
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const t = e.target;
+      const tag = t && t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "CANVAS" ||
+          (t && t.isContentEditable)) return;
+      const k = (e.key || "").toLowerCase();
+      if (k === "z" && !e.shiftKey) { e.preventDefault(); undoRef.current(); }
+      else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redoRef.current(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // ── Mode ──────────────────────────────────────────────────────────────────
   const changeMode = (newMode) => {
@@ -1791,6 +1812,29 @@ function AppShell({ user, token, onLogout }) {
           </div>
         </div>
         <div className="header-right">
+          {/* Undo / redo (Ctrl+Z / Ctrl+Y) */}
+          <div className="header-undo-group">
+            <button
+              className="header-icon-btn"
+              onClick={undo}
+              disabled={!canUndo}
+              title="Undo (Ctrl+Z)"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/>
+              </svg>
+            </button>
+            <button
+              className="header-icon-btn"
+              onClick={redo}
+              disabled={!canRedo}
+              title="Redo (Ctrl+Y)"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h1"/>
+              </svg>
+            </button>
+          </div>
           <button className="header-btn secondary" onClick={() => setDashboardOpen(true)}
             title="Back to the dashboard">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2544,6 +2588,13 @@ function AppShell({ user, token, onLogout }) {
         onManageWorkflows={() => setWorkflowsOpen(true)}
         showToast={showToast}
         reloadKey={dashboardOpen ? currentWorkflowId : null}
+        openWorkflow={steps.length > 0 ? {
+          name: currentWorkflowName || "Untitled draft",
+          stepCount: totalCount,
+          saved: !!currentWorkflowId,
+          url: pinnedUrl || currentPageUrl || "",
+        } : null}
+        onResumeEditing={() => setDashboardOpen(false)}
       />
 
       {/* ── Quick Scrape wizard (guided list scraping) ──────────────────────── */}

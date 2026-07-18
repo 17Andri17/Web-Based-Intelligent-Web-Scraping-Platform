@@ -55,6 +55,14 @@ const HAS_SELECTOR = new Set([
 ]);
 const LOOP_TYPES = new Set(["FOR_EACH_ELEMENTS","FOR_EACH","FOR_EACH_ROW","REPEAT","WHILE","CONDITION","IF_ELEMENT_EXISTS",
   "PAGINATE_SCROLL","PAGINATE_BUTTON","PAGINATE_URL"]);
+// Steps whose selector targets a GROUP of elements (a container / iterator),
+// not a single element. "Pick new element" (single-element reselect) doesn't
+// apply to these — their group is chosen at creation via similar-selection,
+// and (for lists) fields are picked with "Pick from page". So the reselect
+// affordance is hidden for them; the selector text field stays editable.
+const GROUP_SELECT_TYPES = new Set(["EXTRACT_LIST","COLLECT_LIST","FOR_EACH_ELEMENTS","FOR_EACH"]);
+// Single-element steps that support "pick new element" reselect.
+const CAN_RESELECT = (type) => HAS_SELECTOR.has(type) && !GROUP_SELECT_TYPES.has(type);
 const BRANCH_KEYS = ["body","then","else","try","catch"];
 
 function getMeta(type) {
@@ -178,11 +186,13 @@ function StepEditor({ step, reselectStepId, onUpdateParams, onUpdateLabel, onRes
           ) : (
             <div className="cws-sel-row">
               <InlineInput value={selector} placeholder="CSS / XPath selector" mono onSave={saveSelector} />
-              <button className="cws-reselect-btn" onClick={() => onReselect(step.id, LOOP_TYPES.has(step.type))} title="Pick element to update selector">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
-                </svg>
-              </button>
+              {CAN_RESELECT(step.type) && (
+                <button className="cws-reselect-btn" onClick={() => onReselect(step.id, LOOP_TYPES.has(step.type))} title="Pick element to update selector">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                  </svg>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -424,7 +434,7 @@ export default function CompactWorkflowSidebar({
                         <span className="cws-step-sel" title={ownSelector}>{ownSelector}</span>
                       )}
                     </div>
-                    {HAS_SELECTOR.has(step.type) && (
+                    {CAN_RESELECT(step.type) && (
                       <button
                         className="cws-pick-btn"
                         title="Pick new element"

@@ -46,6 +46,14 @@
   // the page reflows (lazy images, infinite lists).
   let _listPickLayoutTimer = null;
   let _listPickLayoutSig   = '';
+  // Passive marker PREVIEW — shown while an EXTRACT_LIST step's editor is
+  // expanded (but not actively picking): the captured-field markers on every
+  // similar item, with NO dim and NO click interception, so the user always
+  // sees what the step captures. Shares the container / marker machinery with
+  // pick mode; `_listPickMode` gates the dim + interception, this gates the
+  // passive view.
+  let _listPreviewActive  = false;
+  let _listPreviewSelector = null;
 
   const originalStyles = new Map();
   // Every element we've ever applied a highlight style to. Used as a
@@ -66,6 +74,9 @@
   const FIELD_PICK_HOVER_SHADOW    = 'inset 0 0 0 9999px rgba(88,166,255,0.11)';
   const FIELD_PICK_CONFIRM_OUTLINE = '2px solid #3fb950';
   const FIELD_PICK_CONFIRM_SHADOW  = 'inset 0 0 0 9999px rgba(63,185,80,0.13)';
+  // Subtle container outline used in passive marker preview (lighter than
+  // the pick-mode container outline — it's just orienting, not interactive).
+  const CONTAINER_PREVIEW_OUTLINE  = '1px dashed rgba(163,113,247,0.45)';
   // Already-captured field markers (see __updateListFieldMarkers__)
   const FIELD_MARK_OUTLINE         = '1.5px dashed #3fb950';
   const FIELD_MARK_OUTLINE_MUTED   = '1.5px dashed rgba(63,185,80,0.18)';
@@ -201,6 +212,12 @@
     if (_forEachScopeSel !== null && typeof window.__clearForEachScope__ === 'function') {
       try { window.__clearForEachScope__(); } catch (_) {}
     }
+    // The passive field-marker preview is tied to the step editor being open,
+    // NOT to the canvas mode — snapshot it, let the blanket restore below wipe
+    // its inline styles, then re-assert it so it survives the mode change.
+    var previewSel = _listPreviewActive ? _listPreviewSelector : null;
+    var previewFields = previewSel ? (_listPickLastFields || []) : null;
+    if (previewSel) { try { window.__hideListFieldMarkers__(); } catch (_) {} }
     fullReset();
     originalStyles.forEach(function(s, el) {
       Object.keys(s).forEach(function(prop) {
@@ -213,6 +230,9 @@
     _sweepStrayHighlights();
     _clearStepHoverHighlight();   // belt-and-suspenders for the separate mechanism
     if (tooltip) tooltip.style.display = 'none';
+    if (previewSel && typeof window.__showListFieldMarkers__ === 'function') {
+      try { window.__showListFieldMarkers__(previewSel, previewFields); } catch (_) {}
+    }
   }
 
   /* =========================================================================
@@ -685,7 +705,7 @@
 
   function _applyListFieldMarkers(fields) {
     _clearListFieldMarkers();
-    if (!_listPickMode || !Array.isArray(fields) || fields.length === 0) return;
+    if ((!_listPickMode && !_listPreviewActive) || !Array.isArray(fields) || fields.length === 0) return;
     var MAX_CHIPS = 400; // keep huge lists from flooding the DOM
     var made = 0;
     for (var ci = 0; ci < _listPickContainers.length && made < MAX_CHIPS; ci++) {
@@ -771,12 +791,44 @@
   }
 
   // Layout can shift under the absolute overlay/chips (images loading,
-  // viewport resize, infinite lists) — re-anchor everything.
+  // viewport resize, infinite lists) — re-anchor everything. Runs for both
+  // the active pick and the passive preview.
   function _onListPickRelayout() {
-    if (!_listPickMode) return;
-    _updateListPickOverlayHoles();
+    if (!_listPickMode && !_listPreviewActive) return;
+    _updateListPickOverlayHoles();       // no-op if no overlay (preview)
     _applyListFieldMarkers(_listPickLastFields || []);
-    _positionPendingBox();
+    _positionPendingBox();               // no-op if no pending box (preview)
+  }
+
+  // Resolve a container selector (CSS or XPath) into _listPickContainers.
+  function _resolveListContainers(containerSelector) {
+    try {
+      _listPickContainers = Array.prototype.slice.call(document.querySelectorAll(containerSelector));
+    } catch (_) {
+      try {
+        var xr = document.evaluate(containerSelector, document, null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        _listPickContainers = [];
+        for (var xi = 0; xi < xr.snapshotLength; xi++) _listPickContainers.push(xr.snapshotItem(xi));
+      } catch (_2) { _listPickContainers = []; }
+    }
+  }
+
+  // Start / stop the reflow watchdog + resize listener shared by pick + preview.
+  function _startListLayoutWatch() {
+    window.addEventListener('resize', _onListPickRelayout);
+    _listPickLayoutSig = _listPickLayoutSignature();
+    clearInterval(_listPickLayoutTimer);
+    _listPickLayoutTimer = setInterval(function() {
+      if (!_listPickMode && !_listPreviewActive) return;
+      var sig = _listPickLayoutSignature();
+      if (sig !== _listPickLayoutSig) { _listPickLayoutSig = sig; _onListPickRelayout(); }
+    }, 900);
+  }
+  function _stopListLayoutWatch() {
+    window.removeEventListener('resize', _onListPickRelayout);
+    clearInterval(_listPickLayoutTimer);
+    _listPickLayoutTimer = null;
   }
 
   // Cheap signature of the containers' geometry; when it changes, the page
@@ -794,11 +846,46 @@
   }
 
   window.__updateListFieldMarkers__ = function(fields) {
+    // No-op unless a pick or a preview is actually on screen.
+    if (!_listPickMode && !_listPreviewActive) return;
     // Any marker update from the editor means the pending pick resolved
     // (confirmed or discarded) — drop the spotlight.
     _setListPickPending(null);
     _listPickLastFields = Array.isArray(fields) ? fields : null;
     _applyListFieldMarkers(_listPickLastFields || []);
+  };
+
+  // ── Passive marker preview (step expanded, not picking) ─────────────────
+  // Show the captured-field markers on every similar item without the dim
+  // overlay or click interception. Used whenever the EXTRACT_LIST editor is
+  // open so the user always sees what the step captures.
+  window.__showListFieldMarkers__ = function(containerSelector, fields) {
+    if (_listPickMode) return;                 // active pick already shows them
+    window.__hideListFieldMarkers__();         // clear any prior preview
+    if (!containerSelector) return;
+    _resolveListContainers(containerSelector);
+    if (!_listPickContainers.length) return;
+    _listPreviewActive   = true;
+    _listPreviewSelector = containerSelector;
+    _listPickContainers.forEach(function(el) {
+      _markStyled(el);
+      storeOriginalStyle(el, 'outline');
+      el.style.setProperty('outline', CONTAINER_PREVIEW_OUTLINE, 'important');
+    });
+    _listPickLastFields = Array.isArray(fields) ? fields : [];
+    _applyListFieldMarkers(_listPickLastFields);
+    _startListLayoutWatch();
+  };
+
+  window.__hideListFieldMarkers__ = function() {
+    if (_listPickMode || !_listPreviewActive) return;
+    _listPreviewActive   = false;
+    _listPreviewSelector = null;
+    _stopListLayoutWatch();
+    _clearListFieldMarkers();
+    _listPickLastFields = null;
+    _listPickContainers.forEach(function(el) { restoreStyle(el, 'outline'); });
+    _listPickContainers = [];
   };
 
   // The editor's "Extract:" chooser targets a specific element (the clicked
@@ -1517,7 +1604,8 @@
   window.__resetSelection__ = function() { _clearAllHovers(); fullReset(); };
 
   window.__startListFieldPick__ = function(containerSelector, fields) {
-    window.__stopListFieldPick__(); // idempotent — clear any previous state
+    window.__hideListFieldMarkers__(); // tear down any passive preview first
+    window.__stopListFieldPick__();    // idempotent — clear any previous state
     // Field-pick is a top-level page context — mutually exclusive with the
     // ForEach loop scope and any normal selection. Clear both (and all hover
     // previews) so exactly one state highlight is ever on screen.
@@ -1525,19 +1613,7 @@
     _clearAllHovers();
     fullReset();
     _listPickMode = true;
-    try {
-      _listPickContainers = Array.from(document.querySelectorAll(containerSelector));
-    } catch (_) {
-      // containerSelector may be an XPath expression — try document.evaluate
-      try {
-        var xr = document.evaluate(containerSelector, document, null,
-          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-        _listPickContainers = [];
-        for (var xi = 0; xi < xr.snapshotLength; xi++) {
-          _listPickContainers.push(xr.snapshotItem(xi));
-        }
-      } catch (_2) { _listPickContainers = []; }
-    }
+    _resolveListContainers(containerSelector);
     _listPickContainers.forEach(function(el) {
       _markStyled(el);
       storeOriginalStyle(el, 'outline');
@@ -1559,17 +1635,7 @@
     }
     // Mark the fields that are already captured, and keep the overlay holes
     // + chips anchored through layout shifts.
-    window.addEventListener('resize', _onListPickRelayout);
-    _listPickLayoutSig = _listPickLayoutSignature();
-    clearInterval(_listPickLayoutTimer);
-    _listPickLayoutTimer = setInterval(function() {
-      if (!_listPickMode) return;
-      var sig = _listPickLayoutSignature();
-      if (sig !== _listPickLayoutSig) {
-        _listPickLayoutSig = sig;
-        _onListPickRelayout();
-      }
-    }, 900);
+    _startListLayoutWatch();
     if (Array.isArray(fields) && fields.length) {
       _listPickLastFields = fields;
       _applyListFieldMarkers(fields);
@@ -1579,9 +1645,7 @@
   window.__stopListFieldPick__ = function() {
     if (!_listPickMode) return;
     _listPickMode = false;
-    window.removeEventListener('resize', _onListPickRelayout);
-    clearInterval(_listPickLayoutTimer);
-    _listPickLayoutTimer = null;
+    _stopListLayoutWatch();
     _setListPickPending(null);
     _listPickPendingCont = null;
     _clearListFieldMarkers();

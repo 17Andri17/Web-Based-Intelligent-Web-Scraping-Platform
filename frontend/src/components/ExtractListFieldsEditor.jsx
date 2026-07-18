@@ -271,13 +271,29 @@ export default function ExtractListFieldsEditor({
     onStartPick && onStartPick(serialiseMarkerFields(normalised));
   };
 
-  // While picking, keep the on-page "already captured" markers in sync with
-  // the field list (confirming a pick, renaming or deleting a field all
-  // update the badges on every container item immediately).
+  // Passive marker preview: while this editor is open (step expanded) but NOT
+  // actively picking, show the captured-field markers on every similar item on
+  // the page — no dim, no click interception — so the user always sees what
+  // the step captures. Torn down when the editor closes or picking starts.
   useEffect(() => {
-    if (!socket || !pickActive) return;
+    if (!socket || pickActive || !containerSelector) return;
+    socket.emit("showListFieldMarkers", {
+      containerSelector,
+      fields: serialiseMarkerFields(normalised),
+    });
+    return () => { socket.emit("hideListFieldMarkers"); };
+    // Re-establish only when the pick state or the container changes — field
+    // edits are pushed via the sync effect below without flicker.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, pickActive, containerSelector, selectorType]);
+
+  // Keep the on-page markers in sync with the field list as it's edited
+  // (add / rename / delete / confirm) — applies to both the active pick and
+  // the passive preview; the backend no-ops when neither is on screen.
+  useEffect(() => {
+    if (!socket || !containerSelector) return;
     socket.emit("updateListFieldMarkers", { fields: serialiseMarkerFields(normalised) });
-  }, [socket, pickActive, normalised]);
+  }, [socket, containerSelector, normalised]);
 
   // The pending pick resolved without a field change (discarded / Escape) —
   // re-send the markers so the page drops the spotlight on the clicked
