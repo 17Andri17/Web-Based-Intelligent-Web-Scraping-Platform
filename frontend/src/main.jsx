@@ -903,6 +903,10 @@ function AppShell({ user, token, onLogout }) {
       socketRef.current?.emit("resetSelection");
       setSelectedElement(null);
     }
+    // Any mode transition clears the sidebar step-hover highlight — it's a
+    // hover preview and must never survive a context change (this is the
+    // separate data-scraper-hl mechanism, so clear it explicitly here too).
+    socketRef.current?.emit("clearHighlight");
     socketRef.current?.emit("setMode", { mode: newMode });
   };
 

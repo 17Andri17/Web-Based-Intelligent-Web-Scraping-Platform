@@ -120,12 +120,10 @@
   function _reapplyScopeEl(el) {
     if (!el) return;
     _markStyled(el);
+    // Ring only — the ForEach dim is a hole-punch overlay now, so iterator
+    // cards need no z-index/position lift to stay bright (see _createDimOverlay).
     el.style.setProperty('outline',    SCOPE_OUTLINE, 'important');
     el.style.setProperty('box-shadow', SCOPE_SHADOW,  'important');
-    if (getComputedStyle(el).position === 'static') {
-      el.style.setProperty('position', 'relative', 'important');
-    }
-    el.style.setProperty('z-index', '2147483641', 'important');
   }
 
   function applySoft(els) {
@@ -196,7 +194,7 @@
     // Tear down EVERY highlight subsystem — not just the main selection — so
     // nothing lingers when the user flips to navigation mode. Each teardown
     // is guarded/idempotent.
-    try { clearHoverHighlight(); } catch (_) {}
+    _clearAllHovers();   // canvas + breadcrumb/tree + sidebar step hovers
     if (_listPickMode && typeof window.__stopListFieldPick__ === 'function') {
       try { window.__stopListFieldPick__(); } catch (_) {}
     }
@@ -213,6 +211,7 @@
     });
     originalStyles.clear();
     _sweepStrayHighlights();
+    _clearStepHoverHighlight();   // belt-and-suspenders for the separate mechanism
     if (tooltip) tooltip.style.display = 'none';
   }
 
@@ -522,22 +521,23 @@
     };
   }
 
-  // The dim overlay is a document-sized sheet with a HOLE punched over each
-  // container (clip-path, evenodd) — the containers show through at full
-  // brightness no matter what stacking contexts their ancestors create.
-  // (The old approach lifted containers with z-index, which silently failed
-  // whenever a parent was itself a stacking context and dimmed the list
-  // together with the rest of the page.)
-  function _updateListPickOverlayHoles() {
-    if (!_listPickOverlay) return;
+  // Shared dim-overlay painter. `overlayEl` is a document-sized absolute
+  // sheet; this cuts a HOLE (clip-path evenodd) over each element in `els`
+  // so those elements show through at full brightness no matter what
+  // stacking contexts their ancestors create. (The old approach lifted
+  // elements with z-index, which silently failed whenever a parent was
+  // itself a stacking context and dimmed the highlighted elements together
+  // with the rest of the page — the exact bug users hit.)
+  function _paintHoles(overlayEl, els, pad) {
+    if (!overlayEl) return;
     var s = _docSize();
-    _listPickOverlay.style.width  = s.w + 'px';
-    _listPickOverlay.style.height = s.h + 'px';
-    var PAD = 4; // keep the container outline outside the dim
+    overlayEl.style.width  = s.w + 'px';
+    overlayEl.style.height = s.h + 'px';
+    var PAD = pad == null ? 4 : pad;
     var parts = ['M0 0H' + s.w + 'V' + s.h + 'H0Z'];
-    for (var i = 0; i < _listPickContainers.length; i++) {
+    for (var i = 0; i < els.length; i++) {
       var r;
-      try { r = _listPickContainers[i].getBoundingClientRect(); } catch (_) { continue; }
+      try { r = els[i].getBoundingClientRect(); } catch (_) { continue; }
       if (r.width === 0 && r.height === 0) continue;
       var x = Math.max(0, r.left + window.scrollX - PAD);
       var y = Math.max(0, r.top + window.scrollY - PAD);
@@ -545,7 +545,11 @@
       var h = r.height + PAD * 2;
       parts.push('M' + x + ' ' + y + 'h' + w + 'v' + h + 'h-' + w + 'Z');
     }
-    _listPickOverlay.style.clipPath = 'path(evenodd, "' + parts.join(' ') + '")';
+    overlayEl.style.clipPath = 'path(evenodd, "' + parts.join(' ') + '")';
+  }
+
+  function _updateListPickOverlayHoles() {
+    _paintHoles(_listPickOverlay, _listPickContainers, 4);
   }
 
   function _createListPickOverlay() {
@@ -1345,26 +1349,41 @@
   let _forEachScopeSel = null;
   let _allIteratorEls  = [];
   let _dimOverlay      = null;
+  let _forEachLayoutTimer = null;
 
   const SCOPE_OUTLINE = '2px solid rgba(163,113,247,0.6)';
   const SCOPE_SHADOW  = '0 0 0 3px rgba(163,113,247,0.18)';
 
+  function _updateForEachOverlayHoles() { _paintHoles(_dimOverlay, _allIteratorEls, 4); }
+
   function _createDimOverlay() {
     if (_dimOverlay) return;
     _dimOverlay = document.createElement('div');
+    // Document-sized hole-punch overlay (same technique as list-pick): the
+    // iterator cards show through at full brightness regardless of ancestor
+    // stacking contexts — no z-index elevation needed, so no stacking bug.
     _dimOverlay.style.cssText = [
-      'position:fixed', 'inset:0', 'pointer-events:none',
+      'position:absolute', 'top:0', 'left:0', 'pointer-events:none',
       'z-index:2147483640',
       'background:rgba(0,0,0,0)',
       'transition:background 200ms ease',
     ].join(';');
     document.body.appendChild(_dimOverlay);
+    _updateForEachOverlayHoles();
     requestAnimationFrame(function() {
-      if (_dimOverlay) _dimOverlay.style.background = 'rgba(0,0,0,0.45)';
+      if (_dimOverlay) _dimOverlay.style.background = 'rgba(0,0,0,0.5)';
     });
+    window.addEventListener('resize', _updateForEachOverlayHoles);
+    clearInterval(_forEachLayoutTimer);
+    _forEachLayoutTimer = setInterval(function() {
+      if (_forEachScopeSel !== null) _updateForEachOverlayHoles();
+    }, 900);
   }
 
   function _removeDimOverlay() {
+    window.removeEventListener('resize', _updateForEachOverlayHoles);
+    clearInterval(_forEachLayoutTimer);
+    _forEachLayoutTimer = null;
     if (!_dimOverlay) return;
     const el = _dimOverlay;
     _dimOverlay = null;
@@ -1372,27 +1391,21 @@
     setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 220);
   }
 
+  // Iterator-card decoration: a purple ring only (the dim is a hole-punch
+  // overlay now, so cards need no z-index/position lift to escape it).
   function _elevateEl(el) {
     if (!el) return;
     _markStyled(el);
     storeOriginalStyle(el, 'outline');
     storeOriginalStyle(el, 'box-shadow');
-    storeOriginalStyle(el, 'position');
-    storeOriginalStyle(el, 'z-index');
     el.style.setProperty('outline',    SCOPE_OUTLINE, 'important');
     el.style.setProperty('box-shadow', SCOPE_SHADOW,  'important');
-    if (getComputedStyle(el).position === 'static') {
-      el.style.setProperty('position', 'relative', 'important');
-    }
-    el.style.setProperty('z-index', '2147483641', 'important');
   }
 
   function _unelevateEl(el) {
     if (!el) return;
     restoreStyle(el, 'outline');
     restoreStyle(el, 'box-shadow');
-    restoreStyle(el, 'position');
-    restoreStyle(el, 'z-index');
   }
 
   window.__setForEachScope__ = function(iteratorSelector) {
@@ -1445,15 +1458,72 @@
     }
   }
 
+  // Clear the canvas hover outline (blue, follows the cursor in selection
+  // mode) if it's on a non-selected element.
+  function _clearCanvasHover() {
+    if (hoverEl && hardEls.indexOf(hoverEl) === -1 && softEls.indexOf(hoverEl) === -1) {
+      if (_allIteratorEls && _allIteratorEls.indexOf(hoverEl) !== -1) _reapplyScopeEl(hoverEl);
+      else restoreStyle(hoverEl, 'outline');
+    }
+    hoverEl = null;
+  }
+
+  // Clear the workflow-sidebar step-hover highlight. That highlight is
+  // applied by server.js's highlightSelector via `data-scraper-hl` datasets
+  // — a mechanism completely separate from this script's originalStyles, so
+  // no injected teardown ever touched it and it could linger after mode
+  // changes / navigation / resets. Restoring it here folds it into every
+  // teardown path.
+  function _clearStepHoverHighlight() {
+    try {
+      var els = document.querySelectorAll('[data-scraper-hl]');
+      var props = ['outline', 'outline-offset', 'box-shadow'];
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        for (var p = 0; p < props.length; p++) {
+          var prop = props[p];
+          var key  = 'scraperHl_' + prop.replace(/-/g, '_');
+          var pkey = key + '_prio';
+          if (el.dataset[key] !== undefined) {
+            var v = el.dataset[key];
+            if (v) el.style.setProperty(prop, v, el.dataset[pkey] || '');
+            else   el.style.removeProperty(prop);
+            delete el.dataset[key];
+            delete el.dataset[pkey];
+          }
+        }
+        delete el.dataset.scraperHl;
+      }
+    } catch (_) {}
+  }
+
+  // ── Unified transient-hover teardown ────────────────────────────────────
+  // Every "hover preview" highlight — canvas hover, breadcrumb / HTML-tree
+  // hover, and the sidebar step hover — is cleared together. Hover previews
+  // are transient by definition and must never outlive the interaction that
+  // produced them, so this runs on every meaningful transition (mode change,
+  // selection change, navigation, entering a pick/loop context).
+  function _clearAllHovers() {
+    try { clearHoverHighlight(); } catch (_) {}
+    try { _clearCanvasHover(); }   catch (_) {}
+    try { _clearStepHoverHighlight(); } catch (_) {}
+  }
+  window.__clearHovers__ = _clearAllHovers;
+
   /* =========================================================================
      EXPOSED API
      ========================================================================= */
 
-  window.__resetSelection__ = function() { fullReset(); };
+  window.__resetSelection__ = function() { _clearAllHovers(); fullReset(); };
 
   window.__startListFieldPick__ = function(containerSelector, fields) {
     window.__stopListFieldPick__(); // idempotent — clear any previous state
-    fullReset();                    // clear any normal element selection
+    // Field-pick is a top-level page context — mutually exclusive with the
+    // ForEach loop scope and any normal selection. Clear both (and all hover
+    // previews) so exactly one state highlight is ever on screen.
+    if (_forEachScopeSel !== null) { try { window.__clearForEachScope__(); } catch (_) {} }
+    _clearAllHovers();
+    fullReset();
     _listPickMode = true;
     try {
       _listPickContainers = Array.from(document.querySelectorAll(containerSelector));
