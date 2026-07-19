@@ -296,15 +296,17 @@ function genAction(step, ctx) {
     // → final JSON contains only the per-product detail records, not
     // the raw links list.
     const includeInOutput = advanced.includeInOutput !== false;
+    const key = (label && label.trim()) ? label : `extracted_${varName}`;
+    const jkey = JSON.stringify(key);
     if (includeInOutput) {
-      const key = (label && label.trim()) ? label : `extracted_${varName}`;
       if (ctx.inLoop) {
-        // Inside WHILE/REPEAT: accumulate into array instead of overwriting
-        store = `  if (!__results__[${JSON.stringify(key)}]) __results__[${JSON.stringify(key)}] = [];\n`
-              + `  if (Array.isArray(${varName})) __results__[${JSON.stringify(key)}].push(...${varName});\n`
-              + `  else if (${varName} !== null && ${varName} !== undefined) __results__[${JSON.stringify(key)}].push(${varName});\n`;
+        // Inside a loop (WHILE / REPEAT / pagination): accumulate into an
+        // array instead of overwriting, so every iteration's rows are kept.
+        store = `  if (!__results__[${jkey}]) __results__[${jkey}] = [];\n`
+              + `  if (Array.isArray(${varName})) __results__[${jkey}].push(...${varName});\n`
+              + `  else if (${varName} !== null && ${varName} !== undefined) __results__[${jkey}].push(${varName});\n`;
       } else {
-        store = `  __results__[${JSON.stringify(key)}] = ${varName};\n`;
+        store = `  __results__[${jkey}] = ${varName};\n`;
       }
     }
     // Mirror the named result into a JS variable with the same name, so
@@ -317,7 +319,24 @@ function genAction(step, ctx) {
       const alias = toJsIdent(label.trim());
       if (alias && !ctx.declaredVars?.has(alias)) {
         if (ctx.capturedAliases) ctx.capturedAliases.add(alias);
-        store += `  ${alias} = ${varName};\n`;
+        if (ctx.inLoop) {
+          // CRITICAL for "paginate a list, THEN enrich it": inside a loop the
+          // alias must ACCUMULATE across iterations too, not just hold the
+          // last one. Otherwise a later step reading `${alias}` (e.g.
+          // RUN_SUBFLOW enrich's source table) would only see the final
+          // page's rows. Mirror the __results__[key] accumulation above.
+          if (includeInOutput) {
+            // __results__[key] is already the full accumulated array — point
+            // the alias at it so both stay in sync.
+            store += `  ${alias} = __results__[${jkey}];\n`;
+          } else {
+            store += `  if (!Array.isArray(${alias})) ${alias} = [];\n`
+                  +  `  if (Array.isArray(${varName})) ${alias}.push(...${varName});\n`
+                  +  `  else if (${varName} !== null && ${varName} !== undefined) ${alias}.push(${varName});\n`;
+          }
+        } else {
+          store += `  ${alias} = ${varName};\n`;
+        }
       }
     }
 
@@ -1184,22 +1203,33 @@ function genControl(step, ctx, depth) {
       const body = genStepList(bodySteps, { ...ctx, inLoop: true, forEachEl: ctx.forEachEl }, depth + 1);
       ctx.forEachEl = prevCtx;
 
-      // Mirror the rows into a JS-visible alias so downstream steps can
-      // reference it as `<label>` (e.g. a FOR_EACH source field). Same
-      // trick we use for standalone extraction steps.
-      const aliasName = step.label && step.label.trim() ? toJsIdent(step.label.trim()) : '';
-      const aliasLine = (aliasName && !ctx.declaredVars?.has(aliasName))
-        ? (ctx.capturedAliases && ctx.capturedAliases.add(aliasName), `${aliasName} = ${resultsVar};`)
-        : '';
-
       // Same "Include in final output" semantics as standalone
       // extractions — the JS alias is still emitted so the rows are
       // usable downstream even if the user opts out of putting the
       // table in the results JSON.
       const includeInOutput = (step.advanced && step.advanced.includeInOutput) !== false;
-      const writebackLine = includeInOutput
-        ? `__results__[${JSON.stringify(resultsKey)}] = ${resultsVar};`
-        : `// (${resultsKey}: kept as JS variable only — excluded from results JSON)`;
+      const rkey = JSON.stringify(resultsKey);
+      const aliasName = step.label && step.label.trim() ? toJsIdent(step.label.trim()) : '';
+      const wantAlias = aliasName && !ctx.declaredVars?.has(aliasName);
+      if (wantAlias && ctx.capturedAliases) ctx.capturedAliases.add(aliasName);
+
+      // Writeback into __results__ and mirror the rows into a JS-visible
+      // alias so downstream steps can reference the table as `<label>` (e.g.
+      // a RUN_SUBFLOW enrich source). When THIS loop is itself nested inside
+      // another loop (e.g. a Pagination step), accumulate across the outer
+      // iterations instead of overwriting — otherwise only the last page's
+      // rows survive (the "only the last page got enriched" bug).
+      const writebackLines = includeInOutput
+        ? (ctx.inLoop
+            ? [`if (!__results__[${rkey}]) __results__[${rkey}] = [];`, `__results__[${rkey}].push(...${resultsVar});`]
+            : [`__results__[${rkey}] = ${resultsVar};`])
+        : [`// (${resultsKey}: kept as JS variable only — excluded from results JSON)`];
+      const aliasLines = !wantAlias ? []
+        : (includeInOutput
+            ? (ctx.inLoop ? [`${aliasName} = __results__[${rkey}];`] : [`${aliasName} = ${resultsVar};`])
+            : (ctx.inLoop
+                ? [`if (!Array.isArray(${aliasName})) ${aliasName} = [];`, `${aliasName}.push(...${resultsVar});`]
+                : [`${aliasName} = ${resultsVar};`]));
 
       // Iteration markers (see FOR_EACH for the rationale).
       const feIdJson = JSON.stringify(step.id || '');
@@ -1218,8 +1248,8 @@ function genControl(step, ctx, depth) {
           `  }`,
           `  console.log('ITER_END:' + JSON.stringify({stepId: ${feIdJson}}));`,
           `}`,
-          writebackLine,
-          aliasLine,
+          ...writebackLines,
+          ...aliasLines,
           // Record-count / field-fill stats for the loop's rows → drives
           // self-healing when the loop selector (or an inner field) breaks.
           (step.id

@@ -1684,8 +1684,7 @@ function TableSelect({ value, onChange, placeholder, step, expectedKind }) {
       </select>
       {tables.length === 0 && (
         <div className="enrich-hint enrich-hint--warn">
-          No named lists yet. Add an <strong>Extract List</strong> step earlier in the
-          workflow and give it a name — it'll appear here to pick.
+          No lists yet — add a named <strong>Extract List</strong> step first.
         </div>
       )}
       {manual && (
@@ -1771,8 +1770,8 @@ function EnrichSummary({ step, config }) {
   if (!tableName) {
     return (
       <div className="enrich-summary enrich-summary--empty">
-        <span className="enrich-summary__icon">💡</span>
-        <div>Pick a list above and this will explain, in plain English, exactly what happens for every row.</div>
+        <span className="enrich-summary__icon">↳</span>
+        <div>Pick a list to see what each row will do.</div>
       </div>
     );
   }
@@ -1780,33 +1779,27 @@ function EnrichSummary({ step, config }) {
   const urlCol = config.urlParam ? (p[config.urlParam] || "") : "";
   const strategy = config.strategyParam ? (p[config.strategyParam] || "flat") : "flat";
 
-  // What runs per row?
-  let action;
-  if (config.subflowParam) {
-    const wf = (availableWorkflows || []).find(w => w.id === p[config.subflowParam]);
-    action = wf
-      ? <>run the <strong>{wf.name}</strong> workflow on that page</>
-      : <>run the chosen workflow on that page</>;
-  } else {
-    action = <>run your steps</>;
-  }
+  const action = config.subflowParam
+    ? (() => {
+        const wf = (availableWorkflows || []).find(w => w.id === p[config.subflowParam]);
+        return wf ? <> run <strong>{wf.name}</strong>,</> : <> run the detail workflow,</>;
+      })()
+    : <> run your steps,</>;
 
   const strategyPhrase = {
-    flat:    <>add its results as <strong>new columns</strong> on the row</>,
-    prefix:  <>add its results as new columns, named with the <strong>“{p[config.prefixParam] || "detail_"}”</strong> prefix</>,
-    nest:    <>tuck the whole result under a single <strong>“{p[config.nestParam] || "detail"}”</strong> column</>,
-    explode: <>output <strong>one row per item</strong> of the detail list</>,
-  }[strategy] || <>merge its results back into the row</>;
+    flat:    <><strong>new columns</strong></>,
+    prefix:  <><strong>prefixed columns</strong></>,
+    nest:    <>one <strong>grouped column</strong></>,
+    explode: <><strong>one row per item</strong></>,
+  }[strategy] || <>new columns</>;
 
   return (
     <div className="enrich-summary">
       <span className="enrich-summary__icon">↳</span>
       <div>
-        For <strong>each row</strong> in <strong>{tableName}</strong>
-        {urlCol
-          ? <>, open the link in the <strong>{urlCol}</strong> column, </>
-          : <> (on the current page), </>}
-        {action}, then {strategyPhrase}.
+        Each row of <strong>{tableName}</strong>
+        {urlCol ? <> → open <strong>{urlCol}</strong>,</> : <>,</>}
+        {action} add {strategyPhrase}.
       </div>
     </div>
   );
