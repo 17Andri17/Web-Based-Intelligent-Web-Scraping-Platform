@@ -1,0 +1,70 @@
+/* ── Enrich-flow field renderers ───────────────────────────────────────────
+   Styling for the point-and-click "list → details" builder: the source-table
+   and column dropdowns, their inline hints, and the live plain-English
+   summary. Teal accent (#2dd4bf) matches the enrich / For-Each-Row colour. */
+
+.enrich-select {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.enrich-dropdown {
+  width: 100%;
+}
+
+/* Small explanatory text under a dropdown. */
+.enrich-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.enrich-hint strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* "You haven't captured a list yet" nudge. */
+.enrich-hint--warn {
+  color: var(--accent-warning, #d29922);
+  background: color-mix(in srgb, var(--accent-warning, #d29922) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-warning, #d29922) 32%, transparent);
+  border-radius: var(--radius-sm, 6px);
+  padding: 8px 10px;
+}
+.enrich-hint--warn strong { color: inherit; }
+
+/* Live plain-English description of what the enrich step will do. */
+.enrich-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: color-mix(in srgb, #2dd4bf 9%, transparent);
+  border: 1px solid color-mix(in srgb, #2dd4bf 34%, transparent);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm, 6px);
+  padding: 10px 12px;
+  margin: 4px 0 2px;
+}
+.enrich-summary strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+.enrich-summary__icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  line-height: 1.4;
+  opacity: 0.9;
+}
+
+/* Neutral, muted variant shown before a source list is chosen. */
+.enrich-summary--empty {
+  color: var(--text-muted);
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.03));
+  border-color: var(--border-default, rgba(255, 255, 255, 0.1));
+  border-left-width: 1px;
+}
+.enrich-summary--empty strong { color: var(--text-secondary); }

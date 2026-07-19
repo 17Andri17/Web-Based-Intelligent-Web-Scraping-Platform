@@ -57,6 +57,8 @@ export function createControl(type, params = {}) {
   // list renderer receives the right shape.
   const finalParams = {};
   for (const [key, paramDef] of Object.entries(def.params || {})) {
+    // Display-only fields (e.g. the live enrich summary) hold no value.
+    if (paramDef.type === 'enrichSummary' || paramDef.type === 'note') continue;
     const emptyDefault = (paramDef.type === 'selectorList' || paramDef.type === 'array') ? [] : '';
     finalParams[key] = params[key] !== undefined
       ? params[key]

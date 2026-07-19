@@ -82,12 +82,16 @@ function buildApiStepFromSource(source) {
 // declarations, so we substitute the variable VALUES into selectors /
 // URLs / etc. before sending the payload to the backend's previewStep.
 // References to undeclared names are left untouched (verbatim text).
-// Same regex as the codegen — top-level identifier or dotted path.
-// Dotted paths only resolve if the ROOT identifier is a declared workflow
-// variable AND it's an object. (Iteration variables like `product.link`
-// only exist at run time, so the live preview leaves them as literal text
-// — the user can still verify them once they hit Run.)
-const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}/g;
+// Same reference syntax as the codegen. A variable NAME may contain spaces
+// (e.g. "Escape Room Listings"), so we only exclude the structural chars
+// . [ ] { } from the name / dotted-path segments. The `[*]` projection form
+// is intentionally NOT resolved here (it needs a runtime array), so those
+// references are left as literal text for the run to substitute.
+// Dotted paths only resolve if the ROOT name is a declared workflow variable
+// AND it's an object. (Iteration variables like `product.link` only exist at
+// run time, so the live preview leaves them as literal text — the user can
+// still verify them once they hit Run.)
+const VAR_RX = /\{\{\s*([^.[\]{}]+(?:\.[^.[\]{}]+)*)\s*\}\}/g;
 function resolveVars(s, vars) {
   if (typeof s !== "string" || !s.includes("{{")) return s;
   const map = new Map();
@@ -96,7 +100,7 @@ function resolveVars(s, vars) {
   }
   if (map.size === 0) return s;
   return s.replace(VAR_RX, (full, path) => {
-    const parts = path.split(".");
+    const parts = path.split(".").map(p => p.trim());
     if (!map.has(parts[0])) return full;     // root not a declared variable → leave for runtime
     let cur = map.get(parts[0]);
     for (let i = 1; i < parts.length; i++) {
