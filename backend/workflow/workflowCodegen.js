@@ -68,37 +68,93 @@ const indent = (code, levels = 1) =>
 //
 // The `[*]` star says "iterate over the array and take this column from
 // each row" — i.e. project a column out of a list-of-objects variable.
-// Anything that doesn't match (e.g. "{{not a var}}") stays as literal
-// text so users aren't accidentally interpolating arbitrary braces.
+//
+// IMPORTANT — names may contain spaces. A captured table can be labelled
+// "Escape Room Listings" and a column can be "unit price". The runtime
+// JS *variable* for such a name is its sanitised identifier
+// (`toJsIdent`, e.g. `Escape_Room_Listings`), while runtime object keys
+// (columns) keep the exact original text, so a spaced column is read with
+// bracket access (`_x["unit price"]`). The parser below resolves both:
+//   {{Escape Room Listings}}          → Escape_Room_Listings
+//   {{Escape Room Listings[*].link}}  → (Escape_Room_Listings || []).map(_x => _x.link)
+//   {{rooms[*].unit price}}           → (rooms || []).map(_x => _x["unit price"])
+//
+// A `{{…}}` whose contents don't parse as a reference (e.g. it contains
+// nested braces) is left as literal text so users aren't accidentally
+// interpolating arbitrary braces.
 //
 // Both helpers escape backticks / existing ${...} sequences so the
 // generated code stays well-formed even when the user types tricky text.
-const VAR_RX = /\{\{\s*([a-zA-Z_$][\w$]*)(\[\*\])?((?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}/g;
+const VAR_RX = /\{\{\s*([^{}]+?)\s*\}\}/g;
+const IDENT_RX = /^[a-zA-Z_$][\w$]*$/;
 
-function refToJs(root, star, rest) {
-  if (star) {
-    return rest
-      ? `(${root} || []).map(_x => _x${rest})`
-      : `(${root} || [])`;
+// Resolve a variable NAME (the "root" of a reference) to the JS identifier
+// it was declared under. Already-valid identifiers are kept verbatim so
+// loop variables like `_url` / `item` / `index` (declared literally, NOT
+// through toJsIdent) still resolve. Names with spaces / punctuation are
+// mapped through toJsIdent — the exact same transform used when the
+// captured-output alias / workflow variable was declared.
+function rootToIdent(name) {
+  const n = String(name).trim();
+  return IDENT_RX.test(n) ? n : toJsIdent(n);
+}
+
+// Build a member-access chain for a dotted path. Plain-identifier segments
+// use dot access; anything else (spaces, punctuation) uses bracket access
+// with the EXACT original key, because runtime rows are keyed by the field
+// name as authored.
+function pathToAccess(segments) {
+  return segments
+    .map(seg => (IDENT_RX.test(seg) ? `.${seg}` : `[${JSON.stringify(seg)}]`))
+    .join('');
+}
+
+// Parse the inside of a `{{…}}` (already trimmed) into { root, star, path }.
+// Grammar:  ROOT ('[*]')? ('.' SEG)*   where ROOT/SEG may contain spaces
+// but not '.', '[' or ']'. Returns null when the text isn't a reference.
+function parseRef(inner) {
+  const m = /^([^.[\]]+?)\s*(\[\*\])?\s*((?:\.[^.[\]]+)*)$/.exec(inner);
+  if (!m) return null;
+  const root = m[1].trim();
+  if (!root) return null;
+  const path = m[3]
+    ? m[3].split('.').slice(1).map(s => s.trim()).filter(Boolean)
+    : [];
+  return { root, star: !!m[2], path };
+}
+
+// Turn the inside of a `{{…}}` into the JS expression it references, or
+// null when it isn't a valid reference.
+function refExpr(inner) {
+  const p = parseRef(inner);
+  if (!p) return null;
+  const rootJs = rootToIdent(p.root);
+  const access = pathToAccess(p.path);
+  if (p.star) {
+    return p.path.length
+      ? `(${rootJs} || []).map(_x => _x${access})`
+      : `(${rootJs} || [])`;
   }
-  return root + (rest || '');
+  return rootJs + access;
 }
 
 function qStr(s /* declaredVars kept for back-compat — no longer used */) {
   if (typeof s !== 'string') return JSON.stringify(s == null ? '' : String(s));
   if (!s.includes('{{')) return JSON.stringify(s);
 
-  VAR_RX.lastIndex = 0;
-  if (!VAR_RX.test(s)) return JSON.stringify(s);
-
   const escaped = s
     .replace(/\\/g, '\\\\')
     .replace(/`/g, '\\`')
     .replace(/\$\{/g, '\\${');
-  const interpolated = escaped.replace(VAR_RX, (_full, root, star, rest) =>
-    '${' + refToJs(root, star, rest) + '}'
-  );
-  return '`' + interpolated + '`';
+  let matched = false;
+  const interpolated = escaped.replace(VAR_RX, (full, inner) => {
+    const expr = refExpr(inner.trim());
+    if (expr == null) return full;   // not a reference → keep literal
+    matched = true;
+    return '${' + expr + '}';
+  });
+  // No resolvable reference inside → emit the plain string unchanged.
+  return matched ? '`' + interpolated + '`' : JSON.stringify(s);
 }
 
 // Extract a JS EXPRESSION out of a string that's "essentially a template
@@ -109,9 +165,9 @@ function qStr(s /* declaredVars kept for back-compat — no longer used */) {
 // to `[]`.
 function qExpr(s) {
   if (typeof s !== 'string') return null;
-  const m = /^\s*\{\{\s*([a-zA-Z_$][\w$]*)(\[\*\])?((?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}\s*$/.exec(s);
+  const m = /^\s*\{\{\s*([^{}]+?)\s*\}\}\s*$/.exec(s);
   if (!m) return null;
-  return refToJs(m[1], m[2], m[3]);
+  return refExpr(m[1].trim());
 }
 
 // Convert a user-typed "JS expression" field (FOR_EACH source, IF
@@ -120,6 +176,7 @@ function qExpr(s) {
 //   - empty                       → fallback
 //   - "{{var}} < 5"               → "var < 5"           (textual subst)
 //   - "{{products[*].link}}"      → "(products || []).map(_x => _x.link)"
+//   - "{{Escape Room Listings}}"  → "Escape_Room_Listings"
 //   - "someVar.length > 0"        → "someVar.length > 0" (raw JS, untouched)
 //
 // We do TEXTUAL substitution rather than wrapping in a template literal
@@ -133,8 +190,10 @@ function jsExpr(s, fallback) {
   const t = s.trim();
   if (!t) return fallback;
   if (!t.includes('{{')) return t;          // already raw JS
-  VAR_RX.lastIndex = 0;
-  return t.replace(VAR_RX, (_full, root, star, rest) => refToJs(root, star, rest));
+  return t.replace(VAR_RX, (full, inner) => {
+    const expr = refExpr(inner.trim());
+    return expr == null ? full : expr;
+  });
 }
 
 const q = (s) => JSON.stringify(s || '');

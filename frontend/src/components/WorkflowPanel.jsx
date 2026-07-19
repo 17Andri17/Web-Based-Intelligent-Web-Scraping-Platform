@@ -14,6 +14,7 @@ import "../styles/ExtractListFieldsEditor.css";
 import "../styles/WorkflowVariables.css";
 import "../styles/VariablePicker.css";
 import "../styles/ConditionBuilder.css";
+import "../styles/EnrichFields.css";
 
 // Context shared across all step components (avoids prop drilling).
 // Defined in ./workflowPanelContext so helper components can consume it
@@ -206,23 +207,41 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
   return out.slice().reverse();
 }
 
+// Parse a single {{reference}} into { root, hasStar, path[] }, or null.
+// Mirrors the backend's parseRef (workflowCodegen.js): names and column
+// segments may contain spaces (a captured table can be "Escape Room
+// Listings", a column "unit price"), so we only exclude the structural
+// characters . [ ] { }. `full` may be a pure "{{…}}" string or the first
+// {{…}} found inside a larger expression.
+const REF_INNER_RX = /^([^.[\]{}]+?)\s*(\[\*\])?\s*((?:\.[^.[\]{}]+)*)$/;
+function parseTemplateRef(full) {
+  if (typeof full !== "string") return null;
+  const outer = /\{\{\s*([^{}]+?)\s*\}\}/.exec(full);
+  if (!outer) return null;
+  const inner = REF_INNER_RX.exec(outer[1].trim());
+  if (!inner) return null;
+  const root = inner[1].trim();
+  if (!root) return null;
+  const path = inner[3]
+    ? inner[3].split(".").slice(1).map(s => s.trim()).filter(Boolean)
+    : [];
+  return { root, hasStar: !!inner[2], path };
+}
+
 // Inspect a FOR_EACH source expression to decide what each iteration's
 // item will be. Returns { rootName, projectedColumn, itemKind }.
 function analyseSourceExpr(raw, colsByName) {
   if (typeof raw !== "string" || !raw.trim()) {
     return { rootName: "", projectedColumn: null, itemKind: "unknown" };
   }
-  const m = /\{\{\s*([a-zA-Z_$][\w$]*)(\[\*\])?((?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}/.exec(raw);
-  if (m) {
-    const root = m[1];
-    const hasStar = !!m[2];
-    const path = m[3] ? m[3].slice(1).split(".") : [];
-    if (hasStar && path.length > 0) {
+  const ref = parseTemplateRef(raw);
+  if (ref) {
+    if (ref.hasStar && ref.path.length > 0) {
       // {{table[*].col}} → each item is the column value (scalar)
-      return { rootName: root, projectedColumn: path.join("."), itemKind: "scalar" };
+      return { rootName: ref.root, projectedColumn: ref.path.join("."), itemKind: "scalar" };
     }
     // {{table}} / {{table[*]}} / {{table.col}} → each item is a row of `table`
-    return { rootName: root, projectedColumn: null, itemKind: "row" };
+    return { rootName: ref.root, projectedColumn: null, itemKind: "row" };
   }
   // Raw identifier — if it names a captured table, item is a row;
   // otherwise we can't be sure.
@@ -262,6 +281,8 @@ function ActionIcon({ type }) {
 function buildDefaultParams(def) {
   const p = {};
   for (const [k, v] of Object.entries(def.inputs || {})) {
+    // Display-only fields (e.g. the live enrich summary) hold no value.
+    if (v.type === "enrichSummary" || v.type === "note") continue;
     if (v.default !== undefined) { p[k] = v.default; continue; }
     if (v.type === "array" || v.type === "selectorList") { p[k] = []; continue; }
     p[k] = "";
@@ -1345,6 +1366,10 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
               value={getValue(k)}
               options={s.options}
               placeholder={s.placeholder}
+              // Full field spec — the enrich renderers (tableSelect /
+              // columnSelect / enrichSummary) read extra config off it
+              // (which sibling param holds the source table, etc.).
+              spec={s}
               onChange={v => setParam(k, v)}
               // Extra context: some renderers (the EXTRACT_LIST fields
               // editor in particular) need to know about sibling params
@@ -1515,9 +1540,10 @@ function detectInputMismatch(value, expectedKind, ctx) {
   const trimmed = value.trim();
   // We only validate inputs that are EXACTLY one variable reference —
   // mixed text + interpolation is always a string at runtime.
-  const m = /^\{\{\s*([a-zA-Z_$][\w$]*)(\[\*\])?((?:\.[a-zA-Z_$][\w$]*)*)\s*\}\}$/.exec(trimmed);
-  if (!m) return null;
-  const root = m[1], hasStar = !!m[2], path = m[3] ? m[3].slice(1).split(".") : [];
+  if (!/^\{\{[^{}]+\}\}$/.test(trimmed)) return null;
+  const ref = parseTemplateRef(trimmed);
+  if (!ref) return null;
+  const root = ref.root, hasStar = ref.hasStar, path = ref.path;
   // Determine what the reference resolves to:
   //   {{X}}            → X's own kind
   //   {{X[*]}}         → list  (the whole list)
@@ -1602,12 +1628,240 @@ function expectedKindForField(stepType, fieldKey) {
   return FIELD_EXPECTED_KIND[fieldKey] || "any";
 }
 
+/* ── Enrich-flow helpers ──────────────────────────────────────────────────
+   The "scrape a list → open each row's link → merge the detail-page results
+   back in" pattern is common but was fiddly: you had to type {{table}}
+   references and remember exact column names. These renderers turn that into
+   point-and-click, and a live summary spells out in plain English what the
+   step will do. Shared by RUN_SUBFLOW (enrich mode) and the FOR_EACH_ROW
+   control. */
+
+// Captured outputs that are enrichable (have rows): lists and tables.
+function useEnrichableTables() {
+  const { availableCapturedOutputs = [] } = useContext(WPCtx) || {};
+  return (availableCapturedOutputs || []).filter(
+    o => o && (o.type === "list" || o.type === "table")
+  );
+}
+
+// Map a {{Table Name}} reference back to its captured-output descriptor.
+function tableForRef(ref, tables) {
+  const parsed = parseTemplateRef(ref || "");
+  if (!parsed) return null;
+  return tables.find(t => t.name === parsed.root) || null;
+}
+
+// Source-table dropdown. The value is stored as a {{Table Name}} reference
+// (so the codegen resolves it to the underlying variable). A "manual" escape
+// hatch reveals the full free-text input + $ variable picker for power users
+// or when the current value isn't one of the known tables.
+function TableSelect({ value, onChange, placeholder, step, expectedKind }) {
+  const tables = useEnrichableTables();
+  const val = (value || "").trim();
+  const matched = tables.find(t => `{{${t.name}}}` === val);
+  const [manualForced, setManualForced] = React.useState(false);
+  const manual = manualForced || (val !== "" && !matched);
+
+  return (
+    <div className="enrich-select">
+      <select
+        className="enrich-dropdown"
+        value={matched ? val : (manual ? "__manual__" : "")}
+        onChange={e => {
+          const v = e.target.value;
+          if (v === "__manual__") { setManualForced(true); return; }
+          setManualForced(false);
+          onChange(v);
+        }}
+      >
+        <option value="">— pick a list to enrich —</option>
+        {tables.map(t => (
+          <option key={`${t.stepId}:${t.name}`} value={`{{${t.name}}}`}>
+            {t.name}{t.columns?.length ? `  ·  ${t.columns.length} columns` : ""}
+          </option>
+        ))}
+        <option value="__manual__">✎ Enter a reference manually…</option>
+      </select>
+      {tables.length === 0 && (
+        <div className="enrich-hint enrich-hint--warn">
+          No named lists yet. Add an <strong>Extract List</strong> step earlier in the
+          workflow and give it a name — it'll appear here to pick.
+        </div>
+      )}
+      {manual && (
+        <ScopedTextInput
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder || "{{My List}}"}
+          step={step}
+          expectedKind={expectedKind}
+        />
+      )}
+    </div>
+  );
+}
+
+// Column dropdown for the chosen source table (e.g. "which column holds the
+// link?"). Reads the sibling source param named by `columnOf`, looks up its
+// columns, and offers them. Falls back to a plain text box when the source
+// or its columns aren't known.
+function ColumnSelect({ value, onChange, placeholder, step, columnOf, optional }) {
+  const tables = useEnrichableTables();
+  const sourceRef = (step?.params && columnOf) ? step.params[columnOf] : "";
+  const table = tableForRef(sourceRef, tables);
+  const columns = (table?.columns || []).filter(Boolean);
+  const val = value || "";
+  const inList = columns.includes(val);
+  const [manualForced, setManualForced] = React.useState(false);
+  const manual = manualForced || (val !== "" && !inList);
+
+  // Source not picked yet, or its columns are unknown → plain text input so
+  // the user is never blocked.
+  if (columns.length === 0) {
+    return (
+      <input
+        type="text"
+        value={val}
+        placeholder={placeholder || "column name"}
+        onChange={e => onChange(e.target.value)}
+      />
+    );
+  }
+
+  return (
+    <div className="enrich-select">
+      <select
+        className="enrich-dropdown"
+        value={inList ? val : (manual ? "__manual__" : "")}
+        onChange={e => {
+          const v = e.target.value;
+          if (v === "__manual__") { setManualForced(true); return; }
+          setManualForced(false);
+          onChange(v);
+        }}
+      >
+        <option value="">{optional ? "— none —" : "— pick a column —"}</option>
+        {columns.map(c => <option key={c} value={c}>{c}</option>)}
+        <option value="__manual__">✎ Type a column name…</option>
+      </select>
+      {manual && (
+        <input
+          type="text"
+          value={val}
+          placeholder={placeholder || "column name"}
+          onChange={e => onChange(e.target.value)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Live, read-only plain-English summary of an enrich step. Reads sibling
+// params (named via `config`) so it works for both RUN_SUBFLOW enrich mode
+// and the FOR_EACH_ROW control.
+function EnrichSummary({ step, config }) {
+  const { availableCapturedOutputs = [], availableWorkflows = [] } = useContext(WPCtx) || {};
+  const p = step?.params || {};
+  const tables = (availableCapturedOutputs || []).filter(o => o && (o.type === "list" || o.type === "table"));
+
+  const sourceRef = config.sourceParam ? (p[config.sourceParam] || "") : "";
+  const table = tableForRef(sourceRef, tables);
+  const tableName = table?.name || (parseTemplateRef(sourceRef)?.root) || null;
+
+  if (!tableName) {
+    return (
+      <div className="enrich-summary enrich-summary--empty">
+        <span className="enrich-summary__icon">💡</span>
+        <div>Pick a list above and this will explain, in plain English, exactly what happens for every row.</div>
+      </div>
+    );
+  }
+
+  const urlCol = config.urlParam ? (p[config.urlParam] || "") : "";
+  const strategy = config.strategyParam ? (p[config.strategyParam] || "flat") : "flat";
+
+  // What runs per row?
+  let action;
+  if (config.subflowParam) {
+    const wf = (availableWorkflows || []).find(w => w.id === p[config.subflowParam]);
+    action = wf
+      ? <>run the <strong>{wf.name}</strong> workflow on that page</>
+      : <>run the chosen workflow on that page</>;
+  } else {
+    action = <>run your steps</>;
+  }
+
+  const strategyPhrase = {
+    flat:    <>add its results as <strong>new columns</strong> on the row</>,
+    prefix:  <>add its results as new columns, named with the <strong>“{p[config.prefixParam] || "detail_"}”</strong> prefix</>,
+    nest:    <>tuck the whole result under a single <strong>“{p[config.nestParam] || "detail"}”</strong> column</>,
+    explode: <>output <strong>one row per item</strong> of the detail list</>,
+  }[strategy] || <>merge its results back into the row</>;
+
+  return (
+    <div className="enrich-summary">
+      <span className="enrich-summary__icon">↳</span>
+      <div>
+        For <strong>each row</strong> in <strong>{tableName}</strong>
+        {urlCol
+          ? <>, open the link in the <strong>{urlCol}</strong> column, </>
+          : <> (on the current page), </>}
+        {action}, then {strategyPhrase}.
+      </div>
+    </div>
+  );
+}
+
 /* ── Field Renderer ── */
-function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey, onName, conditionBuilder }) {
+function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey, onName, conditionBuilder, spec }) {
   // hidden fields are stored in params but not shown in UI
   if (type === "hidden") return null;
 
   const expectedKind = expectedKindForField(step?.type, fieldKey);
+
+  // enrichSummary: a read-only, live plain-English description of what an
+  // enrich step will do. No form value — purely explanatory.
+  if (type === "enrichSummary") {
+    return <EnrichSummary step={step} config={spec || {}} />;
+  }
+
+  // tableSelect: pick a captured list/table to enrich from a dropdown
+  // (stored as a {{Table Name}} reference) instead of typing it.
+  if (type === "tableSelect") {
+    return (
+      <div className="form-group">
+        <label>{label}</label>
+        <TableSelect
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+          step={step}
+          expectedKind={expectedKind}
+        />
+        {spec?.help && <div className="enrich-hint">{spec.help}</div>}
+      </div>
+    );
+  }
+
+  // columnSelect: pick a column of the chosen source table from a dropdown
+  // (e.g. which column holds the link). Falls back to free text when the
+  // source's columns aren't known yet.
+  if (type === "columnSelect") {
+    return (
+      <div className="form-group">
+        <label>{label}</label>
+        <ColumnSelect
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+          step={step}
+          columnOf={spec?.columnOf}
+          optional={spec?.optional}
+        />
+        {spec?.help && <div className="enrich-hint">{spec.help}</div>}
+      </div>
+    );
+  }
 
   // keyvalue: rich fields editor used by EXTRACT_LIST. We pull socket
   // and the latest preview rows out of WPCtx so the AI auto-detect
@@ -1691,6 +1945,9 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
       {type === "select"  && <select value={value ?? ""} onChange={e => onChange(e.target.value)}>{(options || []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>}
       {type === "array"   && <input type="text" value={(value || []).join(", ")} placeholder="Comma-separated values" onChange={e => onChange(e.target.value.split(",").map(v => v.trim()).filter(Boolean))} />}
       {type === "selectorList" && <SelectorListEditor value={value} onChange={onChange} />}
+      {/* Optional per-field help text (used by the enrich builder, but
+          available to any field via its `help` spec). */}
+      {spec?.help && <div className="enrich-hint">{spec.help}</div>}
     </div>
   );
 }

@@ -1660,10 +1660,10 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
     label: "Run Subflow",
     category: "Composition",
     description:
-      "Open another saved workflow ('subflow') to capture details from a page. Three modes: " +
-      "Single URL; iterate over a list of URLs (e.g. {{products[*].link}}); or — the powerful one — " +
-      "Enrich a table: point at a previous Extract List (e.g. products), say which field holds the link, " +
-      "and the subflow runs on each row's page and folds the details back INTO that same row.",
+      "Reuse another saved workflow to scrape detail pages. The most common use is the " +
+      "\"list → details\" pattern: you already scraped a list of items (each with a link), and now " +
+      "you want to open every link and pull richer details. Pick that list below, say which column " +
+      "holds the link, and each detail page's results get folded back into the matching row.",
     inputs: {
       workflowId: {
         // Custom renderer in WorkflowPanel that pulls the user's saved
@@ -1671,23 +1671,90 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
         // number — the backend resolves it at run time.
         type: "workflowSelect",
         required: true,
-        label: "Subflow (saved workflow)",
+        label: "Which saved workflow to run on each page",
       },
       mode: {
         type: "select",
-        label: "Run on",
+        label: "What should it run on?",
         default: "single",
         options: [
-          { label: "Single URL",                                   value: "single"   },
-          { label: "List of URLs (iterate over each)",             value: "iterate"  },
-          { label: "Enrich a table's rows (open each link, merge back)", value: "enrich"   },
+          { label: "Each row of a list — open its link & add details  ★ most common", value: "enrich"   },
+          { label: "One single page",                              value: "single"   },
+          { label: "A list of links — run once per link (no merge)", value: "iterate"  },
         ],
+      },
+
+      // ── enrich mode (the common list → details pattern) ────────────
+      sourceList: {
+        type: "tableSelect",
+        label: "1. Which list do you want to add details to?",
+        placeholder: "{{Products}}",
+        help: "Pick a list you scraped earlier (an Extract List step). Each of its rows will be opened and enriched.",
+        showIf: { mode: ["enrich"] },
+      },
+      urlField: {
+        type: "columnSelect",
+        label: "2. Which column holds the link to open?",
+        placeholder: "link",
+        default: "link",
+        columnOf: "sourceList",
+        help: "The detail page for each row is opened from this column's URL.",
+        showIf: { mode: ["enrich"] },
+      },
+      baseUrl: {
+        type: "string",
+        label: "Base URL for relative links (optional)",
+        placeholder: "https://example.com  — only needed if the links start with \"/\"",
+        showIf: { mode: ["enrich"] },
+      },
+      enrichSummary: {
+        type: "enrichSummary",
+        sourceParam: "sourceList",
+        urlParam: "urlField",
+        strategyParam: "mergeStrategy",
+        prefixParam: "detailPrefix",
+        nestParam: "detailField",
+        subflowParam: "workflowId",
+        showIf: { mode: ["enrich"] },
+      },
+      mergeStrategy: {
+        type: "select",
+        label: "3. How should the details be combined with each row?",
+        default: "flat",
+        options: [
+          { label: "Add the details as new columns  (recommended)",      value: "flat" },
+          { label: "Add as new columns, but prefix their names",         value: "prefix" },
+          { label: "Keep the details together under one column",         value: "nest" },
+          { label: "Make one row per item (e.g. one row per review)",    value: "explode" },
+        ],
+        showIf: { mode: ["enrich"] },
+      },
+      detailPrefix: {
+        type: "string",
+        label: "Prefix for the new columns",
+        placeholder: "detail_",
+        default: "detail_",
+        showIf: { mode: ["enrich"], mergeStrategy: ["prefix"] },
+      },
+      detailField: {
+        type: "string",
+        label: "Name of the column to hold the details",
+        placeholder: "detail",
+        default: "detail",
+        showIf: { mode: ["enrich"], mergeStrategy: ["nest"] },
+      },
+      explodeField: {
+        type: "string",
+        label: "Which detail list should become one-row-per-item?",
+        placeholder: "reviews  — the name of a list your subflow returns",
+        help: "Leave blank to auto-pick the first list the detail page returns.",
+        showIf: { mode: ["enrich"], mergeStrategy: ["explode"] },
       },
 
       // ── single mode ────────────────────────────────────────────────
       url: {
         type: "string",
-        label: "URL  (single mode)",
+        label: "Page URL",
         placeholder: "https://example.com/{{product.link}}  — supports {{variables}}",
         showIf: { mode: ["single", ""] },
       },
@@ -1695,69 +1762,16 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
       // ── iterate mode ───────────────────────────────────────────────
       urlList: {
         type: "string",
-        label: "URL list  (iterate mode)",
-        placeholder: "{{products[*].link}}  — dot-walk to pull a column out of a table variable",
+        label: "List of links to visit",
+        placeholder: "{{Products[*].link}}  — pull a column of links out of a list",
         showIf: { mode: ["iterate"] },
       },
       itemVar: {
         type: "string",
-        label: "Loop variable name  (iterate mode, optional)",
+        label: "Loop variable name (optional)",
         placeholder: "url",
         default: "_url",
         showIf: { mode: ["iterate"] },
-      },
-
-      // ── enrich mode ────────────────────────────────────────────────
-      sourceList: {
-        type: "string",
-        label: "Source table  (enrich mode)",
-        placeholder: "{{products}}  — the Extract List whose rows you want to enrich",
-        showIf: { mode: ["enrich"] },
-      },
-      urlField: {
-        type: "string",
-        label: "Link field  (which column in each row holds the URL)",
-        placeholder: "link",
-        default: "link",
-        showIf: { mode: ["enrich"] },
-      },
-      baseUrl: {
-        type: "string",
-        label: "Base URL for relative links  (optional)",
-        placeholder: "https://example.com  — prepended when the link isn't absolute",
-        showIf: { mode: ["enrich"] },
-      },
-      mergeStrategy: {
-        type: "select",
-        label: "How to merge the detail page's results into the row",
-        default: "flat",
-        options: [
-          { label: "Flat — add detail fields as new columns (lists kept as a nested array)", value: "flat" },
-          { label: "Prefix — like Flat but prefix the new column names", value: "prefix" },
-          { label: "Nest — put the whole detail object under one column", value: "nest" },
-          { label: "Explode — one output row per item of a detail list (denormalise)", value: "explode" },
-        ],
-        showIf: { mode: ["enrich"] },
-      },
-      detailPrefix: {
-        type: "string",
-        label: "Column prefix",
-        placeholder: "detail_",
-        default: "detail_",
-        showIf: { mode: ["enrich"], mergeStrategy: ["prefix"] },
-      },
-      detailField: {
-        type: "string",
-        label: "Nested column name",
-        placeholder: "detail",
-        default: "detail",
-        showIf: { mode: ["enrich"], mergeStrategy: ["nest"] },
-      },
-      explodeField: {
-        type: "string",
-        label: "List field to explode  (leave blank to auto-pick the first list)",
-        placeholder: "reviews",
-        showIf: { mode: ["enrich"], mergeStrategy: ["explode"] },
       },
 
       outputVar: {
