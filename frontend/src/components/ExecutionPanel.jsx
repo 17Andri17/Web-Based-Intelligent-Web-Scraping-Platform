@@ -319,25 +319,31 @@ function formatCell(val) {
    Children come from control blocks' branch arrays (body/then/else/etc).
    ===================================================================== */
 const FLOW_BRANCH_KEYS = ["body", "then", "else", "try", "catch"];
-const FLOW_LOOP_TYPES  = new Set(["FOR_EACH", "FOR_EACH_ELEMENTS", "WHILE", "REPEAT",
+const FLOW_LOOP_TYPES  = new Set(["FOR_EACH", "FOR_EACH_ELEMENTS", "FOR_EACH_ROW", "WHILE", "REPEAT",
   "PAGINATE_SCROLL", "PAGINATE_BUTTON", "PAGINATE_URL"]);
+// RUN_SUBFLOW modes that run the subflow once per item — show a loop-style
+// "N / M" iteration badge, just like a real loop.
+const SUBFLOW_ITER_MODES = new Set(["iterate", "enrich"]);
 
 function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
   if (!step || typeof step !== "object") return null;
   const state = stepStates[step.id] || "idle";
   const iter  = iterations[step.id];
   const isLoop = step.kind === "control" && FLOW_LOOP_TYPES.has(step.type);
-  const isSubflowIter = step.kind === "action" && step.type === "RUN_SUBFLOW" && step.params?.mode === "iterate";
+  const isSubflowIter = step.kind === "action" && step.type === "RUN_SUBFLOW"
+    && SUBFLOW_ITER_MODES.has(step.params?.mode);
 
-  // Children: control branches OR subflow's outputVar marker (subflow
-  // expansion isn't a UI tree — its inlined steps fire STEP_BEGIN under
-  // the parent step. We just show the run-subflow row itself.)
+  // Control branches (body / then / else / try / catch).
   const branches = [];
   for (const key of FLOW_BRANCH_KEYS) {
     if (Array.isArray(step[key]) && step[key].length > 0) {
       branches.push([key, step[key]]);
     }
   }
+  // A RUN_SUBFLOW carries the subflow's own inlined steps under
+  // `subflowSteps` (sent by the backend). Rendering them makes the Flow tab
+  // show exactly what the subflow runs, nested under the Run Subflow row.
+  const subflowSteps = Array.isArray(step.subflowSteps) ? step.subflowSteps : null;
 
   const label = step.label?.trim() || friendlyType(step.type) || "step";
 
@@ -373,6 +379,23 @@ function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
           ))}
         </ul>
       ))}
+      {subflowSteps && subflowSteps.length > 0 && (
+        <ul className="ep-flow-branch ep-flow-subflow">
+          <li className="ep-flow-branch-label ep-flow-subflow-label" style={{ paddingLeft: 4 + (depth + 1) * 14 }}>
+            ⇉ {step.subflowName || "subflow"}
+          </li>
+          {subflowSteps.map(s => (
+            <FlowNode
+              key={s.id}
+              step={s}
+              depth={depth + 1}
+              stepStates={stepStates}
+              iterations={iterations}
+              lastStepId={lastStepId}
+            />
+          ))}
+        </ul>
+      )}
     </li>
   );
 }

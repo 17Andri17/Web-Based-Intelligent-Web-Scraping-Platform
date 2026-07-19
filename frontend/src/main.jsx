@@ -387,6 +387,10 @@ function AppShell({ user, token, onLogout }) {
   const [execIterations, setExecIterations] = useState({});
   const [execLastStepId, setExecLastStepId] = useState(null);
   const [execResults,   setExecResults]   = useState(null);
+  // Flow tree for the live "Flow" tab. The backend sends this at run start
+  // with each RUN_SUBFLOW's steps inlined (so the tab shows exactly what a
+  // subflow runs). Falls back to the local `steps` when absent.
+  const [execFlowTree,  setExecFlowTree]  = useState(null);
   const sessionMetaRef = useRef({});
   // Workflow-level variables (ServiceNow-style). Kept in state so the
   // Variables panel re-renders on every edit, and mirrored into the
@@ -643,6 +647,12 @@ function AppShell({ user, token, onLogout }) {
     socket.on("executionStarted", () => {
       setExecStatus("running"); setExecLogs([]); setExecResults(null);
       setExecStepStates({}); setExecIterations({}); setExecLastStepId(null);
+    });
+    // Flow tree with subflow steps inlined — arrives just before
+    // executionStarted. Kept in its own state so the reset above doesn't
+    // wipe it; the Flow tab prefers it over the local step tree.
+    socket.on("executionFlowTree", (data) => {
+      setExecFlowTree(Array.isArray(data?.steps) ? data.steps : null);
     });
     socket.on("executionLog",     (entry) => { setExecLogs(prev => [...prev, entry]); });
     // Live flow tracking: STEP_BEGIN flips a step into "running" and
@@ -2467,7 +2477,7 @@ function AppShell({ user, token, onLogout }) {
         isOpen={execPanelOpen} onClose={() => setExecPanelOpen(false)}
         logs={execLogs} status={execStatus} results={execResults}
         onCancel={handleCancelExecution}
-        steps={steps}
+        steps={execFlowTree || steps}
         stepStates={execStepStates}
         iterations={execIterations}
         lastStepId={execLastStepId}
