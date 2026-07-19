@@ -19,6 +19,7 @@ const { verifyToken }    = require('./middleware/auth');
 const workflows          = require('./db/repositories/workflows.repo');
 const { resolveWorkflowProxy } = require('./services/proxyResolver.service');
 const { resolveCustomActions, resolveSubflows } = require('./workflow/dependencyResolver');
+const { buildFlowTree } = require('./workflow/workflowUtils');
 const extractListAI      = require('./services/extractListAI.service');
 const extractListHeuristics = require('./services/extractListHeuristics.service');
 // API discovery: passively capture the page's own XHR/fetch traffic while the
@@ -803,6 +804,12 @@ io.on('connection', async (socket) => {
 
     const subflows = await resolveSubflows(steps, socket.user.id, workflowId);
     const workflow = { id: workflowId, steps, meta, customActions, subflows };
+    // Send the live "Flow" tab a tree with each RUN_SUBFLOW's steps inlined,
+    // so it can show the exact steps a subflow runs (and mark iterations when
+    // it runs per-row). Best-effort — never block the run over it.
+    try {
+      socket.emit('executionFlowTree', { steps: buildFlowTree(steps, subflows, workflowId) });
+    } catch (_) {}
     try {
       await executeWorkflow(workflow, socket, { userId: socket.user.id, workflowId });
     } catch (err) {

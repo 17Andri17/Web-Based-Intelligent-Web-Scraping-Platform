@@ -125,8 +125,64 @@ function collectSubflowIds(steps) {
   return Array.from(ids);
 }
 
+// Build a LIGHT, display-only step tree for the live "Flow" tab: the same
+// tree, but with each RUN_SUBFLOW's referenced steps inlined under a
+// `subflowSteps` array — mirroring what the codegen actually runs (including
+// stripping a subflow's leading pinned NAVIGATE) — so the Flow tab can show
+// the exact steps a subflow runs, and mark iterations when it runs per-row.
+//
+// Only the fields the Flow renderer needs are kept (id / type / kind / label,
+// plus RUN_SUBFLOW mode) so the payload stays small. Cycles are broken with a
+// visited set seeded with the root workflow id, matching resolveSubflows and
+// the codegen's inlining guard. `subflows` is the { [id]: { name, steps } }
+// map returned by resolveSubflows.
+function buildFlowTree(steps, subflows = {}, rootWorkflowId = null) {
+  const seed = new Set(rootWorkflowId != null ? [String(rootWorkflowId)] : []);
+
+  const light = (step, visited) => {
+    if (!step || typeof step !== 'object') return null;
+    const node = {
+      id:    step.id || null,
+      type:  step.type || null,
+      kind:  step.kind || 'action',
+      label: step.label || '',
+    };
+    // RUN_SUBFLOW's mode drives the iteration badge (iterate / enrich).
+    if (step.type === 'RUN_SUBFLOW') {
+      node.params = { mode: (step.params && step.params.mode) || 'single' };
+    }
+    // Control branches (body / then / else / try / catch).
+    for (const k of CHILD_KEYS) {
+      if (Array.isArray(step[k]) && step[k].length) {
+        node[k] = step[k].map(s => light(s, visited)).filter(Boolean);
+      }
+    }
+    // Inline the referenced subflow's steps under `subflowSteps`.
+    if (step.kind === 'action' && step.type === 'RUN_SUBFLOW') {
+      const wid = step.params && step.params.workflowId;
+      const subId = wid != null && wid !== '' ? String(wid) : null;
+      const sub = subId != null ? (subflows[subId] || subflows[wid]) : null;
+      if (sub && Array.isArray(sub.steps) && subId && !visited.has(subId)) {
+        const nextVisited = new Set(visited);
+        nextVisited.add(subId);
+        let subSteps = sub.steps;
+        // Mirror codegen: a subflow's leading pinned NAVIGATE is dropped when
+        // inlined (the parent supplies the URL), so it never runs — don't show it.
+        if (subSteps[0] && subSteps[0].kind === 'action' && subSteps[0].type === 'NAVIGATE') {
+          subSteps = subSteps.slice(1);
+        }
+        node.subflowName = sub.name || null;
+        node.subflowSteps = subSteps.map(s => light(s, nextVisited)).filter(Boolean);
+      }
+    }
+    return node;
+  };
+
+  return (Array.isArray(steps) ? steps : []).map(s => light(s, seed)).filter(Boolean);
+}
+
 module.exports = {
   clone, walk, findStepById, patchStepParams,
   removeStepById, removeListField, setStepParams,
-  collectCustomActionIds, collectSubflowIds, CHILD_KEYS,
+  collectCustomActionIds, collectSubflowIds, buildFlowTree, CHILD_KEYS,
 };
