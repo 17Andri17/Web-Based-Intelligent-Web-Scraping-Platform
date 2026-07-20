@@ -23,6 +23,17 @@
   let tierList     = [];     // decorated tiers from SelectorGenerator.findSimilarTiers
   let pendingTier  = -1;     // index of the tier currently proposed in amber
 
+  // Manual multi-element add — the "select more similar elements yourself"
+  // escape hatch. The tier engine only widens within ONE similarity basis
+  // (a shared class, a structural twin set); this lets the user hand-pick a
+  // set that CROSSES those bases (e.g. every badge <p> regardless of its
+  // .green/.red/.blue colour) and derives the most specific comma-free
+  // selector covering them all. Adding picks that sit farther apart widens
+  // the scope on its own (see SelectorGenerator.generalizeFromSamples).
+  let _multiAddMode  = false;
+  let _multiSamples  = [];   // explicit user picks (blue rings)
+  let _multiMatchEls = [];   // everything the generalised selector matches (green)
+
   // List-field-pick mode — activated when user clicks "Pick from page" in
   // the EXTRACT_LIST step editor. Highlights containers, lets user click
   // child elements, emits relative selectors back to the frontend.
@@ -67,6 +78,14 @@
   const SOFT_OUTLINE  = '2px dashed #d29922';
   const HARD_OUTLINE  = '2px solid #3fb950';
   const HOVER_OUTLINE = '2px solid #58a6ff';
+
+  // Manual multi-add: the derived match set is green (like a confirmed group);
+  // the elements the user picked BY HAND get a stronger blue ring on top so
+  // they stand out from the generalisation they produced.
+  const MULTI_PICK_OUTLINE  = '3px solid #58a6ff';
+  const MULTI_PICK_SHADOW   = 'inset 0 0 0 9999px rgba(88,166,255,0.16)';
+  const MULTI_MATCH_OUTLINE = '2px solid #3fb950';
+  const MULTI_MATCH_SHADOW  = 'inset 0 0 0 9999px rgba(63,185,80,0.07)';
 
   const CONTAINER_PICK_OUTLINE     = '2px solid #a371f7';
   const CONTAINER_PICK_SHADOW      = 'inset 0 0 0 9999px rgba(163,113,247,0.05)';
@@ -116,6 +135,7 @@
     _hlOutlineSet = {};
     var list = [
       SOFT_OUTLINE, HARD_OUTLINE, HOVER_OUTLINE,
+      MULTI_PICK_OUTLINE, MULTI_MATCH_OUTLINE,
       CONTAINER_PICK_OUTLINE, FIELD_PICK_HOVER_OUTLINE, FIELD_PICK_CONFIRM_OUTLINE,
       CONTAINER_PREVIEW_OUTLINE, FIELD_MARK_OUTLINE, FIELD_MARK_OUTLINE_MUTED,
       FIELD_PENDING_OUTLINE,
@@ -299,6 +319,9 @@
     // Tear down EVERY highlight subsystem — not just the main selection — so
     // nothing lingers when the user flips to navigation mode. Each teardown
     // is guarded/idempotent.
+    _multiAddMode  = false;   // exit manual multi-add; fullReset below clears its paint
+    _multiSamples  = [];
+    _multiMatchEls = [];
     _clearAllHovers();   // canvas + breadcrumb/tree + sidebar step hovers
     if (_listPickMode && typeof window.__stopListFieldPick__ === 'function') {
       try { window.__stopListFieldPick__(); } catch (_) {}
@@ -1483,6 +1506,61 @@
     selState     = 'multi_selected';
   }
 
+  /* ── Manual multi-element add ───────────────────────────────────────────── */
+
+  // Repaint the manual-add state: every generalised match in green, the
+  // hand-picked seeds with a stronger blue ring on top. hardEls holds them all
+  // so the normal teardown paths clean up.
+  function repaintMultiAdd() {
+    clearArr(hardEls);
+    var pickSet = new Set(_multiSamples);
+    _multiMatchEls.forEach(function(el) {
+      if (!el) return;
+      hardEls.push(el);
+      if (pickSet.has(el)) {
+        setStyle(el, 'outline',    MULTI_PICK_OUTLINE, true);
+        setStyle(el, 'box-shadow', MULTI_PICK_SHADOW,  true);
+      } else {
+        setStyle(el, 'outline',    MULTI_MATCH_OUTLINE, true);
+        setStyle(el, 'box-shadow', MULTI_MATCH_SHADOW,  true);
+      }
+    });
+    // Picks the selector doesn't cover yet (e.g. the very first pick before a
+    // group exists) still need to be visible.
+    _multiSamples.forEach(function(el) {
+      if (!el || _multiMatchEls.indexOf(el) !== -1) return;
+      hardEls.push(el);
+      setStyle(el, 'outline',    MULTI_PICK_OUTLINE, true);
+      setStyle(el, 'box-shadow', MULTI_PICK_SHADOW,  true);
+    });
+  }
+
+  // Recompute the generalised selector for the current picks, repaint, and
+  // push the result to the sidebar as a (manual) multi-selection.
+  function refreshMultiAdd() {
+    var res;
+    try {
+      res = window.SelectorGenerator.generalizeFromSamples(_multiSamples);
+    } catch (_) {
+      res = { primary: null, fallbacks: [], els: _multiSamples.slice(),
+              matchCount: _multiSamples.length, strategy: 'manual-none' };
+    }
+    _multiMatchEls = (res.els && res.els.length) ? res.els.slice() : _multiSamples.slice();
+    repaintMultiAdd();
+    if (tooltip) tooltip.style.display = 'none';
+    window.sendToNode({
+      type:              'multiElementSelected',
+      manualAdd:         true,
+      sampleCount:       _multiSamples.length,
+      commonSelector:    res.primary || '',
+      fallbackSelectors: res.fallbacks || [],
+      matchCount:        _multiMatchEls.length,
+      selectorCount:     _multiMatchEls.length,
+      strategy:          res.strategy || 'manual-generalized',
+      elements:          _multiMatchEls.slice(0, 200).map(buildElementInfo),
+    });
+  }
+
   /* =========================================================================
      MOUSE EVENTS
      ========================================================================= */
@@ -1515,6 +1593,29 @@
         } else {
           tooltip.textContent = '↩ Outside containers — move inside the purple-outlined items';
         }
+        tooltip.style.cssText += ';transform:none';
+        tooltip.style.display = 'block';
+        placeTooltip(e);
+      }
+      return;
+    }
+
+    // ── Manual multi-add (takes priority over normal selection) ───────────
+    if (_multiAddMode) {
+      var mtgt = e.target;
+      if (mtgt === tooltip) return;
+      if (mtgt !== hoverEl) {
+        // Drop the previous plain hover ring, but never disturb a painted
+        // pick/match (those live in hardEls).
+        if (hoverEl && hardEls.indexOf(hoverEl) === -1) restoreStyle(hoverEl, 'outline');
+        hoverEl = mtgt;
+        if (!isRoot(mtgt) && hardEls.indexOf(mtgt) === -1) setStyle(mtgt, 'outline', HOVER_OUTLINE, true);
+      }
+      if (tooltip) {
+        var already = _multiSamples.indexOf(mtgt) !== -1;
+        tooltip.textContent = isRoot(mtgt)
+          ? '➕ Move over an element to add it to the selection'
+          : (already ? '➖ Click to remove from selection: ' : '➕ Click to add to selection: ') + getElPath(mtgt, 3);
         tooltip.style.cssText += ';transform:none';
         tooltip.style.display = 'block';
         placeTooltip(e);
@@ -1684,6 +1785,33 @@
       // (the editor re-sends the field markers either way).
       _clearListPickHover();
       _setListPickPending(tgt, containerEl);
+      return;
+    }
+
+    // ── Manual multi-add (takes priority over normal selection) ────────────
+    // Every click toggles the target in/out of the hand-picked set, then the
+    // selector is re-derived and re-painted.
+    if (_multiAddMode) {
+      var atgt = e.target;
+      if (atgt === tooltip) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (isRoot(atgt)) return;
+      var mIdx = _multiSamples.indexOf(atgt);
+      if (mIdx !== -1) _multiSamples.splice(mIdx, 1);   // click again → remove
+      else             _multiSamples.push(atgt);         // add
+      if (hoverEl === atgt) hoverEl = null;              // its ring is now owned by the paint
+      if (!_multiSamples.length) {
+        clearArr(hardEls);
+        _multiMatchEls = [];
+        window.sendToNode({
+          type: 'multiElementSelected', manualAdd: true, sampleCount: 0,
+          commonSelector: '', fallbackSelectors: [], matchCount: 0,
+          selectorCount: 0, strategy: 'manual-generalized', elements: [],
+        });
+        return;
+      }
+      refreshMultiAdd();
       return;
     }
 
@@ -1910,7 +2038,109 @@
      EXPOSED API
      ========================================================================= */
 
-  window.__resetSelection__ = function() { _clearAllHovers(); fullReset(); };
+  window.__resetSelection__ = function() {
+    _multiAddMode  = false;
+    _multiSamples  = [];
+    _multiMatchEls = [];
+    _clearAllHovers();
+    fullReset();
+  };
+
+  /* ── Manual multi-add API ────────────────────────────────────────────────
+     Enter a mode where every page click toggles an element in/out of a
+     hand-picked set and the most specific comma-free selector covering the
+     set is re-derived live. Seeds from whatever is currently selected (the
+     green group, or the seed element) so the user extends the existing pick
+     rather than starting over. */
+  window.__startMultiAdd__ = function() {
+    // Snapshot the current selection BEFORE fullReset wipes it.
+    var seed = hardEls.length ? hardEls.slice() : (currentEl ? [currentEl] : []);
+    _clearAllHovers();
+    fullReset();                         // clears tier amber / prior highlights
+    _multiAddMode  = true;
+    _multiSamples  = seed.filter(Boolean);
+    _multiMatchEls = [];
+    if (_multiSamples.length) {
+      refreshMultiAdd();
+    } else if (tooltip) {
+      tooltip.textContent = '➕ Click any element on the page to start a manual selection';
+      tooltip.style.cssText += ';transform:none';
+      tooltip.style.display = 'block';
+      tooltip.style.top  = '12px';
+      tooltip.style.left = '50%';
+      tooltip.style.setProperty('transform', 'translateX(-50%)');
+    }
+  };
+
+  // Leave manual-add but KEEP the derived group as a confirmed green
+  // selection (drops the blue pick rings). The sidebar keeps showing it.
+  window.__stopMultiAdd__ = function() {
+    if (!_multiAddMode) return;
+    _multiAddMode = false;
+    var finalEls = _multiMatchEls.length ? _multiMatchEls.slice() : _multiSamples.slice();
+    _clearCanvasHover();
+    clearArr(hardEls);
+    if (finalEls.length) { applyHard(finalEls); selState = 'multi_selected'; }
+    _multiSamples  = [];
+    _multiMatchEls = [];
+    if (tooltip) {
+      tooltip.style.display = 'none';
+      tooltip.style.transform = '';
+      tooltip.style.top  = '';
+      tooltip.style.left = '';
+    }
+  };
+
+  // Apply a hand-edited selector (the "adjust selector" power-user path):
+  // resolve it, paint the matches green, and regenerate fresh fallbacks for
+  // the resulting set. Returns synchronously to the server's page.evaluate.
+  window.__applyManualSelector__ = function(selector, type) {
+    selector = String(selector == null ? '' : selector).trim();
+    if (!selector) return { ok: false, error: 'Selector is empty' };
+    if (!type) type = /^\s*(\.?\/\/|\.?\/|\()/.test(selector) ? 'xpath' : 'css';
+    var els = [];
+    try {
+      if (type === 'xpath') {
+        var r = document.evaluate(selector, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        for (var i = 0; i < r.snapshotLength; i++) {
+          var n = r.snapshotItem(i);
+          if (n && n.nodeType === 1) els.push(n);
+        }
+      } else {
+        els = Array.prototype.slice.call(document.querySelectorAll(selector));
+      }
+    } catch (err) {
+      return { ok: false, error: (err && err.message) ? err.message : 'Invalid selector' };
+    }
+
+    // Repaint as a plain confirmed selection.
+    _multiAddMode = false;
+    _multiSamples = [];
+    _multiMatchEls = [];
+    _clearAllHovers();
+    fullReset();
+    if (els.length) { applyHard(els); currentEl = els[0]; selState = 'multi_selected'; }
+
+    // Regenerate fallbacks from the matched set (skip for huge sets — the
+    // exact-group builder is O(n) DOM work per candidate).
+    var fallbacks = [];
+    if (els.length >= 1 && els.length <= 300 &&
+        window.SelectorGenerator && window.SelectorGenerator.buildGroupSelectors) {
+      try {
+        var gs = window.SelectorGenerator.buildGroupSelectors(els);
+        fallbacks = (gs.fallbacks || []).filter(function(f) { return f.value !== selector; });
+      } catch (_) {}
+    }
+
+    return {
+      ok:           true,
+      matchCount:   els.length,
+      primary:      selector,
+      selectorType: type,
+      fallbacks:    fallbacks,
+      elements:     els.slice(0, 200).map(buildElementInfo),
+    };
+  };
 
   window.__startListFieldPick__ = function(containerSelector, fields) {
     window.__hideListFieldMarkers__(); // tear down any passive preview first

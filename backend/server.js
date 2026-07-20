@@ -281,6 +281,46 @@ io.on('connection', async (socket) => {
     } catch (_) {}
   });
 
+  // ── Manual multi-element add ──────────────────────────────────────────────
+  // Enter/leave the "select more similar elements yourself" mode. While active,
+  // page clicks toggle the picked set and the injected tool streams back
+  // `multiElementSelected` events with manualAdd=true (via the sendToNode
+  // binding, same channel as the tier flow).
+  socket.on('startMultiElementAdd', async () => {
+    try {
+      const page = await getActivePage();
+      if (page) await page.evaluate(() => {
+        if (typeof window.__startMultiAdd__ === 'function') window.__startMultiAdd__();
+      });
+    } catch (_) {}
+  });
+
+  socket.on('stopMultiElementAdd', async () => {
+    try {
+      const page = await getActivePage();
+      if (page) await page.evaluate(() => {
+        if (typeof window.__stopMultiAdd__ === 'function') window.__stopMultiAdd__();
+      });
+    } catch (_) {}
+  });
+
+  // ── Adjust selector (power-user) ──────────────────────────────────────────
+  // Apply a hand-edited primary selector: highlight its matches and regenerate
+  // fresh fallbacks for the resulting set. Answered on `manualSelectorResult`.
+  socket.on('applyManualSelector', async ({ selector, selectorType }) => {
+    const page = await getActivePage();
+    if (!page) { socket.emit('manualSelectorResult', { ok: false, error: 'No active page' }); return; }
+    try {
+      const res = await page.evaluate((sel, t) => {
+        if (typeof window.__applyManualSelector__ === 'function') return window.__applyManualSelector__(sel, t);
+        return { ok: false, error: 'Selector tool not ready' };
+      }, String(selector || ''), selectorType || '');
+      socket.emit('manualSelectorResult', res || { ok: false, error: 'No result' });
+    } catch (err) {
+      socket.emit('manualSelectorResult', { ok: false, error: err.message });
+    }
+  });
+
   // ── Copy: read the remote page's current text selection ──────────────────
   // The user only ever sees a pixel stream, so Ctrl+C in the host browser
   // can't reach the remote page's selection by itself. The frontend
