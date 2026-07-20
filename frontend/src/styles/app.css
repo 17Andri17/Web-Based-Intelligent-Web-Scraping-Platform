@@ -1467,7 +1467,20 @@ body {
     display: flex;
     flex-direction: column;
     height: 100%;
-    overflow: hidden;
+    /* The WHOLE panel scrolls as one column — not just the actions area — so
+       expanding any detail section can never bury the actions in a tiny
+       sub-scroller. The header stays put via position:sticky. */
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.ei-panel::-webkit-scrollbar {
+    width: 6px;
+}
+
+.ei-panel::-webkit-scrollbar-thumb {
+    background: var(--border-default);
+    border-radius: 4px;
 }
 
 
@@ -1488,10 +1501,19 @@ body {
     padding: 10px 14px;
     border-bottom: 1px solid var(--border-default);
     flex-shrink: 0;
+    /* Pinned to the top of the scrolling panel. Needs an opaque background so
+       content scrolling underneath doesn't bleed through. */
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    background: var(--bg-secondary);
 }
 
 .ei-multi-header {
-    background: rgba(210, 153, 34, 0.06);
+    /* Opaque tint (over an opaque base) so it works while sticky. */
+    background:
+        linear-gradient(rgba(210, 153, 34, 0.08), rgba(210, 153, 34, 0.08)),
+        var(--bg-secondary);
 }
 
 .ei-header-info {
@@ -2280,21 +2302,13 @@ body {
 /* ── Body: tabs + action grid ────────────────────────────────────────── */
 
 .ei-body {
-    flex: 1;
-    overflow-y: auto;
+    /* No longer the scroll container — the whole .ei-panel scrolls now. This
+       just stacks its children in importance order and grows naturally. */
+    flex: 1 0 auto;
     display: flex;
     flex-direction: column;
     gap: 0;
-    padding-bottom: 8px;
-}
-
-.ei-body::-webkit-scrollbar {
-    width: 5px;
-}
-
-.ei-body::-webkit-scrollbar-thumb {
-    background: var(--border-default);
-    border-radius: 4px;
+    padding: 10px 0 8px;
 }
 
 .ei-tabs {
@@ -3510,16 +3524,10 @@ body {
 
 /* ── Multi-selection: CSS selector display block ─────────────────────────── */
 
+/* Now just a passthrough — the selector lives in a normal bottom Section that
+   matches the single inspector's Sections. */
 .ei-multi-selector-block {
-    margin: 0 12px 6px;
-    padding: 9px 11px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-default);
-    border-radius: 7px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    flex-shrink: 0;
+    display: contents;
 }
 
 .ei-multi-selector-header {
@@ -3579,19 +3587,36 @@ body {
     font-weight: 700;
 }
 
-/* Section nested inside the multi-selector card: bleed to the card edges
-   so the fold line spans the card, and align padding with the card's. */
-.ei-multi-selector-block .ei-section {
-    border-bottom: none;
-    border-top: 1px solid var(--border-muted);
-    margin: 2px -11px -9px;
-}
-.ei-multi-selector-block .ei-section-head { padding: 6px 11px; }
-.ei-multi-selector-block .ei-section-body {
-    padding: 0 11px 9px;
+/* The selector Section renders like every other body section. */
+.ei-multi-selector-block .ei-section-body,
+.ei-section-body.ei-selector-section-body {
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 6px;
+    padding: 4px 14px 10px;
+}
+
+/* Selector code row shared by the single + multi "Selector & fallbacks"
+   sections: a monospace pill with the type badge and a copy button. */
+.ei-single-sel-code {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.ei-single-sel-code code {
+    flex: 1;
+    min-width: 0;
+    font-family: ui-monospace, monospace;
+    font-size: 11.5px;
+    color: var(--accent-primary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-muted);
+    border-radius: 4px;
+    padding: 5px 9px;
+    word-break: break-all;
+    white-space: pre-wrap;
+    line-height: 1.5;
 }
 
 

@@ -347,106 +347,32 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
         </button>
       </div>
 
-      {/* ── Selector pill ───────────────────────────────────────────────── */}
-      <div className="ei-selector-row">
-        <span className={`ei-sel-type-badge ${element.selectorType === "xpath" ? "xpath" : "css"}`}>
-          {element.selectorType === "xpath" ? "XP" : "CSS"}
-        </span>
-        <code className="ei-selector" title={element.selector}>{element.selector}</code>
-        {element.isRelativeToScope && (
-          <span className="ei-relative-badge" title="Selector is relative to the ForEach iterator — works for every iterated element">
-            relative
-          </span>
-        )}
-        {element.softHighlightCount > 0 && (
-          <span className="ei-similar-badge" title="Similar elements are highlighted in amber — click one to select the group">
-            +{element.softHighlightCount} similar
-          </span>
-        )}
-        <CopyButton text={element.selector} />
-      </div>
-
-      {/* Backup selectors for the single element — same safety net the
-          multi-selection inspector surfaces. */}
-      {(element.fallbackSelectors || []).length > 0 && (
-        <div className="ei-single-fallbacks">
-          <FallbackDisclosure count={element.fallbackSelectors.length}>
-            <FallbackChipList selectors={element.fallbackSelectors} />
-          </FallbackDisclosure>
-        </div>
-      )}
-
-      {/* ── Details — collapsible so the actions keep the prime space ───── */}
-      {element.breadcrumb?.length > 0 && (
-        <Section id="structure" title="Page structure" badge={element.breadcrumb.length}>
-          <InteractiveBreadcrumb
-            breadcrumb={element.breadcrumb}
-            element={element}
-            childrenList={childrenList}
-            onSelectAncestor={onSelectAncestor}
-            onGetChildren={onGetChildren}
-            onSelectChild={onSelectChild}
-            onHoverAncestor={onHoverAncestor}
-            onHoverPickerChild={onHoverPickerChild}
-            onUnhoverPickerChild={onUnhoverPickerChild}
-          />
-        </Section>
-      )}
-
-      {(element.text || element.href || element.src) && (
-        <Section id="content" title="Content preview">
-          <div className="ei-preview">
-            {element.text && <div className="ei-preview-text">"{element.text}"</div>}
-            {element.href && <div className="ei-preview-attr"><span className="ei-attr-name">href</span> {element.href}</div>}
-            {element.src  && <div className="ei-preview-attr"><span className="ei-attr-name">src</span> {element.src}</div>}
-          </div>
-        </Section>
-      )}
-
-      {/* ── Subtle hint when similar elements are soft-highlighted ──────── */}
-      {element.softHighlightCount > 0 && (
-        <div className="ei-similar-hint">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-          </svg>
-          {(() => {
-            const tiers   = element.tierSummary || [];
-            const nearest = tiers[0];
-            if (nearest) {
-              const name = (nearest.label || "").replace(/\s*\(\d+\)\s*$/, "");
-              const more = tiers.length > 1;
-              return (
-                <>
-                  Click the amber {element.softHighlightCount === 1 ? "item" : "items"} to select{" "}
-                  <strong>{name}</strong> ({nearest.count} element{nearest.count !== 1 ? "s" : ""})
-                  {more ? " — then keep clicking amber to widen the scope step by step" : ""}.
-                </>
-              );
-            }
-            return (
-              <>
-                {element.softHighlightCount} similar element{element.softHighlightCount !== 1 ? "s" : ""} highlighted in amber — click one to select all of them
-              </>
-            );
-          })()}
-        </div>
-      )}
-
-      {/* ── Manual multi-select escape hatch ────────────────────────────────
-          When the automatic similar-group can't express what the user wants
-          (e.g. "every badge regardless of colour"), let them hand-pick the
-          set — the backend derives the tightest selector covering the picks. */}
-      {onStartManualAdd && (
-        <button className="ei-manual-add-entry" onClick={onStartManualAdd}
-          title="Click elements anywhere on the page to build a custom selection — the app finds the tightest selector covering them all">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-          Select multiple elements manually
-        </button>
-      )}
-
+      {/* Whole panel scrolls; the actions come first so they're always in
+          reach, with the selector / structure / content details tucked below. */}
       <div className="ei-body">
+        {/* ── Subtle hint when similar elements are soft-highlighted ──────── */}
+        {element.softHighlightCount > 0 && (
+          <div className="ei-similar-hint">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            {(() => {
+              const tiers   = element.tierSummary || [];
+              const nearest = tiers[0];
+              if (nearest) {
+                const name = (nearest.label || "").replace(/\s*\(\d+\)\s*$/, "");
+                return (
+                  <>
+                    Click the amber {element.softHighlightCount === 1 ? "item" : "items"} to select{" "}
+                    <strong>{name}</strong> ({nearest.count}).
+                  </>
+                );
+              }
+              return <>Click an amber item to select all {element.softHighlightCount} similar elements.</>;
+            })()}
+          </div>
+        )}
+
         {/* ── Category tabs ─────────────────────────────────────────────── */}
         <div className="ei-tabs">
           {CATEGORIES.map(c => (
@@ -502,6 +428,64 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
               setTimeout(() => setAddedFlash(null), 800);
             }}
           />
+        )}
+
+        {/* ── Add more elements (secondary) ──────────────────────────────── */}
+        {onStartManualAdd && (
+          <button className="ei-manual-add-entry" onClick={onStartManualAdd}
+            title="Click elements anywhere on the page to build a custom selection — the app finds the tightest selector covering them all">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            Select multiple elements manually
+          </button>
+        )}
+
+        {/* ── Details — collapsed, below the actions ─────────────────────── */}
+        {element.selector && (
+          <Section id="single-selector" title="Selector & fallbacks" defaultOpen={false}>
+            <div className="ei-single-sel-code">
+              <span className={`ei-sel-type-badge ${element.selectorType === "xpath" ? "xpath" : "css"}`}>
+                {element.selectorType === "xpath" ? "XP" : "CSS"}
+              </span>
+              <code title={element.selector}>{element.selector}</code>
+              {element.isRelativeToScope && (
+                <span className="ei-relative-badge" title="Relative to the ForEach iterator — works for every iterated element">relative</span>
+              )}
+              <CopyButton text={element.selector} />
+            </div>
+            {(element.fallbackSelectors || []).length > 0 && (
+              <FallbackDisclosure count={element.fallbackSelectors.length}>
+                <FallbackChipList selectors={element.fallbackSelectors} />
+              </FallbackDisclosure>
+            )}
+          </Section>
+        )}
+
+        {element.breadcrumb?.length > 0 && (
+          <Section id="structure" title="Page structure" badge={element.breadcrumb.length} defaultOpen={false}>
+            <InteractiveBreadcrumb
+              breadcrumb={element.breadcrumb}
+              element={element}
+              childrenList={childrenList}
+              onSelectAncestor={onSelectAncestor}
+              onGetChildren={onGetChildren}
+              onSelectChild={onSelectChild}
+              onHoverAncestor={onHoverAncestor}
+              onHoverPickerChild={onHoverPickerChild}
+              onUnhoverPickerChild={onUnhoverPickerChild}
+            />
+          </Section>
+        )}
+
+        {(element.text || element.href || element.src) && (
+          <Section id="content" title="Content preview" defaultOpen={false}>
+            <div className="ei-preview">
+              {element.text && <div className="ei-preview-text">"{element.text}"</div>}
+              {element.href && <div className="ei-preview-attr"><span className="ei-attr-name">href</span> {element.href}</div>}
+              {element.src  && <div className="ei-preview-attr"><span className="ei-attr-name">src</span> {element.src}</div>}
+            </div>
+          </Section>
         )}
       </div>
     </div>
@@ -579,7 +563,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
       {/* ── ForEach context banner ──────────────────────────────────────── */}
       {forEachCtx && <ForEachContextBanner forEachCtx={forEachCtx} onClear={onClearForEachCtx} />}
 
-      {/* ── Header ─────────────────────────────────────────────────────── */}
+      {/* ── Header (sticky) ────────────────────────────────────────────── */}
       <div className="ei-header ei-multi-header">
         <div className="ei-header-info">
           <span className="ei-multi-icon">⬡</span>
@@ -592,93 +576,23 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
         </button>
       </div>
 
-      {/* ── Selector details — the match count is what matters day-to-day;
-             the raw CSS + strategy + fallbacks live one click away ───────── */}
-      <div className="ei-multi-selector-block">
-        <div className="ei-multi-selector-meta">
-          Matches exactly <strong>{selection.matchCount}</strong> element{selection.matchCount !== 1 ? 's' : ''}
-        </div>
-        <Section id="multisel" title="Selector details" defaultOpen={false}>
-          <div className="ei-multi-selector-header">
-            <span className="ei-multi-selector-label">CSS Selector</span>
-            {selection.strategy && (
-              <span className="ei-multi-strategy-badge" title={`Detection strategy: ${selection.strategy}`}>
-                {strategyLabel(selection.strategy)}
-              </span>
-            )}
-            <CopyButton text={selection.commonSelector} />
-          </div>
-          {selection.commonSelector ? (
-            <code className="ei-multi-selector-code">{selection.commonSelector}</code>
-          ) : (
-            <span className="ei-multi-selector-empty">No selector generated — elements selected by position</span>
-          )}
-          <FallbackDisclosure count={(selection.fallbackSelectors || []).length}>
-            <FallbackChipList selectors={selection.fallbackSelectors} />
-          </FallbackDisclosure>
-
-          {/* Power-user selector editor — a genuine last resort, tucked behind
-              its own disclosure so it never gets in a non-technical user's way. */}
-          {onApplyManualSelector && (
-            <ManualSelectorEditor
-              selection={selection}
-              onApply={onApplyManualSelector}
-              result={manualSelResult}
-            />
-          )}
-        </Section>
-      </div>
-
-      {/* ── Manual multi-add: hand-pick a cross-class set ──────────────────── */}
-      {onStartManualAdd && (
-        <ManualAddPanel
-          selection={selection}
-          onStart={onStartManualAdd}
-          onStop={onStopManualAdd}
-        />
-      )}
-
-      {/* ── Hierarchical similarity-scope progress ─────────────────────────── */}
-      {!selection.manualAdd && typeof selection.tierCount === "number" && selection.tierCount > 1 && (
-        <div className="ei-tier-progress">
-          <div className="ei-tier-progress-head">
-            <span className="ei-tier-progress-title">⬡ Similarity scope</span>
-            <span className="ei-tier-progress-step">
-              step {(selection.tierIndex ?? 0) + 1} of {selection.tierCount}
-            </span>
-          </div>
-          <div className="ei-tier-progress-bar">
-            {Array.from({ length: selection.tierCount }).map((_, i) => (
-              <div key={i} className={`ei-tier-progress-seg ${i <= (selection.tierIndex ?? 0) ? "filled" : ""}`} />
-            ))}
-          </div>
-          <div className="ei-tier-progress-current">
-            Currently selecting{" "}
-            <strong>{selection.tierLabel || `${selection.matchCount} elements`}</strong>.
-          </div>
-          {selection.nextTier ? (
-            <div className="ei-tier-progress-next">
-              Click any <strong>amber</strong> element on the page to widen to{" "}
-              <strong>{selection.nextTier.label}</strong> (+{selection.nextTier.added}), or click a
-              green item to stop here.
-            </div>
-          ) : (
-            <div className="ei-tier-progress-done">
-              Widest scope reached — this is every matching element on the page.
-            </div>
-          )}
-        </div>
-      )}
-
+      {/* Whole panel scrolls — content is ordered by importance so the
+          primary actions sit at the very top and never get pushed off. */}
       <div className="ei-body">
-        {/* ── 1. For-Each loop ───────────────────────────────────────────── */}
+        {/* Active manual-add stays pinned above everything while picking, so
+            the live count + Done are always in reach. */}
+        {selection.manualAdd && onStartManualAdd && (
+          <ManualAddPanel selection={selection} onStart={onStartManualAdd} onStop={onStopManualAdd} />
+        )}
+
+        {/* ── 1. ACTIONS (the whole point — kept first) ──────────────────── */}
         {!forEachCtx && (
           <div className="ei-foreach-banner">
             <div className="ei-foreach-banner-text">
               <span className="ei-foreach-icon">∀</span>
               <div>
-                <div className="ei-foreach-title">Add as For-Each Loop</div>
-                <div className="ei-foreach-desc">Run a series of steps inside every one of {selection.matchCount} matched elements.</div>
+                <div className="ei-foreach-title">For-Each Loop</div>
+                <div className="ei-foreach-desc">Run steps on each of the {selection.matchCount} elements.</div>
               </div>
             </div>
             <button
@@ -689,48 +603,39 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
           </div>
         )}
 
-        {/* ── 2. Extract List (with / without AI) ────────────────────────── */}
         <div className="ei-extract-list-card">
           <div className="ei-extract-list-header">
             <span className="ei-extract-list-icon"><ActionIcon type="EXTRACT_LIST" size={17} /></span>
             <div className="ei-extract-list-text">
-              <div className="ei-extract-list-title">Add as Extract List</div>
-              <div className="ei-extract-list-desc">
-                Pull structured fields (text or attributes) out of each item. The step's editor opens right away — review the fields, adjust them, or pick more straight from the page.
-              </div>
+              <div className="ei-extract-list-title">Extract List</div>
+              <div className="ei-extract-list-desc">Pull fields (text, links…) from every item.</div>
             </div>
           </div>
 
-          {/* Action buttons */}
           {!aiMode && (
             <div className="ei-extract-list-actions">
-              <button
-                className="ei-foreach-btn"
-                onClick={handleAddExtractList}>
-                <PlusIcon /> Add & pick fields
+              <button className="ei-foreach-btn" onClick={handleAddExtractList}>
+                <PlusIcon /> Add &amp; pick fields
               </button>
               <button
                 className="ei-extract-list-ai-btn"
                 onClick={() => setAiMode(true)}
-                title="Open AI prompt and add with auto-detected fields">
-                ✨ Add with AI prompt…
+                title="Add with AI-detected fields">
+                ✨ Use AI…
               </button>
             </div>
           )}
 
-          {/* AI prompt panel */}
           {aiMode && (
             <div className="ei-extract-list-ai">
               <textarea
                 rows={3}
                 value={aiHint}
-                placeholder={'Describe what to extract — e.g. "product title, price, image URL and link. Ignore the rating stars."'}
+                placeholder={'What to extract — e.g. "title, price, image URL and link".'}
                 onChange={e => setAiHint(e.target.value)}
               />
               <div className="ei-extract-list-ai-actions">
-                <button
-                  className="ei-foreach-btn"
-                  onClick={handleAddExtractListWithAI}>
+                <button className="ei-foreach-btn" onClick={handleAddExtractListWithAI}>
                   ✨ Add with AI
                 </button>
                 <button
@@ -740,13 +645,70 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
                 </button>
               </div>
               {aiError && <div className="ei-extract-list-ai-error">{aiError}</div>}
-              {!aiError && (
-                <div className="ei-extract-list-ai-hint">
-                  AI proposes field mappings (text or attribute), each verified on the live page. The step's editor opens immediately — the fields appear there as soon as the AI answers.
-                </div>
-              )}
             </div>
           )}
+        </div>
+
+        {/* ── 2. Add more elements (manual multi-add entry) ──────────────── */}
+        {!selection.manualAdd && onStartManualAdd && (
+          <ManualAddPanel selection={selection} onStart={onStartManualAdd} onStop={onStopManualAdd} />
+        )}
+
+        {/* Tier widening hint — compact, only while an automatic tier flow is
+            live (not during manual add). */}
+        {!selection.manualAdd && typeof selection.tierCount === "number" && selection.tierCount > 1 && (
+          <div className="ei-tier-progress">
+            <div className="ei-tier-progress-head">
+              <span className="ei-tier-progress-title">⬡ Scope</span>
+              <span className="ei-tier-progress-step">
+                {(selection.tierIndex ?? 0) + 1}/{selection.tierCount}
+              </span>
+            </div>
+            <div className="ei-tier-progress-bar">
+              {Array.from({ length: selection.tierCount }).map((_, i) => (
+                <div key={i} className={`ei-tier-progress-seg ${i <= (selection.tierIndex ?? 0) ? "filled" : ""}`} />
+              ))}
+            </div>
+            {selection.nextTier ? (
+              <div className="ei-tier-progress-next">
+                Click an <strong>amber</strong> item to widen (+{selection.nextTier.added}), or a green one to stop.
+              </div>
+            ) : (
+              <div className="ei-tier-progress-done">Widest scope — every match on the page.</div>
+            )}
+          </div>
+        )}
+
+        {/* ── 3. Selector & details (collapsed, at the bottom) ───────────── */}
+        <div className="ei-multi-selector-block">
+          <Section id="multisel" title="Selector & fallbacks" defaultOpen={false}>
+            <div className="ei-multi-selector-header">
+              <span className="ei-multi-selector-label">Selector</span>
+              {selection.strategy && (
+                <span className="ei-multi-strategy-badge" title={`Detection strategy: ${selection.strategy}`}>
+                  {strategyLabel(selection.strategy)}
+                </span>
+              )}
+              <CopyButton text={selection.commonSelector} />
+            </div>
+            {selection.commonSelector ? (
+              <code className="ei-multi-selector-code">{selection.commonSelector}</code>
+            ) : (
+              <span className="ei-multi-selector-empty">No selector generated — elements selected by position</span>
+            )}
+            <FallbackDisclosure count={(selection.fallbackSelectors || []).length}>
+              <FallbackChipList selectors={selection.fallbackSelectors} />
+            </FallbackDisclosure>
+
+            {/* Power-user selector editor — last resort, behind its own toggle. */}
+            {onApplyManualSelector && (
+              <ManualSelectorEditor
+                selection={selection}
+                onApply={onApplyManualSelector}
+                result={manualSelResult}
+              />
+            )}
+          </Section>
         </div>
       </div>
     </div>
@@ -774,9 +736,7 @@ function ManualAddPanel({ selection, onStart, onStop }) {
           <button className="ei-manual-add-done" onClick={onStop}>Done</button>
         </div>
         <div className="ei-manual-add-body">
-          Click elements <strong>anywhere on the page</strong> to add them (click a
-          blue-ringed one again to remove it). The tightest selector covering
-          your picks is rebuilt on every click.
+          Click elements on the page to add them — click a blue one again to remove it.
           <div className="ei-manual-add-stats">
             <span className="ei-manual-add-picks">{n} picked</span>
             <span className="ei-manual-add-sep">·</span>
@@ -789,11 +749,9 @@ function ManualAddPanel({ selection, onStart, onStop }) {
   return (
     <div className="ei-manual-add">
       <div className="ei-manual-add-pitch">
-        <div className="ei-manual-add-pitch-title">Not quite the right group?</div>
+        <div className="ei-manual-add-pitch-title">Not the right group?</div>
         <div className="ei-manual-add-pitch-desc">
-          Hand-pick the elements yourself — click any elements on the page, even
-          across colours or sections, and the tightest selector covering them
-          all is generated (no long OR-lists).
+          Hand-pick elements across colours or sections — the tightest selector is built for you.
         </div>
       </div>
       <button className="ei-manual-add-start" onClick={onStart}>
