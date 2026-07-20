@@ -83,21 +83,50 @@
 }
 
 .wvars-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 8px 4px 4px;
+}
+.wvars-header-toggle {
+  flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
   color: var(--text-primary, #e6e6e6);
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  padding: 10px 12px;
+  padding: 6px 8px;
+  border-radius: 5px;
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
   text-align: left;
 }
-.wvars-header:hover { background: rgba(247, 129, 102, 0.06); }
-.wvars-title { color: #f78166; }
+.wvars-header-toggle:hover { background: rgba(247, 129, 102, 0.06); }
+.wvars-title { color: #f78166; white-space: nowrap; }
+
+/* Round "?" toggle — reveals/hides the help card. */
+.wvars-help-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid rgba(79, 156, 249, 0.4);
+  background: transparent;
+  color: #4f9cf9;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.wvars-help-btn:hover { background: rgba(79, 156, 249, 0.12); }
+.wvars-help-btn.active { background: #4f9cf9; color: #fff; border-color: #4f9cf9; }
 .wvars-count {
   background: rgba(247, 129, 102, 0.16);
   color: #f78166;
@@ -123,15 +152,23 @@
 }
 
 .wvars-help {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   font-size: 11px;
   line-height: 1.5;
   color: var(--text-secondary, #aaa);
   background: rgba(79, 156, 249, 0.05);
   border-left: 3px solid rgba(79, 156, 249, 0.45);
-  padding: 7px 10px;
+  padding: 9px 10px;
   border-radius: 4px;
-  margin-top: 6px;
 }
+.wvars-help-block strong {
+  display: inline;
+  color: var(--text-primary, #e6e6e6);
+  font-size: 11.5px;
+}
+.wvars-help-block p { margin: 3px 0 0; }
 .wvars-help-tag {
   display: inline-block;
   background: #4f9cf9;
@@ -145,6 +182,7 @@
   margin-right: 6px;
   vertical-align: 1px;
 }
+.wvars-help-tag--input { background: #a371f7; }
 .wvars-help code {
   background: var(--bg, #0e0e0e);
   padding: 1px 5px;
@@ -196,25 +234,21 @@
 .wvars-section-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-secondary, #aaa);
   margin: 8px 0 6px;
 }
-.wvars-section-help {
-  font-size: 10.5px;
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: 0;
+.wvars-section-count {
+  background: rgba(255, 255, 255, 0.06);
   color: var(--text-muted, #888);
-}
-.wvars-section-help code {
   font-size: 10px;
-  background: var(--bg, #0e0e0e);
-  padding: 1px 5px;
-  border-radius: 3px;
+  font-weight: 700;
+  padding: 0 6px;
+  border-radius: 9px;
+  letter-spacing: 0;
 }
 
 .wvars-empty {
@@ -244,16 +278,8 @@
   background: rgba(88, 166, 255, 0.04);
   border-color: rgba(88, 166, 255, 0.18);
 }
-.wvars-row--input {
-  background: rgba(163, 113, 247, 0.06);
-  border-color: rgba(163, 113, 247, 0.28);
-}
-.wvars-row--input .wvars-pill {
-  background: rgba(163, 113, 247, 0.16);
-  color: #a371f7;
-}
 
-/* "input" checkbox toggle on a custom-variable row / the add form */
+/* "input" checkbox toggle on a custom-variable card / the add form */
 .wvars-input-toggle {
   display: inline-flex;
   align-items: center;
@@ -298,39 +324,71 @@
   margin-left: auto;
 }
 
+/* ── Editable custom-variable card (stacks vertically so it fits a narrow
+      column and the Add button is never pushed out of view) ──────────── */
+.wvars-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg, #0e0e0e);
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 6px;
+  padding: 8px;
+}
+.wvars-card--input {
+  background: rgba(163, 113, 247, 0.06);
+  border-color: rgba(163, 113, 247, 0.28);
+}
+.wvars-card--input .wvars-pill {
+  background: rgba(163, 113, 247, 0.16);
+  color: #a371f7;
+}
+.wvars-card--adding {
+  border-color: var(--accent-primary, #4f9cf9);
+  margin-top: 6px;
+}
+.wvars-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wvars-card-head .wvars-name-input { flex: 1; }
+.wvars-card-opts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .wvars-name-input,
-.wvars-value-input,
-.wvars-add-name,
-.wvars-add-value {
-  background: transparent;
-  border: 1px solid transparent;
+.wvars-value-input {
+  background: var(--bg-elev, #1a1a1a);
+  border: 1px solid var(--border-soft, #2a2a2a);
   color: var(--text-primary, #e6e6e6);
   font-size: 12px;
   font-family: 'SF Mono', Menlo, monospace;
-  padding: 3px 6px;
-  border-radius: 3px;
+  padding: 5px 7px;
+  border-radius: 4px;
+  min-width: 0;
 }
-.wvars-name-input { flex: 0 0 28%; }
-.wvars-name-input:hover, .wvars-name-input:focus,
-.wvars-value-input:hover, .wvars-value-input:focus {
-  border-color: var(--border-soft, #2a2a2a);
-  background: var(--bg-elev, #1a1a1a);
+.wvars-name-input:focus,
+.wvars-value-input:focus {
+  border-color: var(--accent-primary, #4f9cf9);
+  outline: none;
 }
-.wvars-value-input { flex: 1; min-width: 0; }
+.wvars-value-input { width: 100%; }
 
-.wvars-type-input,
-.wvars-add-type {
-  background: transparent;
+.wvars-type-input {
+  background: var(--bg-elev, #1a1a1a);
   border: 1px solid var(--border-soft, #2a2a2a);
   color: var(--text-secondary, #ccc);
   font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 3px;
-  flex: 0 0 80px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  flex: 1;
+  min-width: 0;
 }
 
-.wvars-remove,
-.wvars-add-cancel {
+.wvars-remove {
   background: transparent;
   border: none;
   color: var(--text-muted, #888);
@@ -340,8 +398,9 @@
   height: 22px;
   border-radius: 3px;
   line-height: 1;
+  flex-shrink: 0;
 }
-.wvars-remove:hover, .wvars-add-cancel:hover {
+.wvars-remove:hover {
   background: rgba(230, 119, 106, 0.15);
   color: #e6776a;
 }
@@ -351,37 +410,27 @@
   background: transparent;
   border: 1px dashed rgba(247, 129, 102, 0.35);
   color: #f78166;
-  padding: 5px 10px;
-  border-radius: 4px;
-  font-size: 11px;
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 12px;
   cursor: pointer;
-  align-self: flex-start;
+  width: 100%;
 }
 .wvars-add-btn:hover {
   background: rgba(247, 129, 102, 0.08);
   border-style: solid;
 }
 
-.wvars-add-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  background: var(--bg, #0e0e0e);
-  border: 1px solid var(--accent-primary, #4f9cf9);
-  border-radius: 5px;
-  padding: 5px 8px;
-}
-.wvars-add-name { flex: 0 0 28%; }
-.wvars-add-value { flex: 1; min-width: 0; }
 .wvars-add-confirm {
   background: var(--accent-primary, #4f9cf9);
   color: #fff;
   border: none;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 3px;
+  padding: 7px 10px;
+  border-radius: 4px;
   cursor: pointer;
+  width: 100%;
 }
+.wvars-add-confirm:hover:not(:disabled) { filter: brightness(1.08); }
 .wvars-add-confirm:disabled { opacity: 0.4; cursor: not-allowed; }
