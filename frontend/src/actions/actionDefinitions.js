@@ -1,5 +1,19 @@
 import { ACTION_TYPES } from "./actionTypes";
 
+// Shared advanced option for every extraction step: how long to wait for the
+// target selector to appear before giving up and returning an empty value.
+// The runner reads whatever is already present with zero delay and only waits
+// when the element isn't there yet, so this is a ceiling, not a fixed pause.
+// 0 disables waiting (read what's on the page this instant).
+const EXTRACT_WAIT_ADV = {
+  waitTimeout: {
+    type: "number",
+    label: "Wait for element (ms)",
+    default: 4000,
+    help: "Max time to wait for the element to appear before returning empty. The step proceeds the moment the element is present, so this only costs time when it's genuinely slow to render. Set 0 to never wait.",
+  },
+};
+
 export const actionDefinitions = {
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -895,7 +909,8 @@ while ((${params.whileExpression || "false"}) && _loopGuard < ${maxIterations}) 
           { label: "Set output as empty string", value: "empty" }
         ],
         default: "fail"
-      }
+      },
+      ...EXTRACT_WAIT_ADV,
     },
     outputs: {
       result: { type: "array|string" }
@@ -1004,7 +1019,8 @@ try {
           { label: "Return null", value: "null" }
         ],
         default: "null"
-      }
+      },
+      ...EXTRACT_WAIT_ADV,
     },
     outputs: {
       result: { type: "string|array", description: "Attribute value(s)" }
@@ -1062,7 +1078,8 @@ ${onNotFound === "fail" ? `const ${outputVar} = await ${outputVar}_el.getAttribu
           { label: "Return null", value: "null" }
         ],
         default: "fail"
-      }
+      },
+      ...EXTRACT_WAIT_ADV,
     },
     outputs: {
       result: { type: "string", description: "HTML content" }
@@ -1104,7 +1121,8 @@ try {
         type: "boolean",
         label: "Trim cell whitespace",
         default: true
-      }
+      },
+      ...EXTRACT_WAIT_ADV,
     },
     outputs: {
       result: { type: "array", description: "Array of row objects" }
@@ -1152,6 +1170,11 @@ const ${outputVar} = await page.$eval(${sel}, (table, opts) => {
         required: true,
         label: "Fields",
       },
+    },
+    advanced: {
+      // Waits for the repeating container to appear before extracting — lets a
+      // list that renders shortly after load still be captured.
+      ...EXTRACT_WAIT_ADV,
     },
     outputs: {
       result: { type: "array", description: "Array of extracted objects" }
@@ -1766,6 +1789,23 @@ if (!_whRes.ok) throw new Error("Webhook failed: " + _whRes.status);
         placeholder: "url",
         default: "_url",
         showIf: { mode: ["iterate"] },
+      },
+
+      // ── Parameterise the subflow (all modes) ───────────────────────
+      // If the chosen subflow declares input variables, map each one to a
+      // value here — a column of the source list (enrich), the loop item
+      // (iterate), or any expression. The subflow was built once against its
+      // sample value; this is what makes it reusable across many targets.
+      inputs: {
+        type: "subflowInputs",
+        label: "Subflow inputs",
+        subflowParam: "workflowId",
+      },
+      selfNavigate: {
+        type: "boolean",
+        label: "Let the subflow open its own pages",
+        default: false,
+        help: "Keep the subflow's own Navigate steps instead of opening one link per row/URL here. Combined with input variables, a single run can visit several derived pages — e.g. Navigate to {{room_url}}, then {{room_url}}/reviews. When on, the link column above is optional.",
       },
 
       outputVar: {

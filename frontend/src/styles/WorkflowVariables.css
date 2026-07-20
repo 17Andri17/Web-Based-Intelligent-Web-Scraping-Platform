@@ -244,6 +244,28 @@
   background: rgba(88, 166, 255, 0.04);
   border-color: rgba(88, 166, 255, 0.18);
 }
+.wvars-row--input {
+  background: rgba(163, 113, 247, 0.06);
+  border-color: rgba(163, 113, 247, 0.28);
+}
+.wvars-row--input .wvars-pill {
+  background: rgba(163, 113, 247, 0.16);
+  color: #a371f7;
+}
+
+/* "input" checkbox toggle on a custom-variable row / the add form */
+.wvars-input-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.wvars-input-toggle input { margin: 0; cursor: pointer; }
 
 .wvars-pill {
   width: 18px;

@@ -631,6 +631,12 @@ body {
     padding: 1px 4px;
     border-radius: 3px;
 }
+.wf-offstart-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
 .wf-offstart-btn {
     flex-shrink: 0;
     padding: 6px 12px;
@@ -643,6 +649,31 @@ body {
     cursor: pointer;
 }
 .wf-offstart-btn:hover { background: rgba(210, 153, 34, 0.30); }
+/* Primary variant — the "record this page as a Navigate step" action, which
+   both fixes the drift and clears the banner, so it reads as the main CTA. */
+.wf-offstart-btn--primary {
+    border-color: rgba(88, 166, 255, 0.55);
+    background: rgba(88, 166, 255, 0.20);
+    color: var(--accent-primary, #58a6ff);
+}
+.wf-offstart-btn--primary:hover { background: rgba(88, 166, 255, 0.32); }
+
+/* Compact "+ Add navigate step" button living inside the stream control-bar
+   drift chip. Overrides the chip's `cursor: help` so it reads as clickable. */
+.url-warning-add {
+    cursor: pointer;
+    margin-left: 4px;
+    padding: 2px 8px;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.6;
+    white-space: nowrap;
+    color: var(--accent-primary, #58a6ff);
+    background: rgba(88, 166, 255, 0.16);
+    border: 1px solid rgba(88, 166, 255, 0.45);
+    border-radius: var(--radius-sm);
+}
+.url-warning-add:hover { background: rgba(88, 166, 255, 0.28); }
 
 /* Inline note shown between a pagination block and the sibling steps that
    follow it — those steps run only after pagination has finished. */

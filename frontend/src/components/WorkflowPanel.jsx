@@ -427,7 +427,7 @@ function buildCustomActionStep(action) {
 export default function WorkflowPanel({
   steps, totalCount, onAdd, onUpdate, onDelete, onReorder, setSteps,
   insertTarget, onSetInsertTarget, onMoveStep, onToggleAttach, customActions = [],
-  offStartUrl = false, pinnedUrl = "", currentPageUrl = "", onReturnToStart,
+  offStartUrl = false, pinnedUrl = "", currentPageUrl = "", onReturnToStart, onAddNavigateStep,
   socket = null, previewData = {},
   variables = [], onVariablesChange,
   variablesCollapsed = false, onToggleVariablesCollapsed,
@@ -505,9 +505,20 @@ export default function WorkflowPanel({
             <strong>You're not on the workflow's start URL.</strong>
             <span>New steps will be recorded against <code>{currentPageUrl || "this page"}</code>, but the workflow starts from <code>{pinnedUrl}</code>.</span>
           </div>
-          {onReturnToStart && (
-            <button className="wf-offstart-btn" onClick={onReturnToStart}>Return to start</button>
-          )}
+          <div className="wf-offstart-actions">
+            {onAddNavigateStep && (
+              <button
+                className="wf-offstart-btn wf-offstart-btn--primary"
+                onClick={onAddNavigateStep}
+                title="Record a Navigate step to this page so the workflow reaches it — after that this page is no longer flagged"
+              >
+                + Add Navigate step
+              </button>
+            )}
+            {onReturnToStart && (
+              <button className="wf-offstart-btn" onClick={onReturnToStart}>Return to start</button>
+            )}
+          </div>
         </div>
       )}
       <div className="workflow-layout">
@@ -1428,7 +1439,7 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
               </button>
               {showAdv && Object.entries(advanced).map(([k, s]) => (
                 <FieldRenderer key={k} label={s.label || k} type={s.type} value={local.advanced?.[k]}
-                  options={s.options} placeholder={s.placeholder} onChange={v => setAdv(k, v)} />
+                  options={s.options} placeholder={s.placeholder} spec={s} onChange={v => setAdv(k, v)} />
               ))}
             </>
           )}
@@ -1778,6 +1789,7 @@ function EnrichSummary({ step, config }) {
 
   const urlCol = config.urlParam ? (p[config.urlParam] || "") : "";
   const strategy = config.strategyParam ? (p[config.strategyParam] || "flat") : "flat";
+  const selfNav = !!p.selfNavigate;
 
   const action = config.subflowParam
     ? (() => {
@@ -1798,7 +1810,9 @@ function EnrichSummary({ step, config }) {
       <span className="enrich-summary__icon">↳</span>
       <div>
         Each row of <strong>{tableName}</strong>
-        {urlCol ? <> → open <strong>{urlCol}</strong>,</> : <>,</>}
+        {selfNav
+          ? <> → <strong>the subflow opens its own pages</strong>,</>
+          : urlCol ? <> → open <strong>{urlCol}</strong>,</> : <>,</>}
         {action} add {strategyPhrase}.
       </div>
     </div>
@@ -1880,6 +1894,46 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
           onStopPick={() => onStopListPick && onStopListPick()}
           onName={onName}
         />
+      </div>
+    );
+  }
+
+  // subflowInputs: maps the chosen subflow's declared INPUT variables to
+  // parent-side expressions. Renders nothing until a subflow with inputs is
+  // picked — so it only appears when it's actually relevant. Each row is a
+  // {{…}}-aware text box; the collected map is stored on params.inputs and the
+  // backend seeds it into the inlined subflow (see workflowCodegen RUN_SUBFLOW).
+  if (type === "subflowInputs") {
+    const { availableWorkflows } = useContext(WPCtx) || {};
+    const wfId = step?.params?.[spec?.subflowParam || "workflowId"];
+    const wf = (availableWorkflows || []).find(w => w.id === wfId);
+    const wfInputs = Array.isArray(wf?.inputs) ? wf.inputs : [];
+    if (!wf || wfInputs.length === 0) return null;
+    const map = (value && typeof value === "object" && !Array.isArray(value)) ? value : {};
+    const setOne = (name, v) => onChange({ ...map, [name]: v });
+    return (
+      <div className="form-group">
+        <label>{label}</label>
+        <div className="subflow-inputs">
+          {wfInputs.map(inp => (
+            <div className="subflow-input-row" key={inp.name}>
+              <div className="subflow-input-meta">
+                <code className="subflow-input-name">{inp.name}</code>
+                <span className="subflow-input-type">{inp.type || "string"}</span>
+                {inp.description ? <span className="subflow-input-desc">{inp.description}</span> : null}
+              </div>
+              <ScopedTextInput
+                value={map[inp.name] ?? ""}
+                onChange={v => setOne(inp.name, v)}
+                placeholder={inp.value ? `sample: ${inp.value}` : `{{row.${inp.name}}}`}
+                step={step}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="enrich-hint">
+          Map each input to a column of the list (e.g. <code>{"{{row.url}}"}</code>) or any expression. Leave blank to keep the subflow's sample value.
+        </div>
       </div>
     );
   }

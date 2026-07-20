@@ -38,7 +38,7 @@ export default function WorkflowVariables({
   layout = "top",   // "top" (legacy) | "side"
 }) {
   const [adding, setAdding] = useState(false);
-  const [draft,  setDraft]  = useState({ name: "", value: "", type: "string", description: "" });
+  const [draft,  setDraft]  = useState({ name: "", value: "", type: "string", description: "", input: false });
 
   const finishAdd = () => {
     const name = sanitiseName(draft.name);
@@ -48,8 +48,9 @@ export default function WorkflowVariables({
       value:       draft.value,
       type:        draft.type,
       description: draft.description.trim(),
+      input:       !!draft.input,
     });
-    setDraft({ name: "", value: "", type: "string", description: "" });
+    setDraft({ name: "", value: "", type: "string", description: "", input: false });
     setAdding(false);
   };
 
@@ -125,6 +126,10 @@ export default function WorkflowVariables({
               <span>Custom variables</span>
               <span className="wvars-section-help">reusable values you can reference inside any step using <code>{"{{name}}"}</code></span>
             </div>
+            <div className="wvars-help" style={{ marginBottom: 8 }}>
+              <span className="wvars-help-tag">input</span>
+              Mark a variable as an <strong>input</strong> to turn this workflow into a reusable, parameterised subflow. Build it once against the sample value; when another workflow runs it via <strong>Run Subflow</strong>, it maps its own data (e.g. a list column) onto each input. Great for “one escape-room URL → visit <code>{"{{url}}"}</code>, <code>{"{{url}}/reviews"}</code>, …”.
+            </div>
 
             {variables.length === 0 && !adding && (
               <div className="wvars-empty">No custom variables defined yet.</div>
@@ -162,11 +167,19 @@ export default function WorkflowVariables({
                 </select>
                 <input
                   className="wvars-add-value"
-                  placeholder="initial value"
+                  placeholder={draft.input ? "sample value (used while building)" : "initial value"}
                   value={draft.value}
                   onChange={e => setDraft(d => ({ ...d, value: e.target.value }))}
                   onKeyDown={e => { if (e.key === "Enter") finishAdd(); if (e.key === "Escape") setAdding(false); }}
                 />
+                <label className="wvars-input-toggle" title="Input variable — supplied by the parent when this workflow is run as a subflow">
+                  <input
+                    type="checkbox"
+                    checked={!!draft.input}
+                    onChange={e => setDraft(d => ({ ...d, input: e.target.checked }))}
+                  />
+                  input
+                </label>
                 <button type="button" className="wvars-add-confirm" onClick={finishAdd} disabled={!draft.name.trim()}>Add</button>
                 <button type="button" className="wvars-add-cancel"  onClick={() => setAdding(false)}>×</button>
               </div>
@@ -229,9 +242,10 @@ function CapturedRow({ value }) {
 
 /* ── Single editable row ────────────────────────────────────────────── */
 function CustomVarRow({ value, onChange, onRemove }) {
+  const isInput = !!value.input;
   return (
-    <div className="wvars-row">
-      <span className="wvars-pill">$</span>
+    <div className={"wvars-row" + (isInput ? " wvars-row--input" : "")}>
+      <span className="wvars-pill" title={isInput ? "Input variable" : "Custom variable"}>{isInput ? "⇥" : "$"}</span>
       <input
         className="wvars-name-input"
         value={value.name}
@@ -250,8 +264,19 @@ function CustomVarRow({ value, onChange, onRemove }) {
         className="wvars-value-input"
         value={value.value || ""}
         onChange={e => onChange?.({ value: e.target.value })}
-        placeholder={value.type === "boolean" ? "true / false" : value.type === "number" ? "0" : value.type === "json" ? "{}" : "value"}
+        placeholder={isInput
+          ? "sample value (used while building)"
+          : value.type === "boolean" ? "true / false" : value.type === "number" ? "0" : value.type === "json" ? "{}" : "value"}
+        title={isInput ? "Sample value — used while building; the parent supplies the real value when run as a subflow" : undefined}
       />
+      <label className="wvars-input-toggle" title="Input variable — supplied by the parent when this workflow is run as a subflow">
+        <input
+          type="checkbox"
+          checked={isInput}
+          onChange={e => onChange?.({ input: e.target.checked })}
+        />
+        input
+      </label>
       <button type="button" className="wvars-remove" onClick={onRemove} title="Remove">×</button>
     </div>
   );

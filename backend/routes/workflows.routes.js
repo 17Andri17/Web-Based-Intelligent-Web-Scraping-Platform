@@ -33,11 +33,30 @@ function validatePayload(body) {
   return { name: name.trim(), stepsJson, metaJson };
 }
 
-// List all workflows for the user (summary only — no steps payload)
+// Extract the workflow's declared input variables (variables flagged
+// `input`) from its meta JSON, as a compact list the subflow picker can map
+// parent data onto. Never throws on malformed meta — returns [].
+function inputVarsFromMeta(metaJson) {
+  if (!metaJson) return [];
+  let meta;
+  try { meta = JSON.parse(metaJson); } catch (_) { return []; }
+  const vars = Array.isArray(meta?.variables) ? meta.variables : [];
+  return vars
+    .filter(v => v && typeof v === 'object' && v.input && v.name)
+    .map(v => ({
+      name: String(v.name),
+      type: v.type || 'string',
+      value: v.value == null ? '' : String(v.value),
+      description: v.description ? String(v.description) : '',
+    }));
+}
+
+// List all workflows for the user (summary only — no steps payload).
 router.get('/', async (req, res) => {
   const rows = await workflows.listSummariesForUser(req.user.id);
   res.json({ workflows: rows.map(r => ({
     id: r.id, name: r.name, createdAt: r.created_at, updatedAt: r.updated_at,
+    inputs: inputVarsFromMeta(r.meta_json),
   })) });
 });
 
