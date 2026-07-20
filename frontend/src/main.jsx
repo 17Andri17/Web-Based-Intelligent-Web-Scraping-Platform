@@ -136,17 +136,19 @@ function treeHasStepType(arr, type) {
   return false;
 }
 
-// Every literal NAVIGATE url anywhere in the workflow tree (the pinned start
-// step plus any recorded mid-flow navigations). Interpolated urls (containing
-// `{{…}}`) are skipped — they resolve to different pages per run, so they
-// can't be compared to a concrete live-browser url. Used to decide whether the
-// page the user has drifted to is one the workflow already reaches on its own.
+// Every NAVIGATE url anywhere in the workflow tree (the pinned start step plus
+// any recorded mid-flow navigations), templates included. Interpolated urls
+// like `{{url}}/reviews` are kept here and resolved against the variables'
+// sample values by the caller — a start step built with an input variable
+// still points at a concrete page while you build, so it can be matched to the
+// live-browser url. Used to decide whether the page the user drifted to is one
+// the workflow already reaches on its own.
 function collectNavigateUrls(steps) {
   const out = [];
   const walk = (arr) => {
     for (const s of arr || []) {
       if (!s || typeof s !== "object") continue;
-      if (s.type === "NAVIGATE" && s.params?.url && !String(s.params.url).includes("{{")) {
+      if (s.type === "NAVIGATE" && s.params?.url) {
         out.push(s.params.url);
       }
       // Recurse into control-block child containers (then / else / body / …),
@@ -1069,14 +1071,29 @@ function AppShell({ user, token, onLogout }) {
   const pinnedUrl = (steps[0]?.type === "NAVIGATE" && steps[0]?.pinned)
     ? (steps[0].params?.url || "")
     : "";
+  // The start URL with any `{{var}}` resolved to the variables' sample values —
+  // i.e. the concrete page the workflow opens while you build it. This is what
+  // the URL bar shows and what drift is measured against, so a start step
+  // written as `{{url}}/reviews` isn't perpetually flagged just for containing
+  // a variable.
+  const resolvedPinnedUrl = useMemo(
+    () => resolveVars(pinnedUrl, workflowVariables),
+    [pinnedUrl, workflowVariables]
+  );
   // Every page the workflow itself navigates to (start URL + any recorded
-  // mid-flow Navigate steps). The drift warning only fires when the live page
-  // is NONE of these — so once the user records a Navigate step for the page
-  // they're on, it stops being flagged and steps recorded there line up with
-  // the workflow at run time.
+  // mid-flow Navigate steps), with `{{var}}` references resolved to sample
+  // values and any still-unresolved templates dropped (they can't map to one
+  // concrete page). The drift warning only fires when the live page matches
+  // NONE of these — so a variable-driven start URL, or a page you've recorded a
+  // Navigate step for, stops being flagged and steps recorded there line up
+  // with the workflow at run time.
   const navUrls = useMemo(() => collectNavigateUrls(steps), [steps]);
+  const resolvedNavUrls = useMemo(
+    () => navUrls.map(u => resolveVars(u, workflowVariables)).filter(u => !u.includes("{{")),
+    [navUrls, workflowVariables]
+  );
   const currentPageIsReachable = !!currentPageUrl
-    && navUrls.some(u => sameUrlIgnoringHash(currentPageUrl, u));
+    && resolvedNavUrls.some(u => sameUrlIgnoringHash(currentPageUrl, u));
   const onDifferentPage = !!(pinnedUrl && currentPageUrl) && !currentPageIsReachable;
 
   // Whenever the puppeteer page reports a new URL (link click, redirect,
@@ -1089,17 +1106,19 @@ function AppShell({ user, token, onLogout }) {
   }, [currentPageUrl]);
 
   // Keep the URL bar in sync with the pinned step's URL whenever the user
-  // edits it via the step editor modal.
+  // edits it via the step editor modal — showing the RESOLVED url (sample
+  // values substituted for `{{var}}`) so the bar reads as a real, navigable
+  // address rather than the raw `{{url}}/reviews` template.
   useEffect(() => {
     const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
-    const pUrl = pinned?.params?.url || "";
+    const pUrl = resolveVars(pinned?.params?.url || "", workflowVariables);
     if (pinned && pUrl !== urlInput) {
       setUrlInput(pUrl);
     }
     // We intentionally don't depend on urlInput — that would create a cycle
     // (typing in the URL bar would reset itself on each keystroke).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [steps]);
+  }, [steps, workflowVariables]);
 
   // ── Click-to-teach cookie prompt actions ─────────────────────────────────
   // Insert the recorded "Close Cookie Banner" step right after the start
@@ -1175,26 +1194,30 @@ function AppShell({ user, token, onLogout }) {
 
   // Low-level: tell the backend to navigate and start streaming the new URL.
   const performNavigate = useCallback((url) => {
-    if (!socketRef.current || !url) return;
+    // Resolve `{{var}}` against the variables' sample values before handing the
+    // url to the headless browser — a start step written as `{{url}}/reviews`
+    // must open the concrete sample page, not a literal template string.
+    const target = resolveVars(url, workflowVariables);
+    if (!socketRef.current || !target) return;
     setStatus("Navigating...");
     lockInteraction();   // pause clicks until the page loads + consent settles
     const rect = canvasContainerRef.current?.getBoundingClientRect();
     const vpW = Math.floor(rect?.width) || 1280;
     const vpH = Math.floor(rect?.height) || 720;
-    sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: url, viewportWidth: vpW, viewportHeight: vpH, proxy: selectedProxy };
+    sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: target, viewportWidth: vpW, viewportHeight: vpH, proxy: selectedProxy };
     // Honour the start step's cookie-consent preference in the live editor too
     // (e.g. "Leave popup visible"), so what you see while building matches what
     // the workflow will do. Falls back to accept.
     const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
     const consent = pinned?.advanced?.consent || "accept";
     socketRef.current.emit("navigate", {
-      url, mode, consent,
+      url: target, mode, consent,
       viewportWidth: vpW, viewportHeight: vpH,
       devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2),
       proxy: selectedProxy,
     });
     isStreamingRef.current = true;
-  }, [mode, steps, lockInteraction, selectedProxy]);
+  }, [mode, steps, lockInteraction, selectedProxy, workflowVariables]);
 
   // Load a full workflow object into the editor. Shared by the Workflows menu
   // (onLoaded) and the Dashboard's "Open" action so both behave identically.
@@ -1212,14 +1235,20 @@ function AppShell({ user, token, onLogout }) {
     setCurrentWorkflowId(wf.id);
     setCurrentWorkflowName(wf.name);
     if (wf.meta) sessionMetaRef.current = { ...sessionMetaRef.current, ...wf.meta };
-    setWorkflowVariables(Array.isArray(wf.meta?.variables) ? wf.meta.variables : []);
+    const loadedVars = Array.isArray(wf.meta?.variables) ? wf.meta.variables : [];
+    setWorkflowVariables(loadedVars);
     setSelectedProxy(wf.meta?.proxy || (wf.meta?.proxyId ? { mode: "single", id: wf.meta.proxyId } : null));
     setExecResults(null);
     setExecLogs([]);
     setExecStatus("idle");
-    const startUrl = loadedSteps[0]?.type === "NAVIGATE"
+    const startUrlRaw = loadedSteps[0]?.type === "NAVIGATE"
       ? loadedSteps[0]?.params?.url || ""
       : wf.meta?.startUrl || "";
+    // Resolve `{{var}}` with THIS workflow's own sample values (the
+    // workflowVariables state hasn't updated yet in this tick, so use the
+    // freshly-loaded list). performNavigate resolves again, but a concrete
+    // url passes through unchanged.
+    const startUrl = resolveVars(startUrlRaw, loadedVars);
     setUrlInput(startUrl);
     if (startUrl) performNavigate(startUrl);
   }, [performNavigate, setSteps]);
@@ -1259,9 +1288,13 @@ function AppShell({ user, token, onLogout }) {
       return;
     }
 
-    if (pinnedStep && url === pinnedUrl) {
-      // Same URL — refresh without prompting.
-      performNavigate(url);
+    // Same URL — refresh without prompting. The bar shows the RESOLVED start
+    // url (sample values substituted), so compare against the resolved pinned
+    // url too; otherwise re-navigating a `{{url}}/reviews` start page would be
+    // mistaken for a URL change.
+    const resolvedPinned = resolveVars(pinnedUrl || "", workflowVariables);
+    if (pinnedStep && (url === pinnedUrl || sameUrlIgnoringHash(url, resolvedPinned))) {
+      performNavigate(pinnedUrl);
       return;
     }
 
@@ -2089,8 +2122,8 @@ function AppShell({ user, token, onLogout }) {
                 // on without forcing them to retype the URL.
                 <button
                   className="url-back-btn"
-                  title={`Back to start URL — ${pinnedUrl}`}
-                  onClick={() => { setUrlInput(pinnedUrl); performNavigate(pinnedUrl); }}
+                  title={`Back to start URL — ${resolvedPinnedUrl}`}
+                  onClick={() => { setUrlInput(resolvedPinnedUrl); performNavigate(pinnedUrl); }}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                     <polyline points="15,18 9,12 15,6"/>
@@ -2483,9 +2516,9 @@ function AppShell({ user, token, onLogout }) {
             onToggleAttach={setAttachById}
             customActions={customActions}
             offStartUrl={onDifferentPage}
-            pinnedUrl={pinnedUrl}
+            pinnedUrl={resolvedPinnedUrl}
             currentPageUrl={currentPageUrl}
-            onReturnToStart={() => { if (pinnedUrl) { setUrlInput(pinnedUrl); performNavigate(pinnedUrl); } }}
+            onReturnToStart={() => { if (pinnedUrl) { setUrlInput(resolvedPinnedUrl); performNavigate(pinnedUrl); } }}
             onAddNavigateStep={addNavigateStepForCurrentPage}
             socket={socket}
             previewData={previewData}
@@ -2610,7 +2643,7 @@ function AppShell({ user, token, onLogout }) {
           onCancel={() => {
             // Revert the URL bar back to the pinned step's URL.
             const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
-            if (pinned) setUrlInput(pinned.params?.url || "");
+            if (pinned) setUrlInput(resolveVars(pinned.params?.url || "", workflowVariables));
             setUrlChangeDialog(null);
           }}
           onSaveAndStartNew={async () => {
@@ -2663,7 +2696,7 @@ function AppShell({ user, token, onLogout }) {
             // Revert the URL bar back to the pinned step's URL — it represents
             // the workflow's start URL, not the current page.
             const pinned = steps[0]?.type === "NAVIGATE" && steps[0]?.pinned ? steps[0] : null;
-            if (pinned) setUrlInput(pinned.params?.url || "");
+            if (pinned) setUrlInput(resolveVars(pinned.params?.url || "", workflowVariables));
             showToast("✓ Added Navigate step to current workflow", "success");
           }}
         />
