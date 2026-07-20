@@ -167,8 +167,11 @@ function buildFlowTree(steps, subflows = {}, rootWorkflowId = null) {
         nextVisited.add(subId);
         let subSteps = sub.steps;
         // Mirror codegen: a subflow's leading pinned NAVIGATE is dropped when
-        // inlined (the parent supplies the URL), so it never runs — don't show it.
-        if (subSteps[0] && subSteps[0].kind === 'action' && subSteps[0].type === 'NAVIGATE') {
+        // inlined (the parent supplies the URL), so it never runs — don't show
+        // it. But when this step lets the subflow navigate itself
+        // (selfNavigate), that leading NAVIGATE IS what runs — keep it visible.
+        const selfNav = !!(step.params && step.params.selfNavigate);
+        if (!selfNav && subSteps[0] && subSteps[0].kind === 'action' && subSteps[0].type === 'NAVIGATE') {
           subSteps = subSteps.slice(1);
         }
         node.subflowName = sub.name || null;

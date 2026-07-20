@@ -10,10 +10,12 @@ const db = require('../client');
    JSON (de)serialisation. See docs/SCALING_AND_DB_MIGRATION.md.
    ========================================================================= */
 
-// Summary list (no steps payload) for the workflows menu.
+// Summary list for the workflows menu. Includes meta_json (but NOT the steps
+// payload) so callers can surface a workflow's declared input variables — the
+// RUN_SUBFLOW picker maps parent data onto them — without a second fetch.
 async function listSummariesForUser(userId) {
   return db.all(`
-    SELECT id, name, created_at, updated_at
+    SELECT id, name, created_at, updated_at, meta_json
     FROM workflows
     WHERE user_id = ?
     ORDER BY updated_at DESC

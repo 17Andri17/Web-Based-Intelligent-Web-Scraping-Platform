@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from "react";
+import React, { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import io from "socket.io-client";
 import { useWorkflow, findStepLocation, getContainer } from "./workflow/useWorkflow";
@@ -134,6 +134,28 @@ function treeHasStepType(arr, type) {
     }
   }
   return false;
+}
+
+// Every literal NAVIGATE url anywhere in the workflow tree (the pinned start
+// step plus any recorded mid-flow navigations). Interpolated urls (containing
+// `{{…}}`) are skipped — they resolve to different pages per run, so they
+// can't be compared to a concrete live-browser url. Used to decide whether the
+// page the user has drifted to is one the workflow already reaches on its own.
+function collectNavigateUrls(steps) {
+  const out = [];
+  const walk = (arr) => {
+    for (const s of arr || []) {
+      if (!s || typeof s !== "object") continue;
+      if (s.type === "NAVIGATE" && s.params?.url && !String(s.params.url).includes("{{")) {
+        out.push(s.params.url);
+      }
+      // Recurse into control-block child containers (then / else / body / …),
+      // which are the only array-valued properties directly on a step.
+      for (const v of Object.values(s)) if (Array.isArray(v)) walk(v);
+    }
+  };
+  walk(steps);
+  return out;
 }
 
 // Root index where a page-setup step (close cookie banner, solve CAPTCHA)
@@ -1047,7 +1069,15 @@ function AppShell({ user, token, onLogout }) {
   const pinnedUrl = (steps[0]?.type === "NAVIGATE" && steps[0]?.pinned)
     ? (steps[0].params?.url || "")
     : "";
-  const onDifferentPage = !!(pinnedUrl && currentPageUrl) && !sameUrlIgnoringHash(currentPageUrl, pinnedUrl);
+  // Every page the workflow itself navigates to (start URL + any recorded
+  // mid-flow Navigate steps). The drift warning only fires when the live page
+  // is NONE of these — so once the user records a Navigate step for the page
+  // they're on, it stops being flagged and steps recorded there line up with
+  // the workflow at run time.
+  const navUrls = useMemo(() => collectNavigateUrls(steps), [steps]);
+  const currentPageIsReachable = !!currentPageUrl
+    && navUrls.some(u => sameUrlIgnoringHash(currentPageUrl, u));
+  const onDifferentPage = !!(pinnedUrl && currentPageUrl) && !currentPageIsReachable;
 
   // Whenever the puppeteer page reports a new URL (link click, redirect,
   // history nav), reflect it in the URL bar — that's what a real browser
@@ -1237,6 +1267,19 @@ function AppShell({ user, token, onLogout }) {
 
     // Existing workflow + URL changed → ask the user what to do.
     setUrlChangeDialog({ newUrl: url });
+  };
+
+  // "Add navigate step" from the off-start warning: the user clicked/redirected
+  // their way to a page the workflow doesn't reach on its own. Record a movable
+  // NAVIGATE step (appended at the end) so the flow actually visits this page —
+  // after which the page stops being flagged and any steps recorded here line
+  // up with the workflow. Mirrors the UrlChangeDialog "Add as step" path, but
+  // for a drift the live browser produced rather than a typed URL.
+  const addNavigateStepForCurrentPage = () => {
+    const url = (currentPageUrl || urlInput || "").trim();
+    if (!url) return;
+    addStep(createAction("NAVIGATE", { url }), [], null);
+    showToast("✓ Added a Navigate step for this page — steps recorded here now match the workflow", "success");
   };
 
   // ── Auto-suggest a snake_case label for new extraction / loop steps ───
@@ -2074,6 +2117,13 @@ function AppShell({ user, token, onLogout }) {
                   <path d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
                 </svg>
                 <span>Off the workflow's start URL</span>
+                <button
+                  className="url-warning-add"
+                  onClick={addNavigateStepForCurrentPage}
+                  title="Record a Navigate step to this page so the workflow reaches it — after that this page is no longer flagged and steps you add here will match at run time"
+                >
+                  + Add navigate step
+                </button>
               </div>
             )}
 
@@ -2436,6 +2486,7 @@ function AppShell({ user, token, onLogout }) {
             pinnedUrl={pinnedUrl}
             currentPageUrl={currentPageUrl}
             onReturnToStart={() => { if (pinnedUrl) { setUrlInput(pinnedUrl); performNavigate(pinnedUrl); } }}
+            onAddNavigateStep={addNavigateStepForCurrentPage}
             socket={socket}
             previewData={previewData}
             variables={workflowVariables}

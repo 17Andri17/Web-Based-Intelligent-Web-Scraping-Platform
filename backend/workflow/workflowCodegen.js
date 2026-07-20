@@ -239,6 +239,15 @@ function genAction(step, ctx) {
   const q = (s) => qStr(s, ctx.declaredVars);
   const selList = (p) => selectorList(p, ctx.declaredVars);
 
+  // How long an extraction step waits for its selector to appear before giving
+  // up and returning an empty value. The default keeps runs snappy — a value
+  // that's already rendered is read with zero delay (resolveElementSoft's fast
+  // path) and only a slow/lazy element incurs the wait — while still tolerating
+  // content that lands a beat after load. Users who need a longer (or zero)
+  // window set it per step via the "Wait for element" advanced field.
+  const EXTRACT_GRACE_DEFAULT = 4000;
+  const grace = () => Math.max(0, num(advanced.waitTimeout, EXTRACT_GRACE_DEFAULT));
+
   // ── ForEach element context ─────────────────────────────────────────────
   // When inside a FOR_EACH_ELEMENTS loop that has extractions, generate
   // element-relative code using `el.$eval(selector)` instead of page-level
@@ -547,35 +556,36 @@ await page.waitForNavigation({ waitUntil: ${q(advanced.waitUntil || 'load')}, ti
     // ── Extraction ───────────────────────────────────────────────────────
     case 'EXTRACT_TEXT': {
       const sels = selList(params);
+      const g = grace();
       const code = params.multiple
-        ? `const ${varName} = await evalOnElements(page, ${sels}, el => el.textContent.trim());\n`
-        : `const ${varName} = await evalOnElement(page, ${sels}, el => el.textContent.trim()).catch(() => null);\n`;
+        ? `const ${varName} = await evalOnElements(page, ${sels}, el => el.textContent.trim(), ${g});\n`
+        : `const ${varName} = await evalOnElement(page, ${sels}, el => el.textContent.trim(), ${g}).catch(() => null);\n`;
       return code + store;
     }
 
     case 'EXTRACT_ATTRIBUTE': {
       const sels = selList(params);
       const attr = q(params.attribute);
-      const code = params.multiple
-        ? `const ${varName} = await evalOnElements(page, ${sels}, (el, a) => el.getAttribute(a), ${attr});\n`
-        : `const ${varName} = await evalOnElement(page, ${sels}, (el, a) => el.getAttribute(a), ${attr}).catch(() => null);\n`;
-      // Note: page.evaluate only passes one extra arg; use closure instead
+      const g = grace();
+      // Wait (softly) for the element/elements to appear, then read the
+      // attribute. Closures are used because page.evaluate only forwards one
+      // extra arg to the browser-side fn.
       const codeFinal = params.multiple
-        ? `const ${varName} = await (async () => { const _els = await resolveElements(page, ${sels}); return Promise.all(_els.map(el => page.evaluate((e, a) => e.getAttribute(a), el, ${attr}))); })();\n`
-        : `const ${varName} = await (async () => { const _el = await resolveElement(page, ${sels}); return _el ? page.evaluate((e, a) => e.getAttribute(a), _el, ${attr}) : null; })();\n`;
+        ? `const ${varName} = await (async () => { const _els = await resolveElementsSoft(page, ${sels}, ${g}); return Promise.all(_els.map(el => page.evaluate((e, a) => e.getAttribute(a), el, ${attr}))); })();\n`
+        : `const ${varName} = await (async () => { const _el = await resolveElementSoft(page, ${sels}, ${g}); return _el ? page.evaluate((e, a) => e.getAttribute(a), _el, ${attr}) : null; })();\n`;
       return codeFinal + store;
     }
 
     case 'EXTRACT_HTML': {
       const prop = params.mode === 'outer' ? 'outerHTML' : 'innerHTML';
       return `
-const ${varName} = await evalOnElement(page, ${selList(params)}, el => el.${prop}).catch(() => null);
+const ${varName} = await evalOnElement(page, ${selList(params)}, el => el.${prop}, ${grace()}).catch(() => null);
 ${store}`.trim() + '\n';
     }
 
     case 'EXTRACT_TABLE': return `
 const ${varName} = await (async () => {
-  const _tbl = await resolveElement(page, ${selList({ selector: params.selector || 'table', selectorType: params.selectorType || 'css', fallbackSelectors: params.fallbackSelectors || [] })});
+  const _tbl = await resolveElementSoft(page, ${selList({ selector: params.selector || 'table', selectorType: params.selectorType || 'css', fallbackSelectors: params.fallbackSelectors || [] })}, ${grace()});
   if (!_tbl) return null;
   return page.evaluate((table, hasHeader) => {
     const rows = Array.from(table.querySelectorAll('tr'));
@@ -640,7 +650,7 @@ ${store}`.trim() + '\n';
         : '';
       return `
 const ${varName} = await (async () => {
-  const _containers = await resolveElements(page, ${sels});
+  const _containers = await resolveElementsSoft(page, ${sels}, ${grace()});
   return Promise.all(_containers.map(container =>
     page.evaluate((el, fields) => {${REL_CHILD_FN}
       const item = {};
@@ -947,16 +957,34 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         capturedAliases: new Set(),   // subflow gets its own alias scope
       };
       subCtx.visitedSubflows.add(String(subflowId));
+
+      // ── Input variables & self-navigation ────────────────────────────────
+      // A subflow's declared workflow variables (sub.meta.variables). Any of
+      // them flagged `input` can be supplied per-invocation from the parent via
+      // params.inputs = { <varName>: <expression> }. This is how one subflow,
+      // authored on a single concrete URL, gets re-run against many targets:
+      // the parent maps a list column into the subflow's input variable and the
+      // subflow references it as {{var}} (e.g. Navigate to {{base_url}}/reviews).
+      const subVars  = Array.isArray(sub.meta && sub.meta.variables) ? sub.meta.variables : [];
+      const inputMap = (params.inputs && typeof params.inputs === 'object' && !Array.isArray(params.inputs))
+        ? params.inputs : {};
+      // selfNavigate: keep the subflow's own NAVIGATE steps and DON'T have the
+      // parent pre-open a URL. Lets the subflow visit several derived pages
+      // (base, base/reviews, …) built from its seeded input variables, instead
+      // of the parent forcing exactly one page per invocation.
+      const selfNav  = !!params.selfNavigate;
+
       // When inlining a subflow, its FIRST step is almost always a pinned
-      // NAVIGATE to the URL it was authored on. The parent step already
-      // opens _subPage at the URL the user wants (single mode) or the
-      // current iteration's URL (iterate mode), so re-navigating to the
-      // authored URL would just throw the work away. Strip a leading
-      // NAVIGATE so the subflow's remaining steps run on _subPage where
-      // the parent put it.
+      // NAVIGATE to the URL it was authored on. Unless the subflow is driving
+      // its own navigation (selfNavigate), the parent already opens _subPage at
+      // the URL the user wants (single mode) or the current iteration's URL, so
+      // re-navigating to the authored URL would just throw the work away —
+      // strip that leading NAVIGATE. With selfNavigate we KEEP it: it's what
+      // takes _subPage to the first (input-variable-derived) page.
       const rawSubSteps = sub.steps || [];
       const subSteps = (
-        rawSubSteps.length > 0
+        !selfNav
+        && rawSubSteps.length > 0
         && rawSubSteps[0]
         && rawSubSteps[0].kind === 'action'
         && rawSubSteps[0].type === 'NAVIGATE'
@@ -966,10 +994,28 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
       // level shallower.
       const subNested = params.mode === 'iterate' || params.mode === 'enrich';
       const subCode  = genStepList(subSteps, subCtx, subNested ? 5 : 4);
+      const seedIndent = subNested ? '        ' : '      ';
       const subAliasDecls = subCtx.capturedAliases.size === 0 ? '' :
-        Array.from(subCtx.capturedAliases).map(a =>
-          (subNested ? '        ' : '      ') + `let ${a};`
-        ).join('\n');
+        Array.from(subCtx.capturedAliases).map(a => seedIndent + `let ${a};`).join('\n');
+      // Re-declare the subflow's own variables inside its inlined closure (the
+      // parent's top-level `let`s are the PARENT's variables, not the sub's).
+      // Input variables are seeded from the parent mapping expression — string
+      // semantics (qStr), so "{{row.url}}/reviews" and a plain literal both
+      // work and it evaluates in the parent's scope via closure (e.g. `row`).
+      // Others fall back to their sample value. Names already produced as a
+      // captured-output alias inside the subflow are skipped (no double `let`).
+      const subVarSeeds = subVars.map(v => {
+        if (!v || typeof v !== 'object') return null;
+        const ident = toJsIdent(v.name);
+        if (!ident || subCtx.capturedAliases.has(ident)) return null;
+        const mapExpr = inputMap[v.name];
+        const seed = (typeof mapExpr === 'string' && mapExpr.trim())
+          ? qStr(mapExpr)
+          : renderVariableLiteral(v);
+        return `${seedIndent}let ${ident} = ${seed};`;
+      }).filter(Boolean).join('\n');
+      // Combined declarations injected at the top of the subflow closure.
+      const subDecls = [subAliasDecls, subVarSeeds].filter(Boolean).join('\n');
 
       const safeSubName = (sub.name || 'unnamed').replace(/\*\//g, '*\\/');
       const timeoutMs   = num(advanced.timeout, 30000);
@@ -994,16 +1040,20 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `  for (let _i = 0; _i < _urlList.length; _i++) {`,
           `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${subIdJson}, index: _i}));`,
           `    const ${itemVar} = _urlList[_i];`,
+          `    const row = ${itemVar};`,
           `    if (${itemVar} == null || ${itemVar} === '') continue;`,
           `    const _subPage = await browser.newPage();`,
           `    try {`,
           `      await applyStealthToPage(_subPage);`,
-          `      await _subPage.goto(String(${itemVar}), { waitUntil: 'load', timeout: ${timeoutMs} });`,
-          `      await dismissConsent(_subPage);`,
+          // selfNavigate: the subflow's own Navigate steps drive _subPage from
+          // the seeded input variables; otherwise open the iteration's URL here.
+          selfNav ? `      // (self-navigate: the subflow opens its own page[s])`
+                  : `      await _subPage.goto(String(${itemVar}), { waitUntil: 'load', timeout: ${timeoutMs} });`,
+          selfNav ? `` : `      await dismissConsent(_subPage);`,
           `      const _subResults = await (async (page) => {`,
           `        const __results__ = {};`,
           `        let __currentStep__ = null;`,
-          subAliasDecls,
+          subDecls,
           `        try {`,
           subCode,
           `        } catch (err) {`,
@@ -1011,7 +1061,8 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `        }`,
           `        return __results__;`,
           `      })(_subPage);`,
-          `      _subResults._sourceUrl = String(${itemVar});`,
+          selfNav ? `      try { _subResults._sourceUrl = _subPage.url(); } catch (_) {}`
+                  : `      _subResults._sourceUrl = String(${itemVar});`,
           `      __results__[${JSON.stringify(outKey)}].push(_subResults);`,
           `    } catch (err) {`,
           `      console.error(${JSON.stringify(`Subflow ${outKey} failed on URL`)}, ${itemVar}, '—', err && err.message);`,
@@ -1057,22 +1108,28 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `  for (let _i = 0; _i < _rows.length; _i++) {`,
           `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${subIdJson}, index: _i}));`,
           `    const _row = (_rows[_i] && typeof _rows[_i] === 'object' && !Array.isArray(_rows[_i])) ? _rows[_i] : { value: _rows[_i] };`,
-          `    let _href = _row[${urlFieldJson}];`,
-          `    // No link on this row → keep the row as-is (don't drop data).`,
-          `    if (_href == null || _href === '') { _out.push(Object.assign({}, _row)); continue; }`,
-          `    _href = String(_href);`,
-          `    // Resolve relative links against the configured base URL.`,
-          `    if (_enrichBase && !/^https?:\\/\\//i.test(_href)) { try { _href = new URL(_href, _enrichBase).href; } catch (_) {} }`,
+          `    const row = _row;`,
+          // ── link-open path (default): open the row's link column on _subPage
+          //    and strip the subflow's own leading Navigate. ──
+          selfNav ? `    let _href = '';` : `    let _href = _row[${urlFieldJson}];`,
+          selfNav ? `` : `    // No link on this row → keep the row as-is (don't drop data).`,
+          selfNav ? `` : `    if (_href == null || _href === '') { _out.push(Object.assign({}, _row)); continue; }`,
+          selfNav ? `` : `    _href = String(_href);`,
+          selfNav ? `` : `    // Resolve relative links against the configured base URL.`,
+          selfNav ? `` : `    if (_enrichBase && !/^https?:\\/\\//i.test(_href)) { try { _href = new URL(_href, _enrichBase).href; } catch (_) {} }`,
           `    const _subPage = await browser.newPage();`,
           `    let _subResults = {};`,
           `    try {`,
           `      await applyStealthToPage(_subPage);`,
-          `      await _subPage.goto(_href, { waitUntil: 'load', timeout: ${timeoutMs} });`,
-          `      await dismissConsent(_subPage);`,
+          // selfNavigate: the subflow's Navigate steps (built from seeded input
+          // variables) open the page[s] themselves — the parent opens nothing.
+          selfNav ? `      // (self-navigate: the subflow opens its own page[s])`
+                  : `      await _subPage.goto(_href, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+          selfNav ? `` : `      await dismissConsent(_subPage);`,
           `      _subResults = await (async (page) => {`,
           `        const __results__ = {};`,
           `        let __currentStep__ = null;`,
-          subAliasDecls,
+          subDecls,
           `        try {`,
           subCode,
           `        } catch (err) {`,
@@ -1080,7 +1137,8 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `        }`,
           `        return __results__;`,
           `      })(_subPage);`,
-          `      _subResults._sourceUrl = _href;`,
+          selfNav ? `      try { _subResults._sourceUrl = _subPage.url(); } catch (_) {}`
+                  : `      _subResults._sourceUrl = _href;`,
           `    } catch (err) {`,
           `      console.error(${JSON.stringify(`Subflow ${outKey} failed on URL`)}, _href, '—', err && err.message);`,
           `    } finally {`,
@@ -1111,12 +1169,15 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         `  const _subPage = await browser.newPage();`,
         `  try {`,
         `    await applyStealthToPage(_subPage);`,
-        `    await _subPage.goto(_subUrl, { waitUntil: 'load', timeout: ${timeoutMs} });`,
-        `    await dismissConsent(_subPage);`,
+        // selfNavigate: the subflow's own Navigate steps open the page(s); the
+        // parent doesn't pre-open _subUrl (which is optional in that case).
+        selfNav ? `    // (self-navigate: the subflow opens its own page[s])`
+                : `    await _subPage.goto(_subUrl, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+        selfNav ? `` : `    await dismissConsent(_subPage);`,
         `    const _subResults = await (async (page) => {`,
         `      const __results__ = {};`,
         `      let __currentStep__ = null;`,
-        subAliasDecls,
+        subDecls,
         `      try {`,
         subCode,
         `      } catch (err) {`,
@@ -2202,6 +2263,42 @@ async function resolveElements(page, selectors) {
 }
 
 /**
+ * "Soft" resolve for extraction: return the element the instant it's present
+ * (no wait when the page is already rendered), otherwise poll — WITHOUT
+ * scrolling — until it appears or \`graceMs\` elapses, then return null. Never
+ * throws and never fails the step: a missing element yields an empty value,
+ * which is the right default for extraction (an absent field is data, not an
+ * error). Pass graceMs = 0 to disable waiting entirely (the pre-existing
+ * "read what's there right now" behaviour).
+ */
+async function resolveElementSoft(page, selectors, graceMs = 0) {
+  let el = await resolveElement(page, selectors);
+  if (el || graceMs <= 0) return el;
+  const deadline = Date.now() + graceMs;
+  while (!el && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 120));
+    el = await resolveElement(page, selectors);
+  }
+  return el;
+}
+
+/**
+ * List counterpart of resolveElementSoft — waits (without scrolling) for the
+ * first selector to match at least one element, up to graceMs, then returns
+ * whatever it has ([] if still nothing). Never throws.
+ */
+async function resolveElementsSoft(page, selectors, graceMs = 0) {
+  let els = await resolveElements(page, selectors);
+  if (els.length || graceMs <= 0) return els;
+  const deadline = Date.now() + graceMs;
+  while (!els.length && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 120));
+    els = await resolveElements(page, selectors);
+  }
+  return els;
+}
+
+/**
  * Wait until any selector in the list appears within timeout ms.
  * Returns the ElementHandle of the first match found.
  * Throws if nothing resolves in time.
@@ -2307,18 +2404,24 @@ async function clickIfPresent(page, selectors, timeout = 8000) {
 
 /**
  * Run page.evaluate(fn, el) with XPath-aware element resolution.
+ * graceMs (default 0) gives the element a brief window to appear before we
+ * give up — used by extraction steps so a value that renders a beat after
+ * load is still captured, while a genuinely-present element is read with no
+ * delay. Still throws when nothing turns up (extraction callers wrap this in
+ * \`.catch(() => null)\` so an absent element becomes an empty value).
  */
-async function evalOnElement(page, selectors, fn) {
-  const el = await resolveElement(page, selectors);
+async function evalOnElement(page, selectors, fn, graceMs = 0) {
+  const el = await resolveElementSoft(page, selectors, graceMs);
   if (!el) throw new Error('evalOnElement: element not found for selectors: ' + JSON.stringify(selectors));
   return page.evaluate(fn, el);
 }
 
 /**
- * Run page.evaluate(fn, el) on ALL elements matched by the first working selector.
+ * Run page.evaluate(fn, el) on ALL elements matched by the first working
+ * selector. graceMs waits (without scrolling) for the first match to appear.
  */
-async function evalOnElements(page, selectors, fn) {
-  const els = await resolveElements(page, selectors);
+async function evalOnElements(page, selectors, fn, graceMs = 0) {
+  const els = await resolveElementsSoft(page, selectors, graceMs);
   if (!els.length) return [];
   return Promise.all(els.map(el => page.evaluate(fn, el)));
 }

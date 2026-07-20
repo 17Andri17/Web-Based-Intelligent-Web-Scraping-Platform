@@ -106,6 +106,60 @@ list the detail page produced, or name it explicitly (e.g. `Reviews`).
   *separate* array of per-page result objects (each tagged with `_sourceUrl`).
   Use this when you *don't* want the results folded back into the source table.
 
+## Parameterised subflows: input variables + self-navigation
+
+The **link column → open one page** shape covers "each row has exactly one URL."
+But sometimes each row needs the subflow to visit **several** pages that share a
+common prefix — e.g. an escape-room's main page **and** its `…/reviews`,
+`…/photos`, and `…/availability` pages. For that, give the subflow **input
+variables** and let it drive its own navigation.
+
+### 1. Declare an input variable in the subflow
+
+In the detail workflow's **Workflow Variables** panel, add a variable (e.g.
+`room_url`) and tick **input**. Give it a **sample value** — a single real URL —
+so you can build the scraper against a concrete page. The `input` flag marks it
+as "supplied by the parent at run time"; the sample is used only while building.
+
+### 2. Build the subflow against the sample, referencing the variable
+
+Point-and-click the scraper as usual, but write the **Navigate** steps in terms
+of the variable:
+
+```
+Navigate {{room_url}}            → extract name, rating
+Navigate {{room_url}}/reviews    → Extract List of reviews
+Navigate {{room_url}}/photos     → Extract List of photo URLs
+```
+
+Because you built it on one concrete URL, every selector is verified against a
+live page — but the URLs are now templated.
+
+### 3. Wire it up in the parent's Run Subflow step
+
+On the **Run Subflow** step (any mode — *enrich* is typical):
+
+- Turn on **Let the subflow open its own pages**. The parent then stops opening
+  one link per row; the subflow's own Navigate steps run instead, so it can
+  visit as many derived pages as it likes. (The *Link column* becomes optional.)
+- Under **Subflow inputs**, map each input variable to a value. In *enrich* mode
+  reference the current row's columns as `{{row.<column>}}` — e.g. map
+  `room_url` to `{{row.url}}`. You can also build a value from other columns or
+  literals (`{{row.base}}/en`).
+
+At run time the subflow runs once per row: its input variables are seeded from
+that row, it navigates to each templated page, scrapes them, and the combined
+result is merged back into the row (using the same **Add details as** strategy).
+
+> **Where does the value come from later?** You build the scraper once, against
+> the sample URL. Every subsequent run pulls the real value from whatever the
+> parent maps in — a list column, an iteration variable, or an expression — so
+> the same subflow scales to the whole list without re-authoring.
+
+Input variables also work in *single* and *A list of links* modes and without
+self-navigation (map columns as extra inputs while still opening the link
+column). Any input you leave unmapped falls back to its sample value.
+
 ## Inline enrich without a subflow: "For Each Row"
 
 You don't need a saved subflow to enrich a list. The **For Each Row (Enrich a
