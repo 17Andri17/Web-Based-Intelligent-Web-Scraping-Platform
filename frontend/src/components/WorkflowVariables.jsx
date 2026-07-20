@@ -3,20 +3,19 @@ import React, { useState } from "react";
 /* =====================================================================
    WorkflowVariables
    ---------------------------------------------------------------------
-   ServiceNow-style "Workflow Variables" panel for the scraping flow.
-   Shows two things side by side:
+   Compact, narrow-sidebar-friendly "Workflow Variables" panel. Two lists:
 
      1. Captured outputs — read-only, auto-derived from every named
         extraction step in the workflow tree. These ARE workflow
         variables — they end up as keys in the run's results JSON.
 
-     2. Custom variables — user-defined inputs. The user names them,
-        gives them a value, picks a type. The codegen emits them as
-        top-level `let` declarations so subsequent steps can reference
-        them (via the {{var}} interpolation we'll plug in later).
+     2. Custom variables — user-defined inputs. Each editable card stacks
+        its controls vertically so it (and the Add button) always fit,
+        even in the narrow side column. All explanatory text lives behind
+        the header "?" toggle so it never eats vertical space.
 
    Props:
-     variables           Array<{name, value, type, description}>
+     variables           Array<{name, value, type, description, input}>
      onAdd(v) / onUpdate(i, patch) / onRemove(i)
      capturedOutputs     Array<{name, type, stepId}>  — auto-derived
      collapsed, onToggleCollapsed
@@ -29,6 +28,8 @@ const TYPES = [
   { id: "json",    label: "JSON"    },
 ];
 
+const EMPTY_DRAFT = { name: "", value: "", type: "string", description: "", input: false };
+
 export default function WorkflowVariables({
   variables = [],
   onAdd, onUpdate, onRemove,
@@ -38,7 +39,8 @@ export default function WorkflowVariables({
   layout = "top",   // "top" (legacy) | "side"
 }) {
   const [adding, setAdding] = useState(false);
-  const [draft,  setDraft]  = useState({ name: "", value: "", type: "string", description: "", input: false });
+  const [draft,  setDraft]  = useState(EMPTY_DRAFT);
+  const [showHelp, setShowHelp] = useState(false);
 
   const finishAdd = () => {
     const name = sanitiseName(draft.name);
@@ -50,14 +52,13 @@ export default function WorkflowVariables({
       description: draft.description.trim(),
       input:       !!draft.input,
     });
-    setDraft({ name: "", value: "", type: "string", description: "", input: false });
+    setDraft(EMPTY_DRAFT);
     setAdding(false);
   };
+  const cancelAdd = () => { setDraft(EMPTY_DRAFT); setAdding(false); };
 
   // Side layout when collapsed: render a thin rail with a vertical
   // "Variables" label and a count badge — clicking re-opens the panel.
-  // This keeps the panel visible (and the count discoverable) without
-  // stealing canvas space.
   if (layout === "side" && collapsed) {
     return (
       <button
@@ -77,40 +78,39 @@ export default function WorkflowVariables({
 
   return (
     <div className={"wvars" + (layout === "side" ? " wvars--side" : "")}>
-      <button type="button" className="wvars-header" onClick={() => onToggleCollapsed?.()}>
-        <ChevronIcon collapsed={collapsed} />
-        <span className="wvars-title">Workflow Variables</span>
-        <span className="wvars-count">
-          {capturedOutputs.length + variables.length}
-        </span>
-        {layout !== "side" && (
-          <span className="wvars-tip">
-            {capturedOutputs.length} captured · {variables.length} custom
+      {/* Header: collapse toggle + a "?" help toggle (help stays hidden
+          until asked for, so the panel isn't dominated by prose). */}
+      <div className="wvars-header">
+        <button type="button" className="wvars-header-toggle" onClick={() => onToggleCollapsed?.()}>
+          <ChevronIcon collapsed={collapsed} />
+          <span className="wvars-title">Workflow Variables</span>
+          <span className="wvars-count">
+            {capturedOutputs.length + variables.length}
           </span>
+        </button>
+        {!collapsed && (
+          <button
+            type="button"
+            className={"wvars-help-btn" + (showHelp ? " active" : "")}
+            onClick={() => setShowHelp(h => !h)}
+            title={showHelp ? "Hide help" : "Show help"}
+            aria-label="Toggle help"
+          >?</button>
         )}
-      </button>
+      </div>
 
       {!collapsed && (
         <div className="wvars-body">
-          {/* Quick how-to: where {{var}} actually works */}
-          <div className="wvars-help">
-            <span className="wvars-help-tag">tip</span>
-            Reference a variable anywhere a step takes text — selector, URL, type-text content. Syntax:
-            <ul className="wvars-help-list">
-              <li><code>{"{{name}}"}</code> — value of a variable</li>
-              <li><code>{"{{table.column}}"}</code> — a field of an object</li>
-              <li><code>{"{{table[*].column}}"}</code> — the column from EVERY row of a list-of-objects (use this with the Run Subflow step's "URL list" mode to visit every link in a captured table)</li>
-            </ul>
-            Click a column name below to copy its reference.
-          </div>
+          {showHelp && <HelpCard />}
+
           {/* ── Captured outputs ─────────────────────────────────── */}
           <div className="wvars-section">
             <div className="wvars-section-title">
               <span>Captured outputs</span>
-              <span className="wvars-section-help">automatically tracked from named extraction steps</span>
+              <span className="wvars-section-count">{capturedOutputs.length}</span>
             </div>
             {capturedOutputs.length === 0 ? (
-              <div className="wvars-empty">No extraction steps named yet. Add a label to any extract step to capture it as a variable.</div>
+              <div className="wvars-empty">Name any extract step to capture it here.</div>
             ) : (
               <div className="wvars-list">
                 {capturedOutputs.map(v => (
@@ -124,15 +124,11 @@ export default function WorkflowVariables({
           <div className="wvars-section">
             <div className="wvars-section-title">
               <span>Custom variables</span>
-              <span className="wvars-section-help">reusable values you can reference inside any step using <code>{"{{name}}"}</code></span>
-            </div>
-            <div className="wvars-help" style={{ marginBottom: 8 }}>
-              <span className="wvars-help-tag">input</span>
-              Mark a variable as an <strong>input</strong> to turn this workflow into a reusable, parameterised subflow. Build it once against the sample value; when another workflow runs it via <strong>Run Subflow</strong>, it maps its own data (e.g. a list column) onto each input. Great for “one escape-room URL → visit <code>{"{{url}}"}</code>, <code>{"{{url}}/reviews"}</code>, …”.
+              <span className="wvars-section-count">{variables.length}</span>
             </div>
 
             {variables.length === 0 && !adding && (
-              <div className="wvars-empty">No custom variables defined yet.</div>
+              <div className="wvars-empty">No custom variables yet.</div>
             )}
 
             {variables.length > 0 && (
@@ -149,39 +145,52 @@ export default function WorkflowVariables({
             )}
 
             {adding ? (
-              <div className="wvars-add-row">
+              <div className="wvars-card wvars-card--adding">
+                <div className="wvars-card-head">
+                  <span className="wvars-pill" title={draft.input ? "Input variable" : "Custom variable"}>
+                    {draft.input ? "⇥" : "$"}
+                  </span>
+                  <input
+                    className="wvars-name-input"
+                    autoFocus
+                    placeholder="variable_name"
+                    value={draft.name}
+                    onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+                    onKeyDown={e => { if (e.key === "Enter") finishAdd(); if (e.key === "Escape") cancelAdd(); }}
+                  />
+                  <button type="button" className="wvars-remove" onClick={cancelAdd} title="Cancel">×</button>
+                </div>
+                <div className="wvars-card-opts">
+                  <select
+                    className="wvars-type-input"
+                    value={draft.type}
+                    onChange={e => setDraft(d => ({ ...d, type: e.target.value }))}
+                    title="Type"
+                  >
+                    {TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                  <label className="wvars-input-toggle" title="Input variable — supplied by the parent when this workflow runs as a subflow">
+                    <input
+                      type="checkbox"
+                      checked={!!draft.input}
+                      onChange={e => setDraft(d => ({ ...d, input: e.target.checked }))}
+                    />
+                    input
+                  </label>
+                </div>
                 <input
-                  className="wvars-add-name"
-                  autoFocus
-                  placeholder="variable_name"
-                  value={draft.name}
-                  onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
-                  onKeyDown={e => { if (e.key === "Enter") finishAdd(); if (e.key === "Escape") setAdding(false); }}
-                />
-                <select
-                  className="wvars-add-type"
-                  value={draft.type}
-                  onChange={e => setDraft(d => ({ ...d, type: e.target.value }))}
-                >
-                  {TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                </select>
-                <input
-                  className="wvars-add-value"
-                  placeholder={draft.input ? "sample value (used while building)" : "initial value"}
+                  className="wvars-value-input"
+                  placeholder={draft.input ? "sample value (used while building)" : "value"}
                   value={draft.value}
                   onChange={e => setDraft(d => ({ ...d, value: e.target.value }))}
-                  onKeyDown={e => { if (e.key === "Enter") finishAdd(); if (e.key === "Escape") setAdding(false); }}
+                  onKeyDown={e => { if (e.key === "Enter") finishAdd(); if (e.key === "Escape") cancelAdd(); }}
                 />
-                <label className="wvars-input-toggle" title="Input variable — supplied by the parent when this workflow is run as a subflow">
-                  <input
-                    type="checkbox"
-                    checked={!!draft.input}
-                    onChange={e => setDraft(d => ({ ...d, input: e.target.checked }))}
-                  />
-                  input
-                </label>
-                <button type="button" className="wvars-add-confirm" onClick={finishAdd} disabled={!draft.name.trim()}>Add</button>
-                <button type="button" className="wvars-add-cancel"  onClick={() => setAdding(false)}>×</button>
+                <button
+                  type="button"
+                  className="wvars-add-confirm"
+                  onClick={finishAdd}
+                  disabled={!draft.name.trim()}
+                >Add variable</button>
               </div>
             ) : (
               <button type="button" className="wvars-add-btn" onClick={() => setAdding(true)}>
@@ -191,6 +200,36 @@ export default function WorkflowVariables({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── Help card (only rendered when the header "?" is toggled on) ─────── */
+function HelpCard() {
+  return (
+    <div className="wvars-help">
+      <div className="wvars-help-block">
+        <span className="wvars-help-tag">tip</span>
+        <strong>Referencing variables</strong>
+        <p>Use a variable anywhere a step takes text — selector, URL, type-text:</p>
+        <ul className="wvars-help-list">
+          <li><code>{"{{name}}"}</code> — a variable's value</li>
+          <li><code>{"{{table.column}}"}</code> — a field of an object</li>
+          <li><code>{"{{table[*].column}}"}</code> — that column from every row of a list</li>
+        </ul>
+        <p>Click a captured column chip below to copy its reference.</p>
+      </div>
+      <div className="wvars-help-block">
+        <span className="wvars-help-tag wvars-help-tag--input">input</span>
+        <strong>Input variables</strong>
+        <p>
+          Tick <em>input</em> to turn this workflow into a reusable, parameterised
+          subflow. Build it once against the sample value; when another workflow
+          runs it via <strong>Run Subflow</strong>, it maps its own data (e.g. a
+          list column) onto each input — great for “one URL → visit
+          {" "}<code>{"{{url}}"}</code>, <code>{"{{url}}/reviews"}</code>, …”.
+        </p>
+      </div>
     </div>
   );
 }
@@ -240,26 +279,39 @@ function CapturedRow({ value }) {
   );
 }
 
-/* ── Single editable row ────────────────────────────────────────────── */
+/* ── Single editable custom-variable card (stacks vertically) ───────── */
 function CustomVarRow({ value, onChange, onRemove }) {
   const isInput = !!value.input;
   return (
-    <div className={"wvars-row" + (isInput ? " wvars-row--input" : "")}>
-      <span className="wvars-pill" title={isInput ? "Input variable" : "Custom variable"}>{isInput ? "⇥" : "$"}</span>
-      <input
-        className="wvars-name-input"
-        value={value.name}
-        onChange={e => onChange?.({ name: sanitiseName(e.target.value) })}
-        placeholder="variable_name"
-      />
-      <select
-        className="wvars-type-input"
-        value={value.type || "string"}
-        onChange={e => onChange?.({ type: e.target.value })}
-        title="Type"
-      >
-        {TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-      </select>
+    <div className={"wvars-card" + (isInput ? " wvars-card--input" : "")}>
+      <div className="wvars-card-head">
+        <span className="wvars-pill" title={isInput ? "Input variable" : "Custom variable"}>{isInput ? "⇥" : "$"}</span>
+        <input
+          className="wvars-name-input"
+          value={value.name}
+          onChange={e => onChange?.({ name: sanitiseName(e.target.value) })}
+          placeholder="variable_name"
+        />
+        <button type="button" className="wvars-remove" onClick={onRemove} title="Remove">×</button>
+      </div>
+      <div className="wvars-card-opts">
+        <select
+          className="wvars-type-input"
+          value={value.type || "string"}
+          onChange={e => onChange?.({ type: e.target.value })}
+          title="Type"
+        >
+          {TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+        <label className="wvars-input-toggle" title="Input variable — supplied by the parent when this workflow runs as a subflow">
+          <input
+            type="checkbox"
+            checked={isInput}
+            onChange={e => onChange?.({ input: e.target.checked })}
+          />
+          input
+        </label>
+      </div>
       <input
         className="wvars-value-input"
         value={value.value || ""}
@@ -269,15 +321,6 @@ function CustomVarRow({ value, onChange, onRemove }) {
           : value.type === "boolean" ? "true / false" : value.type === "number" ? "0" : value.type === "json" ? "{}" : "value"}
         title={isInput ? "Sample value — used while building; the parent supplies the real value when run as a subflow" : undefined}
       />
-      <label className="wvars-input-toggle" title="Input variable — supplied by the parent when this workflow is run as a subflow">
-        <input
-          type="checkbox"
-          checked={isInput}
-          onChange={e => onChange?.({ input: e.target.checked })}
-        />
-        input
-      </label>
-      <button type="button" className="wvars-remove" onClick={onRemove} title="Remove">×</button>
     </div>
   );
 }
