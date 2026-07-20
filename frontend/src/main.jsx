@@ -254,6 +254,9 @@ function AppShell({ user, token, onLogout }) {
   const [isConnected,     setIsConnected]     = useState(false);
   const [selectedElement, setSelectedElement] = useState(null);
   const [childrenList,    setChildrenList]     = useState(null);  // { levelsUp, children }
+  // Result of the power-user "adjust selector" apply — { ok, matchCount,
+  // primary, fallbacks, error } | null. Cleared when the selection changes.
+  const [manualSelResult, setManualSelResult] = useState(null);
   const [toast,           setToast]           = useState(null);   // { msg, type }
   const toastTimerRef = useRef(null);
   // Click-to-teach cookie-banner prompt (see browser/consent.js): when the
@@ -595,6 +598,7 @@ function AppShell({ user, token, onLogout }) {
           setReselectStepId(null);
           socketRef.current?.emit('resetSelection');
         } else {
+          setManualSelResult(null);
           setSelectedElement(data.element);
           setChildrenList(null);
           if (selectingFromHtmlTabRef.current) {
@@ -606,6 +610,8 @@ function AppShell({ user, token, onLogout }) {
         }
       }
       if (data.type === "multiElementSelected") {
+        // A fresh group selection supersedes any prior "adjust selector" result.
+        setManualSelResult(null);
         setSelectedElement({
           isMultiSelection:  true,
           commonSelector:    data.commonSelector || "",
@@ -621,6 +627,9 @@ function AppShell({ user, token, onLogout }) {
           tierCount:         data.tierCount,
           tierLabel:         data.tierLabel || "",
           nextTier:          data.nextTier || null,
+          // Manual multi-add (user hand-picks a cross-class set)
+          manualAdd:         data.manualAdd || false,
+          sampleCount:       data.sampleCount,
           tag:               data.elements?.[0]?.tag || "",
           classes:           "",
           text:              "",
@@ -641,6 +650,36 @@ function AppShell({ user, token, onLogout }) {
     // Children list for breadcrumb picker
     socket.on("childrenList", (data) => {
       setChildrenList(data);
+    });
+
+    // Power-user "adjust selector" result: an edited primary was applied on
+    // the page. On success, fold the freshly-matched set + regenerated
+    // fallbacks back into the live multi-selection so downstream actions
+    // (For-Each / Extract List) use the edited selector.
+    socket.on("manualSelectorResult", (data) => {
+      setManualSelResult(data || null);
+      if (data && data.ok) {
+        setSelectedElement((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            isMultiSelection:  true,
+            commonSelector:    data.primary,
+            selector:          data.primary,
+            selectorType:      data.selectorType || "css",
+            matchCount:        data.matchCount,
+            selectorCount:     data.matchCount,
+            fallbackSelectors: data.fallbacks || [],
+            elements:          data.elements || prev.elements,
+            manualAdd:         false,
+            manualEdited:      true,
+            // A hand-edited selector is no longer on a tier ladder.
+            tierIndex:         undefined,
+            tierCount:         undefined,
+            nextTier:          null,
+          };
+        });
+      }
     });
 
     // Execution events
@@ -1480,6 +1519,30 @@ function AppShell({ user, token, onLogout }) {
     socketRef.current?.emit("resetSelection");
     setSelectedElement(null);
     setChildrenList(null);
+    setManualSelResult(null);
+  }, []);
+
+  // ── Manual multi-element add + selector adjust ────────────────────────────
+  // "Select more similar elements yourself" — enter a mode where clicking
+  // elements anywhere on the page adds them to a hand-picked set and the
+  // backend re-derives the most specific comma-free selector covering them.
+  const handleStartManualAdd = useCallback(() => {
+    setManualSelResult(null);
+    socketRef.current?.emit("startMultiElementAdd");
+  }, []);
+
+  const handleStopManualAdd = useCallback(() => {
+    socketRef.current?.emit("stopMultiElementAdd");
+    // The injected tool keeps the derived group as a confirmed selection and
+    // does NOT re-emit — clear the manualAdd flag locally so the panel flips
+    // back to its resting state.
+    setSelectedElement((prev) => (prev ? { ...prev, manualAdd: false } : prev));
+  }, []);
+
+  // Power-user selector edit: apply a hand-typed primary and regenerate
+  // fallbacks (answered on `manualSelectorResult`).
+  const handleApplyManualSelector = useCallback((selector, selectorType) => {
+    socketRef.current?.emit("applyManualSelector", { selector, selectorType });
   }, []);
 
   const handleClearForEachCtx = useCallback(() => {
@@ -2283,6 +2346,10 @@ function AppShell({ user, token, onLogout }) {
                       socket={socket}
                       onUpdateParams={handleUpdateParams}
                       onAiExtractList={requestAiExtractListFields}
+                      onStartManualAdd={handleStartManualAdd}
+                      onStopManualAdd={handleStopManualAdd}
+                      onApplyManualSelector={handleApplyManualSelector}
+                      manualSelResult={manualSelResult}
                     />
                   ) : (
                     <div className="sidebar-no-element">

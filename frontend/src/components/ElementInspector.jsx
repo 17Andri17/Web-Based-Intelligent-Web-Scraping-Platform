@@ -253,6 +253,7 @@ export default function ElementInspector({
   onClearForEachCtx,
   socket, onUpdateParams, onUpdateLabel,
   onAiExtractList,
+  onStartManualAdd, onStopManualAdd, onApplyManualSelector, manualSelResult,
 }) {
   if (!element) return null;
 
@@ -266,6 +267,10 @@ export default function ElementInspector({
         onAddStep={onAddStep}
         onClearForEachCtx={onClearForEachCtx}
         onAiExtractList={onAiExtractList}
+        onStartManualAdd={onStartManualAdd}
+        onStopManualAdd={onStopManualAdd}
+        onApplyManualSelector={onApplyManualSelector}
+        manualSelResult={manualSelResult}
       />
     );
   }
@@ -284,13 +289,14 @@ export default function ElementInspector({
       onHoverAncestor={onHoverAncestor}
       onUnhoverPickerChild={onUnhoverPickerChild}
       onClearForEachCtx={onClearForEachCtx}
+      onStartManualAdd={onStartManualAdd}
     />
   );
 }
 
 // ─── Single element inspector ──────────────────────────────────────────────
 
-function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep, onSelectAncestor, onGetChildren, onSelectChild, onHoverPickerChild, onHoverAncestor, onUnhoverPickerChild, onClearForEachCtx }) {
+function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep, onSelectAncestor, onGetChildren, onSelectChild, onHoverPickerChild, onHoverAncestor, onUnhoverPickerChild, onClearForEachCtx, onStartManualAdd }) {
   const [activeCategory, setActiveCategory] = useState("interaction");
   const [selectedAction, setSelectedAction] = useState(null);
   const [addedFlash, setAddedFlash] = useState(null);
@@ -426,6 +432,20 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
         </div>
       )}
 
+      {/* ── Manual multi-select escape hatch ────────────────────────────────
+          When the automatic similar-group can't express what the user wants
+          (e.g. "every badge regardless of colour"), let them hand-pick the
+          set — the backend derives the tightest selector covering the picks. */}
+      {onStartManualAdd && (
+        <button className="ei-manual-add-entry" onClick={onStartManualAdd}
+          title="Click elements anywhere on the page to build a custom selection — the app finds the tightest selector covering them all">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          Select multiple elements manually
+        </button>
+      )}
+
       <div className="ei-body">
         {/* ── Category tabs ─────────────────────────────────────────────── */}
         <div className="ei-tabs">
@@ -490,7 +510,8 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
 
 // ─── Multi-element inspector ───────────────────────────────────────────────
 
-function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForEachCtx, onAiExtractList }) {
+function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForEachCtx, onAiExtractList,
+                          onStartManualAdd, onStopManualAdd, onApplyManualSelector, manualSelResult }) {
   // For multi-selection only two actions make sense:
   //   1. Add a ForEach loop that iterates over the matched elements
   //   2. Add an Extract List step that pulls structured fields out of each
@@ -595,11 +616,30 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
           <FallbackDisclosure count={(selection.fallbackSelectors || []).length}>
             <FallbackChipList selectors={selection.fallbackSelectors} />
           </FallbackDisclosure>
+
+          {/* Power-user selector editor — a genuine last resort, tucked behind
+              its own disclosure so it never gets in a non-technical user's way. */}
+          {onApplyManualSelector && (
+            <ManualSelectorEditor
+              selection={selection}
+              onApply={onApplyManualSelector}
+              result={manualSelResult}
+            />
+          )}
         </Section>
       </div>
 
+      {/* ── Manual multi-add: hand-pick a cross-class set ──────────────────── */}
+      {onStartManualAdd && (
+        <ManualAddPanel
+          selection={selection}
+          onStart={onStartManualAdd}
+          onStop={onStopManualAdd}
+        />
+      )}
+
       {/* ── Hierarchical similarity-scope progress ─────────────────────────── */}
-      {typeof selection.tierCount === "number" && selection.tierCount > 1 && (
+      {!selection.manualAdd && typeof selection.tierCount === "number" && selection.tierCount > 1 && (
         <div className="ei-tier-progress">
           <div className="ei-tier-progress-head">
             <span className="ei-tier-progress-title">⬡ Similarity scope</span>
@@ -709,6 +749,180 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Manual multi-add panel ────────────────────────────────────────────────
+//
+// The "select more similar elements yourself" escape hatch. The automatic
+// tier ladder only widens within one similarity basis (a shared class, a
+// structural twin set); this lets the user click any elements on the page —
+// across classes/sections — and the backend derives the tightest comma-free
+// selector covering them all. Rarely needed, but the release valve when the
+// automatic grouping can't express the exact set.
+
+function ManualAddPanel({ selection, onStart, onStop }) {
+  const active = !!selection.manualAdd;
+  if (active) {
+    const n = selection.sampleCount ?? 0;
+    return (
+      <div className="ei-manual-add active">
+        <div className="ei-manual-add-head">
+          <span className="ei-manual-add-dot" />
+          <span className="ei-manual-add-title">Manual selection active</span>
+          <button className="ei-manual-add-done" onClick={onStop}>Done</button>
+        </div>
+        <div className="ei-manual-add-body">
+          Click elements <strong>anywhere on the page</strong> to add them (click a
+          blue-ringed one again to remove it). The tightest selector covering
+          your picks is rebuilt on every click.
+          <div className="ei-manual-add-stats">
+            <span className="ei-manual-add-picks">{n} picked</span>
+            <span className="ei-manual-add-sep">·</span>
+            <span className="ei-manual-add-matches">matches {selection.matchCount}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="ei-manual-add">
+      <div className="ei-manual-add-pitch">
+        <div className="ei-manual-add-pitch-title">Not quite the right group?</div>
+        <div className="ei-manual-add-pitch-desc">
+          Hand-pick the elements yourself — click any elements on the page, even
+          across colours or sections, and the tightest selector covering them
+          all is generated (no long OR-lists).
+        </div>
+      </div>
+      <button className="ei-manual-add-start" onClick={onStart}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        Add elements manually
+      </button>
+    </div>
+  );
+}
+
+// ─── Manual selector editor (power user) ───────────────────────────────────
+//
+// A deliberate last resort for technical users: pick the primary or any
+// fallback as a starting point, edit the raw selector, and apply it — the
+// backend highlights the new match set on the page and regenerates fresh
+// fallbacks for it. Behind its own disclosure so it never crowds the
+// point-and-click flow the rest of the panel is built around.
+
+function ManualSelectorEditor({ selection, onApply, result }) {
+  const [open, setOpen]   = useState(false);
+  const [value, setValue] = useState(selection.commonSelector || "");
+  const [type,  setType]  = useState(selection.selectorType === "xpath" ? "xpath" : "css");
+  // Which known selector the text box was last seeded from (so switching the
+  // dropdown reloads it, but hand-edits are preserved until then).
+  const [source, setSource] = useState("primary");
+
+  // Build the choose-a-starting-point options: primary + each fallback.
+  const options = [
+    { key: "primary", label: "Primary", value: selection.commonSelector || "", type: selection.selectorType || "css" },
+    ...(selection.fallbackSelectors || []).map((f, i) => {
+      const s = typeof f === "string" ? { value: f, type: "css" } : f;
+      return { key: `fb${i}`, label: `Fallback ${i + 1}`, value: s.value, type: s.type || "css" };
+    }),
+  ];
+
+  // Re-seed the editor whenever the underlying selection changes (e.g. after an
+  // apply regenerates fallbacks, or a new group is selected).
+  useEffect(() => {
+    setValue(selection.commonSelector || "");
+    setType(selection.selectorType === "xpath" ? "xpath" : "css");
+    setSource("primary");
+  }, [selection.commonSelector]);
+
+  const loadOption = (key) => {
+    const opt = options.find(o => o.key === key);
+    if (!opt) return;
+    setSource(key);
+    setValue(opt.value);
+    setType(opt.type === "xpath" ? "xpath" : "css");
+  };
+
+  const apply = () => {
+    const v = value.trim();
+    if (!v) return;
+    // Auto-detect XPath so the user doesn't have to touch the type toggle.
+    const looksXPath = /^\s*(\.?\/\/|\.?\/|\()/.test(v);
+    onApply(v, looksXPath ? "xpath" : type);
+  };
+
+  const dirty = value.trim() !== (selection.commonSelector || "").trim();
+
+  return (
+    <div className="ei-seladjust">
+      <button
+        type="button"
+        className={`ei-seladjust-toggle ${open ? "open" : ""}`}
+        onClick={() => setOpen(o => !o)}
+        title="Advanced: hand-edit the selector and regenerate its fallbacks"
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+        Adjust selector manually
+      </button>
+      {open && (
+        <div className="ei-seladjust-body">
+          <div className="ei-seladjust-hint">
+            Last-resort control for technical users. Edit the selector and apply —
+            the page re-highlights the matches and fresh fallbacks are generated.
+          </div>
+
+          {options.length > 1 && (
+            <label className="ei-seladjust-field">
+              <span className="ei-seladjust-label">Start from</span>
+              <select className="ei-select" value={source} onChange={e => loadOption(e.target.value)}>
+                {options.map(o => (
+                  <option key={o.key} value={o.key}>{o.label} — {o.value.slice(0, 48)}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          <label className="ei-seladjust-field">
+            <span className="ei-seladjust-label">Selector</span>
+            <textarea
+              className="ei-seladjust-input"
+              rows={2}
+              value={value}
+              spellCheck={false}
+              placeholder="CSS selector, or an /xpath expression"
+              onChange={e => setValue(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) apply(); }}
+            />
+          </label>
+
+          <div className="ei-seladjust-actions">
+            <div className="ei-seladjust-type">
+              <button type="button" className={type === "css" ? "on" : ""} onClick={() => setType("css")}>CSS</button>
+              <button type="button" className={type === "xpath" ? "on" : ""} onClick={() => setType("xpath")}>XPath</button>
+            </div>
+            <button className="ei-seladjust-apply" onClick={apply} disabled={!value.trim()}>
+              Apply &amp; regenerate fallbacks
+            </button>
+          </div>
+
+          {result && (
+            <div className={`ei-seladjust-result ${result.ok ? "ok" : "err"}`}>
+              {result.ok
+                ? <>✓ Applied — matches <strong>{result.matchCount}</strong> element{result.matchCount !== 1 ? "s" : ""}{result.fallbacks?.length ? `, ${result.fallbacks.length} fallback${result.fallbacks.length !== 1 ? "s" : ""} regenerated` : ""}.</>
+                : <>✕ {result.error || "Invalid selector"}</>}
+            </div>
+          )}
+          {dirty && !result && (
+            <div className="ei-seladjust-dirty">Unapplied edits — click Apply to test them on the page.</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

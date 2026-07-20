@@ -1493,6 +1493,231 @@
   }
 
   /* =========================================================================
+     MANUAL GENERALISATION FROM SAMPLE ELEMENTS
+     ─────────────────────────────────────────────────────────────────────────
+     The tiered similar-selection engine keeps every widening step within ONE
+     similarity basis (a shared class, a structural twin set). That is exactly
+     right most of the time, but it cannot express "all these regardless of
+     colour/class" — e.g. every badge <p> in a section, where the badges carry
+     .green/.red/.blue/.orange and no single class spans them.
+
+     This engine takes a set of elements the user picked BY HAND (seed + any
+     extras they clicked anywhere on the page) and derives the most specific
+     selector that captures them all WITHOUT an OR/comma union. The recipe:
+
+        scope   = the nearest common ancestor of every pick, pinned by a
+                  unique anchor (id / clean class path / positional nth path)
+        pattern = the tag/-class path shared by the picks BELOW that scope,
+                  suffix-aligned so positions that differ collapse to the bare
+                  tag (…section:nth-child(2) → section) while the shared shape
+                  is kept
+
+     As the user adds picks that sit farther apart the common ancestor climbs,
+     so the scope — and therefore the match — widens on its own. Every emitted
+     candidate is verified to contain all picks; the guaranteed-safe floor is
+     `<scope> <sharedLeafTag>`, which by construction always matches.
+     ========================================================================= */
+
+  // Ordered {tag, classes, nth} descriptors from just below `ancestor` down to
+  // `el` (inclusive). Null when `el` is not a descendant of `ancestor`.
+  function relDescriptorPath(el, ancestor) {
+    var out = [];
+    var cur = el;
+    while (cur && cur !== ancestor) {
+      var parent = cur.parentElement;
+      if (!parent) return null;
+      out.unshift({
+        tag:     cur.tagName.toLowerCase(),
+        classes: getStableClasses(cur),
+        nth:     Array.prototype.indexOf.call(parent.children, cur) + 1,
+      });
+      cur = parent;
+    }
+    return cur === ancestor ? out : null;
+  }
+
+  // Unique CSS anchors that resolve to exactly `el`, cleanest first. Used as
+  // the scope prefix for a generalised selector.
+  function anchorsForElement(el) {
+    var out  = [];
+    var seen = {};
+    function push(sel, score) {
+      if (!sel || seen[sel]) return;
+      try { if (!isUnique(sel, el)) return; } catch (_) { return; }
+      seen[sel] = true;
+      out.push({ sel: sel, score: score });
+    }
+    if (el === document.body) { push('body', 20); return out; }
+    if (isStableId(el.id)) push('#' + cssEscape(el.id), 100);
+    try {
+      var r = getSelectorsForElement(el);
+      if (r.primary && r.primary.type === 'css') push(r.primary.value, 78);
+    } catch (_) {}
+    push(cssUniquePath(el, 'nth-child'), 40);
+    if (!out.length) push('body', 15);
+    return out;
+  }
+
+  // querySelectorAll(sel) contains every element in `els`? Returns the full
+  // match list when so, else null. Never accepts a comma-union selector.
+  function groupContainsAll(sel, els) {
+    if (!sel || sel.indexOf(',') !== -1) return null;
+    var m = tryQSA(sel);
+    if (!m) return null;
+    var set = new Set(m);
+    for (var i = 0; i < els.length; i++) if (!set.has(els[i])) return null;
+    return m;
+  }
+
+  /* Build the most specific comma-free selector that matches every element in
+     `els`. Returns { primary, fallbacks, els, matchCount, strategy }. */
+  function generalizeFromSamples(els) {
+    els = (els || []).filter(Boolean);
+    els = els.filter(function (e, i) { return els.indexOf(e) === i; });
+    if (!els.length) {
+      return { primary: null, fallbacks: [], els: [], matchCount: 0, strategy: 'none' };
+    }
+
+    // A single pick has no "group" to generalise — hand back its own best
+    // selector so the caller still gets a usable primary + fallbacks. Prefer a
+    // CSS primary (the manual-add flow treats the selector as CSS); fall back
+    // to a guaranteed-unique nth path when the best single selector is XPath.
+    if (els.length === 1) {
+      var one  = getSelectorsForElement(els[0]);
+      var prim = (one.primary && one.primary.type === 'css')
+        ? one.primary.value
+        : (cssUniquePath(els[0]) || (one.primary ? one.primary.value : null));
+      var mOne = tryQSA(prim) || [els[0]];
+      return {
+        primary:    prim,
+        fallbacks:  (one.fallbacks || []).map(function (f) {
+          return { value: f.value, type: f.type, strategy: f.strategy };
+        }),
+        els:        mOne,
+        matchCount: mOne.length,
+        strategy:   'manual-single',
+      };
+    }
+
+    var nca = findNCA(els) || document.body;
+
+    // Relative descriptor paths from the scope down to each pick. A pick that
+    // IS the scope (someone clicked an ancestor of another pick) yields an
+    // empty path — we can't suffix-align those, so fall back to leaf-only.
+    var paths        = [];
+    var pathsUsable  = true;
+    for (var pi = 0; pi < els.length; pi++) {
+      var p = relDescriptorPath(els[pi], nca);
+      if (!p || !p.length) { pathsUsable = false; break; }
+      paths.push(p);
+    }
+
+    // Suffix-align the paths from the leaf upward: keep a level only while
+    // every pick shares its tag; record the classes common to all picks there.
+    var aligned = []; // leaf-first while building, reversed to top→leaf after
+    if (pathsUsable) {
+      var minLen = paths.reduce(function (m, p) { return Math.min(m, p.length); }, Infinity);
+      for (var d = 0; d < minLen; d++) {
+        var tag0 = null, ok = true, clsSets = [];
+        for (var qi = 0; qi < paths.length; qi++) {
+          var seg = paths[qi][paths[qi].length - 1 - d];
+          if (tag0 === null) tag0 = seg.tag;
+          else if (seg.tag !== tag0) { ok = false; break; }
+          clsSets.push(new Set(seg.classes));
+        }
+        if (!ok) break;
+        var sharedCls = clsSets.length
+          ? Array.from(clsSets[0]).filter(function (c) {
+              return clsSets.every(function (s) { return s.has(c); });
+            })
+          : [];
+        aligned.push({ tag: tag0, sharedClasses: sharedCls });
+      }
+      aligned.reverse(); // now top→leaf
+    }
+    var uniformLen = pathsUsable &&
+      paths.every(function (p) { return p.length === paths[0].length; });
+
+    // Classes shared by ALL picks directly (for the class-only floor).
+    var pickShared = sharedStableClasses(els);
+    var leafTag    = aligned.length ? aligned[aligned.length - 1].tag
+                   : (els.every(function (e) { return e.tagName === els[0].tagName; })
+                      ? els[0].tagName.toLowerCase() : '*');
+
+    var out = [];
+    function consider(sel, score, strategy) {
+      if (!sel) return;
+      for (var k = 0; k < out.length; k++) if (out[k].value === sel) return;
+      var m = groupContainsAll(sel, els);
+      if (!m) return;
+      var finalScore = score
+        - (sel.match(/:nth-(child|of-type)/g) || []).length * 4
+        - Math.floor(sel.length / 60);
+      out.push({ value: sel, type: 'css', strategy: strategy, score: finalScore, count: m.length });
+    }
+
+    var anchors = anchorsForElement(nca);
+    for (var ai = 0; ai < anchors.length; ai++) {
+      var aSel   = anchors[ai].sel;
+      var aBonus = anchors[ai].score / 10;
+      var connector = uniformLen ? ' > ' : ' ';
+
+      if (aligned.length) {
+        // Full aligned pattern, with and without the shared classes.
+        var withCls = aligned.map(function (a) {
+          return a.tag + (a.sharedClasses.length ? '.' + cssEscape(a.sharedClasses[0]) : '');
+        }).join(' > ');
+        var tagOnly = aligned.map(function (a) { return a.tag; }).join(' > ');
+        consider(aSel + connector + withCls, 100 + aBonus, 'manual-aligned-class');
+        consider(aSel + connector + tagOnly, 92 + aBonus, 'manual-aligned-tag');
+
+        // Looser: just the leaf as a descendant of the scope.
+        var leaf = aligned[aligned.length - 1];
+        if (leaf.sharedClasses.length) {
+          consider(aSel + ' ' + leaf.tag + '.' + cssEscape(leaf.sharedClasses[0]),
+                   74 + aBonus, 'manual-scope-leaf-class');
+        }
+        consider(aSel + ' ' + leaf.tag, 66 + aBonus, 'manual-scope-leaf-tag');
+      } else {
+        // No aligned structure (mixed shapes / an ancestor was picked). Anchor
+        // the scope and fall back to a shared class or the shared leaf tag.
+        if (pickShared.length) {
+          consider(aSel + ' ' + leafTag + '.' + cssEscape(pickShared[0]), 70 + aBonus, 'manual-scope-shared-class');
+          consider(aSel + ' .' + cssEscape(pickShared[0]),                68 + aBonus, 'manual-scope-shared-class');
+        }
+        consider(aSel + ' ' + leafTag, 60 + aBonus, 'manual-scope-leaf-tag');
+      }
+    }
+
+    // Global shared-class floor (may match beyond the scope, kept last).
+    if (pickShared.length) {
+      var gTag = els.every(function (e) { return e.tagName === els[0].tagName; })
+        ? els[0].tagName.toLowerCase() : '';
+      consider(gTag + '.' + cssEscape(pickShared[0]), 30, 'manual-global-class');
+      consider('.' + cssEscape(pickShared[0]),        28, 'manual-global-class');
+    }
+
+    out.sort(function (a, b) { return b.score - a.score; });
+
+    if (!out.length) {
+      return { primary: null, fallbacks: [], els: els.slice(), matchCount: els.length, strategy: 'manual-none' };
+    }
+
+    var best      = out[0];
+    var matched   = tryQSA(best.value) || els.slice();
+    var fallbacks = out.slice(1, 7).map(function (o) {
+      return { value: o.value, type: o.type, strategy: o.strategy };
+    });
+    return {
+      primary:    best.value,
+      fallbacks:  fallbacks,
+      els:        matched,
+      matchCount: matched.length,
+      strategy:   'manual-generalized',
+    };
+  }
+
+  /* =========================================================================
      PUBLIC API
      ========================================================================= */
 
@@ -1500,6 +1725,7 @@
     getSelectorsForElement: getSelectorsForElement,
     findSimilarElements: findSimilarElements,
     findSimilarTiers: findSimilarTiers,
+    generalizeFromSamples: generalizeFromSamples,
     buildGroupSelector: buildExactGroupSelector,
     buildGroupSelectors: buildGroupSelectors,
     getStableClasses: getStableClasses,
