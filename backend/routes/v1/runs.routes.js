@@ -7,7 +7,11 @@ const workflowsRepo = require('../../db/repositories/workflows.repo');
 const { sendApiError } = require('../../middleware/apiKeyAuth');
 const { serializeRun } = require('../../utils/apiSerialize');
 const { resultsToCsv } = require('../../utils/resultsExport');
+const { resultsToXlsx } = require('../../utils/resultsXlsx');
 const { parseId, parseLimit, parseCursor, pageEnvelope, safeJson } = require('./helpers');
+
+// application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 /* ===========================================================================
    /v1/runs — the fetch half of trigger-and-fetch: status, extracted data
@@ -63,8 +67,8 @@ router.get('/:id/data', async (req, res) => {
   if (!run) return sendApiError(res, 404, 'not_found', 'No such run.');
 
   const format = String(req.query.format || 'json').toLowerCase();
-  if (format !== 'json' && format !== 'csv') {
-    return sendApiError(res, 400, 'invalid_request', '"format" must be "json" or "csv".');
+  if (format !== 'json' && format !== 'csv' && format !== 'xlsx') {
+    return sendApiError(res, 400, 'invalid_request', '"format" must be "json", "csv", or "xlsx".');
   }
   if (!run.results_json) {
     const hint = ['queued', 'running'].includes(run.status)
@@ -77,6 +81,12 @@ router.get('/:id/data', async (req, res) => {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="run-${run.id}.csv"`);
     return res.send(resultsToCsv(safeJson(run.results_json) || {}));
+  }
+  if (format === 'xlsx') {
+    const buf = await resultsToXlsx(safeJson(run.results_json) || {});
+    res.setHeader('Content-Type', XLSX_MIME);
+    res.setHeader('Content-Disposition', `attachment; filename="run-${run.id}.xlsx"`);
+    return res.send(buf);
   }
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.send(JSON.stringify({

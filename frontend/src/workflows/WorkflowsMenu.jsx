@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { workflowsApi, schedulesApi } from "../api/client";
 import ScheduleEditor from "../runs/ScheduleEditor";
 import RunsHistory from "../runs/RunsHistory";
+import DatasetPanel from "../components/DatasetPanel";
+import MonitorEditor from "../components/MonitorEditor";
 
 /**
  * Modal for saving the current workflow and opening / deleting saved ones.
@@ -31,6 +33,8 @@ export default function WorkflowsMenu({
   // Schedule + history modals, opened per workflow row
   const [scheduleFor, setScheduleFor] = useState(null);   // { id, name } | null
   const [historyFor,  setHistoryFor]  = useState(null);   // { id, name } | null
+  const [dataFor,     setDataFor]     = useState(null);   // { id, name } | null
+  const [monitorFor,  setMonitorFor]  = useState(null);   // { id, name } | null
   // Map workflowId → { isActive, intervalMinutes } so we can show a small
   // badge next to scheduled workflows in the list.
   const [scheduleByWf, setScheduleByWf] = useState({});
@@ -194,8 +198,10 @@ export default function WorkflowsMenu({
                     </div>
                     <div className="actions">
                       <button onClick={() => handleOpen(wf.id)} disabled={busy}>Open</button>
+                      <button onClick={() => setDataFor({ id: wf.id, name: wf.name })} disabled={busy}>Data</button>
                       <button onClick={() => setHistoryFor({ id: wf.id, name: wf.name })} disabled={busy}>History</button>
                       <button onClick={() => setScheduleFor({ id: wf.id, name: wf.name })} disabled={busy}>Schedule</button>
+                      <button onClick={() => setMonitorFor({ id: wf.id, name: wf.name })} disabled={busy}>Monitor</button>
                       <button className="danger" onClick={() => handleDelete(wf.id, wf.name)} disabled={busy}>Delete</button>
                     </div>
                   </div>
@@ -212,6 +218,24 @@ export default function WorkflowsMenu({
         onClose={() => { setScheduleFor(null); refresh(); }}
         workflowId={scheduleFor?.id}
         workflowName={scheduleFor?.name}
+        showToast={showToast}
+      />
+
+      {/* Per-workflow cross-run Data modal */}
+      <DatasetPanel
+        open={!!dataFor}
+        onClose={() => setDataFor(null)}
+        workflowId={dataFor?.id}
+        workflowName={dataFor?.name}
+        showToast={showToast}
+      />
+
+      {/* Per-workflow change-monitoring modal */}
+      <MonitorEditor
+        open={!!monitorFor}
+        onClose={() => setMonitorFor(null)}
+        workflowId={monitorFor?.id}
+        workflowName={monitorFor?.name}
         showToast={showToast}
       />
 

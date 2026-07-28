@@ -266,6 +266,12 @@
 }
 .dash-next { color: var(--accent-primary, #58a6ff); }
 .dash-muted { color: var(--text-secondary, #8b949e); }
+.dash-card-change {
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-success, #3fb950);
+}
 .dash-card-actions {
   margin-top: 12px;
   display: flex;

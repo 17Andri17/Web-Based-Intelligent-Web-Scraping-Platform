@@ -17,7 +17,7 @@ const { parseId } = require('./helpers');
 
 const router = express.Router();
 
-const VALID_EVENTS = ['run.completed', 'run.failed'];
+const VALID_EVENTS = ['run.completed', 'run.failed', 'run.changed'];
 const MAX_URL_LEN = 2048;
 const MAX_WEBHOOKS_PER_USER = 10;
 

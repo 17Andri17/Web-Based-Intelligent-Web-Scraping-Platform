@@ -5,6 +5,9 @@ const { requireAuth } = require('../middleware/auth');
 const runStore = require('../services/runStore.service');
 const workflows = require('../db/repositories/workflows.repo');
 const { resultsToCsv } = require('../utils/resultsExport');
+const { resultsToXlsx } = require('../utils/resultsXlsx');
+
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -35,6 +38,9 @@ function serialize(row) {
     // The workflow version this run executed — present means it can be
     // restored (rolled back to) with one click from run history.
     versionId:         row.version_id ?? null,
+    // Change-monitoring diff summary vs the previous run (null unless the
+    // workflow is monitored and this run had a baseline to compare against).
+    changeSummary:     row.change_summary_json ? safeJson(row.change_summary_json) : null,
   };
 }
 
@@ -108,6 +114,18 @@ router.get('/:id/data.csv', async (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="run-${row.id}.csv"`);
   res.send(resultsToCsv(results));
+});
+
+// Download results as an .xlsx workbook (one worksheet per result key)
+router.get('/:id/data.xlsx', async (req, res) => {
+  const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
+  if (!row) return res.status(404).json({ error: 'Run not found' });
+  const results = safeJson(row.results_json);
+  if (!results) return res.status(404).json({ error: 'No results for this run' });
+  const buf = await resultsToXlsx(results);
+  res.setHeader('Content-Type', XLSX_MIME);
+  res.setHeader('Content-Disposition', `attachment; filename="run-${row.id}.xlsx"`);
+  res.send(buf);
 });
 
 // One-click adopt: replace the workflow's steps with the auto-patched version

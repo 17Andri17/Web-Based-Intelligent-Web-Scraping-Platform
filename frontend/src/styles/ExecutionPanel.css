@@ -388,6 +388,16 @@
   color: var(--bg-primary);
 }
 
+.ep-export-err {
+  margin: 0 12px 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--accent-danger, #f85149);
+  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(248, 81, 73, 0.28);
+  border-radius: 6px;
+}
+
 /* Buttons */
 .ep-btn {
   display: flex;

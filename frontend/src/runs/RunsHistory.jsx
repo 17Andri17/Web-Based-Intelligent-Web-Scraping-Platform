@@ -172,6 +172,7 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
                   {r.errorCategory && <> · <span style={{ color: "#e89a4f" }}>{r.errorCategory}</span></>}
                   {r.retryCount > 0 && <> · {r.retryCount} retr{r.retryCount === 1 ? "y" : "ies"}</>}
                 </div>
+                <ChangeBadge summary={r.changeSummary} />
               </button>
             ))}
           </div>
@@ -193,7 +194,11 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
                 </div>
 
                 {tab === "summary" && (
-                  <Summary detail={detail} onDownloadJson={() => downloadBlob("json")} onDownloadCsv={() => downloadBlob("csv")} onAdopt={adoptPatch} onRestore={restoreVersion} />
+                  <Summary detail={detail}
+                    onDownloadJson={() => downloadBlob("json")}
+                    onDownloadCsv={() => downloadBlob("csv")}
+                    onDownloadXlsx={() => downloadBlob("xlsx")}
+                    onAdopt={adoptPatch} onRestore={restoreVersion} />
                 )}
                 {tab === "data" && <ResultsView results={detail.results} />}
                 {tab === "repairs" && <RepairsView repairs={detail.repairs} />}
@@ -208,6 +213,30 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
 }
 
 /* ── Subcomponents ─────────────────────────────────────────────────── */
+
+// Compact change-monitoring badge for a run row / detail. Shows +new ~changed
+// −removed vs the previous run, or a "baseline" pill for the first run.
+function ChangeBadge({ summary }) {
+  if (!summary) return null;
+  const c = summary.counts || {};
+  const chip = { fontSize: 10, padding: "1px 6px", borderRadius: 8, whiteSpace: "nowrap" };
+  if (summary.baseline) {
+    return (
+      <div style={{ marginTop: 4 }}>
+        <span style={{ ...chip, color: "#8b949e", border: "1px solid #8b949e44" }}>baseline · {c.after ?? 0} rows</span>
+      </div>
+    );
+  }
+  const any = (c.added || 0) + (c.changed || 0) + (c.removed || 0) > 0;
+  return (
+    <div style={{ marginTop: 4, display: "flex", gap: 5, flexWrap: "wrap" }}>
+      {c.added   > 0 && <span style={{ ...chip, color: "#3fb950", border: "1px solid #3fb95055", background: "#3fb9501a" }}>+{c.added} new</span>}
+      {c.changed > 0 && <span style={{ ...chip, color: "#d29922", border: "1px solid #d2992255", background: "#d299221a" }}>~{c.changed} changed</span>}
+      {c.removed > 0 && <span style={{ ...chip, color: "#f85149", border: "1px solid #f8514955", background: "#f851491a" }}>−{c.removed} removed</span>}
+      {!any && <span style={{ ...chip, color: "#8b949e", border: "1px solid #8b949e44" }}>no change</span>}
+    </div>
+  );
+}
 
 function DetailTab({ name, tab, setTab, disabled, children }) {
   const active = tab === name;
@@ -227,7 +256,7 @@ function DetailTab({ name, tab, setTab, disabled, children }) {
   );
 }
 
-function Summary({ detail, onDownloadJson, onDownloadCsv, onAdopt, onRestore }) {
+function Summary({ detail, onDownloadJson, onDownloadCsv, onDownloadXlsx, onAdopt, onRestore }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
@@ -244,6 +273,17 @@ function Summary({ detail, onDownloadJson, onDownloadCsv, onAdopt, onRestore }) 
           detail.status === "success" ? "ok" : detail.status === "needs_review" ? "warn" : "err"
         }>
           {detail.aiSummary}
+        </Note>
+      )}
+
+      {detail.changeSummary && (
+        <Note label="Changes since last run" tone="ok">
+          <ChangeBadge summary={detail.changeSummary} />
+          {!detail.changeSummary.baseline && detail.changeSummary.sample?.changed?.length > 0 && (
+            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 6 }}>
+              Changed fields: {[...new Set(detail.changeSummary.sample.changed.flatMap(c => c.fields || []))].slice(0, 8).join(", ")}
+            </div>
+          )}
         </Note>
       )}
 
@@ -264,8 +304,10 @@ function Summary({ detail, onDownloadJson, onDownloadCsv, onAdopt, onRestore }) 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
         {detail.hasResults && (
           <>
-            <button className="wf-save-btn" onClick={onDownloadJson}>Download data (JSON)</button>
+            <button className="wf-save-btn" onClick={onDownloadXlsx}
+                    style={{ background: "var(--accent-success, #3fb950)", color: "#fff" }}>Download Excel (.xlsx)</button>
             <button className="wf-save-btn" onClick={onDownloadCsv}>Download data (CSV)</button>
+            <button className="wf-save-btn" onClick={onDownloadJson}>Download data (JSON)</button>
           </>
         )}
         {detail.hasPatchedSteps && (

@@ -40,10 +40,25 @@ async function dispatchRunEvent(runRow) {
   if (!runRow) return;
   const event = eventForStatus(runRow.status);
   if (!event) return;
+  await pushEvent(runRow.user_id, event, { run: serializeRun(runRow) });
+}
 
+// run.changed — pushed by changeMonitor when a monitored workflow's data
+// changed between runs. Carries the run plus the compact diff summary.
+async function dispatchChangeEvent(runRow, changeSummary) {
+  if (!runRow || !changeSummary) return;
+  await pushEvent(runRow.user_id, 'run.changed', {
+    run: serializeRun(runRow),
+    changes: changeSummary,
+  });
+}
+
+// Build a signed event body and deliver it to every active endpoint the user
+// has subscribed to `event`. Shared by all dispatchers above.
+async function pushEvent(userId, event, dataObj) {
   let endpoints;
   try {
-    endpoints = await webhooksRepo.listActiveForEvent(runRow.user_id, event);
+    endpoints = await webhooksRepo.listActiveForEvent(userId, event);
   } catch (_) { return; }
 
   const live = endpoints.filter(w => {
@@ -56,7 +71,7 @@ async function dispatchRunEvent(runRow) {
     object: 'event',
     type: event,
     created_at: new Date().toISOString(),
-    data: { run: serializeRun(runRow) },
+    data: dataObj,
   });
 
   await Promise.all(live.map(w => deliver(w, event, body)));
@@ -95,4 +110,4 @@ async function deliver(webhook, event, body) {
 
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-module.exports = { dispatchRunEvent, eventForStatus, sign };
+module.exports = { dispatchRunEvent, dispatchChangeEvent, eventForStatus, sign };

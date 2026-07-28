@@ -236,6 +236,15 @@ async function main() {
     ok('data csv → section + escaping', csv.status === 200 && csv.text.startsWith('# products')
       && csv.text.includes('"A ""quoted"" name"') && csv.text.includes('"9,99"'));
 
+    const xlsx = await api('GET', `/v1/runs/${firstRunId}/data?format=xlsx`, { key });
+    // .xlsx is a zip — bytes 0x50 0x4B ("PK") survive res.text() decoding.
+    ok('data xlsx → workbook mime + PK zip signature', xlsx.status === 200
+      && (xlsx.headers.get('content-type') || '').includes('spreadsheetml')
+      && xlsx.text.startsWith('PK'));
+
+    const badFmt = await api('GET', `/v1/runs/${firstRunId}/data?format=pdf`, { key });
+    ok('data invalid format → 400', badFmt.status === 400 && badFmt.json.error.code === 'invalid_request');
+
     r = await api('GET', `/v1/runs/${firstRunId}/logs`, { key });
     ok('logs returned', r.status === 200 && r.json.data.some(l => l.line === 'hello from test'));
 

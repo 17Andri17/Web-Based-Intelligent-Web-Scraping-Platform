@@ -206,6 +206,7 @@ export default function Dashboard({
                       <span className="dash-next">· Next {relTime(c.schedule.nextRunAt)}</span>
                     )}
                   </div>
+                  <ChangeLine summary={c.latest?.changeSummary} />
                   <div className="dash-card-actions" onClick={e => e.stopPropagation()}>
                     <button className="dash-card-btn" onClick={() => onOpenWorkflow(c.id)}>Open</button>
                   </div>
@@ -217,6 +218,20 @@ export default function Dashboard({
       </div>
     </div>
   );
+}
+
+// One-line change indicator on a workflow card — only when the latest run
+// recorded a real change (baseline and no-change runs stay quiet so the card
+// isn't noisy).
+function ChangeLine({ summary }) {
+  if (!summary || summary.baseline) return null;
+  const c = summary.counts || {};
+  const parts = [];
+  if (c.added   > 0) parts.push(`+${c.added} new`);
+  if (c.changed > 0) parts.push(`~${c.changed} changed`);
+  if (c.removed > 0) parts.push(`−${c.removed} removed`);
+  if (parts.length === 0) return null;
+  return <div className="dash-card-change">{parts.join(" · ")}</div>;
 }
 
 // Host + short path for the resume banner ("example.com/products").

@@ -1,347 +1,278 @@
-# Platform analysis — errors, upgrades, and competitive roadmap
+# Platform analysis — status, upgrades, and competitive roadmap
 
 *Scope: production-ready for a single local user first (per product decision);
 scaling/multi-tenant work is explicitly out of scope here and already mapped in
 [SCALING_AND_DB_MIGRATION.md](./SCALING_AND_DB_MIGRATION.md). Competitors
 benchmarked: Browse AI, Octoparse.*
 
+*Last refreshed: 2026-07-25. This document doubles as the roadmap the project
+is executing — sections are marked ✅ shipped / ⚠️ partial / ❌ open so it stays
+an honest source of truth as work lands.*
+
 ---
 
 ## 1. Executive summary
 
-The platform is architecturally further along than its README suggests. The
-execution pipeline (persisted runs → error classification → staged self-healing
-with deterministic verification → auto-adopt policy → versioned rollback) is
+The platform is architecturally well past its original README. The execution
+pipeline (persisted runs → error classification → staged self-healing with
+deterministic verification → auto-adopt policy → versioned rollback) is
 genuinely competitive with — and in transparency, ahead of — what Browse AI
 markets as "robots that adapt". API discovery (propose the site's own JSON API
-instead of scraping the DOM) and clean-code export are differentiators neither
-competitor ships.
+instead of scraping the DOM) and clean-code export remain differentiators
+neither competitor ships.
 
-The gaps are not in the engine; they are in the **first ten minutes of use** and
-in **what happens to the data after extraction**:
+As of this refresh, the two gaps this document originally called out — **the
+first ten minutes of use** and **what happens to the data after extraction** —
+have largely been closed:
 
-1. A non-technical user is dropped into an editor with a URL bar and a step
-   palette full of terms like `FOR_EACH_ELEMENTS` and "JS expression". All the
-   machinery for a guided "click twice, get a table" flow already exists
-   (heuristic container detection, AI field proposal, pagination detector,
-   live preview) — it just isn't chained into a wizard.
-2. Extracted data leads a short life: view per-run, download JSON/CSV, done.
-   No dataset view across runs, no change monitoring/alerts (Browse AI's core
-   product), no Sheets/Excel delivery, no email/notification on failure.
-3. A handful of real bugs (one breaks code download for workflows using custom
-   actions or subflows) and production-hardening items (frontend has no build
-   script, hardcoded API URL, fallback JWT secret) stand between "works in dev"
-   and "production-ready locally".
+- The **Quick Scrape wizard**, **Dashboard home**, **no-code condition
+  builder**, and **friendly schedule picker** turn the "dropped into an editor
+  full of `FOR_EACH_ELEMENTS`" first-run into a guided path.
+- The **cross-run Dataset view**, **Excel (.xlsx) export**, and **change
+  monitoring** (row-level diff + `run.changed` webhook + change feed) give the
+  extracted data a life beyond a single run — Browse AI's flagship capability.
+- The original P0 correctness bugs and production-hardening items are all
+  fixed (§3, §4).
 
-Everything below is ordered so section 7 can be read as the actionable roadmap.
+What remains is mostly **power-user surface and delivery breadth** (§7 P2–P3):
+a webhook management UI, workflow export/import/duplicate → templates, Google
+Sheets delivery, cron/weekday schedules, run-with-inputs in the editor, and
+bulk input lists. None of it requires the scaling work.
 
 ---
 
-## 2. What the platform already does well
+## 2. Feature inventory
 
-Feature inventory, grouped by the competitor concept it matches:
+Grouped by the competitor concept it matches.
 
 | Capability | Status | Notes |
 |---|---|---|
 | Visual point-and-click builder on a live streamed browser | ✅ strong | Real Chromium pixel stream w/ input forwarding, HiDPI, selector tool, breadcrumb/ancestor picker, HTML source tree inspector |
-| AI field suggestion for lists | ✅ strong | LLM proposal + live-DOM verification + heuristic fallback + "intent rescue" merging (`server.js` aiExtractListFields) — degrades gracefully with no API key |
+| Guided "click twice, get a table" onboarding | ✅ shipped | **Quick Scrape wizard** chains navigate → container detection → AI field proposal → pagination into one linear flow (`QuickScrapeWizard.jsx`) |
+| Home dashboard | ✅ shipped | Post-login landing with per-workflow status cards, "Needs attention" inbox, and (new) change indicators (`Dashboard.jsx`) |
+| AI field suggestion for lists | ✅ strong | LLM proposal + live-DOM verification + heuristic fallback + "intent rescue" merging — degrades gracefully with no API key |
 | Pagination handling | ✅ strong | Three native containers (scroll/button/URL) + a two-phase detector (static DOM scan + empirical scroll test) with confidence scores |
-| Self-healing | ✅ differentiator | Empty-result detection ("passed but captured nothing"), snapshot-verified fixes, confidence-gated auto-adopt, one-click manual adopt, full audit trail in `run_repairs` |
+| Self-healing | ✅ differentiator | Empty-result detection, snapshot-verified fixes, confidence-gated auto-adopt, one-click manual adopt, full audit trail in `run_repairs` |
 | Run history & versioning | ✅ strong | Every run pins an executed version; one-click rollback; logs, repairs, AI summaries |
-| Scheduling | ⚠️ partial | Interval + time-of-day anchor only; no cron, no weekday selection |
-| Public REST API | ✅ strong | `/v1` with API keys (hashed), idempotency, cursor pagination, rate limits, quotas, signed webhooks, consistent error shape — 61 tests green |
-| Webhooks | ⚠️ partial | Dispatcher + API exist; **no UI** to register/manage them |
+| No-code condition builder | ✅ shipped | Field/operator/value dropdowns compiling to JS, with "edit as code" preserved (`ConditionBuilder.jsx`); wired for IF / WHILE expressions |
+| Scheduling | ⚠️ partial | Interval + time-of-day anchor (`ScheduleEditor.jsx`); **no cron, no weekday selection** yet |
+| Public REST API | ✅ strong | `/v1` with API keys (hashed), idempotency, cursor pagination, rate limits, quotas, signed webhooks, consistent error shape |
+| Webhooks | ⚠️ partial | Dispatcher + API + three events (run.completed/failed/**changed**); **still no UI** to register/manage them |
 | Proxies | ✅ strong | Per-user proxies, pools with rotation, platform-shared pools, AES-256-GCM-encrypted passwords, WebRTC leak guard |
-| Anti-bot / stealth | ✅ strong | Device profiles, UA/client-hints consistency, worker source-rewrite (fixes `hasInconsistentWorkerValues`), consent auto-dismiss with click-to-teach |
+| Anti-bot / stealth | ✅ strong | Device profiles, UA/client-hints consistency, worker source-rewrite, consent auto-dismiss with click-to-teach |
 | CAPTCHA | ✅ strong | Free always-on detection; opt-in solving (CapSolver/2Captcha); solve-by-hand in the live stream |
-| List → detail ("enrich") | ✅ | RUN_SUBFLOW enrich mode (docs/WORKFLOW_ENRICH.md) — matches Octoparse detail-page extraction |
-| Code export | ✅ differentiator | Download standalone Puppeteer script + tailored README (competitors lock you in) |
-| API discovery | ✅ differentiator | Passive XHR/fetch capture → propose the underlying JSON API → replay-verify → EXTRACT_API step. Neither competitor has this |
-| Data delivery | ❌ gap | JSON/CSV download + webhook step only. No Sheets/Excel/Airtable/Zapier, no e-mail |
-| Monitoring / change alerts | ❌ gap | Browse AI's flagship. Baseline machinery (prior-run medians) already exists in healing |
+| List → detail ("enrich") | ✅ | RUN_SUBFLOW enrich mode (docs/WORKFLOW_ENRICH.md) |
+| Code export | ✅ differentiator | Download standalone Puppeteer script + tailored README |
+| API discovery | ✅ differentiator | Passive XHR/fetch capture → propose the underlying JSON API → replay-verify → EXTRACT_API step |
+| **Cross-run dataset view** | ✅ shipped | Rows unioned + de-duplicated across a workflow's retained runs, with first/last-seen and times-seen; computed on read (`dataset.service.js`, `DatasetPanel.jsx`) |
+| **Data delivery — Excel** | ✅ shipped | `.xlsx` workbook (one sheet per output list) from run results and datasets; JSON/CSV also (`resultsXlsx.js`) |
+| **Monitoring / change alerts** | ✅ shipped | Per-workflow "watch for changes": row-level diff vs previous run, stored summary, `run.changed` webhook, dashboard + history change feed (`changeMonitor.service.js`, `MonitorEditor.jsx`) |
+| Data delivery — Google Sheets / Zapier | ❌ gap | Excel covers the offline case; live push to Sheets/Zapier still open |
 | Templates / prebuilt robots | ❌ gap | Both competitors lead onboarding with a template gallery |
-| Bulk input (run per URL list) | ⚠️ hidden | Achievable with variables + FOR_EACH but not productized |
+| Workflow export / import / duplicate | ❌ gap | No JSON export or duplicate button; also the prerequisite for templates |
+| Bulk input (run per URL list) | ⚠️ hidden | Achievable with variables + FOR_EACH and the `/v1` `inputs` field, but not productized in the UI |
 
 ---
 
-## 3. Bugs found (concrete, with locations)
+## 3. Bugs — all fixed ✅
 
-### 3.1 High — code download broken for custom actions & subflows
+The concrete correctness bugs this analysis originally found have been fixed and
+covered by tests. Recorded here for provenance.
 
-`backend/server.js:1552-1553` (the `downloadCode` socket handler):
+### 3.1 ✅ Code download broken for custom actions & subflows
 
-```js
-const customActions = resolveCustomActions(steps, socket.user.id);
-const subflows = resolveSubflows(steps, socket.user.id, data.workflowId || null);
-```
+`downloadCode` passed the **unresolved Promises** from the async
+`resolveCustomActions` / `resolveSubflows` into `generateCode`, so downloaded
+scripts threw "custom action not available" and silently dropped subflows.
+**Fixed:** the handler now awaits both (`server.js` `downloadCode`), matching
+the execute path.
 
-Both resolvers are **async** (`workflow/dependencyResolver.js`) but are not
-awaited — `generateCode` receives two `Promise` objects. `ctx.customActions?.[actionId]`
-on a Promise is `undefined`, so the downloaded script contains
-`throw new Error("Custom action … is not available (was it deleted?)")` and
-subflows are silently skipped with a warning comment
-(`workflowCodegen.js:742-744, 799-800`). The execute path does this correctly
-(`server.js:712,741` awaits both) — only the download path is broken.
+### 3.2 ✅ Socket listener stacking on repeated navigation
 
-**Fix:** make the handler `async` and `await` both calls (2-line change).
+Every `navigate` re-registered `disconnect` / `stopStreaming` listeners on the
+long-lived socket, leaking stale CDP-session closures and tripping Node's
+`MaxListenersExceededWarning`. **Fixed:** a single `stopStreaming` listener per
+connection reads the current session (`server.js`).
 
-### 3.2 Medium — socket listener stacking on repeated navigation
+### 3.3 ✅ `SAVE_DATA` relative paths landed in the OS temp dir
 
-`backend/server.js:587-588`: every `navigate` event registers a **new**
-`socket.on('disconnect', stopStreaming)` and `socket.on('stopStreaming', stopStreaming)`
-on the same long-lived socket. A user who navigates N times in one session
-accumulates N listener pairs → Node's `MaxListenersExceededWarning` at 11, and
-every stale closure (holding the old CDP session object) stays reachable for
-the socket's lifetime. The stale handlers also all fire on the next
-`stopStreaming`, each tearing down whatever the *current* session is (the first
-one wins; the rest no-op — correct today, but fragile).
+Generated scripts ran with `cwd` in the temp dir and `SAVE_DATA` did a bare
+`writeFileSync` with no `mkdir`, so `./output/results.json` threw ENOENT and a
+bare filename "succeeded" somewhere invisible. **Fixed:** relative destinations
+resolve against `WS_EXPORT_DIR` with `mkdirSync` (`workflowCodegen.js`,
+`runner.service.js`).
 
-**Fix:** keep one listener per connection that reads the current session from
-`userSessions`, or `socket.off(...)` the previous pair before registering (the
-`modeReapplyListeners` map two screens up already models this pattern).
+### 3.4 ✅ CSV export dropped columns and mangled nested values *(found & fixed in this refresh)*
 
-### 3.3 Medium — `SAVE_DATA` relative paths land in (or fail in) the OS temp dir
+The CSV serialiser took headers from **row 0 only**, so any column absent from
+the first row (the common enrich case where the first row's detail page failed)
+was silently dropped from every export — the in-app download **and**
+`GET /v1/runs/:id/data?format=csv`. A second, divergent copy in the frontend
+stringified object cells as `[object Object]`. **Fixed:** a single header-union
+serialiser ([resultsExport.js](../backend/utils/resultsExport.js)); the frontend
+now shares it, with a parity test that fails the build if the two ever drift.
 
-Generated scripts run as a child process with `cwd` set to the temp directory
-(`runner.service.js:53`), and `SAVE_DATA` does a plain
-`fs.writeFileSync(destination)` (`workflowCodegen.js:735`) with no `mkdir`.
-The UI's own placeholder suggests `./output/results.json`
-(`actionDefinitions.js:1602`), which therefore throws `ENOENT` (missing
-`output/` dir in the tmp cwd) — and a bare `./results.json` "succeeds" into a
-directory the user will never look in. Scheduled/API runs make this worse since
-there's no interactive log to notice.
+### 3.5 ✅ Production-hardening items
 
-**Fix:** resolve relative destinations against a per-user exports directory
-(e.g. `backend/data/exports/<userId>/`), `mkdir -p` the parent, and surface the
-absolute path in the run log / results UI. (Also consider allowlisting the
-base directory — a workflow shouldn't be able to write to arbitrary paths on
-the host once anyone but you can define workflows.)
-
-### 3.4 Low — README known issues still open & stale
-
-`README.md` still lists "Fix multiple context opening error" and "Fix scrolling
-when ending ousid canvas", while also listing already-done items ("Create
-workflow designer"). Related present-day limitation worth documenting: one live
-editor page per account — opening the app in two tabs silently reroutes the
-stream/bindings to the newest socket (`server.js` reconnect path).
-
-### 3.5 Hardening notes (fine locally today, must-fix before any exposure)
-
-- `middleware/auth.js:5` — JWT secret falls back to `'dev-secret-change-me'`.
-  The server should **refuse to boot** without `JWT_SECRET` (it already has the
-  fail-fast pattern for DB init at `server.js:1871-1874`).
-- `frontend/src/api/client.js:3` — `API_BASE` is hardcoded to
-  `http://localhost:3001`; should come from `import.meta.env.VITE_API_BASE`.
-- `frontend/package.json` — **no `build` script** (only `dev`). There is
-  currently no way to produce a production bundle; add `build`/`preview`, and
-  ideally have Express serve the built assets so one process serves everything
-  (also removes the `cors({ origin: '*' })` + socket.io `origin: '*'` wildcard).
-- No rate limiting/lockout on `/api/auth/login|register`, password minimum is
-  6 chars, and registration is open — on a LAN-reachable port anyone can mint
-  an account. Bind to `127.0.0.1` by default and/or add an
-  `ALLOW_REGISTRATION=false` flag once your own account exists.
-- Data growth: `runs.results_json` and `run_logs` are kept forever with no
-  retention/pruning; heavy scheduled scraping will balloon the SQLite file.
-- Resource ceiling: scheduler `CONCURRENCY=3` + API worker `2` means up to 5
-  concurrent headless Chromes plus the editor browser — worth a global cap
-  (single env var) so a laptop doesn't thrash.
-
-### 3.6 Verified-working (tested in this analysis)
-
-`npm test` (22 assertions), `test:db` smoke (full CRUD + cascade), and
-`test:api` (61 checks incl. auth, idempotency, quotas, rate limits, webhooks)
-all pass. The pipeline/self-healing design decisions are consistently enforced
-in code (e.g. auto-adopt requires high confidence + verification + no manual
-flags; destructive `remove-step` heals are never auto-adopted).
+- **JWT secret** no longer falls back to `'dev-secret-change-me'` — resolves
+  from `JWT_SECRET` or generates a persisted one (`middleware/auth.js`).
+- **Frontend `API_BASE`** is env-driven (`VITE_API_BASE`), relative in prod
+  (`api/client.js`); frontend has `build` / `preview` scripts and Express serves
+  the built assets from the same origin.
+- **Retention** — `maintenance.service.js` prunes old run logs and caps results
+  per workflow.
+- **Health endpoint** — `/healthz` (`app.js`).
+- **Browser concurrency cap** — `WS_MAX_CONCURRENT_RUNS` (`runner.service.js`).
+- **CI** — GitHub Actions runs the unit, DB, API, and frontend-build jobs on
+  every push.
 
 ---
 
-## 4. Production-readiness checklist (local, single user)
+## 4. Production-readiness checklist (local, single user) — ✅ complete
 
-Beyond the fixes in §3:
+1. ✅ **One-command start** — frontend `build`, Express serves `frontend/dist`
+   from the same origin.
+2. ✅ **Boot-time env** — hard-fail on missing DB; clear warnings for optional
+   keys (LLM, captcha, proxy encryption).
+3. ✅ **Retention job** — `maintenance.service.js`.
+4. ✅ **Health endpoint** — `/healthz`.
+5. ✅ **CI** — all suites green on push.
+6. ✅ **README** — real setup guide and feature map.
 
-1. **One-command start** — `npm run build` in frontend, Express serves
-   `frontend/dist`, single `npm start` (or a `Dockerfile`/`docker-compose.yml`
-   with a mounted volume for `backend/data/`). Add `pm2`/systemd notes for
-   auto-restart.
-2. **Boot-time env validation** — hard-fail on missing `JWT_SECRET`; log
-   clear one-line warnings for optional-but-recommended keys (LLM, captcha,
-   proxy encryption) exactly like their runtime services already do.
-3. **Retention job** — nightly prune of `run_logs` older than N days and
-   `results_json` beyond the last K runs per workflow (keep the runs rows for
-   history), plus tmp-script cleanup on boot for files left by a crash.
-4. **Health endpoint** — `/healthz` returning DB + browser-launch status, so a
-   process manager can restart on failure.
-5. **CI** — a GitHub Actions workflow running the three existing suites on
-   push; they are fast and already green, so this is nearly free.
-6. **README rewrite** — real setup guide (env vars, first workflow, feature
-   map). The current README's to-do list undersells about 30k lines of work.
+Remaining nice-to-have: a `Dockerfile` / `docker-compose.yml` with a mounted
+volume for `backend/data/` and pm2/systemd notes (documented, not yet shipped).
 
 ---
 
-## 5. UX analysis
+## 5. UX status
 
-### 5.1 For non-technical users — friction inventory
+### 5.1 Non-technical users — friction, mostly resolved
 
-The core insight: **every capability a "click two items and get a table" flow
-needs already exists**, but the user must know the order to invoke them.
+| # | Original friction | Status |
+|---|---|---|
+| 1 | Empty-state drops user into an editor | ✅ Quick Scrape wizard + Dashboard |
+| 2 | Navigate vs Select mode invisible | ⚠️ mode indicator + wizard drives it; no first-run coach marks yet |
+| 3 | Engineer-speak step names (`FOR_EACH_ELEMENTS`) | ⚠️ control descriptions added; a full plain-language pass is still open |
+| 4 | Raw JS expression fields | ✅ Condition builder for IF/WHILE; ⚠️ SET_VARIABLE / TRANSFORM custom still raw |
+| 5 | Bare selector text inputs | ⚠️ "pick on page" + match-count badge exist for the primary selector fields; not yet on every selector param |
+| 6 | No home screen | ✅ Dashboard landing |
+| 7 | No templates | ❌ still open (§6.3) |
+| 8 | Failures buried | ✅ Needs-attention inbox + AI summaries on the dashboard |
+| 9 | Schedule = minutes math | ✅ presets + "start at" time; ⚠️ no weekdays |
+| 10 | Results are per-run snapshots | ✅ Dataset view + change monitoring |
 
-| # | Friction | Where | Proposal |
-|---|---|---|---|
-| 1 | Empty-state drops user into an editor; no guidance | app shell | **Quick Scrape wizard** (§6.1) — the single highest-impact change |
-| 2 | Two-mode interaction (Navigate vs Select) is invisible/unexplained | live view toolbar | First-run coach marks; hold-<kbd>Shift</kbd> to temporarily select; mode auto-suggestion when the user seems to be trying to select |
-| 3 | Step vocabulary is engineer-speak: `FOR_EACH_ELEMENTS`, `EXTRACT_ATTRIBUTE`, "Condition (JS expression)" | actionDefinitions/controlDefinitions | Plain-language labels ("Loop over each product card", "Get link/image address"); keep the technical name as a subtitle |
-| 4 | 11+ params ask for raw JS expressions (`IF`, `WHILE`, `SET_VARIABLE`, `TRANSFORM_DATA` custom, …) | actionDefinitions.js:712,774,1465,1519… | **No-code condition builder**: field/operator/value dropdowns compiling to the JS expression; "Edit as code" toggle preserves full power |
-| 5 | CSS selectors appear as bare text inputs in step editors | many steps | Every selector field gets a "pick on page" button (the reselect flow exists — `reselectStepId` in main.jsx — extend it to all selector params) + a live match-count badge (machinery exists in previewStep) |
-| 6 | No home screen: workflows/runs/schedules live behind modals | main.jsx | **Dashboard landing page** (§6.2) |
-| 7 | No templates or examples to learn from | — | **Template gallery** (§6.3) |
-| 8 | Failure states are informative but buried (per-workflow History modal) | RunsHistory | Surface `needs_review` counts on the dashboard + a global "attention" inbox; the AI summaries are already user-friendly — show them earlier |
-| 9 | Schedule editor = minutes math | ScheduleEditor.jsx | "Every day at 9:00", weekday checkboxes; keep custom minutes as advanced |
-| 10 | Results are per-run snapshots | RunsHistory data tab | **Dataset view** per workflow (§6.4) |
+### 5.2 Technical users — what's still missing
 
-### 5.2 For technical users — what's missing
+Power features present and good: custom JS actions, subflows, `{{a[*].b}}`
+projections, transform pipelines, EXTRACT_API, code download, full REST API,
+cross-run datasets, change-diff webhooks. Gaps:
 
-Power features already present (custom JS actions, subflows, variables with
-`{{a[*].b}}` projections, transform pipelines, EXTRACT_API, code download,
-REST API) are genuinely good. Gaps:
-
-1. **Webhook management UI** — today only `POST /v1/webhooks` can register one.
-2. **Workflow export/import/duplicate** — no JSON export, no duplicate button;
-   needed for backup, sharing, and "start from a copy" iteration.
-3. **Cron scheduling** — the `schedules` table is interval-based; add an
-   optional `cron_expression` column and evaluate with a tiny cron parser.
-4. **Run inputs in the UI** — `/v1` accepts `inputs` overriding workflow
-   variables; the editor's Run button should too ("Run with inputs…").
-5. **Per-workflow execution settings** — nav timeout, retry budget, healing
-   on/off (some users will want deterministic runs), user-agent override.
-6. **Selector debugging** — a "why did this match 0 elements?" panel showing
-   the healing validators' verdicts interactively rather than only post-run.
+1. ❌ **Webhook management UI** — today only `POST /v1/webhooks` registers one.
+2. ❌ **Workflow export / import / duplicate** — needed for backup, sharing,
+   "start from a copy", and as the substrate for templates.
+3. ❌ **Cron / weekday scheduling** — schedules are interval + time-of-day only.
+4. ❌ **Run-with-inputs in the editor** — `/v1` accepts `inputs`; the editor's
+   Run button doesn't yet.
+5. ❌ **Per-workflow execution settings** — nav timeout, retry budget, healing
+   on/off (deterministic runs), UA override.
+6. ❌ **Selector debugging** — an interactive "why did this match 0 elements?"
+   panel (the healing validators already compute the verdicts post-run).
 
 ---
 
-## 6. Proposed feature additions (the competitive plays)
+## 6. Feature additions
 
-### 6.1 Quick Scrape wizard (vs Browse AI's core loop) — highest priority
+### 6.1 ✅ Quick Scrape wizard — shipped
+One-button guided list scraping that orchestrates the existing container
+detection, AI field proposal, and pagination detector into a linear flow, then
+hands finished steps to the editor. `QuickScrapeWizard.jsx`.
 
-One button on the empty state and toolbar: **"Scrape a list from this page"**.
-Chain what already exists:
+### 6.2 ✅ Dashboard home — shipped
+Post-login landing: per-workflow cards with last-run status, needs-attention
+inbox, schedule/next-run, and change indicators. `Dashboard.jsx`.
 
-1. User enters URL → navigate (existing).
-2. Auto-run container detection (`extractListHeuristics.proposeFromContainer`)
-   → highlight the best repeating container, let the user click to confirm or
-   pick another (list-field pick mode exists).
-3. Auto-run AI field proposal (`aiExtractListFields`) → editable column list
-   with live sample values (ExtractListFieldsEditor exists).
-4. Auto-run `detectPagination` → one-click "also scrape the next N pages"
-   using the top suggestion.
-5. Land in the normal editor with a named EXTRACT_LIST (+ pagination container)
-   and the Data Preview tab open.
+### 6.3 ❌ Template gallery — open
+Ship 6–10 saved workflows as JSON seeds + a "start from template" flow. Cheap
+once workflow export/import (§5.2.2) exists — templates are the same JSON.
 
-This is ~90% orchestration of existing socket events. It converts the platform
-from "powerful editor" to "Browse AI-simple with an editor underneath".
+### 6.4 ✅ Dataset view — shipped
+Per-workflow "Data across runs": rows unioned and de-duplicated across retained
+successful runs, with first/last-seen and times-seen, exportable as CSV/Excel.
+Computed on read, so it works retroactively with no new storage.
+`dataset.service.js`, `DatasetPanel.jsx`.
 
-### 6.2 Dashboard home screen
-
-Route the post-login landing to a workflow dashboard: cards/table with name,
-last run status (green/amber/red), records extracted, next scheduled run,
-sparkline of recent run record-counts (data already in `runs`), and buttons:
-Run, Edit, History, Schedule, Duplicate, Export. Global "Needs review" inbox
-across workflows. This matches the mental model both competitors train users
-on, and it's where monitoring (§6.5) will live.
-
-### 6.3 Template gallery
-
-Ship 6–10 saved workflows as JSON seeds ("Products from a category page",
-"Job listings", "News headlines", "Table from a page", "Detail-page enrich
-demo") + a "start from template" flow that just loads the steps and asks for a
-URL. Cheap to build once workflow export/import (§5.2.2) exists — templates
-are the same JSON format.
-
-### 6.4 Dataset view (accumulate across runs)
-
-Per workflow, a "Data" tab that unions rows across runs with `first_seen_at` /
-`last_seen_at` (dedupe key = user-chosen field, defaulting to the
-EXTRACT_LIST's dedupe field which already exists in COLLECT_LIST). Export the
-dataset, not just a run. This is the substrate for:
-
-### 6.5 Monitoring & change alerts (Browse AI's flagship)
-
-A per-workflow toggle: "Monitor for changes". After each scheduled run, diff
-against the previous run (row-level add/remove/change using the dedupe key) and
-(a) store the diff summary on the run row, (b) fire `run.changed` through the
-existing webhook dispatcher, (c) show a change feed on the dashboard. The
-baseline/median machinery in `healingStats` and `recentSuccessfulResults`
-already proves the data access pattern. E-mail can come later; webhook + UI
-feed first (works with ntfy/Slack/Discord via URL for a local user).
+### 6.5 ✅ Monitoring & change alerts — shipped
+Per-workflow "Watch for changes": after each successful run, diff against the
+previous run (row-level add/remove/change, keyed the same way the dataset view
+dedupes), store the summary on the run, and fire `run.changed` through the
+webhook dispatcher when something changed. Change feed on the dashboard, in run
+history, and in the monitor editor. `changeDiff.service.js`,
+`changeMonitor.service.js`, `MonitorEditor.jsx`. E-mail delivery is still
+future; webhook (ntfy/Slack/Discord via URL) + UI feed ship today.
 
 ### 6.6 Data delivery integrations
+1. ✅ **Excel (.xlsx) export** — shipped (`resultsXlsx.js`), one sheet per output
+   list, wired into run results and dataset downloads.
+2. ❌ **Google Sheets push** — still open; the webhook-dispatcher path is the
+   right attachment point.
+3. ❌ Zapier/Make — need a public URL; defer until hosting.
 
-Priority order for a local single user:
-1. **Excel (.xlsx) export** — one dependency (`exceljs`), an extra format in
-   `resultsExport.js` + the two download menus. Non-technical users live in
-   Excel; CSV-with-`#`-sections is hostile to them.
-2. **Google Sheets push** — OAuth or (simpler locally) service-account JSON +
-   sheet ID per workflow; append rows on run completion via the webhook
-   dispatcher path.
-3. Zapier/Make need a public URL — defer until hosting; the signed-webhook
-   surface is already the right foundation.
-
-### 6.7 Bulk runs over an input list (Octoparse "URL list loop")
-
-First-class "Input list" on a workflow: paste/upload CSV of URLs (or search
-terms), run the workflow once per row (sequential locally), results tagged
-with the input. The variables + `/v1` `inputs` plumbing already exists;
+### 6.7 ❌ Bulk runs over an input list — open
+First-class "Input list": paste/upload a CSV of URLs/terms, run once per row,
+results tagged with the input. The variables + `/v1` `inputs` plumbing exists;
 this is a UI + a loop in the pipeline caller.
 
-### 6.8 Promote API Discovery in the UX
-
-It's the platform's most distinctive capability and currently hides behind a
-panel toggle. When discovery finds a high-confidence verified source while the
-user is building a DOM scrape of the same data, show a non-blocking hint:
-"This site serves this data as JSON — switch to the API for a faster, more
-robust scrape (no selectors to break)". That sentence is also the marketing.
+### 6.8 ❌ Promote API Discovery in the UX — open
+When discovery finds a high-confidence verified source while the user builds a
+DOM scrape of the same data, show a non-blocking "this site serves this as JSON
+— switch for a faster, sturdier scrape" hint.
 
 ---
 
 ## 7. Prioritized roadmap
 
-**P0 — correctness & production hygiene (days)**
-1. Fix `downloadCode` missing `await` (§3.1)
-2. Fix navigate listener stacking (§3.2)
-3. Fix `SAVE_DATA` relative-path behavior (§3.3)
-4. Frontend `build` script + env-driven `API_BASE` + Express static serving
-5. Enforce `JWT_SECRET`, bind default listen address to localhost, registration flag
-6. Retention/pruning job + tmp cleanup + global browser-concurrency cap
-7. CI running the three existing suites; README rewrite
+**P0 — correctness & production hygiene — ✅ done**
+1. ✅ `downloadCode` await (§3.1)
+2. ✅ navigate listener stacking (§3.2)
+3. ✅ `SAVE_DATA` relative-path behavior (§3.3)
+4. ✅ CSV header-union + shared serialiser (§3.4)
+5. ✅ frontend `build` + env-driven `API_BASE` + same-origin static serving
+6. ✅ `JWT_SECRET` enforcement, localhost default, registration flag
+7. ✅ retention/pruning + browser-concurrency cap + `/healthz`
+8. ✅ CI running all suites; README rewrite
 
-**P1 — the non-technical breakthrough (1–2 weeks)**
-8. Quick Scrape wizard (§6.1)
-9. Dashboard home + needs-review inbox (§6.2)
-10. Plain-language step labels + selector "pick on page" everywhere + match-count badges
-11. No-code condition builder with "edit as code" escape hatch
-12. Friendly schedule picker (time-of-day / weekdays)
+**P1 — the non-technical breakthrough — ✅ done**
+9. ✅ Quick Scrape wizard (§6.1)
+10. ✅ Dashboard home + needs-review inbox (§6.2)
+11. ✅ No-code condition builder with "edit as code"
+12. ✅ Friendly schedule picker (time-of-day)
+13. ⚠️ plain-language step labels + selector "pick on page" everywhere +
+    match-count badges — *partially done; finish the pass*
 
-**P2 — competitive feature parity (2–4 weeks)**
-13. Workflow export/import/duplicate → template gallery (§6.3, §5.2.2)
-14. Dataset view (§6.4) → monitoring & change alerts (§6.5)
-15. Excel export, then Google Sheets delivery (§6.6)
-16. Webhook management UI (§5.2.1)
-17. Bulk input lists (§6.7)
+**P2 — competitive feature parity — mostly done**
+14. ✅ Dataset view (§6.4)
+15. ✅ Monitoring & change alerts (§6.5)
+16. ✅ Excel export (§6.6.1)
+17. ❌ Workflow export/import/duplicate → template gallery (§6.3)
+18. ❌ Webhook management UI (§5.2.1)
+19. ❌ Google Sheets delivery (§6.6.2)
+20. ❌ Bulk input lists (§6.7)
 
-**P3 — power-user & differentiation polish**
-18. Cron schedules; per-workflow execution settings; run-with-inputs UI
-19. API-discovery nudges in the editor (§6.8)
-20. Selector debugging panel; healing-history analytics ("this workflow healed 3× this month — consider re-pinning selectors")
+**P3 — power-user & differentiation polish — open**
+21. ❌ Cron / weekday schedules; per-workflow execution settings; run-with-inputs UI
+22. ❌ API-discovery nudges in the editor (§6.8)
+23. ❌ Selector debugging panel; healing-history analytics
 
 ---
 
 ## 8. Where this leaves the product vs competitors
 
-With P0+P1 shipped, the honest pitch is: *Browse AI's simplicity for list
-scraping, Octoparse's depth for workflow logic, plus three things neither has —
+With P0+P1 and most of P2 shipped, the honest pitch is now real: *Browse AI's
+simplicity for list scraping (guided wizard, dashboard, monitoring & change
+alerts), Octoparse's depth for workflow logic, plus three things neither has —
 transparent verified self-healing, site-API discovery, and no lock-in (your
-scraper exports as runnable code).* P2 closes the two real gaps (monitoring,
-data delivery). Nothing in this roadmap requires the scaling work — every item
-runs single-process against SQLite, and the seams the codebase already drew
-(pipeline callbacks, webhook dispatcher, repos) are the right attachment
-points for all of it.
+scraper exports as runnable code).* The remaining P2 items (templates via
+workflow export/import, Google Sheets delivery, webhook UI, bulk inputs) are
+breadth, not foundations — every one runs single-process against SQLite, and
+the seams the codebase already drew (pipeline callbacks, webhook dispatcher,
+repos, the dataset/diff services) are the attachment points for all of it.

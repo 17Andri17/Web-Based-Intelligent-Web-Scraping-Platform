@@ -137,7 +137,7 @@ async function getRunForUser(runId, userId) {
 async function listRunsForUser(userId, { limit = 50, workflowId = null } = {}) {
   const cols = `id, workflow_id, schedule_id, trigger, status, started_at, finished_at,
                 duration_ms, error_message, error_category, failed_step_label,
-                ai_summary, retry_count, parent_run_id, version_id`;
+                ai_summary, retry_count, parent_run_id, version_id, change_summary_json`;
   if (workflowId) {
     return db.all(`
       SELECT ${cols} FROM runs
@@ -255,6 +255,50 @@ async function recentSuccessfulResults(workflowId, limit = 5) {
     try { out.push(JSON.parse(r.results_json)); } catch (_) {}
   }
   return out;
+}
+
+// The most recent successful runs of a workflow that carry results, with their
+// ids and timestamps and parsed results — the input to the cross-run dataset
+// view (dataset.service). Newest-first from SQL (bounded by `limit`); returned
+// oldest→newest so first-seen accumulation is left-to-right. A retained run
+// whose results_json won't parse is skipped rather than aborting the view.
+async function recentSuccessfulRunsWithResults(workflowId, limit = 100) {
+  const rows = await db.all(`
+    SELECT id, started_at, finished_at, results_json FROM runs
+    WHERE workflow_id = ? AND status = 'success' AND results_json IS NOT NULL
+    ORDER BY started_at DESC
+    LIMIT ?
+  `, [workflowId, limit]);
+  const out = [];
+  for (const r of rows) {
+    let results;
+    try { results = JSON.parse(r.results_json); } catch (_) { continue; }
+    out.push({ id: r.id, startedAt: r.started_at, finishedAt: r.finished_at, results });
+  }
+  return out.reverse(); // oldest → newest
+}
+
+// The successful run immediately before `beforeRunId` (same workflow) that
+// carries results — the baseline a monitored run is diffed against. Ordered by
+// id so it's stable regardless of started_at clock skew. Returns
+// { id, startedAt, results } or null when there's no prior run.
+async function previousSuccessfulRunWithResults(workflowId, beforeRunId) {
+  const r = await db.get(`
+    SELECT id, started_at, results_json FROM runs
+    WHERE workflow_id = ? AND status = 'success' AND results_json IS NOT NULL AND id < ?
+    ORDER BY id DESC
+    LIMIT 1
+  `, [workflowId, beforeRunId]);
+  if (!r) return null;
+  let results;
+  try { results = JSON.parse(r.results_json); } catch (_) { return null; }
+  return { id: r.id, startedAt: r.started_at, results };
+}
+
+// Persist the change-monitoring diff summary onto a run row.
+async function saveChangeSummary(runId, summary) {
+  await db.run('UPDATE runs SET change_summary_json = ? WHERE id = ?',
+    [summary == null ? null : JSON.stringify(summary), runId]);
 }
 
 // ── workflow versions (rollback history) ────────────────────────────────────
@@ -421,6 +465,56 @@ async function claimDueSchedule(scheduleId, intervalMinutes, now = new Date()) {
   return info.changes === 1;
 }
 
+// ── change monitors (per-workflow "watch for changes") ──────────────────────
+async function getMonitorForWorkflow(userId, workflowId) {
+  return db.get('SELECT * FROM workflow_monitors WHERE user_id = ? AND workflow_id = ?', [userId, workflowId]);
+}
+
+// Read a monitor by workflow id alone — used by the pipeline, which already
+// knows the run's owner but wants the config without re-scoping by user.
+async function getMonitorByWorkflow(workflowId) {
+  return db.get('SELECT * FROM workflow_monitors WHERE workflow_id = ?', [workflowId]);
+}
+
+async function upsertMonitor({ userId, workflowId, isActive = true, outputKey = null, keyField = null }) {
+  const existing = await db.get('SELECT id FROM workflow_monitors WHERE workflow_id = ?', [workflowId]);
+  if (existing) {
+    await db.run(`
+      UPDATE workflow_monitors
+      SET is_active = ?, output_key = ?, key_field = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [isActive ? 1 : 0, outputKey, keyField, existing.id]);
+    return getMonitorById(existing.id);
+  }
+  const inserted = await db.get(`
+    INSERT INTO workflow_monitors (user_id, workflow_id, is_active, output_key, key_field)
+    VALUES (?, ?, ?, ?, ?)
+    RETURNING id
+  `, [userId, workflowId, isActive ? 1 : 0, outputKey, keyField]);
+  return getMonitorById(inserted.id);
+}
+
+async function getMonitorById(id) {
+  return db.get('SELECT * FROM workflow_monitors WHERE id = ?', [id]);
+}
+
+async function deleteMonitor(userId, workflowId) {
+  const info = await db.run('DELETE FROM workflow_monitors WHERE user_id = ? AND workflow_id = ?', [userId, workflowId]);
+  return info.changes;
+}
+
+// Recent runs of a workflow that recorded a change summary (newest first) —
+// the per-workflow change feed.
+async function recentChangedRuns(workflowId, limit = 20) {
+  return db.all(`
+    SELECT id, started_at, finished_at, status, change_summary_json
+    FROM runs
+    WHERE workflow_id = ? AND change_summary_json IS NOT NULL
+    ORDER BY id DESC
+    LIMIT ?
+  `, [workflowId, limit]);
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────
 function truncate(s, n) {
   if (s == null) return null;
@@ -440,6 +534,11 @@ module.exports = {
   recordRepair, markRepairVerified, markAutoAdopted, listRepairsForRun,
   // self-healing helpers
   recentSuccessfulResults, updateWorkflowSteps,
+  // cross-run dataset view
+  recentSuccessfulRunsWithResults,
+  // change monitoring
+  previousSuccessfulRunWithResults, saveChangeSummary,
+  getMonitorForWorkflow, getMonitorByWorkflow, upsertMonitor, deleteMonitor, recentChangedRuns,
   // version history / rollback
   ensureVersion, getVersionForUser, listVersionsForWorkflow,
   // schedules

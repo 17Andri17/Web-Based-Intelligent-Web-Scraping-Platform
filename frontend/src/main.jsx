@@ -414,6 +414,10 @@ function AppShell({ user, token, onLogout }) {
   const [execIterations, setExecIterations] = useState({});
   const [execLastStepId, setExecLastStepId] = useState(null);
   const [execResults,   setExecResults]   = useState(null);
+  // Persisted run id for the current live run (carried on executionStarted /
+  // executionDone). Lets the Results panel fetch server-rendered exports
+  // (e.g. .xlsx) for the run it just produced.
+  const [execRunId,     setExecRunId]     = useState(null);
   // Flow tree for the live "Flow" tab. The backend sends this at run start
   // with each RUN_SUBFLOW's steps inlined (so the tab shows exactly what a
   // subflow runs). Falls back to the local `steps` when absent.
@@ -707,9 +711,10 @@ function AppShell({ user, token, onLogout }) {
     });
 
     // Execution events
-    socket.on("executionStarted", () => {
+    socket.on("executionStarted", (info) => {
       setExecStatus("running"); setExecLogs([]); setExecResults(null);
       setExecStepStates({}); setExecIterations({}); setExecLastStepId(null);
+      setExecRunId(info?.runId ?? null);
     });
     // Flow tree with subflow steps inlined — arrives just before
     // executionStarted. Kept in its own state so the reset above doesn't
@@ -750,7 +755,8 @@ function AppShell({ user, token, onLogout }) {
         return prev;
       });
     });
-    socket.on("executionDone",    ({ success, results, status }) => {
+    socket.on("executionDone",    ({ success, results, status, runId }) => {
+      if (runId != null) setExecRunId(runId);
       // `status` is the persisted run status ('success' | 'error' | 'needs_review' | 'cancelled').
       // We map it to the local 4-state for the panel: idle/running/done/error.
       const ok = status === "success" || success;
@@ -1019,6 +1025,7 @@ function AppShell({ user, token, onLogout }) {
     setCurrentWorkflowId(null);
     setCurrentWorkflowName("");
     setExecResults(null);
+    setExecRunId(null);
     setExecLogs([]);
     setExecStatus("idle");
     setExecPanelOpen(false);
@@ -1239,6 +1246,7 @@ function AppShell({ user, token, onLogout }) {
     setWorkflowVariables(loadedVars);
     setSelectedProxy(wf.meta?.proxy || (wf.meta?.proxyId ? { mode: "single", id: wf.meta.proxyId } : null));
     setExecResults(null);
+    setExecRunId(null);
     setExecLogs([]);
     setExecStatus("idle");
     const startUrlRaw = loadedSteps[0]?.type === "NAVIGATE"
@@ -1712,6 +1720,7 @@ function AppShell({ user, token, onLogout }) {
     setExecStatus("idle");
     setExecLogs([]);
     setExecResults(null);
+    setExecRunId(null);
     // Pass workflowId when the user has a saved workflow loaded so the run
     // is recorded against it. If the workflow hasn't been saved yet, the
     // backend will auto-create a draft and emit `workflowAutoCreated`.
@@ -2627,6 +2636,7 @@ function AppShell({ user, token, onLogout }) {
       <ExecutionPanel
         isOpen={execPanelOpen} onClose={() => setExecPanelOpen(false)}
         logs={execLogs} status={execStatus} results={execResults}
+        runId={execRunId}
         onCancel={handleCancelExecution}
         steps={execFlowTree || steps}
         stepStates={execStepStates}

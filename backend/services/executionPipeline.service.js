@@ -11,6 +11,7 @@ const { checkCompiles } = require('./codeCheck');
 const llm               = require('./llm.service');
 const { generateCode }  = require('../workflow/workflowCodegen');
 const webhookDispatcher = require('./webhookDispatcher.service');
+const changeMonitor     = require('./changeMonitor.service');
 const {
   patchStepParams, setStepParams, removeStepById, clone,
 } = require('../workflow/workflowUtils');
@@ -459,6 +460,11 @@ async function executeAndPersist(arg) {
   // Push notification to any registered webhook endpoints (run.completed /
   // run.failed). Fire-and-forget: delivery problems must never fail a run.
   safeCall(() => webhookDispatcher.dispatchRunEvent(finalRow), null);
+  // Change monitoring: diff a successful run against the previous one, store
+  // the summary, and push run.changed. Also fire-and-forget — a monitoring
+  // problem must never surface to the run. No-op unless the workflow has an
+  // active monitor.
+  safeCall(() => changeMonitor.evaluateRun(finalRow, finalResults), null);
   return finalRow;
 }
 

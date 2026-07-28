@@ -1,0 +1,115 @@
+/* DatasetPanel — cross-run "Data" view. Reuses the wf-* modal shell; these
+   rules cover the controls, the scrolling table, and the pager. */
+
+.ds-modal {
+  max-width: 1100px;
+  width: 94vw;
+  max-height: 88vh;
+}
+
+.ds-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 74vh;
+}
+
+/* ── Controls row ─────────────────────────────────────────────────────── */
+.ds-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.ds-controls-spacer { flex: 1 1 auto; }
+
+.ds-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary, #9aa0a6);
+}
+.ds-control select {
+  min-width: 180px;
+  padding: 6px 8px;
+  font-size: 13px;
+  border-radius: 6px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  color: var(--text-primary, #e6e6e6);
+  border: 1px solid var(--border-soft, #2a2a2a);
+}
+
+.ds-downloads { display: flex; gap: 8px; }
+.ds-xlsx { background: var(--accent-success, #3fb950); color: #fff; }
+
+/* ── Table ────────────────────────────────────────────────────────────── */
+.ds-tablewrap {
+  flex: 1 1 auto;
+  overflow: auto;
+  border: 1px solid var(--border-soft, #2a2a2a);
+  border-radius: 8px;
+}
+
+.ds-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+.ds-table th,
+.ds-table td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-soft, #2a2a2a);
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ds-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-2, #1a1a1a);
+  color: var(--text-primary, #e6e6e6);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border, #333);
+}
+.ds-table tbody tr:hover td {
+  background: var(--accent-soft, rgba(79, 156, 249, 0.06));
+}
+.ds-table .ds-keycol { color: var(--accent-primary, #4f9cf9); }
+
+/* Provenance columns sit visually apart from the scraped data. */
+.ds-table .ds-meta {
+  color: var(--text-secondary, #9aa0a6);
+  background: var(--surface-1, rgba(255, 255, 255, 0.015));
+}
+.ds-table .ds-meta-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── Empty state ──────────────────────────────────────────────────────── */
+.ds-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text-secondary, #9aa0a6);
+  gap: 4px;
+}
+.ds-empty-emoji { font-size: 40px; margin-bottom: 8px; }
+.ds-empty h3 { margin: 0; color: var(--text-primary, #e6e6e6); }
+.ds-empty p { margin: 0; max-width: 420px; font-size: 13px; }
+
+/* ── Footer / pager ───────────────────────────────────────────────────── */
+.ds-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ds-foot-info { font-size: 12px; color: var(--text-secondary, #9aa0a6); }
+.ds-pager { display: flex; align-items: center; gap: 8px; }
+.ds-pager-range { font-size: 12px; color: var(--text-secondary, #9aa0a6); font-variant-numeric: tabular-nums; }

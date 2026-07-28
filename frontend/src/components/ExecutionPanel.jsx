@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { resultsToCsv } from "../utils/resultsExport";
+import { runsApi } from "../api/client";
 
 /* =====================================================================
    ExecutionPanel
@@ -9,14 +11,17 @@ import { useState, useRef, useEffect, useCallback } from "react";
      status        'idle' | 'running' | 'done' | 'error'
      results       object | null    — { [labelName]: data }
      onCancel      fn
+     runId         number | null   — persisted run id for this run; enables
+                                     the server-rendered Excel (.xlsx) export
    ===================================================================== */
 export default function ExecutionPanel({
-  isOpen, onClose, logs, status, results, onCancel,
+  isOpen, onClose, logs, status, results, onCancel, runId = null,
   steps = [], stepStates = {}, iterations = {}, lastStepId = null,
 }) {
   const [activeTab,    setActiveTab]    = useState('flow');
   const [selectedKey,  setSelectedKey]  = useState(null);
   const [exportFormat, setExportFormat] = useState('json');
+  const [exportErr,    setExportErr]    = useState(null);
   const logsEndRef = useRef(null);
 
   // Auto-scroll log
@@ -43,16 +48,30 @@ export default function ExecutionPanel({
     URL.revokeObjectURL(url);
   };
 
-  // Single combined file — all extraction results in one download
-  const handleExport = () => {
+  // Single combined file — all extraction results in one download.
+  // JSON/CSV serialise in the browser from the in-memory results (fast, no
+  // round-trip). XLSX is binary and rendered server-side, so it fetches the
+  // workbook for this persisted run — hence it needs a runId.
+  const handleExport = async () => {
     if (!results) return;
+    setExportErr(null);
     if (exportFormat === 'json') {
       downloadFile(JSON.stringify(results, null, 2), 'results.json', 'application/json');
-    } else {
-      const sections = Object.entries(results).map(([key, data]) =>
-        `# ${key}\n${toCSV(data)}`
-      );
-      downloadFile(sections.join('\n\n'), 'results.csv', 'text/csv');
+    } else if (exportFormat === 'csv') {
+      downloadFile(resultsToCsv(results), 'results.csv', 'text/csv');
+    } else if (exportFormat === 'xlsx') {
+      if (runId == null) { setExportErr('Excel export needs a saved run — try again once the run finishes.'); return; }
+      try {
+        const blob = await runsApi.downloadDataBlob(runId, 'xlsx');
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url;
+        a.download = `run-${runId}.xlsx`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        setExportErr(err?.response?.data?.error || err.message || 'Excel export failed');
+      }
     }
   };
 
@@ -168,18 +187,23 @@ export default function ExecutionPanel({
                         <span className="ep-data-title">{selectedKey}</span>
                         <div className="ep-data-actions">
                           <div className="ep-format-toggle">
-                            <button className={exportFormat === 'json' ? 'active' : ''} onClick={() => setExportFormat('json')}>JSON</button>
-                            <button className={exportFormat === 'csv'  ? 'active' : ''} onClick={() => setExportFormat('csv')}>CSV</button>
+                            <button className={exportFormat === 'json' ? 'active' : ''} onClick={() => { setExportFormat('json'); setExportErr(null); }}>JSON</button>
+                            <button className={exportFormat === 'csv'  ? 'active' : ''} onClick={() => { setExportFormat('csv'); setExportErr(null); }}>CSV</button>
+                            {runId != null && (
+                              <button className={exportFormat === 'xlsx' ? 'active' : ''} onClick={() => { setExportFormat('xlsx'); setExportErr(null); }}>Excel</button>
+                            )}
                           </div>
                           <button className="ep-btn" onClick={handleExport}>
                             <DownloadIcon />
                             Export all results
                             <span className="ep-export-filename">
-                              results.{exportFormat}
+                              {exportFormat === 'xlsx' ? `run-${runId}.xlsx` : `results.${exportFormat}`}
                             </span>
                           </button>
                         </div>
                       </div>
+
+                      {exportErr && <div className="ep-export-err">{exportErr}</div>}
 
                       {/* Preview */}
                       <div className="ep-preview-area">
@@ -281,21 +305,6 @@ function StatusBadge({ status }) {
 /* =====================================================================
    Helpers
    ===================================================================== */
-function toCSV(data) {
-  if (!Array.isArray(data)) return JSON.stringify(data);
-  if (data.length === 0) return '';
-  if (typeof data[0] !== 'object') return data.join('\n');
-  const headers = Object.keys(data[0]);
-  const rows    = data.map(r => headers.map(h => csvCell(r[h])).join(','));
-  return [headers.join(','), ...rows].join('\n');
-}
-
-function csvCell(val) {
-  if (val === null || val === undefined) return '';
-  const s = String(val);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
 function getCount(data) {
   if (Array.isArray(data)) return data.length;
   if (data !== null && typeof data === 'object') return `{${Object.keys(data).length}}`;

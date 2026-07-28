@@ -49,6 +49,18 @@ export const workflowsApi = {
   create: (name, steps, meta) => api.post("/api/workflows", { name, steps, meta }).then(r => r.data.workflow),
   update: (id, name, steps, meta) => api.put(`/api/workflows/${id}`, { name, steps, meta }).then(r => r.data.workflow),
   remove: (id) => api.delete(`/api/workflows/${id}`).then(r => r.data),
+  // Cross-run dataset: rows accumulated across a workflow's runs.
+  // params: { output?, key?, limit?, offset? } (key = "__row__" for whole-row dedupe)
+  dataset: (id, params = {}) => api.get(`/api/workflows/${id}/dataset`, { params }).then(r => r.data),
+  datasetDownloadBlob: async (id, fmt = "csv", params = {}) => {
+    const r = await api.get(`/api/workflows/${id}/dataset.${fmt}`, { params, responseType: "blob" });
+    return r.data;
+  },
+  // Change monitoring: config + recent change feed for a workflow.
+  getMonitor:    (id) => api.get(`/api/workflows/${id}/monitor`).then(r => r.data),
+  // body: { isActive, outputKey?, keyField? } — keyField "" = whole-row, omit = auto
+  saveMonitor:   (id, body) => api.put(`/api/workflows/${id}/monitor`, body).then(r => r.data.monitor),
+  removeMonitor: (id) => api.delete(`/api/workflows/${id}/monitor`).then(r => r.data),
 };
 
 export const customActionsApi = {

@@ -83,8 +83,9 @@ curl -s $BASE/v1/runs/9001 -H "Authorization: Bearer $KEY"
 # → { "status": "success", "has_data": true, ... }
 
 # 4. fetch the data
-curl -s $BASE/v1/runs/9001/data              # JSON
-curl -s "$BASE/v1/runs/9001/data?format=csv" # CSV
+curl -s $BASE/v1/runs/9001/data                # JSON
+curl -s "$BASE/v1/runs/9001/data?format=csv"   # CSV
+curl -s "$BASE/v1/runs/9001/data?format=xlsx" -o run.xlsx   # Excel workbook
 ```
 
 Run statuses: `queued → running → success | error | needs_review | cancelled`.
@@ -107,7 +108,7 @@ human (partial data may still be available via `/data`).
 | `POST /v1/workflows/:id/runs` | Trigger. Body (optional): `{ "inputs": { <variable>: <value> } }`. Returns `202` with the queued run. Inputs must match variables declared on the workflow (see `GET /v1/workflows/:id`); unknown names are a 400 so typos fail loudly. |
 | `GET /v1/runs` | List, newest first. Filters: `workflow_id`, `status`, plus `limit`/`cursor`. |
 | `GET /v1/runs/:id` | Status + metadata (timings, retry count, error details when failed). |
-| `GET /v1/runs/:id/data` | Extracted data. `?format=json` (default, `{ "object": "run.data", "data": {...} }`) or `?format=csv` (one `# section` per output key). 404 `no_data` while the run is still queued/running. |
+| `GET /v1/runs/:id/data` | Extracted data. `?format=json` (default, `{ "object": "run.data", "data": {...} }`), `?format=csv` (one `# section` per output key), or `?format=xlsx` (an Excel workbook, one worksheet per output key). 404 `no_data` while the run is still queued/running. |
 | `GET /v1/runs/:id/logs` | The run's execution log lines. |
 | `POST /v1/runs/:id/cancel` | Cancel. A `queued` run is cancelled atomically before it starts (200). A `running` run is aborted via the worker (202 + `cancel_requested: true`); runs executing outside the API worker (UI-triggered, another process) return 409. |
 
@@ -118,12 +119,15 @@ scheduled runs — self-healing, workflow versioning, and run history all apply.
 
 | | |
 |---|---|
-| `POST /v1/webhooks` | Register. Body: `{ "url": "https://…", "events": ["run.completed", "run.failed"] }` (`events` optional, defaults to both). Returns the endpoint **including its signing `secret` (`whsec_…`) — shown only this once.** |
+| `POST /v1/webhooks` | Register. Body: `{ "url": "https://…", "events": ["run.completed", "run.failed", "run.changed"] }` (`events` optional, defaults to `run.completed` + `run.failed`). Returns the endpoint **including its signing `secret` (`whsec_…`) — shown only this once.** |
 | `GET /v1/webhooks` | List (secrets omitted). |
 | `DELETE /v1/webhooks/:id` | Remove. |
 
 Events fire for **every** finished run (API-, UI-, and schedule-triggered):
 `run.completed` on `success`, `run.failed` on `error` / `needs_review`.
+`run.changed` fires when a workflow with change monitoring enabled produces
+data that differs from its previous run (its payload adds a `changes` object
+with the diff summary alongside `run`). See docs/PLATFORM_ANALYSIS.md §6.5.
 Delivery payload:
 
 ```json

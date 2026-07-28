@@ -4,10 +4,10 @@
   "description": "",
   "main": "app.js",
   "scripts": {
-    "test": "node test/healing-pure.test.js",
+    "test": "node test/healing-pure.test.js && node test/results-export.test.js && node test/results-xlsx.test.js && node test/dataset.test.js && node test/changeDiff.test.js",
     "test:browser": "node test/healing-integration.test.js && node test/healing-e2e.test.js",
     "test:db": "node scripts/db-smoke.js",
-    "test:api": "node test/api-v1.test.js",
+    "test:api": "node test/api-v1.test.js && node test/dataset-api.test.js && node test/change-monitor.test.js",
     "start": "node server.js"
   },
   "keywords": [],
@@ -18,6 +18,7 @@
     "better-sqlite3": "^12.10.0",
     "body-parser": "^2.2.0",
     "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.3",
     "node-fetch": "^2.7.0",
