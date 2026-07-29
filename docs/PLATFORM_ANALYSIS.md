@@ -178,8 +178,11 @@ cross-run datasets, change-diff webhooks. Gaps:
    run a saved, parameterized workflow with specific values (single or bulk).
 5. ❌ **Per-workflow execution settings** — nav timeout, retry budget, healing
    on/off (deterministic runs), UA override.
-6. ❌ **Selector debugging** — an interactive "why did this match 0 elements?"
-   panel (the healing validators already compute the verdicts post-run).
+6. ✅ **Selector debugging** — an interactive "why did this match 0 elements?"
+   panel: tests a CSS/XPath selector against the live page and returns a
+   plain-language verdict (ok / hidden / iframe / partial / none), a sample of
+   matches, and — via progressive relaxation — which part of the selector is the
+   culprit (`SelectorDebugger.jsx`, `selectorDebug.js`, `debugSelector` socket).
 
 ---
 
@@ -281,7 +284,7 @@ DOM scrape of the same data, show a non-blocking "this site serves this as JSON
 **P3 — power-user & differentiation polish — partly done**
 21. ✅ Cron / weekday schedules; ✅ run-with-inputs UI; ❌ per-workflow execution settings
 22. ❌ API-discovery nudges in the editor (§6.8)
-23. ❌ Selector debugging panel; healing-history analytics
+23. ✅ Selector debugging panel; ❌ healing-history analytics
 
 ---
 

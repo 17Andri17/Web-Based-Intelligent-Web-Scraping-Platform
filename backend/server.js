@@ -22,6 +22,7 @@ const { resolveCustomActions, resolveSubflows } = require('./workflow/dependency
 const { buildFlowTree } = require('./workflow/workflowUtils');
 const extractListAI      = require('./services/extractListAI.service');
 const extractListHeuristics = require('./services/extractListHeuristics.service');
+const { cssRelaxations, buildDiagnosis } = require('./services/selectorDebug');
 // API discovery: passively capture the page's own XHR/fetch traffic while the
 // user browses, then propose the underlying data API instead of scraping the
 // DOM. See browser/networkCapture.js + services/apiDiscovery.service.js and
@@ -318,6 +319,92 @@ io.on('connection', async (socket) => {
       socket.emit('manualSelectorResult', res || { ok: false, error: 'No result' });
     } catch (err) {
       socket.emit('manualSelectorResult', { ok: false, error: err.message });
+    }
+  });
+
+  // ── Selector debugger ────────────────────────────────────────────────────
+  // "Why does this selector match 0 elements?" — test a CSS/XPath selector
+  // against the live page and return a plain-language diagnosis. One
+  // page.evaluate gathers the full-selector counts + a sample + the counts for
+  // each progressively-looser variant (built on the backend by cssRelaxations);
+  // buildDiagnosis turns those raw numbers into a verdict + suggestions. When
+  // the top page has 0 matches we also probe iframes.
+  socket.on('debugSelector', async ({ selector, selectorType }) => {
+    const sel = String(selector || '').trim();
+    const type = selectorType === 'xpath' ? 'xpath' : 'css';
+    if (!sel) { socket.emit('debugSelectorResult', { ok: false, error: 'Enter a selector to test.' }); return; }
+    const page = await getActivePage();
+    if (!page) { socket.emit('debugSelectorResult', { ok: false, error: 'No page is loaded — navigate to a page first.' }); return; }
+
+    const relaxations = type === 'css' ? cssRelaxations(sel) : [];
+    try {
+      const raw = await page.evaluate((sel, type, relaxations) => {
+        const isVisible = (el) => {
+          if (!el || !el.getClientRects) return false;
+          const rects = el.getClientRects();
+          if (!rects || rects.length === 0) return false;
+          const cs = window.getComputedStyle(el);
+          return cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) !== 0;
+        };
+        const queryAll = (s) => {
+          try {
+            if (type === 'xpath') {
+              const r = document.evaluate(s, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+              return Array.from({ length: r.snapshotLength }, (_, i) => r.snapshotItem(i));
+            }
+            return Array.from(document.querySelectorAll(s));
+          } catch (_) { return null; } // invalid selector
+        };
+        const els = queryAll(sel);
+        if (els === null) return { invalid: true };
+        const samples = els.slice(0, 5).map(el => ({
+          tag: el.tagName ? el.tagName.toLowerCase() : '?',
+          id: el.id || null,
+          classes: el.classList ? Array.from(el.classList).slice(0, 6) : [],
+          text: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 90),
+          href: (el.getAttribute && el.getAttribute('href')) || null,
+          visible: isVisible(el),
+        }));
+        const rel = (relaxations || []).map(rs => {
+          const m = queryAll(rs);
+          return { selector: rs, count: m === null ? 0 : m.length };
+        });
+        return { matchCount: els.length, visibleCount: els.filter(isVisible).length, samples, relaxations: rel };
+      }, sel, type, relaxations);
+
+      if (raw && raw.invalid) {
+        socket.emit('debugSelectorResult', { ok: false, error: `That ${type === 'xpath' ? 'XPath' : 'CSS selector'} isn't valid.` });
+        return;
+      }
+
+      // Probe iframes only when the top document had no matches.
+      let iframeMatches = 0;
+      if ((raw.matchCount || 0) === 0) {
+        try {
+          for (const fr of page.frames()) {
+            if (fr === page.mainFrame()) continue;
+            const c = await fr.evaluate((s, t) => {
+              try {
+                if (t === 'xpath') { const r = document.evaluate(s, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null); return r.snapshotLength; }
+                return document.querySelectorAll(s).length;
+              } catch (_) { return 0; }
+            }, sel, type).catch(() => 0);
+            iframeMatches += c || 0;
+          }
+        } catch (_) {}
+      }
+
+      const diagnosis = buildDiagnosis({
+        selectorType: type,
+        matchCount: raw.matchCount,
+        visibleCount: raw.visibleCount,
+        samples: raw.samples,
+        relaxations: raw.relaxations,
+        iframeMatches,
+      });
+      socket.emit('debugSelectorResult', { ok: true, selector: sel, selectorType: type, ...diagnosis });
+    } catch (err) {
+      socket.emit('debugSelectorResult', { ok: false, error: err.message });
     }
   });
 

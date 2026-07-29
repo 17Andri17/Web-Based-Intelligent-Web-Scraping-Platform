@@ -23,6 +23,7 @@ import ProxiesMenu from "./proxies/ProxiesMenu";
 import ApiKeysMenu from "./apiKeys/ApiKeysMenu";
 import WebhooksMenu from "./webhooks/WebhooksMenu";
 import RunInputsDialog from "./components/RunInputsDialog";
+import SelectorDebugger from "./components/SelectorDebugger";
 import { API_BASE, customActionsApi, workflowsApi, aiApi } from "./api/client";
 import "./styles/PaginationDetector.css";
 import "./styles/ApiSourcesPanel.css";
@@ -476,6 +477,8 @@ function AppShell({ user, token, onLogout }) {
   // Run-with-inputs / bulk runs (background, via the API worker queue).
   const [runMenuOpen, setRunMenuOpen] = useState(false);
   const [runInputsOpen, setRunInputsOpen] = useState(false);
+  // Selector debugger ("why does this match 0 elements?").
+  const [selectorDebugOpen, setSelectorDebugOpen] = useState(false);
 
   // ── Custom actions (user-defined reusable steps) ─────────────────────────
   const [customActionsOpen, setCustomActionsOpen] = useState(false);
@@ -2318,6 +2321,17 @@ function AppShell({ user, token, onLogout }) {
               </svg>
               API
             </button>
+            {/* Selector debugger */}
+            <button
+              className={`inspector-toggle-btn ${selectorDebugOpen ? "active" : ""}`}
+              onClick={() => setSelectorDebugOpen(true)}
+              title="Test a CSS/XPath selector against the page and see why it matches (or doesn't)"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+              </svg>
+              Debug
+            </button>
           </div>
 
           {/* Stream body: canvas + inspector sidebar side by side */}
@@ -2850,6 +2864,13 @@ function AppShell({ user, token, onLogout }) {
         workflowName={currentWorkflowName || "workflow"}
         variables={workflowVariables}
         showToast={showToast}
+      />
+
+      {/* ── Selector debugger (test a selector against the live page) ─────── */}
+      <SelectorDebugger
+        open={selectorDebugOpen}
+        onClose={() => setSelectorDebugOpen(false)}
+        socket={socket}
       />
 
       {/* ── Workflows menu (save / open / delete) ───────────────────────── */}
