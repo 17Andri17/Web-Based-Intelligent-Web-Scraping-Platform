@@ -367,23 +367,25 @@ async function getScheduleByWorkflow(userId, workflowId) {
   return db.get('SELECT * FROM schedules WHERE user_id = ? AND workflow_id = ?', [userId, workflowId]);
 }
 
-async function upsertSchedule({ userId, workflowId, intervalMinutes, isActive, anchorAtIso = null }) {
+async function upsertSchedule({ userId, workflowId, intervalMinutes, isActive, anchorAtIso = null, weekdays = null, cronExpression = null }) {
   const existing = await db.get('SELECT id FROM schedules WHERE workflow_id = ?', [workflowId]);
   const validAnchor = normaliseAnchor(anchorAtIso);
-  const nextRun = computeNextRun(validAnchor, intervalMinutes).toISOString();
+  const weekdaysCsv = normaliseWeekdays(weekdays);
+  const cron = normaliseCron(cronExpression);
+  const nextRun = computeNextRun(validAnchor, intervalMinutes, { weekdaysCsv, cron }).toISOString();
   if (existing) {
     await db.run(`
       UPDATE schedules
-      SET interval_minutes = ?, is_active = ?, anchor_at = ?, next_run_at = ?, updated_at = CURRENT_TIMESTAMP
+      SET interval_minutes = ?, is_active = ?, anchor_at = ?, weekdays = ?, cron_expression = ?, next_run_at = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `, [intervalMinutes, isActive ? 1 : 0, validAnchor, nextRun, existing.id]);
+    `, [intervalMinutes, isActive ? 1 : 0, validAnchor, weekdaysCsv, cron, nextRun, existing.id]);
     return getScheduleById(existing.id);
   }
   const inserted = await db.get(`
-    INSERT INTO schedules (user_id, workflow_id, interval_minutes, is_active, anchor_at, next_run_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO schedules (user_id, workflow_id, interval_minutes, is_active, anchor_at, weekdays, cron_expression, next_run_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     RETURNING id
-  `, [userId, workflowId, intervalMinutes, isActive ? 1 : 0, validAnchor, nextRun]);
+  `, [userId, workflowId, intervalMinutes, isActive ? 1 : 0, validAnchor, weekdaysCsv, cron, nextRun]);
   return getScheduleById(inserted.id);
 }
 
@@ -393,24 +395,91 @@ function normaliseAnchor(anchorAtIso) {
   return Number.isNaN(t) ? null : new Date(t).toISOString();
 }
 
+// Accept an array (or CSV string) of weekday numbers 0-6; return a sorted,
+// de-duped CSV, or null when it's every day / empty (no filtering).
+function normaliseWeekdays(weekdays) {
+  if (weekdays == null) return null;
+  const arr = Array.isArray(weekdays) ? weekdays : String(weekdays).split(',');
+  const set = new Set(arr.map(n => Number(String(n).trim())).filter(n => Number.isInteger(n) && n >= 0 && n <= 6));
+  if (set.size === 0 || set.size === 7) return null; // no constraint
+  return [...set].sort((a, b) => a - b).join(',');
+}
+
+function normaliseCron(cron) {
+  if (cron == null || String(cron).trim() === '') return null;
+  return String(cron).trim();
+}
+
+function parseWeekdaysCsv(csv) {
+  if (!csv) return null;
+  const set = new Set(String(csv).split(',').map(n => Number(n.trim())).filter(n => Number.isInteger(n)));
+  return set.size ? set : null;
+}
+
 /**
  * Compute the next time a scheduled workflow should fire.
  *
- * With an anchor: recurring at anchor + k * interval (k >= 0); the next fire
- * is the smallest such slot strictly in the future. Without an anchor: fire in
- * `intervalMinutes` from now.
+ * Precedence:
+ *   1. cron  — when set, the cron expression drives the next fire entirely.
+ *   2. anchor + interval — recurring at anchor + k*interval (k>=0), the
+ *      smallest slot strictly in the future; without an anchor, now+interval.
+ *   3. weekdays — a filter on the interval slots: skip forward by interval
+ *      until the slot lands on an allowed weekday (server-local).
  */
-function computeNextRun(anchorIso, intervalMinutes) {
-  const now = Date.now();
+function computeNextRun(anchorIso, intervalMinutes, opts = {}) {
+  const nowMsVal = opts.now instanceof Date ? opts.now.getTime()
+    : (typeof opts.now === 'number' ? opts.now : Date.now());
+
+  // 1. Cron wins.
+  if (opts.cron) {
+    const d = cronNext(opts.cron, new Date(nowMsVal));
+    if (d) return d;
+    // invalid cron → fall through to interval so a bad string never wedges the schedule
+  }
+
   const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000;
-  if (!anchorIso) return new Date(now + intervalMs);
-  const anchor = Date.parse(anchorIso);
-  if (Number.isNaN(anchor)) return new Date(now + intervalMs);
-  if (anchor > now) return new Date(anchor);
-  const slots = Math.ceil((now - anchor) / intervalMs);
-  let next = anchor + slots * intervalMs;
-  if (next <= now) next += intervalMs;
+  let next;
+  if (!anchorIso) {
+    next = nowMsVal + intervalMs;
+  } else {
+    const anchor = Date.parse(anchorIso);
+    if (Number.isNaN(anchor)) next = nowMsVal + intervalMs;
+    else if (anchor > nowMsVal) next = anchor;
+    else {
+      const slots = Math.ceil((nowMsVal - anchor) / intervalMs);
+      next = anchor + slots * intervalMs;
+      if (next <= nowMsVal) next += intervalMs;
+    }
+  }
+
+  // 3. Weekday filter.
+  const allowed = parseWeekdaysCsv(opts.weekdaysCsv);
+  if (allowed && allowed.size > 0 && allowed.size < 7) {
+    let guard = 0;
+    while (!allowed.has(new Date(next).getDay()) && guard++ < 20000) {
+      next += intervalMs;
+    }
+  }
   return new Date(next);
+}
+
+// True iff `expr` is a cron string cron-parser can parse.
+function computeNextRunCronValid(expr) {
+  return cronNext(expr, new Date()) !== null;
+}
+
+// Next cron occurrence after `from`, or null if the expression is invalid.
+// cron-parser v5 exposes CronExpressionParser.parse; older exposes parseExpression.
+function cronNext(expr, from) {
+  try {
+    const cp = require('cron-parser');
+    const it = cp.CronExpressionParser
+      ? cp.CronExpressionParser.parse(expr, { currentDate: from })
+      : cp.parseExpression(expr, { currentDate: from });
+    return it.next().toDate();
+  } catch (_) {
+    return null;
+  }
 }
 
 async function getScheduleById(id) {
@@ -433,8 +502,10 @@ async function dueSchedules(now = new Date()) {
 }
 
 async function bumpScheduleAfterRun(scheduleId, intervalMinutes) {
-  const row = await db.get('SELECT anchor_at FROM schedules WHERE id = ?', [scheduleId]);
-  const next = computeNextRun(row && row.anchor_at, intervalMinutes).toISOString();
+  const row = await db.get('SELECT anchor_at, weekdays, cron_expression FROM schedules WHERE id = ?', [scheduleId]);
+  const next = computeNextRun(row && row.anchor_at, intervalMinutes, {
+    weekdaysCsv: row && row.weekdays, cron: row && row.cron_expression,
+  }).toISOString();
   await db.run(`
     UPDATE schedules
     SET last_run_at = CURRENT_TIMESTAMP, next_run_at = ?
@@ -454,9 +525,11 @@ async function bumpScheduleAfterRun(scheduleId, intervalMinutes) {
  * Returns true iff this caller claimed the slot.
  */
 async function claimDueSchedule(scheduleId, intervalMinutes, now = new Date()) {
-  const row = await db.get('SELECT anchor_at FROM schedules WHERE id = ?', [scheduleId]);
+  const row = await db.get('SELECT anchor_at, weekdays, cron_expression FROM schedules WHERE id = ?', [scheduleId]);
   if (!row) return false;
-  const next = computeNextRun(row.anchor_at, intervalMinutes).toISOString();
+  const next = computeNextRun(row.anchor_at, intervalMinutes, {
+    weekdaysCsv: row.weekdays, cron: row.cron_expression, now,
+  }).toISOString();
   const info = await db.run(`
     UPDATE schedules
     SET last_run_at = CURRENT_TIMESTAMP, next_run_at = ?
@@ -515,6 +588,51 @@ async function recentChangedRuns(workflowId, limit = 20) {
   `, [workflowId, limit]);
 }
 
+// ── Google Sheets delivery (per-workflow) ───────────────────────────────────
+async function getSheetForWorkflow(userId, workflowId) {
+  return db.get('SELECT * FROM workflow_sheets WHERE user_id = ? AND workflow_id = ?', [userId, workflowId]);
+}
+
+// By workflow id alone — the pipeline already knows the run's owner.
+async function getSheetByWorkflow(workflowId) {
+  return db.get('SELECT * FROM workflow_sheets WHERE workflow_id = ?', [workflowId]);
+}
+
+async function upsertSheet({ userId, workflowId, isActive = true, spreadsheetId, sheetName = 'Sheet1', outputKey = null }) {
+  const existing = await db.get('SELECT id FROM workflow_sheets WHERE workflow_id = ?', [workflowId]);
+  if (existing) {
+    await db.run(`
+      UPDATE workflow_sheets
+      SET is_active = ?, spreadsheet_id = ?, sheet_name = ?, output_key = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [isActive ? 1 : 0, spreadsheetId, sheetName, outputKey, existing.id]);
+    return getSheetById(existing.id);
+  }
+  const inserted = await db.get(`
+    INSERT INTO workflow_sheets (user_id, workflow_id, is_active, spreadsheet_id, sheet_name, output_key)
+    VALUES (?, ?, ?, ?, ?, ?)
+    RETURNING id
+  `, [userId, workflowId, isActive ? 1 : 0, spreadsheetId, sheetName, outputKey]);
+  return getSheetById(inserted.id);
+}
+
+async function getSheetById(id) {
+  return db.get('SELECT * FROM workflow_sheets WHERE id = ?', [id]);
+}
+
+async function deleteSheet(userId, workflowId) {
+  const info = await db.run('DELETE FROM workflow_sheets WHERE user_id = ? AND workflow_id = ?', [userId, workflowId]);
+  return info.changes;
+}
+
+// Record the outcome of the most recent delivery attempt (for the UI).
+async function updateSheetStatus(workflowId, status) {
+  await db.run(
+    'UPDATE workflow_sheets SET last_status = ?, last_sent_at = CURRENT_TIMESTAMP WHERE workflow_id = ?',
+    [String(status).slice(0, 300), workflowId]
+  );
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────
 function truncate(s, n) {
   if (s == null) return null;
@@ -539,9 +657,12 @@ module.exports = {
   // change monitoring
   previousSuccessfulRunWithResults, saveChangeSummary,
   getMonitorForWorkflow, getMonitorByWorkflow, upsertMonitor, deleteMonitor, recentChangedRuns,
+  // Google Sheets delivery
+  getSheetForWorkflow, getSheetByWorkflow, upsertSheet, deleteSheet, updateSheetStatus,
   // version history / rollback
   ensureVersion, getVersionForUser, listVersionsForWorkflow,
   // schedules
   listSchedulesForUser, getScheduleByWorkflow, upsertSchedule,
   deleteSchedule, dueSchedules, bumpScheduleAfterRun, claimDueSchedule, getScheduleById,
+  computeNextRun, normaliseWeekdays, computeNextRunCronValid,   // exported for unit tests + route validation
 };

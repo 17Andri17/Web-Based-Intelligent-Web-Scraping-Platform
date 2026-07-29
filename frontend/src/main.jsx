@@ -14,13 +14,14 @@ import HtmlInspectorPanel from "./components/HtmlInspectorPanel";
 import PaginationDetector from "./components/PaginationDetector";
 import ApiSourcesPanel from "./components/ApiSourcesPanel";
 import Dashboard from "./components/Dashboard";
-import QuickScrapeWizard from "./components/QuickScrapeWizard";
+import GuidedCoach, { coachStepIndex } from "./components/GuidedCoach";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
 import CustomActionsMenu from "./customActions/CustomActionsMenu";
 import ProxiesMenu from "./proxies/ProxiesMenu";
 import ApiKeysMenu from "./apiKeys/ApiKeysMenu";
+import WebhooksMenu from "./webhooks/WebhooksMenu";
 import { API_BASE, customActionsApi, workflowsApi, aiApi } from "./api/client";
 import "./styles/PaginationDetector.css";
 import "./styles/ApiSourcesPanel.css";
@@ -373,6 +374,11 @@ function AppShell({ user, token, onLogout }) {
   }, [collectSampleValues]);
   const [reselectStepId,  setReselectStepId]  = useState(null); // step id awaiting element re-pick
   const [reselectIsLoop,  setReselectIsLoop]  = useState(false);
+  // Which param the next page-pick writes to. null = the step's primary
+  // `selector` (with selectorType + fallbacks), the classic reselect. A field
+  // key (e.g. "endSelector", "loadingSelector") means the "Pick on page"
+  // button on a secondary selector field in the step editor is driving it.
+  const [reselectField,   setReselectField]   = useState(null);
   // Insert target: where new steps from ElementInspector will land
   // null = root end (default); { type:"inside"|"after"|"root_end", stepId? }
   const [insertTarget, setInsertTarget] = useState(null);
@@ -383,10 +389,12 @@ function AppShell({ user, token, onLogout }) {
   useEffect(() => { stepsRef.current = steps; }, [steps]);
   // Stable refs for reselect (avoid stale closures in socket handler)
   const reselectStepIdRef            = useRef(null);
+  const reselectFieldRef             = useRef(null);
   const updateParamsByIdRef          = useRef(null);
   const handleUpdateParamsRef        = useRef(null);
   const paginationManualWaitingRef   = useRef(false);
   useEffect(() => { reselectStepIdRef.current          = reselectStepId; },          [reselectStepId]);
+  useEffect(() => { reselectFieldRef.current           = reselectField; },            [reselectField]);
   useEffect(() => { updateParamsByIdRef.current         = updateParamsById; },         [updateParamsById]);
   useEffect(() => { paginationManualWaitingRef.current  = paginationManualWaiting; }, [paginationManualWaiting]);
   const insertTargetRef = useRef(null);
@@ -447,7 +455,9 @@ function AppShell({ user, token, onLogout }) {
   // status, and a "needs attention" inbox. The wizard is the guided
   // point-and-click flow for building a list scraper from scratch.
   const [dashboardOpen, setDashboardOpen] = useState(true);
-  const [wizardOpen,    setWizardOpen]    = useState(false);
+  // Inline first-scrape coach: guides the user through the REAL controls
+  // (URL bar → Select → click → Inspector → Run) instead of a parallel wizard.
+  const [coachOpen,     setCoachOpen]     = useState(false);
 
   // ── Proxy servers ──────────────────────────────────────────────────────
   const [proxiesOpen, setProxiesOpen] = useState(false);
@@ -461,6 +471,7 @@ function AppShell({ user, token, onLogout }) {
 
   // ── API keys (public /v1 API credentials) ────────────────────────────────
   const [apiKeysOpen, setApiKeysOpen] = useState(false);
+  const [webhooksOpen, setWebhooksOpen] = useState(false);
 
   // ── Custom actions (user-defined reusable steps) ─────────────────────────
   const [customActionsOpen, setCustomActionsOpen] = useState(false);
@@ -617,13 +628,28 @@ function AppShell({ user, token, onLogout }) {
           socketRef.current?.emit('resetSelection');
         } else if (reselectStepIdRef.current) {
           const el = data.element;
-          updateParamsByIdRef.current(reselectStepIdRef.current, {
-            selector: el.selector || '',
-            selectorType: el.selectorType || 'css',
-            fallbackSelectors: el.fallbackSelectors || [],
-          });
+          const field = reselectFieldRef.current;
+          if (field) {
+            // "Pick on page" for a specific secondary selector field: write
+            // just that field. selectorType is shared per step, so keep it in
+            // sync too; fallbacks belong to the primary selector only.
+            updateParamsByIdRef.current(reselectStepIdRef.current, {
+              [field]: el.selector || '',
+              selectorType: el.selectorType || 'css',
+            });
+            // The pick came from the step editor — take the user back to it.
+            setActiveTab('workflow');
+          } else {
+            updateParamsByIdRef.current(reselectStepIdRef.current, {
+              selector: el.selector || '',
+              selectorType: el.selectorType || 'css',
+              fallbackSelectors: el.fallbackSelectors || [],
+            });
+          }
           reselectStepIdRef.current = null;
           setReselectStepId(null);
+          reselectFieldRef.current = null;
+          setReselectField(null);
           socketRef.current?.emit('resetSelection');
         } else {
           setManualSelResult(null);
@@ -1955,6 +1981,33 @@ function AppShell({ user, token, onLogout }) {
 
   const isRunDisabled = steps.length === 0 || execStatus === "running";
 
+  // First-scrape coach: current step derived purely from live editor state, so
+  // it advances as the user actually does each thing. `coachTarget` names the
+  // real control to spotlight this step.
+  const coachStep = coachStepIndex({
+    pageLoaded:   !!currentPageUrl,
+    mode,
+    hasSelection: !!(selectedElement && selectedElement.isMultiSelection),
+    hasList:      steps.some(s => s.type === "EXTRACT_LIST" || s.type === "COLLECT_LIST"),
+    hasRun:       !!execRunId || execStatus === "done",
+  });
+  const coachTarget = coachOpen ? ["url", "mode", "canvas", "sidebar", "run"][coachStep] : null;
+  const spot = (name) => (coachTarget === name ? " coach-spotlight" : "");
+
+  // "Pick on page" for a selector field in the step editor: jump to the live
+  // page in Select mode and arm the next click to write that field. fieldKey
+  // null = the step's primary selector (classic reselect); a key targets a
+  // secondary selector field (endSelector, loadingSelector, …).
+  const onPickOnPage = (stepId, fieldKey = null) => {
+    reselectStepIdRef.current = stepId;
+    reselectFieldRef.current  = fieldKey;
+    setReselectStepId(stepId);
+    setReselectField(fieldKey);
+    setActiveTab("stream");
+    changeMode("selection");
+    showToast("Click the element on the page to set this selector", "success");
+  };
+
   return (
     <div className="app-container">
       {/* ── Header ────────────────────────────────────────────────────────── */}
@@ -2040,7 +2093,7 @@ function AppShell({ user, token, onLogout }) {
             Download Code
           </button>
           <button
-            className={`header-btn run-btn ${execStatus === "running" ? "running" : ""}`}
+            className={`header-btn run-btn ${execStatus === "running" ? "running" : ""}${spot("run")}`}
             onClick={execStatus === "running" ? () => setExecPanelOpen(true) : handleRun}
             disabled={isRunDisabled && execStatus !== "running"}
           >
@@ -2070,6 +2123,7 @@ function AppShell({ user, token, onLogout }) {
                   <button className="item" onClick={() => { setUserMenuOpen(false); setCustomActionsOpen(true); }}>Custom actions…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setProxiesOpen(true); }}>Proxies…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setApiKeysOpen(true); }}>API keys…</button>
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setWebhooksOpen(true); }}>Webhooks…</button>
                   <button className="item danger" onClick={() => { setUserMenuOpen(false); onLogout(); }}>Sign out</button>
                 </div>
               </>
@@ -2108,7 +2162,7 @@ function AppShell({ user, token, onLogout }) {
         <div className={`stream-panel ${activeTab !== "stream" ? "hidden-panel" : ""}`}>
           {/* Control bar */}
           <div className="control-bar">
-            <div className="mode-toggle">
+            <div className={`mode-toggle${spot("mode")}`}>
               <button
                 className={`mode-btn ${mode === "navigation" ? "active" : ""}`}
                 onClick={() => { if (!forEachCtx) changeMode("navigation"); }}
@@ -2123,7 +2177,7 @@ function AppShell({ user, token, onLogout }) {
                 Select
               </button>
             </div>
-            <div className={`url-input-wrapper${onDifferentPage ? " url-input-wrapper--warn" : ""}`}>
+            <div className={`url-input-wrapper${onDifferentPage ? " url-input-wrapper--warn" : ""}${spot("url")}`}>
               {onDifferentPage && pinnedUrl && (
                 // Back to the workflow's start URL — only shown while we've
                 // drifted away from it. Sends the user (and any future
@@ -2171,7 +2225,7 @@ function AppShell({ user, token, onLogout }) {
 
             {/* Sidebar toggle */}
             <button
-              className={`inspector-toggle-btn ${showSidebar ? "active" : ""}`}
+              className={`inspector-toggle-btn ${showSidebar ? "active" : ""}${spot("sidebar")}`}
               onClick={() => setShowSidebar(v => !v)}
               title={showSidebar ? "Hide sidebar" : "Show sidebar"}
             >
@@ -2191,17 +2245,16 @@ function AppShell({ user, token, onLogout }) {
               </svg>
               Source
             </button>
-            {/* Quick Scrape wizard — openable at any moment; it syncs to
-                whatever has already happened (page loaded, list picked). */}
+            {/* Guided coach — walks the real controls; toggleable any time. */}
             <button
-              className={`inspector-toggle-btn quick-scrape-btn ${wizardOpen ? "active" : ""}`}
-              onClick={() => setWizardOpen(v => !v)}
-              title="Guided list scraping — picks up from what you've already done"
+              className={`inspector-toggle-btn quick-scrape-btn ${coachOpen ? "active" : ""}`}
+              onClick={() => setCoachOpen(v => !v)}
+              title="Step-by-step guide to building your first scraper"
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/>
+                <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
               </svg>
-              Quick Scrape
+              Guide
             </button>
             {/* Pagination detector */}
             <button
@@ -2236,7 +2289,7 @@ function AppShell({ user, token, onLogout }) {
           {/* Stream body: canvas + inspector sidebar side by side */}
           <div className="stream-body">
             <div
-              className={`canvas-container${showSidebar ? " canvas-container--with-sidebar" : ""}`}
+              className={`canvas-container${showSidebar ? " canvas-container--with-sidebar" : ""}${spot("canvas")}`}
               ref={canvasContainerRef}
               style={htmlMaximized && sidebarTab === "html" ? { display: "none" } : undefined}
             >
@@ -2483,11 +2536,15 @@ function AppShell({ user, token, onLogout }) {
                       // mutually exclusive page modes — end the pick first.
                       if (listPickStepId) handleStopListPick();
                       setReselectStepId(id);
+                      // Classic reselect targets the step's primary selector —
+                      // clear any stale "pick on page" field target.
+                      setReselectField(null);
+                      reselectFieldRef.current = null;
                       setReselectIsLoop(!!isLoop);
                       if (isLoop) socketRef.current?.emit("startForEachSelection");
                       else socketRef.current?.emit("startElementSelection");
                     }}
-                    onCancelReselect={() => { setReselectStepId(null); socketRef.current?.emit("resetSelection"); }}
+                    onCancelReselect={() => { setReselectStepId(null); setReselectField(null); reselectFieldRef.current = null; socketRef.current?.emit("resetSelection"); }}
                     onHighlight={(sel) => socketRef.current?.emit("highlightSelector", { selector: sel })}
                     onClearHighlight={() => socketRef.current?.emit("clearHighlight")}
                     onUpdateParams={handleUpdateParams}
@@ -2540,6 +2597,9 @@ function AppShell({ user, token, onLogout }) {
             listPickStepId={listPickStepId}
             onStartListPick={handleStartListPick}
             onStopListPick={handleStopListPick}
+            onPickOnPage={onPickOnPage}
+            reselectStepId={reselectStepId}
+            reselectField={reselectField}
           />
         )}
         {activeTab === "data" && (
@@ -2741,6 +2801,13 @@ function AppShell({ user, token, onLogout }) {
         showToast={showToast}
       />
 
+      {/* ── Webhooks (run + change-monitoring push endpoints) ─────────────── */}
+      <WebhooksMenu
+        open={webhooksOpen}
+        onClose={() => setWebhooksOpen(false)}
+        showToast={showToast}
+      />
+
       {/* ── Workflows menu (save / open / delete) ───────────────────────── */}
       {/* ── Dashboard (landing screen) ──────────────────────────────────────── */}
       <Dashboard
@@ -2751,7 +2818,7 @@ function AppShell({ user, token, onLogout }) {
           resetWorkflow();
           setDashboardOpen(false);
           setActiveTab("stream");
-          setWizardOpen(true);
+          setCoachOpen(true);
         }}
         onNewBlank={() => {
           if (steps.length > 0 && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
@@ -2772,53 +2839,16 @@ function AppShell({ user, token, onLogout }) {
         onResumeEditing={() => setDashboardOpen(false)}
       />
 
-      {/* ── Quick Scrape wizard (guided list scraping) ──────────────────────── */}
-      <QuickScrapeWizard
-        open={wizardOpen}
-        socket={socket}
-        currentPageUrl={currentPageUrl}
-        selection={selectedElement}
-        onClose={() => setWizardOpen(false)}
-        onSetMode={changeMode}
-        onNavigate={(url) => {
-          setUrlInput(url);
-          // The wizard drives navigation directly (not through the URL bar's
-          // handleNavigate), so make sure the workflow still gets its pinned
-          // start NAVIGATE — otherwise page-setup steps recorded during the
-          // load (e.g. Close Cookie Banner) attach to nothing and the built
-          // workflow starts with no navigation.
-          const cur = stepsRef.current || [];
-          if (cur[0]?.type === "NAVIGATE") {
-            if (cur[0].pinned && cur[0].params?.url !== url) {
-              updateParamsById(cur[0].id, { url });
-            }
-          } else {
-            const nav = createAction("NAVIGATE", { url });
-            nav.pinned = true;
-            addStep(nav, [], 0);
-          }
-          performNavigate(url);
-        }}
-        onApplySteps={(newSteps, meta) => {
-          // Append the wizard's generated steps to the workflow and jump to
-          // the Workflow tab so the user can review/edit them. If the
-          // workflow doesn't have a start NAVIGATE yet (the wizard drives
-          // navigation directly), pin one first so the workflow is
-          // self-contained — and so page-setup steps (cookie banner,
-          // CAPTCHA) have a navigation to attach to.
-          const startUrl = meta?.startUrl || currentPageUrl;
-          if ((stepsRef.current || [])[0]?.type !== "NAVIGATE" && startUrl) {
-            const nav = createAction("NAVIGATE", { url: startUrl });
-            nav.pinned = true;
-            addStep(nav, [], 0);
-          }
-          for (const s of newSteps) addStep(s, [], null);
-          if (meta && meta.startUrl) sessionMetaRef.current = { ...sessionMetaRef.current, startUrl: meta.startUrl };
-          setWizardOpen(false);
-          setActiveTab("workflow");
-          showToast("✓ Scraper built — review the steps, then Run", "success");
-        }}
-        showToast={showToast}
+      {/* ── First-scrape coach (guides the real controls, not a wizard) ─────── */}
+      <GuidedCoach
+        open={coachOpen}
+        stepIndex={coachStep}
+        onClose={() => setCoachOpen(false)}
+        onFocusUrl={() => { setActiveTab("stream"); setTimeout(() => document.querySelector(".url-input")?.focus(), 0); }}
+        onSelectMode={() => { if (!forEachCtx) changeMode("selection"); }}
+        onOpenInspector={() => { setShowSidebar(true); setSidebarTab("inspector"); }}
+        onRun={() => { if (!isRunDisabled) handleRun(); }}
+        onOpenData={() => setActiveTab("data")}
       />
 
       <WorkflowsMenu

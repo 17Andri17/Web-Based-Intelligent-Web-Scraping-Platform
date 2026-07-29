@@ -61,6 +61,11 @@ export const workflowsApi = {
   // body: { isActive, outputKey?, keyField? } — keyField "" = whole-row, omit = auto
   saveMonitor:   (id, body) => api.put(`/api/workflows/${id}/monitor`, body).then(r => r.data.monitor),
   removeMonitor: (id) => api.delete(`/api/workflows/${id}/monitor`).then(r => r.data),
+  // Google Sheets delivery: config + instance service-account status.
+  getSheet:      (id) => api.get(`/api/workflows/${id}/sheet`).then(r => r.data),
+  // body: { isActive, spreadsheet (id/URL), sheetName?, outputKey? }
+  saveSheet:     (id, body) => api.put(`/api/workflows/${id}/sheet`, body).then(r => r.data.sheet),
+  removeSheet:   (id) => api.delete(`/api/workflows/${id}/sheet`).then(r => r.data),
 };
 
 export const customActionsApi = {
@@ -99,6 +104,14 @@ export const proxyPoolsApi = {
   removeShared: (id) => api.delete(`/api/proxy-pools/shared/${id}`).then(r => r.data),
 };
 
+export const webhooksApi = {
+  events: ()        => api.get("/api/webhooks/events").then(r => r.data.events),
+  list:   ()        => api.get("/api/webhooks").then(r => r.data.webhooks),
+  // Returns { ...webhook, secret } — the secret is shown exactly once.
+  create: (url, events) => api.post("/api/webhooks", { url, events }).then(r => r.data.webhook),
+  remove: (id)      => api.delete(`/api/webhooks/${id}`).then(r => r.data),
+};
+
 export const aiApi = {
   // Returns '' on any error / when AI isn't configured — caller should
   // treat the empty string as "no suggestion" and leave the label alone.
@@ -111,8 +124,8 @@ export const aiApi = {
 export const schedulesApi = {
   list:           ()             => api.get("/api/schedules").then(r => r.data.schedules),
   getForWorkflow: (workflowId)   => api.get(`/api/schedules/workflow/${workflowId}`).then(r => r.data.schedule),
-  upsertForWorkflow: (workflowId, intervalMinutes, isActive, startAtIso = null) =>
-    api.put(`/api/schedules/workflow/${workflowId}`, { intervalMinutes, isActive, startAtIso }).then(r => r.data.schedule),
+  upsertForWorkflow: (workflowId, intervalMinutes, isActive, startAtIso = null, extra = {}) =>
+    api.put(`/api/schedules/workflow/${workflowId}`, { intervalMinutes, isActive, startAtIso, ...extra }).then(r => r.data.schedule),
   removeForWorkflow: (workflowId) =>
     api.delete(`/api/schedules/workflow/${workflowId}`).then(r => r.data),
 };

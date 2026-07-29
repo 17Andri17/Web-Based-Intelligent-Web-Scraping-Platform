@@ -14,6 +14,9 @@ import { schedulesApi } from "../api/client";
      showToast(msg, type)
    ===================================================================== */
 
+// 0=Sunday … 6=Saturday, matching JS Date.getDay() and the backend filter.
+const DAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
 const PRESETS = [
   { minutes: 15,    label: "Every 15 minutes" },
   { minutes: 30,    label: "Every 30 minutes" },
@@ -39,6 +42,11 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
   // the first run is the next occurrence of this time in the user's local
   // tz, and subsequent runs land on anchor + k * interval.
   const [startTime, setStartTime] = useState('');
+  // Optional weekday filter (0=Sun … 6=Sat). Empty = every day.
+  const [weekdays, setWeekdays] = useState([]);
+  // Advanced: a cron expression that, when set, drives the schedule entirely.
+  const [cronMode, setCronMode] = useState(false);
+  const [cron, setCron]         = useState('');
 
   const refresh = async () => {
     if (!workflowId) return;
@@ -59,11 +67,17 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
         } else {
           setStartTime('');
         }
+        setWeekdays(Array.isArray(s.weekdays) ? s.weekdays : []);
+        setCron(s.cronExpression || '');
+        setCronMode(!!s.cronExpression);
       } else {
         setEnabled(false);
         setMinutes(60);
         setCustomMode(false);
         setStartTime('');
+        setWeekdays([]);
+        setCron('');
+        setCronMode(false);
       }
     } catch (err) {
       setError(err?.response?.data?.error || err.message);
@@ -80,6 +94,9 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
     setBusy(true);
     setError(null);
     try {
+      if (enabled && cronMode && !cron.trim()) {
+        throw new Error("Enter a cron expression, or turn off the cron option.");
+      }
       const m = Number(minutes);
       if (!Number.isFinite(m) || m < 5) {
         throw new Error("Interval must be at least 5 minutes");
@@ -97,9 +114,16 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
         if (target <= now) target.setDate(target.getDate() + 1); // already passed today → tomorrow
         startAtIso = target.toISOString();
       }
-      const saved = await schedulesApi.upsertForWorkflow(workflowId, m, enabled, startAtIso);
+      const extra = {
+        weekdays: cronMode ? [] : weekdays,
+        cronExpression: cronMode ? cron.trim() : null,
+      };
+      const saved = await schedulesApi.upsertForWorkflow(workflowId, m, enabled, cronMode ? null : startAtIso, extra);
       setSchedule(saved);
-      const when = startTime ? `starting ${startTime} every ${prettyMin(m)}` : `every ${prettyMin(m)}`;
+      const when = cronMode
+        ? `on cron “${cron.trim()}”`
+        : (startTime ? `starting ${startTime} every ${prettyMin(m)}` : `every ${prettyMin(m)}`)
+          + (weekdays.length && weekdays.length < 7 ? ` on ${weekdays.map(d => DAY_ABBR[d]).join(", ")}` : "");
       showToast?.(enabled ? `✓ Schedule active — ${when}` : "✓ Schedule paused", "success");
     } catch (err) {
       setError(err?.response?.data?.error || err.message);
@@ -157,13 +181,44 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
                 border: `1px solid ${enabled ? "rgba(79,156,249,0.28)" : "var(--border-soft, #2a2a2a)"}`,
                 color: enabled ? "var(--text-primary, #e6e6e6)" : "var(--text-secondary, #999)",
               }}>
-                {enabled
-                  ? (startTime
-                      ? <>This workflow will run <strong>at {startTime} {tzLabel()}</strong>, then <strong>every {prettyMin(Number(minutes))}</strong>.</>
-                      : <>This workflow will run <strong>every {prettyMin(Number(minutes))}</strong>, starting when you save.</>)
-                  : <>Automatic runs are <strong>off</strong>. Turn on the switch above to schedule this workflow.</>}
+                {!enabled
+                  ? <>Automatic runs are <strong>off</strong>. Turn on the switch above to schedule this workflow.</>
+                  : cronMode
+                    ? (cron.trim()
+                        ? <>This workflow will run on the cron schedule <strong>{cron.trim()}</strong> ({tzLabel()}).</>
+                        : <>Enter a cron expression below to schedule this workflow.</>)
+                    : (<>
+                        This workflow will run{" "}
+                        {startTime ? <><strong>at {startTime} {tzLabel()}</strong>, then <strong>every {prettyMin(Number(minutes))}</strong></> : <><strong>every {prettyMin(Number(minutes))}</strong>, starting when you save</>}
+                        {weekdays.length > 0 && weekdays.length < 7 && <> — only on <strong>{weekdays.map(d => DAY_ABBR[d]).join(", ")}</strong></>}.
+                      </>)}
               </div>
 
+              {/* Advanced: a cron expression drives the schedule entirely. */}
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 12 }}>
+                <input type="checkbox" checked={cronMode} onChange={e => setCronMode(e.target.checked)} disabled={!enabled || busy} />
+                <span>Use a cron expression <span style={{ color: "var(--text-secondary)" }}>(advanced)</span></span>
+              </label>
+
+              {cronMode && (
+                <div style={{ marginBottom: 14 }}>
+                  <div className="wf-section-title">Cron expression</div>
+                  <input
+                    type="text"
+                    value={cron}
+                    onChange={e => setCron(e.target.value)}
+                    disabled={!enabled || busy}
+                    placeholder="0 9 * * 1-5"
+                    style={{ width: "100%", fontFamily: "monospace" }}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 6 }}>
+                    Standard 5-field cron in your local time. Example: <code>0 9 * * 1-5</code> = 9:00 AM on weekdays.
+                    Overrides the interval and weekday settings.
+                  </div>
+                </div>
+              )}
+
+              {!cronMode && (<>
               <div className="wf-section-title">How often</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6, marginBottom: 10 }}>
                 {PRESETS.map(p => (
@@ -204,6 +259,34 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
                 />
               </div>
 
+              <div className="wf-section-title">On days (optional)</div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
+                {DAY_ABBR.map((label, d) => {
+                  const on = weekdays.includes(d);
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      className="wf-save-btn"
+                      style={{
+                        padding: "5px 10px", minWidth: 46,
+                        background: on ? "var(--accent-primary, #4f9cf9)" : "transparent",
+                        color: on ? "#fff" : "var(--text-secondary)",
+                      }}
+                      onClick={() => setWeekdays(w => on ? w.filter(x => x !== d) : [...w, d].sort((a, b) => a - b))}
+                      disabled={!enabled || busy}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 14 }}>
+                {weekdays.length === 0 || weekdays.length === 7
+                  ? "Runs every day. Pick days to restrict it (e.g. weekdays only)."
+                  : `Only runs on ${weekdays.map(d => DAY_ABBR[d]).join(", ")}.`}
+              </div>
+
               <div className="wf-section-title">Start at (optional)</div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                 <input
@@ -228,6 +311,7 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
                     : `Runs every ${prettyMin(Number(minutes))} starting when you save`}
                 </span>
               </div>
+              </>)}
 
               {schedule && (
                 <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 14 }}>

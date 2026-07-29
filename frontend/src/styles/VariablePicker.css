@@ -192,6 +192,34 @@
   border-color: #e89a4f !important;
   background: rgba(232, 154, 79, 0.05) !important;
 }
+/* "Pick on page" button on selector fields — click an element instead of
+   typing a CSS selector. */
+.vpick-onpage-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--accent-primary, #4f9cf9);
+  background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 35%, transparent);
+}
+.vpick-onpage-btn:hover { background: color-mix(in srgb, var(--accent-primary) 18%, transparent); }
+.vpick-onpage-btn.picking {
+  color: #fff;
+  background: var(--accent-primary, #4f9cf9);
+  border-color: var(--accent-primary, #4f9cf9);
+  animation: vpickPickPulse 1.4s ease-in-out infinite;
+}
+@keyframes vpickPickPulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-primary) 50%, transparent); }
+  50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-primary) 0%, transparent); }
+}
 .vpick-input-warning {
   font-size: 11px;
   color: #e89a4f;

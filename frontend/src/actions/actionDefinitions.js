@@ -727,8 +727,9 @@ const ${outputVar} = page.url();
       expression: {
         type: "string",
         required: true,
-        label: "Condition expression (JS)",
-        placeholder: "e.g.  myVar !== null  or  results.length > 0"
+        label: "This is true when…",
+        placeholder: "e.g.  myVar !== null  or  results.length > 0",
+        help: "Build a condition with the picker above, or type your own expression."
       }
     },
     advanced: {
@@ -1489,8 +1490,9 @@ const ${outputVar} = await (async () => {
       value: {
         type: "string",
         required: true,
-        label: "Value (JS expression or quoted string)",
-        placeholder: "\"hello\"  or  42  or  someOtherVar + 1"
+        label: "Set it to",
+        placeholder: "\"hello\"  or  42  or  someOtherVar + 1",
+        help: "Text in quotes, a number, or an expression using other variables."
       }
     },
     advanced: {},

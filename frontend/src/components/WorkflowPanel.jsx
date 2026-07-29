@@ -433,6 +433,7 @@ export default function WorkflowPanel({
   variablesCollapsed = false, onToggleVariablesCollapsed,
   availableWorkflows = [], currentWorkflowId = null,
   listPickStepId = null, onStartListPick, onStopListPick,
+  onPickOnPage, reselectStepId = null, reselectField = null,
 }) {
   const [pickerCtx, setPickerCtx]   = useState(null);
   const [editingCtx, setEditingCtx] = useState(null);
@@ -482,7 +483,7 @@ export default function WorkflowPanel({
           || s.type?.replace(/_/g, ' '));
 
   return (
-    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, onToggleAttach, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId, variables, availableCapturedOutputs: capturedOutputs, steps, listPickStepId, onStartListPick, onStopListPick }}>
+    <WPCtx.Provider value={{ insertTarget, onSetInsertTarget, onMoveStep, onToggleAttach, activeId, customActions, socket, previewData, availableWorkflows, currentWorkflowId, variables, availableCapturedOutputs: capturedOutputs, steps, listPickStepId, onStartListPick, onStopListPick, onPickOnPage, reselectStepId, reselectField }}>
     <div className="workflow-designer">
       <div className="workflow-header">
         <div className="workflow-title">
@@ -1457,10 +1458,25 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
    Wraps a single-line input with a "$" button that opens a popover
    tree of available variables / captured outputs / loop-iteration
    variables. Picking inserts at the current caret position. */
-function ScopedTextInput({ value, onChange, placeholder, type = "text", step, expectedKind = "any", showMatchCount = false }) {
-  const { variables = [], availableCapturedOutputs = [], steps: allSteps = [], previewData = {} } =
-    useContext(WPCtx) || {};
+// Steps whose primary `selector` targets a GROUP/container, picked via the
+// list "Pick from page" flow rather than a single-element click.
+const GROUP_SELECT_STEP_TYPES = new Set(["EXTRACT_LIST", "COLLECT_LIST", "FOR_EACH_ELEMENTS", "FOR_EACH"]);
+
+function ScopedTextInput({ value, onChange, placeholder, type = "text", step, expectedKind = "any", showMatchCount = false, fieldKey = null }) {
+  const { variables = [], availableCapturedOutputs = [], steps: allSteps = [], previewData = {},
+          onPickOnPage, reselectStepId = null, reselectField = null } = useContext(WPCtx) || {};
   const inputRef = useRef(null);
+
+  // "Pick on page" applies to single-element selector fields. The primary
+  // `selector` maps to the classic reselect (fieldKey null); secondary
+  // selector fields (endSelector, loadingSelector, contentSelector…) target
+  // themselves. Container/list selectors are excluded — they use list-pick.
+  const isSelectorField = typeof fieldKey === "string" && /selector$/i.test(fieldKey) && fieldKey !== "containerSelector";
+  const isPrimarySelector = fieldKey === "selector";
+  const canPick = !!onPickOnPage && step && isSelectorField
+    && !(isPrimarySelector && GROUP_SELECT_STEP_TYPES.has(step.type));
+  const pickTargetField = isPrimarySelector ? null : fieldKey;
+  const isPicking = canPick && reselectStepId === step.id && reselectField === pickTargetField;
 
   // Live element-match count for selector fields, from the step's preview
   // (previewStep returns totalMatched). Only shown when we actually have a
@@ -1516,6 +1532,19 @@ function ScopedTextInput({ value, onChange, placeholder, type = "text", step, ex
           onChange={e => onChange(e.target.value)}
           className={mismatchWarning ? "vpick-input-mismatch" : undefined}
         />
+        {canPick && (
+          <button
+            type="button"
+            className={`vpick-onpage-btn ${isPicking ? "picking" : ""}`}
+            onClick={() => onPickOnPage(step.id, pickTargetField)}
+            title="Click the element on the live page instead of typing a selector"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>
+            </svg>
+            {isPicking ? "Click on page…" : "Pick"}
+          </button>
+        )}
         <VariablePicker
           variables={variables}
           capturedOutputs={availableCapturedOutputs}
@@ -1985,6 +2014,7 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
           // fields so a non-technical user immediately sees whether their
           // selector finds anything on the page.
           showMatchCount={fieldKey === "selector" || fieldKey === "containerSelector"}
+          fieldKey={fieldKey}
         />
       )}
       {type === "number"  && <input type="number" value={value ?? ""}   onChange={e => onChange(Number(e.target.value))} />}

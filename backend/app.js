@@ -12,6 +12,7 @@ const runsRoutes = require('./routes/runs.routes');
 const proxiesRoutes = require('./routes/proxies.routes');
 const proxyPoolsRoutes = require('./routes/proxyPools.routes');
 const apiKeysRoutes = require('./routes/apiKeys.routes');
+const webhooksRoutes = require('./routes/webhooks.routes');
 const v1Routes = require('./routes/v1');
 
 const app = express();
@@ -31,6 +32,7 @@ app.use('/api/proxies', proxiesRoutes);
 app.use('/api/proxy-pools', proxyPoolsRoutes);
 // Dashboard management of public-API keys (JWT-authed, internal).
 app.use('/api/api-keys', apiKeysRoutes);
+app.use('/api/webhooks', webhooksRoutes);
 
 // Public REST API — versioned, API-key-authed surface for third-party
 // programs (docs/API_ARCHITECTURE.md). Internal frontend routes stay /api/*.

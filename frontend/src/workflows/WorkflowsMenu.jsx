@@ -4,6 +4,7 @@ import ScheduleEditor from "../runs/ScheduleEditor";
 import RunsHistory from "../runs/RunsHistory";
 import DatasetPanel from "../components/DatasetPanel";
 import MonitorEditor from "../components/MonitorEditor";
+import SheetDeliveryEditor from "../components/SheetDeliveryEditor";
 
 /**
  * Modal for saving the current workflow and opening / deleting saved ones.
@@ -35,6 +36,7 @@ export default function WorkflowsMenu({
   const [historyFor,  setHistoryFor]  = useState(null);   // { id, name } | null
   const [dataFor,     setDataFor]     = useState(null);   // { id, name } | null
   const [monitorFor,  setMonitorFor]  = useState(null);   // { id, name } | null
+  const [sheetFor,    setSheetFor]    = useState(null);   // { id, name } | null
   // Map workflowId → { isActive, intervalMinutes } so we can show a small
   // badge next to scheduled workflows in the list.
   const [scheduleByWf, setScheduleByWf] = useState({});
@@ -202,6 +204,7 @@ export default function WorkflowsMenu({
                       <button onClick={() => setHistoryFor({ id: wf.id, name: wf.name })} disabled={busy}>History</button>
                       <button onClick={() => setScheduleFor({ id: wf.id, name: wf.name })} disabled={busy}>Schedule</button>
                       <button onClick={() => setMonitorFor({ id: wf.id, name: wf.name })} disabled={busy}>Monitor</button>
+                      <button onClick={() => setSheetFor({ id: wf.id, name: wf.name })} disabled={busy}>Sheets</button>
                       <button className="danger" onClick={() => handleDelete(wf.id, wf.name)} disabled={busy}>Delete</button>
                     </div>
                   </div>
@@ -236,6 +239,15 @@ export default function WorkflowsMenu({
         onClose={() => setMonitorFor(null)}
         workflowId={monitorFor?.id}
         workflowName={monitorFor?.name}
+        showToast={showToast}
+      />
+
+      {/* Per-workflow Google Sheets delivery modal */}
+      <SheetDeliveryEditor
+        open={!!sheetFor}
+        onClose={() => setSheetFor(null)}
+        workflowId={sheetFor?.id}
+        workflowName={sheetFor?.name}
         showToast={showToast}
       />
 

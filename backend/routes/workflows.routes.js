@@ -6,6 +6,7 @@ const runStore = require('../services/runStore.service');
 const dataset = require('../services/dataset.service');
 const { resultsToCsv } = require('../utils/resultsExport');
 const { resultsToXlsx } = require('../utils/resultsXlsx');
+const sheets = require('../services/googleSheets.service');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -280,6 +281,61 @@ router.put('/:id/monitor', async (req, res) => {
 router.delete('/:id/monitor', async (req, res) => {
   const changes = await runStore.deleteMonitor(req.user.id, req.params.id);
   if (changes === 0) return res.status(404).json({ error: 'No monitor for this workflow' });
+  res.json({ ok: true });
+});
+
+// ── Google Sheets delivery ──────────────────────────────────────────────────
+
+function serializeSheet(row) {
+  if (!row) return null;
+  return {
+    workflowId:    row.workflow_id,
+    isActive:      !!row.is_active,
+    spreadsheetId: row.spreadsheet_id,
+    sheetName:     row.sheet_name || 'Sheet1',
+    outputKey:     row.output_key || null,   // null = primary list
+    lastStatus:    row.last_status || null,
+    lastSentAt:    row.last_sent_at || null,
+  };
+}
+
+// Config + the instance's service-account status (so the UI can tell the user
+// which e-mail to share the sheet with, and whether delivery can work at all).
+router.get('/:id/sheet', async (req, res) => {
+  const owned = await workflows.existsForUser(req.params.id, req.user.id);
+  if (!owned) return res.status(404).json({ error: 'Not found' });
+  const cfg = await runStore.getSheetForWorkflow(req.user.id, req.params.id);
+  res.json({
+    sheet: serializeSheet(cfg),
+    serviceAccount: { configured: sheets.isConfigured(), email: sheets.getServiceAccountEmail() },
+  });
+});
+
+// Enable / update. Body: { isActive?, spreadsheet (id or URL), sheetName?, outputKey? }
+router.put('/:id/sheet', async (req, res) => {
+  const owned = await workflows.existsForUser(req.params.id, req.user.id);
+  if (!owned) return res.status(404).json({ error: 'Not found' });
+  const b = req.body || {};
+
+  const spreadsheetId = sheets.parseSpreadsheetId(b.spreadsheet || b.spreadsheetId || '');
+  if (!spreadsheetId) {
+    return res.status(400).json({ error: 'Enter a valid Google Sheets URL or spreadsheet ID.' });
+  }
+  const sheetName = (b.sheetName && String(b.sheetName).trim()) || 'Sheet1';
+  const outputKey = b.outputKey == null || b.outputKey === '' ? null : String(b.outputKey);
+
+  const saved = await runStore.upsertSheet({
+    userId: req.user.id,
+    workflowId: Number(req.params.id),
+    isActive: b.isActive === undefined ? true : !!b.isActive,
+    spreadsheetId, sheetName, outputKey,
+  });
+  res.json({ sheet: serializeSheet(saved) });
+});
+
+router.delete('/:id/sheet', async (req, res) => {
+  const changes = await runStore.deleteSheet(req.user.id, req.params.id);
+  if (changes === 0) return res.status(404).json({ error: 'No sheet delivery for this workflow' });
   res.json({ ok: true });
 });
 

@@ -20,6 +20,8 @@ function serialize(s) {
     intervalMinutes: s.interval_minutes,
     isActive:        s.is_active === 1,
     anchorAt:        s.anchor_at || null,
+    weekdays:        s.weekdays ? s.weekdays.split(',').map(Number) : [],
+    cronExpression:  s.cron_expression || null,
     nextRunAt:       s.next_run_at,
     lastRunAt:       s.last_run_at,
     createdAt:       s.created_at,
@@ -44,7 +46,7 @@ router.put('/workflow/:workflowId', async (req, res) => {
   const wf = await workflows.getForUser(workflowId, req.user.id);
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
 
-  const { intervalMinutes, isActive, startAtIso } = req.body || {};
+  const { intervalMinutes, isActive, startAtIso, weekdays, cronExpression } = req.body || {};
   const im = Number(intervalMinutes);
   if (!Number.isFinite(im) || im < MIN_INTERVAL || im > MAX_INTERVAL) {
     return res.status(400).json({ error: `intervalMinutes must be between ${MIN_INTERVAL} and ${MAX_INTERVAL}` });
@@ -59,12 +61,30 @@ router.put('/workflow/:workflowId', async (req, res) => {
     anchorAtIso = new Date(t).toISOString();
   }
 
+  // Weekdays: optional array of 0-6.
+  if (weekdays !== undefined && weekdays !== null) {
+    if (!Array.isArray(weekdays) || weekdays.some(d => !Number.isInteger(d) || d < 0 || d > 6)) {
+      return res.status(400).json({ error: 'weekdays must be an array of integers 0-6 (0=Sunday)' });
+    }
+  }
+
+  // Cron: optional; validate by parsing so a bad string fails loudly here.
+  let cron = null;
+  if (cronExpression != null && String(cronExpression).trim() !== '') {
+    cron = String(cronExpression).trim();
+    if (!runStore.computeNextRunCronValid(cron)) {
+      return res.status(400).json({ error: 'cronExpression is not a valid 5-field cron string' });
+    }
+  }
+
   const saved = await runStore.upsertSchedule({
     userId: req.user.id,
     workflowId,
     intervalMinutes: im,
     isActive: isActive !== false,
     anchorAtIso,
+    weekdays: weekdays || null,
+    cronExpression: cron,
   });
   res.json({ schedule: serialize({ ...saved, workflow_name: wf.name }) });
 });

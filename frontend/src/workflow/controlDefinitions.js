@@ -61,8 +61,9 @@ export const controlDefinitions = {
     params: {
       expression: {
         type: 'string', required: true,
-        label: 'Condition (JS expression)',
+        label: 'Only run these steps when…',
         placeholder: 'results.length > 0  or  currentPage < 10',
+        help: 'Build a condition with the picker above, or type your own expression.',
       },
     },
   },
@@ -231,12 +232,13 @@ export const controlDefinitions = {
     params: {
       expression: {
         type: 'string', required: true,
-        label: 'Continue while (JS expression)',
+        label: 'Keep repeating while…',
         placeholder: 'hasNextPage === true',
+        help: 'Build a condition with the picker above, or type your own expression.',
       },
       maxIterations: {
         type: 'number',
-        label: 'Max iterations (safety cap)',
+        label: 'Stop after this many loops (safety cap)',
         default: 1000,
       },
     },

@@ -34,10 +34,11 @@ have largely been closed:
 - The original P0 correctness bugs and production-hardening items are all
   fixed (§3, §4).
 
-What remains is mostly **power-user surface and delivery breadth** (§7 P2–P3):
-a webhook management UI, workflow export/import/duplicate → templates, Google
-Sheets delivery, cron/weekday schedules, run-with-inputs in the editor, and
-bulk input lists. None of it requires the scaling work.
+The webhook management UI, cron/weekday schedules, and Google Sheets delivery
+have since shipped too. What remains is mostly **power-user surface and the last
+of delivery breadth** (§7 P2–P3): workflow export/import/duplicate → templates,
+run-with-inputs in the editor, bulk input lists, a selector-debugging panel, and
+per-workflow execution settings. None of it requires the scaling work.
 
 ---
 
@@ -48,16 +49,16 @@ Grouped by the competitor concept it matches.
 | Capability | Status | Notes |
 |---|---|---|
 | Visual point-and-click builder on a live streamed browser | ✅ strong | Real Chromium pixel stream w/ input forwarding, HiDPI, selector tool, breadcrumb/ancestor picker, HTML source tree inspector |
-| Guided "click twice, get a table" onboarding | ✅ shipped | **Quick Scrape wizard** chains navigate → container detection → AI field proposal → pagination into one linear flow (`QuickScrapeWizard.jsx`) |
+| Guided onboarding for non-technical users | ✅ shipped | **Inline first-scrape coach** (`GuidedCoach.jsx`) — spotlights the *real* controls (URL bar → Select → click → Inspector → Run) and auto-advances from live state, teaching the actual UI. Replaced the earlier floating Quick Scrape wizard, which duplicated the inspector/workflow in a weaker parallel path |
 | Home dashboard | ✅ shipped | Post-login landing with per-workflow status cards, "Needs attention" inbox, and (new) change indicators (`Dashboard.jsx`) |
 | AI field suggestion for lists | ✅ strong | LLM proposal + live-DOM verification + heuristic fallback + "intent rescue" merging — degrades gracefully with no API key |
 | Pagination handling | ✅ strong | Three native containers (scroll/button/URL) + a two-phase detector (static DOM scan + empirical scroll test) with confidence scores |
 | Self-healing | ✅ differentiator | Empty-result detection, snapshot-verified fixes, confidence-gated auto-adopt, one-click manual adopt, full audit trail in `run_repairs` |
 | Run history & versioning | ✅ strong | Every run pins an executed version; one-click rollback; logs, repairs, AI summaries |
 | No-code condition builder | ✅ shipped | Field/operator/value dropdowns compiling to JS, with "edit as code" preserved (`ConditionBuilder.jsx`); wired for IF / WHILE expressions |
-| Scheduling | ⚠️ partial | Interval + time-of-day anchor (`ScheduleEditor.jsx`); **no cron, no weekday selection** yet |
+| Scheduling | ✅ shipped | Interval + time-of-day anchor + **weekday filter + optional cron expression** (`ScheduleEditor.jsx`, migration 0006, `cron-parser`) |
 | Public REST API | ✅ strong | `/v1` with API keys (hashed), idempotency, cursor pagination, rate limits, quotas, signed webhooks, consistent error shape |
-| Webhooks | ⚠️ partial | Dispatcher + API + three events (run.completed/failed/**changed**); **still no UI** to register/manage them |
+| Webhooks | ✅ shipped | Dispatcher + API + three events (run.completed/failed/**changed**), **and a dashboard management UI** (`WebhooksMenu.jsx`, `/api/webhooks`) to register endpoints and pick events |
 | Proxies | ✅ strong | Per-user proxies, pools with rotation, platform-shared pools, AES-256-GCM-encrypted passwords, WebRTC leak guard |
 | Anti-bot / stealth | ✅ strong | Device profiles, UA/client-hints consistency, worker source-rewrite, consent auto-dismiss with click-to-teach |
 | CAPTCHA | ✅ strong | Free always-on detection; opt-in solving (CapSolver/2Captcha); solve-by-hand in the live stream |
@@ -67,7 +68,7 @@ Grouped by the competitor concept it matches.
 | **Cross-run dataset view** | ✅ shipped | Rows unioned + de-duplicated across a workflow's retained runs, with first/last-seen and times-seen; computed on read (`dataset.service.js`, `DatasetPanel.jsx`) |
 | **Data delivery — Excel** | ✅ shipped | `.xlsx` workbook (one sheet per output list) from run results and datasets; JSON/CSV also (`resultsXlsx.js`) |
 | **Monitoring / change alerts** | ✅ shipped | Per-workflow "watch for changes": row-level diff vs previous run, stored summary, `run.changed` webhook, dashboard + history change feed (`changeMonitor.service.js`, `MonitorEditor.jsx`) |
-| Data delivery — Google Sheets / Zapier | ❌ gap | Excel covers the offline case; live push to Sheets/Zapier still open |
+| Data delivery — Google Sheets | ✅ shipped | Per-workflow "append to a Google Sheet" on each successful run, via an instance-wide service account (`googleSheets.service.js`, `SheetDeliveryEditor.jsx`); Zapier/Make still open (need a public URL) |
 | Templates / prebuilt robots | ❌ gap | Both competitors lead onboarding with a template gallery |
 | Workflow export / import / duplicate | ❌ gap | No JSON export or duplicate button; also the prerequisite for templates |
 | Bulk input (run per URL list) | ⚠️ hidden | Achievable with variables + FOR_EACH and the `/v1` `inputs` field, but not productized in the UI |
@@ -151,10 +152,10 @@ volume for `backend/data/` and pm2/systemd notes (documented, not yet shipped).
 | # | Original friction | Status |
 |---|---|---|
 | 1 | Empty-state drops user into an editor | ✅ Quick Scrape wizard + Dashboard |
-| 2 | Navigate vs Select mode invisible | ⚠️ mode indicator + wizard drives it; no first-run coach marks yet |
-| 3 | Engineer-speak step names (`FOR_EACH_ELEMENTS`) | ⚠️ control descriptions added; a full plain-language pass is still open |
-| 4 | Raw JS expression fields | ✅ Condition builder for IF/WHILE; ⚠️ SET_VARIABLE / TRANSFORM custom still raw |
-| 5 | Bare selector text inputs | ⚠️ "pick on page" + match-count badge exist for the primary selector fields; not yet on every selector param |
+| 2 | Navigate vs Select mode invisible | ✅ the inline coach spotlights the mode toggle and can switch it for the user |
+| 3 | Engineer-speak step names (`FOR_EACH_ELEMENTS`) | ⚠️ control descriptions added; JS-expression field labels softened with help text; a full step-name pass is still open |
+| 4 | Raw JS expression fields | ✅ Condition builder for IF/WHILE + friendlier labels/help; ⚠️ SET_VARIABLE / TRANSFORM custom still raw |
+| 5 | Bare selector text inputs | ✅ "Pick on page" now on every single-element selector field (generalized reselect); match-count badge on the primary selector |
 | 6 | No home screen | ✅ Dashboard landing |
 | 7 | No templates | ❌ still open (§6.3) |
 | 8 | Failures buried | ✅ Needs-attention inbox + AI summaries on the dashboard |
@@ -167,10 +168,11 @@ Power features present and good: custom JS actions, subflows, `{{a[*].b}}`
 projections, transform pipelines, EXTRACT_API, code download, full REST API,
 cross-run datasets, change-diff webhooks. Gaps:
 
-1. ❌ **Webhook management UI** — today only `POST /v1/webhooks` registers one.
+1. ✅ **Webhook management UI** — `WebhooksMenu.jsx` + `/api/webhooks` register
+   endpoints and pick events (incl. run.changed) from the dashboard.
 2. ❌ **Workflow export / import / duplicate** — needed for backup, sharing,
    "start from a copy", and as the substrate for templates.
-3. ❌ **Cron / weekday scheduling** — schedules are interval + time-of-day only.
+3. ✅ **Cron / weekday scheduling** — weekday checkboxes + optional cron.
 4. ❌ **Run-with-inputs in the editor** — `/v1` accepts `inputs`; the editor's
    Run button doesn't yet.
 5. ❌ **Per-workflow execution settings** — nav timeout, retry budget, healing
@@ -182,10 +184,14 @@ cross-run datasets, change-diff webhooks. Gaps:
 
 ## 6. Feature additions
 
-### 6.1 ✅ Quick Scrape wizard — shipped
-One-button guided list scraping that orchestrates the existing container
-detection, AI field proposal, and pagination detector into a linear flow, then
-hands finished steps to the editor. `QuickScrapeWizard.jsx`.
+### 6.1 ✅ Guided first-scrape coach — shipped (replaced the Quick Scrape wizard)
+The original Quick Scrape wizard was a floating panel that re-implemented
+navigate + selection + field detection + pagination in a weaker parallel path
+and overlapped the sidebar. It was replaced by an **inline coach**
+(`GuidedCoach.jsx`) that docks over the canvas and spotlights the *real*
+controls in sequence (URL bar → Select toggle → click an item → Inspector →
+Run → Data), auto-advancing as the user acts and offering a "do it for me"
+button per step. It teaches the actual UI, so the second scrape needs no guide.
 
 ### 6.2 ✅ Dashboard home — shipped
 Post-login landing: per-workflow cards with last-run status, needs-attention
@@ -213,8 +219,14 @@ future; webhook (ntfy/Slack/Discord via URL) + UI feed ship today.
 ### 6.6 Data delivery integrations
 1. ✅ **Excel (.xlsx) export** — shipped (`resultsXlsx.js`), one sheet per output
    list, wired into run results and dataset downloads.
-2. ❌ **Google Sheets push** — still open; the webhook-dispatcher path is the
-   right attachment point.
+2. ✅ **Google Sheets push** — shipped. Per-workflow config appends each
+   successful run's chosen list to a sheet (header row written when empty, rows
+   aligned to existing columns thereafter). Auth is an instance-wide service
+   account (`GOOGLE_SERVICE_ACCOUNT_JSON`); the user shares the sheet with its
+   e-mail. Fire-and-forget from the pipeline finish path, like change
+   monitoring. `googleSheets.service.js`, `sheetsDelivery.service.js`,
+   `SheetDeliveryEditor.jsx`. No `googleapis` dependency — the OAuth JWT flow
+   uses the existing `jsonwebtoken` + `node-fetch`.
 3. ❌ Zapier/Make — need a public URL; defer until hosting.
 
 ### 6.7 ❌ Bulk runs over an input list — open
@@ -246,20 +258,20 @@ DOM scrape of the same data, show a non-blocking "this site serves this as JSON
 10. ✅ Dashboard home + needs-review inbox (§6.2)
 11. ✅ No-code condition builder with "edit as code"
 12. ✅ Friendly schedule picker (time-of-day)
-13. ⚠️ plain-language step labels + selector "pick on page" everywhere +
-    match-count badges — *partially done; finish the pass*
+13. ⚠️ selector "pick on page" everywhere ✅ + JS-expression labels softened ✅;
+    a full plain-language step-name pass is still open
 
 **P2 — competitive feature parity — mostly done**
 14. ✅ Dataset view (§6.4)
 15. ✅ Monitoring & change alerts (§6.5)
 16. ✅ Excel export (§6.6.1)
 17. ❌ Workflow export/import/duplicate → template gallery (§6.3)
-18. ❌ Webhook management UI (§5.2.1)
-19. ❌ Google Sheets delivery (§6.6.2)
+18. ✅ Webhook management UI (§5.2.1)
+19. ✅ Google Sheets delivery (§6.6.2)
 20. ❌ Bulk input lists (§6.7)
 
-**P3 — power-user & differentiation polish — open**
-21. ❌ Cron / weekday schedules; per-workflow execution settings; run-with-inputs UI
+**P3 — power-user & differentiation polish — partly done**
+21. ✅ Cron / weekday schedules; ❌ per-workflow execution settings; ❌ run-with-inputs UI
 22. ❌ API-discovery nudges in the editor (§6.8)
 23. ❌ Selector debugging panel; healing-history analytics
 

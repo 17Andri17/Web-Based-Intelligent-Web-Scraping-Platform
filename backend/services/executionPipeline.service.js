@@ -12,6 +12,7 @@ const llm               = require('./llm.service');
 const { generateCode }  = require('../workflow/workflowCodegen');
 const webhookDispatcher = require('./webhookDispatcher.service');
 const changeMonitor     = require('./changeMonitor.service');
+const sheetsDelivery    = require('./sheetsDelivery.service');
 const {
   patchStepParams, setStepParams, removeStepById, clone,
 } = require('../workflow/workflowUtils');
@@ -465,6 +466,10 @@ async function executeAndPersist(arg) {
   // problem must never surface to the run. No-op unless the workflow has an
   // active monitor.
   safeCall(() => changeMonitor.evaluateRun(finalRow, finalResults), null);
+  // Google Sheets delivery: append a successful run's rows to the configured
+  // sheet. Also fire-and-forget — a delivery problem must never surface to the
+  // run. No-op unless the workflow has active sheet delivery.
+  safeCall(() => sheetsDelivery.deliverRun(finalRow, finalResults), null);
   return finalRow;
 }
 
