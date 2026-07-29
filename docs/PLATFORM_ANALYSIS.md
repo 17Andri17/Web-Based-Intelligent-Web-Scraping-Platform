@@ -34,11 +34,12 @@ have largely been closed:
 - The original P0 correctness bugs and production-hardening items are all
   fixed (§3, §4).
 
-The webhook management UI, cron/weekday schedules, and Google Sheets delivery
-have since shipped too. What remains is mostly **power-user surface and the last
-of delivery breadth** (§7 P2–P3): workflow export/import/duplicate → templates,
-run-with-inputs in the editor, bulk input lists, a selector-debugging panel, and
-per-workflow execution settings. None of it requires the scaling work.
+The webhook management UI, cron/weekday schedules, Google Sheets delivery,
+run-with-inputs, bulk input lists, and workflow export/import/duplicate have
+since shipped too. What remains is a short **power-user tail** (§7 P2–P3): a
+template gallery (now unblocked — the export format is the template format), a
+selector-debugging panel, per-workflow execution settings, and API-discovery
+nudges in the editor. None of it requires the scaling work.
 
 ---
 
@@ -70,8 +71,8 @@ Grouped by the competitor concept it matches.
 | **Monitoring / change alerts** | ✅ shipped | Per-workflow "watch for changes": row-level diff vs previous run, stored summary, `run.changed` webhook, dashboard + history change feed (`changeMonitor.service.js`, `MonitorEditor.jsx`) |
 | Data delivery — Google Sheets | ✅ shipped | Per-workflow "append to a Google Sheet" on each successful run, via an instance-wide service account (`googleSheets.service.js`, `SheetDeliveryEditor.jsx`); Zapier/Make still open (need a public URL) |
 | Templates / prebuilt robots | ❌ gap | Both competitors lead onboarding with a template gallery |
-| Workflow export / import / duplicate | ❌ gap | No JSON export or duplicate button; also the prerequisite for templates |
-| Bulk input (run per URL list) | ⚠️ hidden | Achievable with variables + FOR_EACH and the `/v1` `inputs` field, but not productized in the UI |
+| Workflow export / import / duplicate | ✅ shipped | Portable JSON envelope (bundles referenced custom actions; strips per-user proxy), cross-account import that remaps custom-action ids, and same-account duplicate (`workflowPortable.js`, `WorkflowsMenu.jsx`). The prerequisite for templates is now in place |
+| Bulk input (run per URL list) | ✅ shipped | "Run with inputs" (one) and "Bulk run from a list" (many) enqueue background runs per input row (`RunInputsDialog.jsx`, `POST /api/workflows/:id/bulk-run`), executed by the API worker |
 
 ---
 
@@ -170,11 +171,11 @@ cross-run datasets, change-diff webhooks. Gaps:
 
 1. ✅ **Webhook management UI** — `WebhooksMenu.jsx` + `/api/webhooks` register
    endpoints and pick events (incl. run.changed) from the dashboard.
-2. ❌ **Workflow export / import / duplicate** — needed for backup, sharing,
-   "start from a copy", and as the substrate for templates.
+2. ✅ **Workflow export / import / duplicate** — portable JSON export/import
+   (with custom-action bundling + id remap) and same-account duplicate.
 3. ✅ **Cron / weekday scheduling** — weekday checkboxes + optional cron.
-4. ❌ **Run-with-inputs in the editor** — `/v1` accepts `inputs`; the editor's
-   Run button doesn't yet.
+4. ✅ **Run-with-inputs in the editor** — a caret next to Run opens a dialog to
+   run a saved, parameterized workflow with specific values (single or bulk).
 5. ❌ **Per-workflow execution settings** — nav timeout, retry budget, healing
    on/off (deterministic runs), UA override.
 6. ❌ **Selector debugging** — an interactive "why did this match 0 elements?"
@@ -197,9 +198,11 @@ button per step. It teaches the actual UI, so the second scrape needs no guide.
 Post-login landing: per-workflow cards with last-run status, needs-attention
 inbox, schedule/next-run, and change indicators. `Dashboard.jsx`.
 
-### 6.3 ❌ Template gallery — open
-Ship 6–10 saved workflows as JSON seeds + a "start from template" flow. Cheap
-once workflow export/import (§5.2.2) exists — templates are the same JSON.
+### 6.3 ❌ Template gallery — open (now unblocked)
+Ship 6–10 saved workflows as JSON seeds + a "start from template" flow. The
+workflow export/import format (§5.2.2, now shipped) IS the template format — a
+template is just a bundled export, imported on demand — so this is now mostly a
+gallery UI + a handful of seed `.workflow.json` files.
 
 ### 6.4 ✅ Dataset view — shipped
 Per-workflow "Data across runs": rows unioned and de-duplicated across retained
@@ -229,10 +232,15 @@ future; webhook (ntfy/Slack/Discord via URL) + UI feed ship today.
    uses the existing `jsonwebtoken` + `node-fetch`.
 3. ❌ Zapier/Make — need a public URL; defer until hosting.
 
-### 6.7 ❌ Bulk runs over an input list — open
-First-class "Input list": paste/upload a CSV of URLs/terms, run once per row,
-results tagged with the input. The variables + `/v1` `inputs` plumbing exists;
-this is a UI + a loop in the pipeline caller.
+### 6.7 ✅ Bulk runs over an input list — shipped
+"Run with inputs" (one) and "Bulk run from a list" (many) live behind a caret
+next to the editor's Run button. A pasted list (one value per line) or a CSV
+whose header names the workflow's variables becomes one input row per line;
+each enqueues a background run (`createQueuedRun`, trigger `bulk`) that the API
+worker executes headless — so self-healing, monitoring, sheets delivery and
+webhooks all apply, and each run's inputs are stored and shown in history.
+`RunInputsDialog.jsx`, `utils/bulkInputs.js`, `POST /api/workflows/:id/bulk-run`,
+shared validator `utils/workflowInputs.js` (also used by `/v1`).
 
 ### 6.8 ❌ Promote API Discovery in the UX — open
 When discovery finds a high-confidence verified source while the user builds a
@@ -265,13 +273,13 @@ DOM scrape of the same data, show a non-blocking "this site serves this as JSON
 14. ✅ Dataset view (§6.4)
 15. ✅ Monitoring & change alerts (§6.5)
 16. ✅ Excel export (§6.6.1)
-17. ❌ Workflow export/import/duplicate → template gallery (§6.3)
+17. ✅ Workflow export/import/duplicate (§5.2.2); ❌ template gallery (§6.3, now unblocked)
 18. ✅ Webhook management UI (§5.2.1)
 19. ✅ Google Sheets delivery (§6.6.2)
-20. ❌ Bulk input lists (§6.7)
+20. ✅ Bulk input lists (§6.7)
 
 **P3 — power-user & differentiation polish — partly done**
-21. ✅ Cron / weekday schedules; ❌ per-workflow execution settings; ❌ run-with-inputs UI
+21. ✅ Cron / weekday schedules; ✅ run-with-inputs UI; ❌ per-workflow execution settings
 22. ❌ API-discovery nudges in the editor (§6.8)
 23. ❌ Selector debugging panel; healing-history analytics
 

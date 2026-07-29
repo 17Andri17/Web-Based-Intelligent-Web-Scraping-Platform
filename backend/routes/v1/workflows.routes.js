@@ -7,6 +7,7 @@ const runStore = require('../../services/runStore.service');
 const { sendApiError } = require('../../middleware/apiKeyAuth');
 const { serializeRun, serializeWorkflow, serializeWorkflowSummary } = require('../../utils/apiSerialize');
 const { parseId, parseLimit, parseCursor, pageEnvelope, isUniqueViolation, safeJson } = require('./helpers');
+const { validateInputs } = require('../../utils/workflowInputs');
 
 /* ===========================================================================
    /v1/workflows — read-only discovery + the trigger endpoint.
@@ -51,32 +52,13 @@ router.post('/:id/runs', async (req, res) => {
   // ── inputs: optional overrides for the workflow's declared variables ────
   const inputs = req.body ? req.body.inputs : undefined;
   if (inputs !== undefined) {
-    if (inputs === null || typeof inputs !== 'object' || Array.isArray(inputs)) {
-      return sendApiError(res, 400, 'invalid_inputs', '"inputs" must be an object mapping variable names to values.');
-    }
     const inputsJson = JSON.stringify(inputs);
     if (Buffer.byteLength(inputsJson, 'utf8') > MAX_INPUTS_BYTES) {
       return sendApiError(res, 400, 'invalid_inputs', `"inputs" is too large (max ${MAX_INPUTS_BYTES / 1024}KB).`);
     }
     const meta = workflow.meta_json ? safeJson(workflow.meta_json) || {} : {};
-    const declared = new Set(
-      (Array.isArray(meta.variables) ? meta.variables : [])
-        .filter(v => v && typeof v.name === 'string')
-        .map(v => v.name)
-    );
-    const unknown = Object.keys(inputs).filter(k => !declared.has(k));
-    if (unknown.length) {
-      const available = declared.size
-        ? `Declared variables: ${[...declared].join(', ')}.`
-        : 'This workflow declares no variables.';
-      return sendApiError(res, 400, 'invalid_inputs',
-        `Unknown input(s): ${unknown.join(', ')}. ${available}`);
-    }
-    const nulls = Object.keys(inputs).filter(k => inputs[k] === null);
-    if (nulls.length) {
-      return sendApiError(res, 400, 'invalid_inputs',
-        `Input(s) must not be null: ${nulls.join(', ')}. Omit a variable to use its default value.`);
-    }
+    const err = validateInputs(meta, inputs);
+    if (err) return sendApiError(res, 400, 'invalid_inputs', err);
   }
 
   // ── quota (monthly runs) ────────────────────────────────────────────────

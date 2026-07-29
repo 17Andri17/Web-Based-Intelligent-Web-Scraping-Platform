@@ -7,7 +7,15 @@ const dataset = require('../services/dataset.service');
 const { resultsToCsv } = require('../utils/resultsExport');
 const { resultsToXlsx } = require('../utils/resultsXlsx');
 const sheets = require('../services/googleSheets.service');
+const customActionsRepo = require('../db/repositories/customActions.repo');
+const { collectCustomActionIds, collectSubflowIds } = require('../workflow/workflowUtils');
+const portable = require('../utils/workflowPortable');
+const { validateInputs } = require('../utils/workflowInputs');
 const { requireAuth } = require('../middleware/auth');
+
+function safeJson(s) { try { return JSON.parse(s); } catch (_) { return null; } }
+const MAX_INPUTS_BYTES = 16 * 1024;   // per-row inputs cap (matches /v1)
+const MAX_BULK_ROWS = 500;            // cap runs enqueued in one bulk request
 
 const router = express.Router();
 router.use(requireAuth);
@@ -284,6 +292,46 @@ router.delete('/:id/monitor', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Bulk / parameterized runs ───────────────────────────────────────────────
+// Enqueue one background run per input row. Each row is an inputs object
+// overriding the workflow's declared variables; a single-element `rows` is
+// "Run with inputs". The queued runs are executed by the API worker (headless,
+// bounded concurrency) — the same path as scheduled and /v1-triggered runs, so
+// self-healing, monitoring, sheets delivery, and webhooks all apply.
+router.post('/:id/bulk-run', async (req, res) => {
+  const wf = await workflows.getForUser(req.params.id, req.user.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+  const rows = req.body && req.body.rows;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return res.status(400).json({ error: 'Provide a non-empty "rows" array of input objects.' });
+  }
+  if (rows.length > MAX_BULK_ROWS) {
+    return res.status(400).json({ error: `Too many rows (${rows.length}). Max ${MAX_BULK_ROWS} per bulk run.` });
+  }
+
+  const meta = wf.meta_json ? safeJson(wf.meta_json) || {} : {};
+  for (let i = 0; i < rows.length; i++) {
+    const err = validateInputs(meta, rows[i]);
+    if (err) return res.status(400).json({ error: `Row ${i + 1}: ${err}` });
+    if (Buffer.byteLength(JSON.stringify(rows[i]), 'utf8') > MAX_INPUTS_BYTES) {
+      return res.status(400).json({ error: `Row ${i + 1}: inputs too large (max ${MAX_INPUTS_BYTES / 1024}KB).` });
+    }
+  }
+
+  const runIds = [];
+  for (const inputs of rows) {
+    const runId = await runStore.createQueuedRun({
+      userId: req.user.id,
+      workflowId: Number(req.params.id),
+      trigger: 'bulk',
+      inputsJson: JSON.stringify(inputs),
+    });
+    runIds.push(runId);
+  }
+  res.status(202).json({ created: runIds.length, runIds });
+});
+
 // ── Google Sheets delivery ──────────────────────────────────────────────────
 
 function serializeSheet(row) {
@@ -337,6 +385,80 @@ router.delete('/:id/sheet', async (req, res) => {
   const changes = await runStore.deleteSheet(req.user.id, req.params.id);
   if (changes === 0) return res.status(404).json({ error: 'No sheet delivery for this workflow' });
   res.json({ ok: true });
+});
+
+// ── Export / import / duplicate ─────────────────────────────────────────────
+
+// Download a workflow as a portable JSON envelope (steps + meta + the bundled
+// definitions of any custom actions it references).
+router.get('/:id/export', async (req, res) => {
+  const wf = await workflows.getForUser(req.params.id, req.user.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+  const steps = safeJson(wf.steps_json) || [];
+  const meta = wf.meta_json ? safeJson(wf.meta_json) || {} : {};
+  const actionIds = collectCustomActionIds(steps);
+  const rows = actionIds.length ? await customActionsRepo.getManyByIds(req.user.id, actionIds) : [];
+  const customActions = rows.map(a => ({
+    id: a.id, name: a.name, description: a.description || '',
+    inputs: safeJson(a.inputs_json) || [], outputs: safeJson(a.outputs_json) || [], code: a.code || '',
+  }));
+
+  const envelope = portable.buildEnvelope({ name: wf.name, steps, meta, customActions });
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${portable.exportFileName(wf.name)}"`);
+  res.send(JSON.stringify(envelope, null, 2));
+});
+
+// Create a new workflow from an uploaded export envelope. Custom actions are
+// recreated (or reused by name) and their ids remapped in the steps.
+router.post('/import', async (req, res) => {
+  const env = req.body;
+  const v = portable.validateEnvelope(env);
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  if (Buffer.byteLength(JSON.stringify(env.steps), 'utf8') > MAX_PAYLOAD_BYTES) {
+    return res.status(400).json({ error: 'Workflow is too large to import.' });
+  }
+
+  const existing = await customActionsRepo.listForUser(req.user.id);
+  const byName = new Map(existing.map(a => [a.name, a]));
+  const createAction = (def) => customActionsRepo.create({
+    userId: req.user.id, name: def.name, description: def.description || '',
+    inputsJson: JSON.stringify(Array.isArray(def.inputs) ? def.inputs : []),
+    outputsJson: JSON.stringify(Array.isArray(def.outputs) ? def.outputs : []),
+    code: def.code || '',
+  });
+
+  const { steps, created, missing } = await portable.remapCustomActions(env.steps, env.customActions, byName, createAction);
+  const meta = portable.stripMetaForExport(env.meta || {});
+  // `targetName` is an explicit override (distinct from the envelope's own
+  // `name`, which would otherwise always suppress the "(imported)" suffix).
+  const name = ((req.body.targetName && String(req.body.targetName).trim())
+    || `${env.name || 'Imported workflow'} (imported)`).slice(0, MAX_NAME_LEN);
+
+  const wf = await workflows.create({ userId: req.user.id, name, stepsJson: JSON.stringify(steps), metaJson: JSON.stringify(meta) });
+
+  // Notes the UI can surface: recreated actions, and any subflow references that
+  // won't resolve unless the referenced workflows also exist in this account.
+  const subflowRefs = collectSubflowIds(steps).length;
+  res.status(201).json({
+    workflow: { id: wf.id, name: wf.name },
+    createdCustomActions: created,
+    unresolvedCustomActionRefs: missing.length,
+    subflowRefs,
+  });
+});
+
+// Copy a workflow within the same account ("start from a copy"). Custom-action
+// and subflow references stay valid (same account), so no remap is needed.
+router.post('/:id/duplicate', async (req, res) => {
+  const wf = await workflows.getForUser(req.params.id, req.user.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+  const name = `${wf.name} (copy)`.slice(0, MAX_NAME_LEN);
+  const copy = await workflows.create({
+    userId: req.user.id, name, stepsJson: wf.steps_json, metaJson: wf.meta_json,
+  });
+  res.status(201).json({ workflow: { id: copy.id, name: copy.name } });
 });
 
 module.exports = router;

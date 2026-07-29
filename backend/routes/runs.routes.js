@@ -62,6 +62,9 @@ router.get('/:id', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Run not found' });
   const out = serialize(row);
   out.results = row.results_json ? safeJson(row.results_json) : null;
+  // Inputs this run was triggered with (bulk / run-with-inputs / API), so the
+  // history shows which values produced these results.
+  out.inputs = row.inputs_json ? safeJson(row.inputs_json) : null;
   const repairs = await runStore.listRepairsForRun(row.id);
   out.repairs = repairs.map(r => ({
     id: r.id,

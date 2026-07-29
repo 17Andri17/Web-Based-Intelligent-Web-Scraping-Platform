@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { workflowsApi, schedulesApi } from "../api/client";
 import ScheduleEditor from "../runs/ScheduleEditor";
 import RunsHistory from "../runs/RunsHistory";
@@ -37,6 +37,7 @@ export default function WorkflowsMenu({
   const [dataFor,     setDataFor]     = useState(null);   // { id, name } | null
   const [monitorFor,  setMonitorFor]  = useState(null);   // { id, name } | null
   const [sheetFor,    setSheetFor]    = useState(null);   // { id, name } | null
+  const fileInputRef = useRef(null);                      // hidden import file picker
   // Map workflowId → { isActive, intervalMinutes } so we can show a small
   // badge next to scheduled workflows in the list.
   const [scheduleByWf, setScheduleByWf] = useState({});
@@ -131,6 +132,51 @@ export default function WorkflowsMenu({
     }
   };
 
+  const handleExport = async (id, wfName) => {
+    try {
+      const blob = await workflowsApi.exportBlob(id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(wfName || "workflow").replace(/[^a-zA-Z0-9-_ ]+/g, "").trim().replace(/\s+/g, "-") || "workflow"}.workflow.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      showToast?.(`✗ ${err?.response?.data?.error || err.message}`, "error");
+    }
+  };
+
+  const handleDuplicate = async (id) => {
+    setBusy(true); setError(null);
+    try {
+      const copy = await workflowsApi.duplicate(id);
+      showToast?.(`✓ Duplicated → "${copy.name}"`, "success");
+      await refresh();
+    } catch (err) {
+      setError(err?.response?.data?.error || err.message);
+    } finally { setBusy(false); }
+  };
+
+  // Import from a chosen .json file: parse, POST, refresh.
+  const handleImportFile = async (file) => {
+    if (!file) return;
+    setBusy(true); setError(null);
+    try {
+      const text = await file.text();
+      let envelope;
+      try { envelope = JSON.parse(text); }
+      catch { throw new Error("That file isn't valid JSON."); }
+      const res = await workflowsApi.importFromEnvelope(envelope);
+      let msg = `✓ Imported "${res.workflow.name}"`;
+      if (res.createdCustomActions?.length) msg += ` (+${res.createdCustomActions.length} custom action${res.createdCustomActions.length === 1 ? "" : "s"})`;
+      showToast?.(msg, "success");
+      if (res.subflowRefs > 0) showToast?.("Note: this workflow calls subflows — make sure those workflows also exist in your account.", "loop");
+      await refresh();
+    } catch (err) {
+      setError(err?.response?.data?.error || err.message);
+    } finally { setBusy(false); }
+  };
+
   const canSave = currentSteps && currentSteps.length > 0;
 
   return (
@@ -173,7 +219,20 @@ export default function WorkflowsMenu({
 
           {error && <div className="wf-error">{error}</div>}
 
-          <div className="wf-section-title">Your saved workflows</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div className="wf-section-title">Your saved workflows</div>
+            <button className="wf-save-btn" onClick={() => fileInputRef.current?.click()} disabled={busy}
+                    title="Create a workflow from an exported .json file">
+              Import…
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              style={{ display: "none" }}
+              onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; handleImportFile(f); }}
+            />
+          </div>
           {loading ? (
             <div className="wf-empty">Loading…</div>
           ) : list.length === 0 ? (
@@ -205,6 +264,8 @@ export default function WorkflowsMenu({
                       <button onClick={() => setScheduleFor({ id: wf.id, name: wf.name })} disabled={busy}>Schedule</button>
                       <button onClick={() => setMonitorFor({ id: wf.id, name: wf.name })} disabled={busy}>Monitor</button>
                       <button onClick={() => setSheetFor({ id: wf.id, name: wf.name })} disabled={busy}>Sheets</button>
+                      <button onClick={() => handleDuplicate(wf.id)} disabled={busy} title="Make a copy">Duplicate</button>
+                      <button onClick={() => handleExport(wf.id, wf.name)} disabled={busy} title="Download as a JSON file">Export</button>
                       <button className="danger" onClick={() => handleDelete(wf.id, wf.name)} disabled={busy}>Delete</button>
                     </div>
                   </div>

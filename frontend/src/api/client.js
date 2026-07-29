@@ -49,6 +49,10 @@ export const workflowsApi = {
   create: (name, steps, meta) => api.post("/api/workflows", { name, steps, meta }).then(r => r.data.workflow),
   update: (id, name, steps, meta) => api.put(`/api/workflows/${id}`, { name, steps, meta }).then(r => r.data.workflow),
   remove: (id) => api.delete(`/api/workflows/${id}`).then(r => r.data),
+  // Export / import / duplicate.
+  exportBlob:  async (id) => { const r = await api.get(`/api/workflows/${id}/export`, { responseType: "blob" }); return r.data; },
+  importFromEnvelope: (envelope, targetName) => api.post("/api/workflows/import", { ...envelope, targetName }).then(r => r.data),
+  duplicate:   (id) => api.post(`/api/workflows/${id}/duplicate`).then(r => r.data.workflow),
   // Cross-run dataset: rows accumulated across a workflow's runs.
   // params: { output?, key?, limit?, offset? } (key = "__row__" for whole-row dedupe)
   dataset: (id, params = {}) => api.get(`/api/workflows/${id}/dataset`, { params }).then(r => r.data),
@@ -61,6 +65,9 @@ export const workflowsApi = {
   // body: { isActive, outputKey?, keyField? } — keyField "" = whole-row, omit = auto
   saveMonitor:   (id, body) => api.put(`/api/workflows/${id}/monitor`, body).then(r => r.data.monitor),
   removeMonitor: (id) => api.delete(`/api/workflows/${id}/monitor`).then(r => r.data),
+  // Bulk / parameterized runs: enqueue one background run per input row.
+  // rows = array of { variableName: value } objects. Returns { created, runIds }.
+  bulkRun:       (id, rows) => api.post(`/api/workflows/${id}/bulk-run`, { rows }).then(r => r.data),
   // Google Sheets delivery: config + instance service-account status.
   getSheet:      (id) => api.get(`/api/workflows/${id}/sheet`).then(r => r.data),
   // body: { isActive, spreadsheet (id/URL), sheetName?, outputKey? }

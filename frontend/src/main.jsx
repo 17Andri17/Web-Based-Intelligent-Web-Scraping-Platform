@@ -22,6 +22,7 @@ import CustomActionsMenu from "./customActions/CustomActionsMenu";
 import ProxiesMenu from "./proxies/ProxiesMenu";
 import ApiKeysMenu from "./apiKeys/ApiKeysMenu";
 import WebhooksMenu from "./webhooks/WebhooksMenu";
+import RunInputsDialog from "./components/RunInputsDialog";
 import { API_BASE, customActionsApi, workflowsApi, aiApi } from "./api/client";
 import "./styles/PaginationDetector.css";
 import "./styles/ApiSourcesPanel.css";
@@ -472,6 +473,9 @@ function AppShell({ user, token, onLogout }) {
   // ── API keys (public /v1 API credentials) ────────────────────────────────
   const [apiKeysOpen, setApiKeysOpen] = useState(false);
   const [webhooksOpen, setWebhooksOpen] = useState(false);
+  // Run-with-inputs / bulk runs (background, via the API worker queue).
+  const [runMenuOpen, setRunMenuOpen] = useState(false);
+  const [runInputsOpen, setRunInputsOpen] = useState(false);
 
   // ── Custom actions (user-defined reusable steps) ─────────────────────────
   const [customActionsOpen, setCustomActionsOpen] = useState(false);
@@ -2092,13 +2096,43 @@ function AppShell({ user, token, onLogout }) {
             </svg>
             Download Code
           </button>
-          <button
-            className={`header-btn run-btn ${execStatus === "running" ? "running" : ""}${spot("run")}`}
-            onClick={execStatus === "running" ? () => setExecPanelOpen(true) : handleRun}
-            disabled={isRunDisabled && execStatus !== "running"}
-          >
-            {execStatus === "running" ? <><SpinnerIcon /> Running…</> : <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Run</>}
-          </button>
+          <div style={{ position: "relative", display: "inline-flex" }}>
+            <button
+              className={`header-btn run-btn ${execStatus === "running" ? "running" : ""}${spot("run")}`}
+              onClick={execStatus === "running" ? () => setExecPanelOpen(true) : handleRun}
+              disabled={isRunDisabled && execStatus !== "running"}
+              style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+            >
+              {execStatus === "running" ? <><SpinnerIcon /> Running…</> : <><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Run</>}
+            </button>
+            {/* Caret → run a saved, parameterized workflow with specific inputs
+                (single or bulk), executed in the background via the queue. */}
+            <button
+              className="header-btn run-btn"
+              title="Run with inputs / bulk run"
+              onClick={() => setRunMenuOpen(v => !v)}
+              style={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, padding: "0 8px", marginLeft: 1 }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6,9 12,15 18,9"/></svg>
+            </button>
+            {runMenuOpen && (
+              <>
+                <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setRunMenuOpen(false)} />
+                <div className="user-popover" style={{ right: 0, top: "100%", marginTop: 4 }}>
+                  <button className="item" onClick={() => {
+                    setRunMenuOpen(false);
+                    if (!currentWorkflowId) { showToast("Save this workflow first to run it with inputs", "error"); setWorkflowsOpen(true); return; }
+                    setRunInputsOpen(true);
+                  }}>Run with inputs…</button>
+                  <button className="item" onClick={() => {
+                    setRunMenuOpen(false);
+                    if (!currentWorkflowId) { showToast("Save this workflow first to run it in bulk", "error"); setWorkflowsOpen(true); return; }
+                    setRunInputsOpen(true);
+                  }}>Bulk run from a list…</button>
+                </div>
+              </>
+            )}
+          </div>
           {(execStatus === "done" || execStatus === "error") && (
             <button className={`header-btn secondary ${execStatus === "error" ? "error-badge" : "success-badge"}`}
               onClick={() => setExecPanelOpen(true)}>
@@ -2805,6 +2839,16 @@ function AppShell({ user, token, onLogout }) {
       <WebhooksMenu
         open={webhooksOpen}
         onClose={() => setWebhooksOpen(false)}
+        showToast={showToast}
+      />
+
+      {/* ── Run with inputs / bulk run (queued background runs) ───────────── */}
+      <RunInputsDialog
+        open={runInputsOpen}
+        onClose={() => setRunInputsOpen(false)}
+        workflowId={currentWorkflowId}
+        workflowName={currentWorkflowName || "workflow"}
+        variables={workflowVariables}
         showToast={showToast}
       />
 
