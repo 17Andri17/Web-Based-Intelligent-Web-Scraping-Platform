@@ -16,11 +16,15 @@ import "../styles/TransformPipelineEditor.css";
      fieldName   — the field's key (for the split-column hints)
      transforms  — array of clean ops (or undefined)
      split       — split spec (or null/undefined)
+     allowSplit  — show the split section (default true). Off for single-value
+                   extraction steps, whose output is a scalar with no columns.
      sample      — optional sample raw string to power the live tester
      onChange({ transforms, split })  — emit the updated pipeline
    ===================================================================== */
 
-export default function TransformPipelineEditor({ fieldName, transforms, split, sample, onChange }) {
+export default function TransformPipelineEditor({
+  fieldName, transforms, split, sample, onChange, allowSplit = true,
+}) {
   const ops = Array.isArray(transforms) ? transforms : [];
   const [adding, setAdding] = useState(false);
   const [test, setTest] = useState(sample != null ? String(sample) : "");
@@ -143,7 +147,11 @@ export default function TransformPipelineEditor({ fieldName, transforms, split, 
         )}
       </div>
 
-      {/* ── Split into columns ─────────────────────────────────────── */}
+      {/* ── Split into columns ───────────────────────────────────────
+          Hidden for single-value extraction (allowSplit={false}): a Get Text
+          step produces one value, not a row, so there are no columns to split
+          it into. */}
+      {allowSplit && (
       <div className="tpe-section">
         <div className="tpe-section-head">
           <span className="tpe-section-title">Split into columns</span>
@@ -229,6 +237,7 @@ export default function TransformPipelineEditor({ fieldName, transforms, split, 
           </div>
         )}
       </div>
+      )}
 
       {/* ── Live tester ────────────────────────────────────────────── */}
       <div className="tpe-section tpe-tester">

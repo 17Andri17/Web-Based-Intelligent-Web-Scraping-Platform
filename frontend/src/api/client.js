@@ -43,6 +43,15 @@ export const authApi = {
   me:       () => api.get("/api/auth/me").then(r => r.data),
 };
 
+// Account-level e-mail alerts. `available` reflects whether this instance has
+// SMTP configured at all — the UI hides the switches when it doesn't.
+export const notificationsApi = {
+  get:    () => api.get("/api/notifications").then(r => r.data),
+  save:   (body) => api.put("/api/notifications", body).then(r => r.data.settings),
+  remove: () => api.delete("/api/notifications").then(r => r.data),
+  test:   (email) => api.post("/api/notifications/test", { email }).then(r => r.data),
+};
+
 export const workflowsApi = {
   list:   () => api.get("/api/workflows").then(r => r.data.workflows),
   get:    (id) => api.get(`/api/workflows/${id}`).then(r => r.data.workflow),
@@ -53,6 +62,13 @@ export const workflowsApi = {
   exportBlob:  async (id) => { const r = await api.get(`/api/workflows/${id}/export`, { responseType: "blob" }); return r.data; },
   importFromEnvelope: (envelope, targetName) => api.post("/api/workflows/import", { ...envelope, targetName }).then(r => r.data),
   duplicate:   (id) => api.post(`/api/workflows/${id}/duplicate`).then(r => r.data.workflow),
+  // Template gallery: ready-made starting points. `useTemplate` runs the same
+  // import path as an uploaded export file and returns the new workflow.
+  templates:   () => api.get("/api/workflows/templates/list").then(r => r.data.templates),
+  useTemplate: (id, targetName) => api.post(`/api/workflows/templates/${id}/use`, { targetName }).then(r => r.data),
+  // One row per workflow for the global "Data" screen: how much has each
+  // scraper actually collected, and over how many runs.
+  dataSummary: () => api.get("/api/workflows/dataset/summary").then(r => r.data),
   // Cross-run dataset: rows accumulated across a workflow's runs.
   // params: { output?, key?, limit?, offset? } (key = "__row__" for whole-row dedupe)
   dataset: (id, params = {}) => api.get(`/api/workflows/${id}/dataset`, { params }).then(r => r.data),
@@ -65,6 +81,10 @@ export const workflowsApi = {
   // body: { isActive, outputKey?, keyField? } — keyField "" = whole-row, omit = auto
   saveMonitor:   (id, body) => api.put(`/api/workflows/${id}/monitor`, body).then(r => r.data.monitor),
   removeMonitor: (id) => api.delete(`/api/workflows/${id}/monitor`).then(r => r.data),
+  // Full run-to-run diff, computed on demand (not the bounded summary stored on
+  // the run). params: { runId?, baseRunId?, output?, key?, limit? }
+  // key = "__row__" for whole-row matching; omit for the monitor's / automatic choice.
+  diff:          (id, params = {}) => api.get(`/api/workflows/${id}/diff`, { params }).then(r => r.data),
   // Bulk / parameterized runs: enqueue one background run per input row.
   // rows = array of { variableName: value } objects. Returns { created, runIds }.
   bulkRun:       (id, rows) => api.post(`/api/workflows/${id}/bulk-run`, { rows }).then(r => r.data),
@@ -147,6 +167,10 @@ export const apiKeysApi = {
 
 export const runsApi = {
   list:     (workflowId)         => api.get("/api/runs", { params: workflowId ? { workflowId } : {} }).then(r => r.data.runs),
+  // Runs still queued or running. A run executes on the server, so it
+  // survives a reload or closing the workflow — this is how the UI finds
+  // one again and re-attaches to its progress.
+  active:   ()                   => api.get("/api/runs/active").then(r => r.data.runs),
   get:      (id)                 => api.get(`/api/runs/${id}`).then(r => r.data.run),
   logs:     (id)                 => api.get(`/api/runs/${id}/logs`).then(r => r.data.logs),
   // Build download URLs that the auth interceptor doesn't touch — anchor
@@ -163,4 +187,11 @@ export const runsApi = {
   applyPatch: (id) => api.post(`/api/runs/${id}/apply-patch`).then(r => r.data.workflow),
   // Roll the workflow back to the exact version this run executed.
   restore:    (id) => api.post(`/api/runs/${id}/restore`).then(r => r.data.workflow),
+  // Can this run be continued instead of re-run? → { resumable, reason?, items? }
+  resumeInfo: (id) => api.get(`/api/runs/${id}/resume-info`).then(r => r.data),
+  // Continue it: skips the items already captured, restores their rows.
+  resume:     (id) => api.post(`/api/runs/${id}/resume`).then(r => r.data),
+  // Split one big job across N independent runs; the dataset view unions them.
+  shard: (workflowId, shards) =>
+    api.post("/api/runs/shard", { workflowId, shards }).then(r => r.data),
 };

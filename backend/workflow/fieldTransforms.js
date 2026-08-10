@@ -160,9 +160,21 @@ function __ftHasPipeline(spec) {
     || (spec.split && typeof spec.split === 'object');
 }
 
+// Clean a SINGLE extraction's result — the value a Get Text / Get Attribute /
+// Get HTML step produced. Those steps yield either one value or, with
+// multiple=true, an array of them, so the array case maps element-wise. Rows
+// from list extraction go through __ftMaterializeRow instead (it also handles
+// splitting into columns, which has no meaning for a scalar output).
+function __ftCleanAny(value, ops) {
+  if (!Array.isArray(ops) || ops.length === 0) return value;
+  if (Array.isArray(value)) return value.map((v) => __ftCleanValue(v, ops));
+  return __ftCleanValue(value, ops);
+}
+
 // Inlinable source for the generated workflow script. materializeRow depends
-// on cleanValue + splitValue, so all three travel together.
-const RUNTIME_SRC = [__ftCleanValue, __ftSplitValue, __ftMaterializeRow]
+// on cleanValue + splitValue, and cleanAny on cleanValue, so they travel
+// together.
+const RUNTIME_SRC = [__ftCleanValue, __ftSplitValue, __ftMaterializeRow, __ftCleanAny]
   .map((f) => f.toString())
   .join('\n\n');
 
@@ -170,6 +182,7 @@ module.exports = {
   __ftCleanValue,
   __ftSplitValue,
   __ftMaterializeRow,
+  __ftCleanAny,
   __ftNamedGroups,
   __ftEffectiveColumns,
   __ftHasPipeline,

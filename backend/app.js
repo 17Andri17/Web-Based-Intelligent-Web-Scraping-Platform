@@ -13,6 +13,7 @@ const proxiesRoutes = require('./routes/proxies.routes');
 const proxyPoolsRoutes = require('./routes/proxyPools.routes');
 const apiKeysRoutes = require('./routes/apiKeys.routes');
 const webhooksRoutes = require('./routes/webhooks.routes');
+const notificationsRoutes = require('./routes/notifications.routes');
 const v1Routes = require('./routes/v1');
 
 const app = express();
@@ -33,6 +34,7 @@ app.use('/api/proxy-pools', proxyPoolsRoutes);
 // Dashboard management of public-API keys (JWT-authed, internal).
 app.use('/api/api-keys', apiKeysRoutes);
 app.use('/api/webhooks', webhooksRoutes);
+app.use('/api/notifications', notificationsRoutes);
 
 // Public REST API — versioned, API-key-authed surface for third-party
 // programs (docs/API_ARCHITECTURE.md). Internal frontend routes stay /api/*.
@@ -46,6 +48,11 @@ app.get('/healthz', async (req, res) => {
   try { await db.get('SELECT 1 AS ok'); dbOk = true; } catch (_) {}
   res.status(dbOk ? 200 : 503).json({ status: dbOk ? 'ok' : 'degraded', db: dbOk, uptime: process.uptime() });
 });
+
+// Bundled demo site ("DemoMart") for the guided tour — a deterministic shop
+// the streamed browser navigates to. Served from the backend (not the frontend
+// build) so it's always reachable by the backend's Chromium in dev and prod.
+app.use('/demo', express.static(path.join(__dirname, 'public', 'demo')));
 
 // Serve the built frontend when present (npm run build in frontend/), so a
 // single process serves both the API and the UI in production. In dev the

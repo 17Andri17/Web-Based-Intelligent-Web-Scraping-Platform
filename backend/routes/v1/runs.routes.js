@@ -22,7 +22,7 @@ const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 
 const router = express.Router();
 
-const RUN_STATUSES = new Set(['queued', 'running', 'success', 'error', 'needs_review', 'cancelled']);
+const RUN_STATUSES = new Set(['queued', 'running', 'success', 'error', 'needs_review', 'cancelled', 'partial']);
 
 // List runs, newest first (?workflow_id=&status=&limit=&cursor=)
 router.get('/', async (req, res) => {

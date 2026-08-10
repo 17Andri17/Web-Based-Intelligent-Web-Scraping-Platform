@@ -65,6 +65,167 @@
   letter-spacing: 0.5px;
 }
 
+/* Which run this panel is showing. Matters now that the panel can be opened
+   against a run this tab never started. */
+.ep-run-id {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Per-step duration. Sits right-aligned so the column of numbers reads as a
+   column, and stays muted — it's reference data, not the primary signal. */
+.ep-flow-time {
+  margin-left: auto;
+  padding-left: 10px;
+  font-size: 10.5px;
+  color: var(--text-muted, #6e7681);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.ep-flow-time-n {
+  margin-left: 4px;
+  opacity: 0.65;
+}
+
+/* Parallel worker lanes under a loop node. One small chip per worker showing
+   the item it is on — enough to see that the pool is saturated and roughly
+   where it is, in one row rather than a panel of its own. */
+.ep-flow-workers-wrap { padding: 1px 0 4px 26px; }
+
+.ep-flow-workers {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.ep-flow-workers:hover { background: rgba(127, 127, 127, 0.08); }
+
+.ep-flow-workers-caret {
+  font-size: 9px;
+  color: var(--text-muted, #6e7681);
+  transition: transform 0.12s ease;
+  display: inline-block;
+}
+.ep-flow-workers-caret.open { transform: rotate(90deg); }
+
+.ep-flow-workers-label {
+  font-size: 10px;
+  color: var(--text-muted, #6e7681);
+  margin-right: 4px;
+}
+
+/* Expanded per-worker rows: one line each, so eight workers cost eight thin
+   lines rather than a panel. Only rendered while open. */
+.ep-flow-lanes {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ep-flow-lane {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text-secondary, #8b949e);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.ep-flow-lane--clickable { cursor: pointer; }
+.ep-flow-lane--clickable:hover { background: rgba(127, 127, 127, 0.08); }
+.ep-flow-lane--idle { opacity: 0.5; }
+
+.ep-flow-lane-caret {
+  font-size: 8px;
+  width: 8px;
+  color: var(--text-muted, #6e7681);
+  transition: transform 0.12s ease;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+.ep-flow-lane-caret.open { transform: rotate(90deg); }
+.ep-flow-lane-caret--none { visibility: hidden; }
+
+/* One worker's own pass through the body, rendered with the same FlowNode as
+   the main tree so it reads identically — just scored per worker. */
+.ep-flow-lane-tree {
+  list-style: none;
+  margin: 1px 0 4px;
+  padding: 2px 0 2px 18px;
+  border-left: 1px solid var(--border-muted, #21262d);
+  margin-left: 12px;
+}
+.ep-flow-lane-n {
+  min-width: 16px;
+  text-align: center;
+  border-radius: 3px;
+  font-size: 9.5px;
+  color: var(--accent-primary, #58a6ff);
+  background: rgba(88, 166, 255, 0.14);
+  font-variant-numeric: tabular-nums;
+}
+.ep-flow-lane-item {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary, #f0f6fc);
+  white-space: nowrap;
+}
+.ep-flow-lane-step {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ep-flow-lane-iter {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted, #6e7681);
+  white-space: nowrap;
+}
+.ep-flow-lane-idle { font-style: italic; }
+.ep-flow-worker {
+  min-width: 20px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-primary, #58a6ff);
+  background: rgba(88, 166, 255, 0.14);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+}
+.ep-flow-worker--idle {
+  color: var(--text-muted, #6e7681);
+  background: transparent;
+  border-color: var(--border-muted, #21262d);
+}
+
+/* Live "rows saved" counter — the proof a long run is progressing. */
+.ep-rows-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-success);
+  background: rgba(63, 185, 80, 0.12);
+  border: 1px solid rgba(63, 185, 80, 0.25);
+  font-variant-numeric: tabular-nums;
+}
+
 .ep-status-badge.idle    { background: var(--bg-tertiary);             color: var(--text-muted); }
 .ep-status-badge.running { background: rgba(88,166,255,0.15);           color: var(--accent-primary); animation: pulseBadge 1.5s ease-in-out infinite; }
 .ep-status-badge.done    { background: rgba(63,185,80,0.15);            color: var(--accent-success); }
@@ -179,6 +340,10 @@
 .ep-flow-state-running > .ep-flow-row { background: rgba(79, 156, 249, 0.10); }
 .ep-flow-state-done    > .ep-flow-row { opacity: 0.8; }
 .ep-flow-state-error   > .ep-flow-row { background: rgba(230, 119, 106, 0.10); }
+/* Running in SEVERAL workers at once. Distinct from plain "running" (one
+   place, one position) because these steps have no single position — orange
+   says "several of these are in flight" rather than implying one. */
+.ep-flow-state-parallel > .ep-flow-row { background: rgba(210, 153, 34, 0.12); }
 .ep-flow-dot {
   display: inline-flex;
   width: 12px;
@@ -193,6 +358,28 @@
 .ep-flow-dot--running { border-color: #4f9cf9; background: rgba(79, 156, 249, 0.18); }
 .ep-flow-dot--done    { border-color: #3ea66f; background: #3ea66f; }
 .ep-flow-dot--error   { border-color: #e6776a; background: #e6776a; }
+.ep-flow-dot--parallel {
+  border-color: #d29922;
+  background: rgba(210, 153, 34, 0.22);
+  animation: ep-flow-parallel-pulse 1.5s ease-in-out infinite;
+}
+@keyframes ep-flow-parallel-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(210, 153, 34, 0.45); }
+  50%      { box-shadow: 0 0 0 3px rgba(210, 153, 34, 0); }
+}
+
+/* How many workers are on this step. */
+.ep-flow-parallel {
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #d29922;
+  background: rgba(210, 153, 34, 0.14);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
 .ep-flow-dot-spin {
   position: absolute;
   inset: -3px;
@@ -541,3 +728,32 @@
   line-height: 1.6;
   flex: 1;
 }
+/* "This run isn't reporting" banner. Deliberately prominent: a run whose
+   owner has died looks identical to a slow one, and the difference matters. */
+.ep-stalled {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 12px 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary, #f0f6fc);
+  background: rgba(210, 153, 34, 0.12);
+  border: 1px solid rgba(210, 153, 34, 0.35);
+}
+.ep-stalled-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 11px;
+  color: #d29922;
+  border: 1.5px solid #d29922;
+}
+.ep-stalled .ep-btn { margin-left: auto; flex: 0 0 auto; }

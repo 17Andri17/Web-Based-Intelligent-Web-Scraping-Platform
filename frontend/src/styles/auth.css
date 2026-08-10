@@ -174,16 +174,35 @@
 .user-popover .item:hover { background: var(--bg-tertiary); }
 .user-popover .item.danger { color: var(--accent-danger); }
 
-/* ==================== WORKFLOWS MENU MODAL ==================== */
+/* ==================== MENU MODALS (shared chrome) ====================
+   Every menu opened from the header — Workflows, Custom actions, Proxies,
+   API keys, Webhooks, and the per-workflow editors — is built from these
+   classes, so they read as one surface with the rest of the app.
+
+   Sizes:   .wf-modal (default 560) · .wf-modal-lg (760) · .wf-modal-xl (1040)
+   Header:  .wf-header + optional .wf-header-titles/.wf-header-sub
+   Body:    .wf-body, sections via .wf-section-head + .wf-section-title
+   Lists:   .wf-list > .wf-item (a card: title row, meta row, actions)
+   Buttons: .wf-save-btn (primary) · .wf-ghost-btn (secondary) · .wf-icon-btn
+*/
 .wf-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: rgba(1, 4, 9, 0.66);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
     z-index: 100;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 24px;
+    animation: wf-fade var(--transition-fast) ease-out;
+}
+
+@keyframes wf-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes wf-rise {
+    from { opacity: 0; transform: translateY(8px) scale(0.99); }
+    to   { opacity: 1; transform: none; }
 }
 
 .wf-modal {
@@ -192,18 +211,30 @@
     border-radius: var(--radius-lg);
     width: 100%;
     max-width: 560px;
-    max-height: 80vh;
+    max-height: 86vh;
     display: flex;
     flex-direction: column;
     box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    animation: wf-rise var(--transition-normal) cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.wf-modal-lg { max-width: 760px; }
+.wf-modal-xl { max-width: 1040px; }
+
+@media (prefers-reduced-motion: reduce) {
+    .wf-overlay, .wf-modal { animation: none; }
 }
 
 .wf-header {
-    padding: 16px 20px;
+    padding: 14px 20px;
     border-bottom: 1px solid var(--border-default);
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
+    background: var(--bg-secondary);
+    flex-shrink: 0;
 }
 
 .wf-header h2 {
@@ -213,61 +244,58 @@
     margin: 0;
 }
 
+/* Title + a quiet subtitle (which workflow, how many items) on one line. */
+.wf-header-titles {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+}
+
+.wf-header-sub {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wf-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+}
+
 .wf-close {
     background: none;
     border: none;
     color: var(--text-secondary);
     cursor: pointer;
-    padding: 4px;
+    padding: 5px;
+    border-radius: var(--radius-sm);
     display: flex;
+    flex-shrink: 0;
 }
 
-.wf-close:hover { color: var(--text-primary); }
+.wf-close:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 
 .wf-body {
-    padding: 16px 20px;
+    padding: 16px 20px 20px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 14px;
 }
 
-.wf-save-row {
+/* A section heading with its action on the right — replaces the ad-hoc inline
+   flex wrappers that used to sit around every "+ New …" button. */
+.wf-section-head {
     display: flex;
-    gap: 8px;
-    align-items: stretch;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
 }
-
-.wf-save-row input {
-    flex: 1;
-    padding: 9px 12px;
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border-default);
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    font-size: 14px;
-    outline: none;
-}
-
-.wf-save-row input:focus {
-    border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
-}
-
-.wf-save-btn {
-    background: var(--accent-primary);
-    color: #fff;
-    border: none;
-    padding: 0 16px;
-    font-size: 13px;
-    font-weight: 600;
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    white-space: nowrap;
-}
-
-.wf-save-btn:hover:not(:disabled) { filter: brightness(1.1); }
-.wf-save-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .wf-section-title {
     font-size: 11px;
@@ -277,33 +305,170 @@
     font-weight: 600;
 }
 
+/* ── Inputs ──────────────────────────────────────────────────────────────── */
+.wf-save-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.wf-save-row input,
+.wf-search {
+    flex: 1;
+    padding: 9px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 14px;
+    outline: none;
+    min-width: 0;
+}
+
+.wf-save-row input:focus,
+.wf-search:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+}
+
+.wf-search {
+    width: 100%;
+    font-size: 13px;
+    padding: 8px 12px;
+}
+
+/* Selects inside a menu used to fall back to the browser's own control, which
+   is what made these panels look unrelated to the rest of the app. */
+.wf-body select,
+.wf-body textarea:not(.ca-code) {
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+}
+
+.wf-body select:focus,
+.wf-body textarea:not(.ca-code):focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+}
+
+.wf-body select:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* Checkboxes pick up the accent so they stop rendering as system blue. */
+.wf-body input[type="checkbox"] {
+    accent-color: var(--accent-primary);
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.wf-save-btn {
+    background: var(--accent-primary);
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    white-space: nowrap;
+    line-height: 1.3;
+}
+
+.wf-save-btn:hover:not(:disabled) { filter: brightness(1.1); }
+.wf-save-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.wf-ghost-btn {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-default);
+    padding: 6px 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.wf-ghost-btn:hover:not(:disabled) { color: var(--text-primary); border-color: var(--accent-primary); }
+.wf-ghost-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Compact square action — icon plus a tooltip, used for the per-row shortcuts. */
+.wf-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.wf-icon-btn:hover:not(:disabled) {
+    color: var(--accent-primary);
+    background: var(--bg-elevated);
+    border-color: var(--border-default);
+}
+
+.wf-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.wf-icon-btn.on { color: var(--accent-primary); }
+
+/* ── Lists ───────────────────────────────────────────────────────────────── */
 .wf-list {
     display: flex;
     flex-direction: column;
     gap: 6px;
 }
 
+/* A row is a card: the name gets the full width of its own line, so it is never
+   squeezed by however many actions the row happens to carry. */
 .wf-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 12px;
     padding: 10px 12px;
     border: 1px solid var(--border-default);
     background: var(--bg-tertiary);
     border-radius: var(--radius-md);
+    transition: border-color var(--transition-fast), background var(--transition-fast);
 }
+
+.wf-item:hover { border-color: var(--border-default); background: var(--bg-elevated); }
 
 .wf-item .info {
     display: flex;
     flex-direction: column;
+    gap: 2px;
     min-width: 0;
+    flex: 1;
 }
 
 .wf-item .name {
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: 13.5px;
     font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* The text of the name truncates; the badges beside it never do. */
+.wf-item .name > .label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -311,32 +476,110 @@
 
 .wf-item .meta {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .wf-item .actions {
     display: flex;
+    align-items: center;
     gap: 4px;
+    flex-shrink: 0;
 }
 
-.wf-item button {
+/* Text buttons inside a row (Edit / Delete on the simpler menus). */
+.wf-item button:not(.wf-icon-btn):not(.wf-save-btn):not(.wf-menu-item) {
     background: none;
     border: 1px solid var(--border-default);
-    color: var(--text-primary);
+    color: var(--text-secondary);
     font-size: 12px;
     padding: 5px 10px;
     border-radius: var(--radius-sm);
     cursor: pointer;
+    white-space: nowrap;
 }
 
-.wf-item button:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
-.wf-item button.danger:hover { border-color: var(--accent-danger); color: var(--accent-danger); }
+.wf-item button:not(.wf-icon-btn):not(.wf-save-btn):not(.wf-menu-item):hover {
+    border-color: var(--accent-primary);
+    color: var(--accent-primary);
+}
 
+.wf-item button.danger:hover { border-color: var(--accent-danger) !important; color: var(--accent-danger) !important; }
+
+/* ── Badges ──────────────────────────────────────────────────────────────── */
+.wf-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.wf-badge.current { border-color: rgba(88, 166, 255, 0.45); color: var(--accent-primary); background: rgba(88, 166, 255, 0.10); }
+.wf-badge.sched   { border-color: rgba(163, 113, 247, 0.45); color: var(--accent-purple); background: rgba(163, 113, 247, 0.10); }
+.wf-badge.watch   { border-color: rgba(63, 185, 80, 0.45); color: var(--accent-success); background: rgba(63, 185, 80, 0.10); }
+
+/* ── Row overflow menu ───────────────────────────────────────────────────── */
+.wf-menu-wrap { position: relative; display: flex; }
+
+.wf-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    z-index: 50;
+    min-width: 176px;
+    padding: 4px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+/* Flip upward when the row sits near the bottom of a scrolled list. */
+.wf-menu.up { top: auto; bottom: calc(100% + 4px); }
+
+.wf-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    background: none;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.wf-menu-item:hover { background: var(--bg-tertiary); }
+.wf-menu-item.danger { color: var(--accent-danger); }
+.wf-menu-item.danger:hover { background: rgba(248, 81, 73, 0.12); }
+.wf-menu-item svg { flex-shrink: 0; opacity: 0.8; }
+.wf-menu-sep { height: 1px; background: var(--border-default); margin: 3px 0; }
+
+/* ── States ──────────────────────────────────────────────────────────────── */
 .wf-empty {
     color: var(--text-muted);
     font-size: 13px;
-    padding: 16px;
+    padding: 20px 16px;
     text-align: center;
+    line-height: 1.6;
     border: 1px dashed var(--border-default);
     border-radius: var(--radius-md);
 }
@@ -348,6 +591,13 @@
     padding: 8px 12px;
     border-radius: var(--radius-md);
     font-size: 13px;
+}
+
+@media (max-width: 640px) {
+    .wf-overlay { padding: 12px; }
+    .wf-modal { max-height: 92vh; }
+    .wf-item { flex-direction: column; align-items: stretch; }
+    .wf-item .actions { justify-content: flex-end; }
 }
 
 /* ==================== URL CHANGE DIALOG ==================== */

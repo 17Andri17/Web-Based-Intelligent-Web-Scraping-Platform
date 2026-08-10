@@ -133,7 +133,7 @@ export default function ApiKeysMenu({ open, onClose, showToast }) {
                 holding a key can run your workflows and read your extracted data.
               </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
+              <div className="wf-section-head" style={{ marginTop: 18 }}>
                 <div className="wf-section-title">Active keys</div>
                 {!creating && <button className="wf-save-btn" onClick={() => { setCreating(true); setError(null); }}>+ New key</button>}
               </div>

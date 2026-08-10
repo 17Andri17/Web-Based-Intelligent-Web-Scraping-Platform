@@ -17,6 +17,8 @@ import { runsApi } from "../api/client";
 export default function ExecutionPanel({
   isOpen, onClose, logs, status, results, onCancel, runId = null,
   steps = [], stepStates = {}, iterations = {}, lastStepId = null,
+  rowsCaptured = 0, stepTimes = {}, workers = {}, lanes = {}, laneTotals = {},
+  stalled = false,
 }) {
   const [activeTab,    setActiveTab]    = useState('flow');
   const [selectedKey,  setSelectedKey]  = useState(null);
@@ -29,13 +31,15 @@ export default function ExecutionPanel({
     if (activeTab === 'logs') logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs, activeTab]);
 
-  // Switch to data tab once results arrive
+  // Switch to the data tab once results arrive — but not while the run is
+  // still going: yanking the user off the Flow view mid-run (a paginated API
+  // step publishes results per page now) would hide the thing they opened the
+  // panel to watch.
   useEffect(() => {
-    if (results && Object.keys(results).length > 0) {
-      setActiveTab('data');
-      setSelectedKey(prev => prev || Object.keys(results)[0]);
-    }
-  }, [results]);
+    if (!results || Object.keys(results).length === 0) return;
+    setSelectedKey(prev => prev || Object.keys(results)[0]);
+    if (status !== 'running') setActiveTab('data');
+  }, [results, status]);
 
   // Export helpers
   const downloadFile = (content, filename, mime) => {
@@ -89,6 +93,16 @@ export default function ExecutionPanel({
           <div className="ep-header-left">
             <StatusBadge status={status} />
             <span className="ep-title">Workflow Execution</span>
+            {runId != null && <span className="ep-run-id">Run #{runId}</span>}
+            {/* Rows safely stored so far. A long run otherwise looks identical
+                at minute 1 and minute 40 — this is the one number that shows
+                it is actually getting somewhere, and it is the count that
+                would survive if the run stopped right now. */}
+            {status === 'running' && rowsCaptured > 0 && (
+              <span className="ep-rows-live" title="Rows captured and saved so far — kept even if the run stops">
+                {rowsCaptured.toLocaleString()} rows saved
+              </span>
+            )}
           </div>
           <div className="ep-header-right">
             {status === 'running' && (
@@ -101,6 +115,20 @@ export default function ExecutionPanel({
             </button>
           </div>
         </div>
+
+        {/* Nothing is reporting on this run. Said plainly, with the way out
+            right next to it — an unexplained spinner with a Cancel that does
+            nothing is the worst version of this. */}
+        {stalled && status === 'running' && (
+          <div className="ep-stalled">
+            <span className="ep-stalled-icon">!</span>
+            <span>
+              This run isn&rsquo;t reporting progress — the server that was executing it may have
+              stopped. Anything it captured is saved. Use Stop to close it out.
+            </span>
+            <button className="ep-btn danger" onClick={onCancel}>Stop</button>
+          </div>
+        )}
 
         {/* ── Tabs ────────────────────────────────────────────────────── */}
         <div className="ep-tabs">
@@ -122,7 +150,11 @@ export default function ExecutionPanel({
         {activeTab === 'flow' && (
           <div className="ep-flow">
             {(!steps || steps.length === 0) ? (
-              <div className="ep-empty-logs">No steps to show.</div>
+              <div className="ep-empty-logs">
+                {status === 'running'
+                  ? 'Loading the step list for this run…'
+                  : 'No steps to show.'}
+              </div>
             ) : (
               <ul className="ep-flow-tree">
                 {steps.map(s => (
@@ -133,6 +165,10 @@ export default function ExecutionPanel({
                     stepStates={stepStates}
                     iterations={iterations}
                     lastStepId={lastStepId}
+                    stepTimes={stepTimes}
+                    workers={workers}
+                    lanes={lanes}
+                    laneTotals={laneTotals}
                   />
                 ))}
               </ul>
@@ -334,10 +370,195 @@ const FLOW_LOOP_TYPES  = new Set(["FOR_EACH", "FOR_EACH_ELEMENTS", "FOR_EACH_ROW
 // "N / M" iteration badge, just like a real loop.
 const SUBFLOW_ITER_MODES = new Set(["iterate", "enrich"]);
 
-function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
+/* How long a step took.
+
+   A step that ran once shows its duration. A step INSIDE a loop ran once per
+   iteration, so a total would be meaningless next to its siblings — it shows
+   the average instead, with the run count so the number is interpretable. The
+   loop itself ran once at its own level, so it shows the whole thing. */
+function formatMs(ms) {
+  if (!Number.isFinite(ms)) return null;
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+  const m = Math.floor(ms / 60000);
+  const s = Math.round((ms % 60000) / 1000);
+  return `${m}m${s ? ` ${s}s` : ""}`;
+}
+
+function StepTiming({ timing }) {
+  if (!timing || !timing.n) return null;
+  const avg = timing.ms / timing.n;
+  const repeated = timing.n > 1;
+  return (
+    <span
+      className="ep-flow-time"
+      title={repeated
+        ? `Ran ${timing.n.toLocaleString()} times · ${formatMs(avg)} average · ${formatMs(timing.ms)} total`
+        : `Took ${formatMs(timing.ms)}`}
+    >
+      {repeated ? `~${formatMs(avg)}` : formatMs(timing.ms)}
+      {repeated && <span className="ep-flow-time-n">×{timing.n.toLocaleString()}</span>}
+    </span>
+  );
+}
+
+/* What each parallel worker is doing.
+
+   "12 of 30" is the whole story at concurrency 1 and almost none of it at
+   concurrency 8, where the useful questions are whether every worker is busy
+   and roughly where they are. One compact lane per worker answers both in a
+   single row; it disappears entirely when there's nothing to disambiguate. */
+function WorkerLanes({ workers, lanes, total, bodySteps }) {
+  const [open, setOpen] = useState(false);
+  if (!Array.isArray(workers) || workers.length < 2) return null;
+  const busy = workers.filter(w => w != null).length;
+  const detail = lanes || {};
+
+  return (
+    <div className="ep-flow-workers-wrap">
+      <button
+        type="button"
+        className="ep-flow-workers"
+        onClick={() => setOpen(o => !o)}
+        title={open ? "Hide what each worker is doing" : "Show what each worker is doing"}
+      >
+        <span className={"ep-flow-workers-caret" + (open ? " open" : "")}>▸</span>
+        <span className="ep-flow-workers-label">
+          {busy} of {workers.length} working
+        </span>
+        {/* Collapsed: one chip per worker with the item it holds. Enough to
+            see the pool is saturated without opening anything. */}
+        {!open && workers.map((item, i) => (
+          <span
+            key={i}
+            className={"ep-flow-worker" + (item == null ? " ep-flow-worker--idle" : "")}
+          >
+            {item == null ? "·" : item + 1}
+          </span>
+        ))}
+      </button>
+
+      {/* Expanded: what each worker is actually doing right now. This is the
+          detail that the shared step row cannot show — with N workers on the
+          same subflow body, one row can only ever display one of them. */}
+      {open && (
+        <ul className="ep-flow-lanes">
+          {workers.map((item, i) => (
+            <WorkerLane
+              key={i}
+              n={i}
+              item={item}
+              detail={detail[i] || {}}
+              total={total}
+              bodySteps={bodySteps}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* One worker. Collapsed it is a single line — which item, which step, where in
+   any loop. Opened it renders the SAME step tree as the main view, but scored
+   with this worker's own states, so you can see one worker's pass through the
+   body in isolation instead of the blur of all of them at once. */
+function WorkerLane({ n, item, detail, total, bodySteps }) {
+  const [open, setOpen] = useState(false);
+  const idle = item == null;
+  const canExpand = !idle && Array.isArray(bodySteps) && bodySteps.length > 0;
+
+  return (
+    <li className={"ep-flow-lane-wrap" + (idle ? " ep-flow-lane--idle" : "")}>
+      <div
+        className={"ep-flow-lane" + (canExpand ? " ep-flow-lane--clickable" : "")}
+        onClick={canExpand ? () => setOpen(o => !o) : undefined}
+        role={canExpand ? "button" : undefined}
+        tabIndex={canExpand ? 0 : undefined}
+        onKeyDown={canExpand ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(o => !o); } } : undefined}
+        title={canExpand ? (open ? "Hide this worker's steps" : "Show this worker's steps") : undefined}
+      >
+        {canExpand
+          ? <span className={"ep-flow-lane-caret" + (open ? " open" : "")}>▸</span>
+          : <span className="ep-flow-lane-caret ep-flow-lane-caret--none" />}
+        <span className="ep-flow-lane-n">{n + 1}</span>
+        {idle ? (
+          <span className="ep-flow-lane-idle">idle</span>
+        ) : (
+          <>
+            <span className="ep-flow-lane-item">
+              item {item + 1}{total ? ` / ${total}` : ""}
+            </span>
+            {detail.step && !open && (
+              <span className="ep-flow-lane-step">
+                {detail.step.label?.trim() || friendlyType(detail.step.type)}
+              </span>
+            )}
+            {detail.iter && !open && (
+              <span className="ep-flow-lane-iter">
+                {detail.iter.total ? `${detail.iter.index}/${detail.iter.total}` : detail.iter.index}
+              </span>
+            )}
+          </>
+        )}
+      </div>
+
+      {open && canExpand && (
+        <ul className="ep-flow-tree ep-flow-lane-tree">
+          {bodySteps.map(s => (
+            <FlowNode
+              key={s.id}
+              step={s}
+              depth={0}
+              stepStates={detail.stepStates || {}}
+              iterations={detail.iterations || {}}
+              lastStepId={detail.lastStepId || null}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/* How many workers are on this step right now.
+
+   A step inside a parallel subflow has no single state — N workers are at N
+   different points. It used to be left "idle" for that reason, which read as
+   "never ran" for the steps doing most of the work. Counting the lanes gives
+   it an honest state of its own: running in N workers. */
+function laneSummary(laneDetail, stepId) {
+  if (!laneDetail || !stepId) return null;
+  let running = 0, done = 0, error = 0;
+  for (const lane of Object.values(laneDetail)) {
+    const st = lane && lane.stepStates && lane.stepStates[stepId];
+    if (st === "running") running++;
+    else if (st === "done") done++;
+    else if (st === "error") error++;
+  }
+  return (running || done || error) ? { running, done, error } : null;
+}
+
+function FlowNode({ step, depth, stepStates, iterations, lastStepId, stepTimes = {}, workers = {},
+                    lanes = {}, laneTotals = {}, inParallel = false, parallelOwner = null }) {
   if (!step || typeof step !== "object") return null;
-  const state = stepStates[step.id] || "idle";
+  const timing = stepTimes[step.id];
+  const workerItems = workers[step.id];
+  const laneDetail = lanes[step.id];
+
+  // Inside a parallel loop, state comes from the lanes rather than the shared
+  // stream — the shared one deliberately holds nothing for these steps.
+  const summary = parallelOwner ? laneSummary(lanes[parallelOwner], step.id) : null;
+  const state = summary
+    ? (summary.running > 0 ? "parallel" : summary.error > 0 ? "error" : "done")
+    : (stepStates[step.id] || "idle");
   const iter  = iterations[step.id];
+
+  // A loop that several workers run at once. Its per-lane index restarts on
+  // every item and interleaves across workers, so showing it reads as noise —
+  // the running total across all lanes is the number that means something.
+  const laneTotal = inParallel ? laneTotals[step.id] : null;
+  const isParallelHere = Array.isArray(workerItems) && workerItems.length > 1;
   const isLoop = step.kind === "control" && FLOW_LOOP_TYPES.has(step.type);
   const isSubflowIter = step.kind === "action" && step.type === "RUN_SUBFLOW"
     && SUBFLOW_ITER_MODES.has(step.params?.mode);
@@ -363,7 +584,15 @@ function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
         <span className="ep-flow-type">{stepKindIcon(step)}</span>
         <span className="ep-flow-label">{label}</span>
         <span className="ep-flow-typetag">{friendlyType(step.type)}</span>
-        {(isLoop || isSubflowIter) && iter && (
+        {(isLoop || isSubflowIter) && laneTotal != null && (
+          <span
+            className="ep-flow-iter"
+            title={`${laneTotal.toLocaleString()} iterations completed across all workers. Per-worker position is in the worker list above — a single number here would jump between workers and describe none of them.`}
+          >
+            {laneTotal.toLocaleString()} done
+          </span>
+        )}
+        {(isLoop || isSubflowIter) && laneTotal == null && iter && (
           <span
             className="ep-flow-iter"
             title={iter.total ? `Iteration ${iter.index} of ${iter.total}` : `Iteration ${iter.index}`}
@@ -372,7 +601,24 @@ function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
             {iter.running && <span className="ep-flow-iter-pulse" />}
           </span>
         )}
+        {summary && summary.running > 0 && (
+          <span
+            className="ep-flow-parallel"
+            title={`${summary.running} worker${summary.running === 1 ? "" : "s"} running this step right now`}
+          >
+            ×{summary.running}
+          </span>
+        )}
+        <StepTiming timing={timing} />
       </div>
+      {(isLoop || isSubflowIter) && (
+        <WorkerLanes
+          workers={workerItems}
+          lanes={laneDetail}
+          total={iter && iter.total}
+          bodySteps={subflowSteps || step.body}
+        />
+      )}
       {branches.map(([key, list]) => (
         <ul key={key} className="ep-flow-branch">
           {branches.length > 1 && <li className="ep-flow-branch-label" style={{ paddingLeft: 4 + (depth + 1) * 14 }}>{key}</li>}
@@ -384,6 +630,12 @@ function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
               stepStates={stepStates}
               iterations={iterations}
               lastStepId={lastStepId}
+              stepTimes={stepTimes}
+              workers={workers}
+              lanes={lanes}
+              laneTotals={laneTotals}
+              inParallel={inParallel || isParallelHere}
+              parallelOwner={isParallelHere ? step.id : parallelOwner}
             />
           ))}
         </ul>
@@ -401,6 +653,12 @@ function FlowNode({ step, depth, stepStates, iterations, lastStepId }) {
               stepStates={stepStates}
               iterations={iterations}
               lastStepId={lastStepId}
+              stepTimes={stepTimes}
+              workers={workers}
+              lanes={lanes}
+              laneTotals={laneTotals}
+              inParallel={inParallel || isParallelHere}
+              parallelOwner={isParallelHere ? step.id : parallelOwner}
             />
           ))}
         </ul>

@@ -14,7 +14,10 @@ import HtmlInspectorPanel from "./components/HtmlInspectorPanel";
 import PaginationDetector from "./components/PaginationDetector";
 import ApiSourcesPanel from "./components/ApiSourcesPanel";
 import Dashboard from "./components/Dashboard";
-import GuidedCoach, { coachStepIndex } from "./components/GuidedCoach";
+import GuidedTour from "./components/GuidedTour";
+import TemplateGallery, { TemplateSetupBanner } from "./components/TemplateGallery";
+import DataHome from "./components/DataHome";
+import { makeBasicsTour } from "./tours/basicsTour";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
@@ -22,9 +25,18 @@ import CustomActionsMenu from "./customActions/CustomActionsMenu";
 import ProxiesMenu from "./proxies/ProxiesMenu";
 import ApiKeysMenu from "./apiKeys/ApiKeysMenu";
 import WebhooksMenu from "./webhooks/WebhooksMenu";
+import NotificationsMenu from "./components/NotificationsMenu";
 import RunInputsDialog from "./components/RunInputsDialog";
+import PerformanceSettings from "./components/PerformanceSettings";
 import SelectorDebugger from "./components/SelectorDebugger";
-import { API_BASE, customActionsApi, workflowsApi, aiApi } from "./api/client";
+import { API_BASE, customActionsApi, workflowsApi, aiApi, runsApi } from "./api/client";
+import { useMediaQuery, HEADER_COMPACT_QUERY } from "./utils/useMediaQuery";
+import { unresolveVars, rawUrlForCurrentPage } from "./utils/urlVars";
+import {
+  saveDraft, loadDraft, clearDraft,
+  saveTourProgress, loadTourProgress, clearTourProgress,
+  loadTourPrefs, saveTourPrefs,
+} from "./utils/draftStore";
 import "./styles/PaginationDetector.css";
 import "./styles/ApiSourcesPanel.css";
 import "./styles/app.css";
@@ -123,6 +135,22 @@ function deepResolveVars(obj, vars) {
     return out;
   }
   return obj;
+}
+
+// A cheap content fingerprint of the editable workflow, used to answer "has
+// this changed since it was last saved?". Compared against a baseline taken
+// on load/save, so a saved-and-untouched workflow doesn't trigger the
+// unsaved-work guard on close. Deliberately covers only what the user edits
+// (the step tree + variables) — viewport metadata and run results churn on
+// their own and would make everything look permanently dirty.
+function workflowSignature(steps, variables) {
+  try {
+    return JSON.stringify([steps || [], variables || []]);
+  } catch (_) {
+    // Circular / non-serialisable state: treat as always-dirty rather than
+    // silently claiming the work is safe.
+    return null;
+  }
 }
 
 // Depth-first scan for a step type anywhere in the workflow tree (branches
@@ -423,6 +451,21 @@ function AppShell({ user, token, onLogout }) {
   // "N / M iterations" pills for active loops.
   const [execIterations, setExecIterations] = useState({});
   const [execLastStepId, setExecLastStepId] = useState(null);
+  // Rows check-pointed so far on the running job (see executionPartial).
+  const [execPartialRows, setExecPartialRows] = useState(0);
+  // stepId → { n, ms }: how long each step took and how often it ran. Total
+  // for a step or loop; average per iteration for steps inside a loop.
+  const [execStepTimes, setExecStepTimes] = useState({});
+  // stepId → [itemIndex|null], one entry per parallel worker on that loop.
+  const [execWorkers, setExecWorkers] = useState({});
+  // loop stepId → lane → { item, step, iter }: what each worker is doing.
+  const [execLanes, setExecLanes] = useState({});
+  // Read by the executionDone handler, which is registered once at mount and
+  // would otherwise close over an empty lanes map forever.
+  const execLanesRef = useRef(execLanes);
+  useEffect(() => { execLanesRef.current = execLanes; }, [execLanes]);
+  // stepId → monotonic iteration count across all workers, for nested loops.
+  const [execLaneTotals, setExecLaneTotals] = useState({});
   const [execResults,   setExecResults]   = useState(null);
   // Persisted run id for the current live run (carried on executionStarted /
   // executionDone). Lets the Results panel fetch server-rendered exports
@@ -437,7 +480,46 @@ function AppShell({ user, token, onLogout }) {
   // Variables panel re-renders on every edit, and mirrored into the
   // meta payload sent to the backend on run / save.
   const [workflowVariables, setWorkflowVariables] = useState([]);
+  // Read by stable callbacks (pinStart, the URL-change dialog) that must not
+  // close over a stale variable list when re-parameterising a captured URL.
+  const workflowVariablesRef = useRef(workflowVariables);
+  useEffect(() => { workflowVariablesRef.current = workflowVariables; }, [workflowVariables]);
   const [variablesCollapsed, setVariablesCollapsed] = useState(false);
+
+  /* ── Never spin forever ──────────────────────────────────────────────────
+     Socket events are the fast path, but they are not a guarantee: if the
+     server that owned this run went away, no "done" is ever sent and the panel
+     would spin indefinitely with no way out. Polling the run row is the
+     backstop — the server's reaper finalises abandoned runs, and this notices
+     within a few seconds whatever happened to the connection.
+
+     Also surfaces WHY nothing is moving, so a stalled run reads as stalled
+     rather than as a UI that has quietly given up. */
+  const [execStalled, setExecStalled] = useState(false);
+  useEffect(() => {
+    if (execStatus !== "running" || execRunId == null) { setExecStalled(false); return; }
+    let alive = true;
+    const check = async () => {
+      try {
+        const d = await runsApi.get(execRunId);
+        if (!alive || !d) return;
+        if (d.status !== "running" && d.status !== "queued") {
+          // Terminal on the server — adopt it regardless of what arrived (or
+          // didn't) over the socket.
+          setExecStatus(d.status === "success" ? "done" : "error");
+          if (d.results && Object.keys(d.results).length > 0) setExecResults(d.results);
+          setExecStalled(false);
+          return;
+        }
+        // Still running, but is anything actually reporting? `live` is false
+        // once the server has no in-memory record of the run.
+        setExecStalled(d.live === false);
+      } catch (_) { /* offline — keep showing what we have */ }
+    };
+    check();
+    const t = setInterval(check, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, [execStatus, execRunId]);
 
   // ── Toast helper ─────────────────────────────────────────────────────────
   const showToast = useCallback((msg, type = "success") => {
@@ -452,14 +534,91 @@ function AppShell({ user, token, onLogout }) {
   const [currentWorkflowName, setCurrentWorkflowName] = useState("");
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
-  // ── Dashboard home + Quick Scrape wizard ─────────────────────────────────
+  // ── Re-attach to a run that is still going ───────────────────────────────
+  // Runs execute on the SERVER, so closing the workflow or reloading the page
+  // doesn't stop them — but the progress lived only in this component's state,
+  // so coming back looked like the run had disappeared. Ask the backend what is
+  // still in flight and surface it, so the user can reopen its progress.
+  const [activeRuns, setActiveRuns] = useState([]);
+  const [resumeDismissed, setResumeDismissed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const runs = await runsApi.active();
+        if (alive) setActiveRuns(Array.isArray(runs) ? runs : []);
+      } catch (_) { /* offline / not signed in — nothing to show */ }
+    };
+    poll();
+    // Keep it current while the tab is open: a run can finish, and a scheduled
+    // or API-triggered one can start, without this tab doing anything.
+    const t = setInterval(poll, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  // A run this tab is already showing doesn't need a "resume" prompt.
+  const resumableRuns = activeRuns.filter(r => r.id !== execRunId);
+
+  // ── Header responsiveness ────────────────────────────────────────────────
+  // Below the compact breakpoint the secondary header actions move into a ⋯
+  // menu rather than wrapping onto a second row (which broke the 56px header
+  // and made the buttons unclickable).
+  const headerCompact = useMediaQuery(HEADER_COMPACT_QUERY);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  // Leaving the menu mounted after the header expands again would strand an
+  // open popover with no button under it.
+  useEffect(() => { if (!headerCompact) setHeaderMenuOpen(false); }, [headerCompact]);
+
+  // ── Dashboard home ───────────────────────────────────────────────────────
   // The dashboard is the landing screen after login: workflows, their run
-  // status, and a "needs attention" inbox. The wizard is the guided
-  // point-and-click flow for building a list scraper from scratch.
+  // status, and a "needs attention" inbox.
   const [dashboardOpen, setDashboardOpen] = useState(true);
-  // Inline first-scrape coach: guides the user through the REAL controls
-  // (URL bar → Select → click → Inspector → Run) instead of a parallel wizard.
-  const [coachOpen,     setCoachOpen]     = useState(false);
+  // Forced walkthrough on the bundled DemoMart shop (GuidedTour + basicsTour).
+  const [tourOpen,      setTourOpen]      = useState(false);
+
+  /* ── Local persistence (drafts + tour progress) ──────────────────────────
+     Everything here is browser-local and scoped to this user. Two separate
+     slots on purpose:
+
+       • the DRAFT — the user's own unsaved workflow, restored after a
+         refresh / crash / accidental close.
+       • the TOUR — its step position plus the throwaway DemoMart workflow it
+         builds. The tour must never leave a scraper behind in the user's
+         drafts, so while a tour-derived session is in the editor the draft
+         autosave stands down entirely and the tour persists itself instead. */
+  const draftScope = user?.username || "anon";
+  // True while the editor holds a workflow the TOUR built. Set when the tour
+  // starts and kept after it finishes (the last step is free play, and that
+  // playground still isn't the user's work); cleared only by an explicit
+  // reset or by loading a real workflow.
+  const [isTourWorkflow, setIsTourWorkflow] = useState(false);
+  // Serialised workflow as of the last save/load, so "is there unsaved work?"
+  // is an honest question rather than "are there any steps at all?".
+  const [savedSignature, setSavedSignature] = useState(null);
+  // Read once at mount so the dashboard can offer "Take the tour" vs
+  // "Resume the tour", and knows whether the first-run prompt is still wanted.
+  const [tourPrefs, setTourPrefs] = useState(() => loadTourPrefs(draftScope));
+  const [tourProgress, setTourProgress] = useState(() => loadTourProgress(draftScope));
+  // Where GuidedTour should open — a saved position when resuming, 0 when
+  // starting fresh.
+  const [tourResumeFrom, setTourResumeFrom] = useState({ idx: 0, maxIdx: 0 });
+  // Set when a draft is recovered at mount, so the editor can say so.
+  const [restoredDraftAt, setRestoredDraftAt] = useState(null);
+
+  // ── E-mail alerts (account-level "tell me when…") ────────────────────────
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+
+  // ── Global data view ─────────────────────────────────────────────────────
+  // Extracted data used to be reachable only through Workflows → row → icon →
+  // modal-on-modal, one scraper at a time. This is the destination that
+  // answers "what have I actually collected?" in one place.
+  const [dataHomeOpen, setDataHomeOpen] = useState(false);
+
+  // ── Template gallery ─────────────────────────────────────────────────────
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  // { name, setup[] } while a template-derived workflow still has its setup
+  // checklist showing. Templates ship with empty selectors on purpose, so
+  // without this the editor just looks broken.
+  const [templateGuide, setTemplateGuide] = useState(null);
 
   // ── Proxy servers ──────────────────────────────────────────────────────
   const [proxiesOpen, setProxiesOpen] = useState(false);
@@ -470,6 +629,11 @@ function AppShell({ user, token, onLogout }) {
   // server.js's navigate handler for the live preview. A 'pool'/'platform'
   // selection rotates to a different member proxy on each resolution.
   const [selectedProxy, setSelectedProxy] = useState(null);
+  // Per-workflow speed switches (meta.performance) — see
+  // components/PerformanceSettings.jsx and backend workflowCodegen resolvePerf.
+  // All default off, so an untouched workflow runs exactly as it always has.
+  const [perfSettings, setPerfSettings] = useState({});
+  const [perfOpen, setPerfOpen] = useState(false);
 
   // ── API keys (public /v1 API credentials) ────────────────────────────────
   const [apiKeysOpen, setApiKeysOpen] = useState(false);
@@ -747,7 +911,22 @@ function AppShell({ user, token, onLogout }) {
     socket.on("executionStarted", (info) => {
       setExecStatus("running"); setExecLogs([]); setExecResults(null);
       setExecStepStates({}); setExecIterations({}); setExecLastStepId(null);
+      setExecPartialRows(0);
+      setExecStepTimes({}); setExecWorkers({});
+      setExecLanes({}); setExecLaneTotals({});
       setExecRunId(info?.runId ?? null);
+    });
+    // Rows safely check-pointed so far — what would survive if the run died
+    // right now. Gives a long run something honest to show while the Results
+    // tab is still empty.
+    socket.on("executionPartial", (info) => {
+      if (info && typeof info.rows === "number") setExecPartialRows(info.rows);
+      if (info && info.times) setExecStepTimes(prev => ({ ...prev, ...info.times }));
+    });
+    // Which item each worker of a parallel loop is on.
+    socket.on("executionWorkers", (info) => {
+      if (!info || !info.stepId) return;
+      setExecWorkers(prev => ({ ...prev, [info.stepId]: info.workers || [] }));
     });
     // Flow tree with subflow steps inlined — arrives just before
     // executionStarted. Kept in its own state so the reset above doesn't
@@ -763,6 +942,39 @@ function AppShell({ user, token, onLogout }) {
     socket.on("executionStepBegin", (info) => {
       const id = info?.id;
       if (!id) return;
+      // Tagged with a lane ⇒ it came from inside one parallel worker. Folding
+      // it into the shared step state is what made the display flicker
+      // between workers; it belongs to that lane instead.
+      if (info.owner != null && info.lane != null) {
+        setExecLanes(prev => {
+          const byLane = prev[info.owner] || {};
+          let lane = byLane[info.lane] || { stepStates: {}, iterations: {}, lastStepId: null };
+          // A worker starting a new item begins the body again — its per-item
+          // progress resets, or steps would still read "done" from the last one.
+          if (info.item != null && lane.item !== info.item) {
+            lane = { item: info.item, stepStates: {}, iterations: {}, lastStepId: null };
+          }
+          const stepStates = { ...lane.stepStates };
+          if (lane.lastStepId && stepStates[lane.lastStepId] === "running") {
+            stepStates[lane.lastStepId] = "done";
+          }
+          stepStates[id] = "running";
+          return {
+            ...prev,
+            [info.owner]: {
+              ...byLane,
+              [info.lane]: {
+                ...lane,
+                item: info.item,
+                step: { id, label: info.label, type: info.type },
+                stepStates,
+                lastStepId: id,
+              },
+            },
+          };
+        });
+        return;
+      }
       setExecStepStates(prev => {
         const next = { ...prev };
         // mark whichever step was running as "done"
@@ -780,6 +992,31 @@ function AppShell({ user, token, onLogout }) {
     socket.on("executionIteration", (info) => {
       const id = info?.stepId;
       if (!id) return;
+      if (info.owner != null && info.lane != null) {
+        setExecLanes(prev => {
+          const laneNow = (prev[info.owner] || {})[info.lane] || {};
+          const iterations = { ...(laneNow.iterations || {}) };
+          const cur = iterations[id] || {};
+          let iter = laneNow.iter || null;
+          if (info.kind === "start") {
+            iterations[id] = { total: info.total || 0, index: 0, running: true };
+            iter = { stepId: id, total: info.total || 0, index: 0 };
+          } else if (info.kind === "tick") {
+            iterations[id] = { ...cur, index: (info.index ?? 0) + 1, running: true };
+            iter = { ...(iter || {}), stepId: id, index: (info.index ?? 0) + 1 };
+          } else if (info.kind === "end") {
+            iterations[id] = { ...cur, running: false };
+            iter = null;
+          }
+          return { ...prev, [info.owner]: { ...(prev[info.owner] || {}), [info.lane]: { ...laneNow, iter, iterations } } };
+        });
+        // A per-lane index restarts every item and interleaves across workers,
+        // so the step row shows the cross-worker total instead.
+        if (info.kind === "tick") {
+          setExecLaneTotals(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+        }
+        return;
+      }
       setExecIterations(prev => {
         const cur = prev[id] || {};
         if (info.kind === "start") return { ...prev, [id]: { total: info.total || 0, index: 0, running: true } };
@@ -798,13 +1035,28 @@ function AppShell({ user, token, onLogout }) {
       // No STEP_BEGIN follows the final step, so it would otherwise stay
       // stuck in the "running" (spinner) state. Flip any step still marked
       // running to its terminal state now that the run has ended.
+      //
+      // Steps that only ran inside parallel workers have no shared state at
+      // all — that is what let them be tracked per worker — so fold their
+      // outcome in here too, or they would read as "never ran" once the lanes
+      // are cleared below.
+      const laneStepIds = [];
+      for (const byLane of Object.values(execLanesRef.current || {})) {
+        for (const lane of Object.values(byLane || {})) {
+          laneStepIds.push(...Object.keys((lane && lane.stepStates) || {}));
+        }
+      }
       setExecStepStates(prev => {
         const next = { ...prev };
         for (const k of Object.keys(next)) {
           if (next[k] === "running") next[k] = ok ? "done" : "error";
         }
+        for (const id of laneStepIds) {
+          if (next[id] !== "error") next[id] = ok ? "done" : "error";
+        }
         return next;
       });
+      setExecLanes({});   // nobody is mid-item once the run is over
       // Likewise, stop any loop iteration counters still pulsing.
       setExecIterations(prev => {
         const next = { ...prev };
@@ -1071,9 +1323,17 @@ function AppShell({ user, token, onLogout }) {
     sessionMetaRef.current = {};
     setWorkflowVariables([]);
     setSelectedProxy(null);
+    setPerfSettings({});
     socketRef.current?.emit("stopStreaming");
     isStreamingRef.current = false;
     setStatus("");
+    // An explicit "new workflow" is the user throwing the draft away — drop
+    // the stored copy too, or the next load would resurrect what they just
+    // discarded. Also ends any tour-derived session: the editor is clean now.
+    clearDraft(draftScope);
+    setSavedSignature(null);
+    setIsTourWorkflow(false);
+    setTemplateGuide(null);
     // Wipe the last streamed frame so the canvas isn't showing a stale page.
     const canvas = canvasRef.current;
     if (canvas) {
@@ -1081,7 +1341,7 @@ function AppShell({ user, token, onLogout }) {
       if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
     latestFrameRef.current = null;
-  }, [setSteps]);
+  }, [setSteps, draftScope]);
 
   // Pending URL-change confirmation (shown when user changes URL on an
   // existing workflow). Payload: { newUrl }.
@@ -1262,7 +1522,13 @@ function AppShell({ user, token, onLogout }) {
   // Load a full workflow object into the editor. Shared by the Workflows menu
   // (onLoaded) and the Dashboard's "Open" action so both behave identically.
   // Declared after performNavigate — it references it in its dependency array.
-  const loadWorkflowIntoEditor = useCallback((wf) => {
+  // `opts.navigate === false` loads the workflow WITHOUT driving the live
+  // browser to its start URL, and without clearing execution state. That's the
+  // "open this workflow so I can watch its run" case: auto-navigating there
+  // would spend a page load nobody asked for, and resetting exec state would
+  // detach the very run the user opened it to see.
+  const loadWorkflowIntoEditor = useCallback((wf, opts = {}) => {
+    const navigate = opts.navigate !== false;
     // Normalise: mark the first NAVIGATE step as the pinned start URL. Older
     // workflows saved before pinning won't have this flag.
     const loadedSteps = (wf.steps || []).map((s, i) =>
@@ -1277,11 +1543,21 @@ function AppShell({ user, token, onLogout }) {
     if (wf.meta) sessionMetaRef.current = { ...sessionMetaRef.current, ...wf.meta };
     const loadedVars = Array.isArray(wf.meta?.variables) ? wf.meta.variables : [];
     setWorkflowVariables(loadedVars);
+    // Freshly loaded from the server = nothing unsaved yet. Also ends any
+    // tour-derived session — this is the user's own work now.
+    setSavedSignature(workflowSignature(loadedSteps, loadedVars));
+    setIsTourWorkflow(false);
+    // A workflow created from a template carries its setup checklist in meta;
+    // show it until dismissed. Anything else clears a stale one.
+    setTemplateGuide(wf.meta?.template || null);
     setSelectedProxy(wf.meta?.proxy || (wf.meta?.proxyId ? { mode: "single", id: wf.meta.proxyId } : null));
-    setExecResults(null);
-    setExecRunId(null);
-    setExecLogs([]);
-    setExecStatus("idle");
+    setPerfSettings(wf.meta?.performance || {});
+    if (navigate) {
+      setExecResults(null);
+      setExecRunId(null);
+      setExecLogs([]);
+      setExecStatus("idle");
+    }
     const startUrlRaw = loadedSteps[0]?.type === "NAVIGATE"
       ? loadedSteps[0]?.params?.url || ""
       : wf.meta?.startUrl || "";
@@ -1291,21 +1567,104 @@ function AppShell({ user, token, onLogout }) {
     // url passes through unchanged.
     const startUrl = resolveVars(startUrlRaw, loadedVars);
     setUrlInput(startUrl);
-    if (startUrl) performNavigate(startUrl);
+    if (startUrl && navigate) performNavigate(startUrl);
   }, [performNavigate, setSteps]);
 
   // Open a workflow by id from the Dashboard: fetch the full record, load it,
   // and leave the dashboard.
-  const openWorkflowById = useCallback(async (id) => {
+  const openWorkflowById = useCallback(async (id, opts = {}) => {
     try {
       const wf = await workflowsApi.get(id);
-      loadWorkflowIntoEditor(wf);
+      loadWorkflowIntoEditor(wf, opts);
       setDashboardOpen(false);
       setActiveTab("stream");
     } catch (err) {
       showToast(`✗ Couldn't open workflow: ${err?.response?.data?.error || err.message}`, "error");
     }
   }, [loadWorkflowIntoEditor, showToast]);
+
+  /* ── Watch a run ────────────────────────────────────────────────────────
+     Opens the run's workflow (so the Flow view has steps to draw) WITHOUT
+     navigating the live browser, then subscribes to the run itself. The
+     server replies with a snapshot — flow tree, which steps have run, loop
+     counters, the recent log tail — so the panel opens already populated
+     instead of waiting for the next event to arrive.
+
+     Works for a run this tab never started: a scheduled one, an API one, one
+     from another tab, or one from before a reload. */
+  const watchRun = useCallback(async (runId, { openWorkflow = true } = {}) => {
+    if (!runId) return;
+    try {
+      const detail = await runsApi.get(runId);
+      if (openWorkflow && detail.workflowId) {
+        await openWorkflowById(detail.workflowId, { navigate: false });
+      }
+
+      setExecRunId(runId);
+      setExecPanelOpen(true);
+      setExecLogs([]);
+      setExecStepStates({});
+      setExecIterations({});
+      setExecLastStepId(null);
+      setExecResults(null);
+      setExecFlowTree(null);
+      setExecStepTimes({});
+      setExecWorkers({});
+      setExecLanes({});
+      setExecLaneTotals({});
+
+      const finished = detail.status !== "running" && detail.status !== "queued";
+      setExecStatus(finished ? (detail.status === "success" ? "done" : "error") : "running");
+
+      // A finished run is served entirely from the durable record.
+      if (finished) {
+        setExecResults(detail.results || null);
+        const logs = await runsApi.logs(runId).catch(() => []);
+        setExecLogs((logs || []).map(l => ({ line: l.line, level: l.level })));
+      }
+
+      const sock = socketRef.current;
+      if (!sock) return;
+      sock.emit("watchRun", { runId }, async (reply) => {
+        if (!reply || !reply.ok) {
+          if (reply && reply.error) showToast(`✗ ${reply.error}`, "error");
+          return;
+        }
+        const snap = reply.snapshot;
+        if (snap) {
+          // Live run: adopt the server's view wholesale, then keep receiving
+          // events on the same channels the launching tab uses.
+          if (Array.isArray(snap.flowTree) && snap.flowTree.length) setExecFlowTree(snap.flowTree);
+          setExecStepStates(snap.stepStates || {});
+          setExecIterations(snap.iterations || {});
+          setExecLastStepId(snap.lastStepId || null);
+          setExecLogs((snap.logs || []).map(l => ({ line: l.line, level: l.level })));
+          setExecPartialRows(snap.rowsCaptured || 0);
+          setExecStepTimes(snap.stepTimes || {});
+          setExecWorkers(snap.workers || {});
+          setExecLanes(snap.lanes || {});
+          setExecLaneTotals(snap.laneTotals || {});
+          if (snap.results) setExecResults(snap.results);
+          if (snap.status === "running") setExecStatus("running");
+        } else if (!finished) {
+          // Running, but no snapshot — the server restarted since it began.
+          // The DB still has the logs, so show those rather than nothing.
+          const logs = await runsApi.logs(runId).catch(() => []);
+          setExecLogs((logs || []).map(l => ({ line: l.line, level: l.level })));
+        }
+        // The Flow tab needs the tree with subflows inlined. For a finished
+        // run (or a lost snapshot) ask the server to build it from the saved
+        // workflow, so the step list is the real executed shape.
+        if ((!snap || !snap.flowTree?.length) && detail.workflowId) {
+          sock.emit("requestFlowTree", { workflowId: detail.workflowId }, (r) => {
+            if (r && r.ok && Array.isArray(r.steps)) setExecFlowTree(r.steps);
+          });
+        }
+      });
+    } catch (err) {
+      showToast(`✗ Couldn't open that run: ${err?.response?.data?.error || err.message}`, "error");
+    }
+  }, [openWorkflowById, showToast]);
 
   // ── Navigate ──────────────────────────────────────────────────────────────
   // Three paths:
@@ -1322,7 +1681,7 @@ function AppShell({ user, token, onLogout }) {
 
     if (!pinnedStep && !hasWorkflow) {
       // Fresh start — create the pinned step and navigate.
-      const step = createAction("NAVIGATE", { url });
+      const step = createAction("NAVIGATE", { url: unresolveVars(url, workflowVariablesRef.current) });
       step.pinned = true;
       addStep(step, [], null);
       performNavigate(url);
@@ -1352,7 +1711,7 @@ function AppShell({ user, token, onLogout }) {
   const addNavigateStepForCurrentPage = () => {
     const url = (currentPageUrl || urlInput || "").trim();
     if (!url) return;
-    addStep(createAction("NAVIGATE", { url }), [], null);
+    addStep(createAction("NAVIGATE", { url: unresolveVars(url, workflowVariablesRef.current) }), [], null);
     showToast("✓ Added a Navigate step for this page — steps recorded here now match the workflow", "success");
   };
 
@@ -1759,7 +2118,7 @@ function AppShell({ user, token, onLogout }) {
     // backend will auto-create a draft and emit `workflowAutoCreated`.
     socketRef.current.emit("executeWorkflow", {
       steps,
-      meta: { ...sessionMetaRef.current, variables: workflowVariables },
+      meta: { ...sessionMetaRef.current, variables: workflowVariables, performance: perfSettings },
       workflowId: currentWorkflowId || null,
       workflowName: currentWorkflowName || null,
     });
@@ -1769,11 +2128,36 @@ function AppShell({ user, token, onLogout }) {
     if (!socketRef.current) return;
     socketRef.current.emit("downloadCode", {
       steps,
-      meta: { ...sessionMetaRef.current, variables: workflowVariables },
+      meta: { ...sessionMetaRef.current, variables: workflowVariables, performance: perfSettings },
     });
   };
 
   const handleCancelExecution = () => {
+    // Cancel by run id so it works from a tab that is watching rather than the
+    // one that launched. Falls back to the per-socket signal when the panel is
+    // showing a run whose id we don't have yet (the first moments of a run).
+    if (execRunId != null) {
+      socketRef.current?.emit("cancelRun", { runId: execRunId }, (r) => {
+        if (!r || !r.ok) {
+          showToast("✗ Couldn't stop that run — reload and try again.", "error");
+          return;
+        }
+        // Each outcome is real and worth naming: the old version reported a
+        // flat failure whenever this server didn't happen to own the run.
+        if (r.alreadyFinished) {
+          showToast(`This run had already finished (${r.status}).`, "success");
+          setExecStatus(r.status === "success" ? "done" : "error");
+        } else if (r.orphaned) {
+          showToast("That run was no longer alive — it has been closed and its rows kept.", "success");
+          setExecStatus("error");
+        } else if (r.requested) {
+          showToast("Stop requested — the run will halt shortly.", "success");
+        } else {
+          showToast("Stopping the run — the rows already captured are kept.", "success");
+        }
+      });
+      return;
+    }
     socketRef.current?.emit("cancelExecution");
   };
 
@@ -1988,18 +2372,67 @@ function AppShell({ user, token, onLogout }) {
 
   const isRunDisabled = steps.length === 0 || execStatus === "running";
 
-  // First-scrape coach: current step derived purely from live editor state, so
-  // it advances as the user actually does each thing. `coachTarget` names the
-  // real control to spotlight this step.
-  const coachStep = coachStepIndex({
-    pageLoaded:   !!currentPageUrl,
+  // Legacy no-op kept so existing `${spot(...)}` className expressions stay
+  // valid; the guided tour uses its own overlay (GuidedTour) instead of
+  // spotlighting via a class.
+  const spot = () => "";
+
+  // ── Guided tour (GuidedTour) ──────────────────────────────────────────────
+  // The DemoMart URL the streamed browser navigates to. API_BASE points at the
+  // backend origin (which serves /demo); same-origin in production.
+  const demoUrl = `${API_BASE || window.location.origin}/demo/shop.html`;
+  const basicsSteps = useMemo(() => makeBasicsTour({ demoUrl }), [demoUrl]);
+  // Live state the tour's step gates read.
+  const _selText = `${selectedElement?.selector || ""} ${selectedElement?.commonSelector || ""}`;
+  const _selIsCard = /product-card/.test(_selText) || selectedElement?.tag === "article";
+  const _selIsHeading = /heading|(^|[^-])\bh1\b/.test(_selText) || selectedElement?.tag === "h1";
+  const tourState = {
     mode,
-    hasSelection: !!(selectedElement && selectedElement.isMultiSelection),
-    hasList:      steps.some(s => s.type === "EXTRACT_LIST" || s.type === "COLLECT_LIST"),
-    hasRun:       !!execRunId || execStatus === "done",
-  });
-  const coachTarget = coachOpen ? ["url", "mode", "canvas", "sidebar", "run"][coachStep] : null;
-  const spot = (name) => (coachTarget === name ? " coach-spotlight" : "");
+    pageUrl: currentPageUrl || "",
+    onDemoBase:  /\/demo\/shop\.html/.test(currentPageUrl || "") && !/[?&]category=/.test(currentPageUrl || ""),
+    onDemoAudio: /[?&]category=audio/.test(currentPageUrl || ""),
+    onDifferentPage,                       // the orange "back to start" button is showing
+    selection: selectedElement,
+    selHasSingle: !!(selectedElement && !selectedElement.isMultiSelection),
+    selIsCard: _selIsCard,
+    selIsHeading: _selIsHeading,
+    selMultiCards: !!(selectedElement && selectedElement.isMultiSelection) && (selectedElement.matchCount || 0) > 1,
+    stepTypes: steps.map(s => s.type),
+    hasExtractText: steps.some(s => s.type === "EXTRACT_TEXT"),
+    hasExtractList: steps.some(s => s.type === "EXTRACT_LIST" || s.type === "COLLECT_LIST"),
+    hasPaginate: steps.some(s => /^PAGINATE_/.test(s.type)),
+    paginationSuggested: Array.isArray(paginationSuggestions) && paginationSuggestions.length > 0,
+    activeTab, sidebarTab, paginationOpen,
+    execDone: !!execRunId || execStatus === "done",
+  };
+  // Map a demo element's page rect (CSS px) to on-screen coords over the canvas
+  // — inverse of scaled(). Lets the tour spotlight elements on the pixel stream.
+  const mapPageRectToScreen = (pr) => {
+    const c = canvasRef.current;
+    if (!c || !pr) return null;
+    const r = c.getBoundingClientRect();
+    const vw = pr.vw || viewportCssRef.current?.width || c.width || 1;
+    const vh = pr.vh || viewportCssRef.current?.height || c.height || 1;
+    const sx = r.width / vw, sy = r.height / vh;
+    return { left: r.left + pr.x * sx, top: r.top + pr.y * sy, width: pr.width * sx, height: pr.height * sy };
+  };
+  const tourApi = {
+    prefillUrl: (u) => setUrlInput(u),
+    goStream: () => setActiveTab("stream"),
+    showWorkflow: () => setActiveTab("workflow"),
+    closePagination: () => setPaginationOpen(false),
+    openInspector: () => { setShowSidebar(true); setSidebarTab("inspector"); },
+    // Ensure a pinned NAVIGATE step at `url` is step[0], so the workflow has a
+    // start URL and the orange "back to start" button appears once the user
+    // browses away. Idempotent.
+    pinStart: (url) => {
+      const cur = stepsRef.current || [];
+      if (cur[0]?.type === "NAVIGATE" && cur[0]?.pinned) return;
+      const nav = createAction("NAVIGATE", { url: unresolveVars(url, workflowVariablesRef.current) });
+      nav.pinned = true;
+      addStep(nav, [], 0);
+    },
+  };
 
   // "Pick on page" for a selector field in the step editor: jump to the live
   // page in Select mode and arm the next click to write that field. fieldKey
@@ -2015,6 +2448,174 @@ function AppShell({ user, token, onLogout }) {
     showToast("Click the element on the page to set this selector", "success");
   };
 
+  /* ── Draft autosave, restore, and the unsaved-work guard ─────────────────
+     A workflow being built lived only in this component's state, so a stray
+     Ctrl+R or a closed tab destroyed it silently. It is now mirrored into
+     localStorage on a debounce and offered back on the next load. */
+
+  const currentSignature = useMemo(
+    () => workflowSignature(steps, workflowVariables),
+    [steps, workflowVariables]
+  );
+  // There is work at risk when the editor holds a workflow that differs from
+  // whatever was last saved or loaded. A tour-derived session never counts —
+  // the DemoMart scraper is a teaching prop, not the user's work.
+  const hasUnsavedWork =
+    !isTourWorkflow &&
+    steps.length > 0 &&
+    (savedSignature === null || currentSignature === null || currentSignature !== savedSignature);
+
+  // Restore exactly once, before the autosave effect below is allowed to
+  // write — otherwise the empty initial state would overwrite the draft we
+  // are about to read.
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+    const draft = loadDraft(draftScope);
+    if (!draft) return;
+    setSteps(draft.steps);
+    setWorkflowVariables(Array.isArray(draft.variables) ? draft.variables : []);
+    sessionMetaRef.current = { ...(draft.meta || {}) };
+    setCurrentWorkflowId(draft.workflowId ?? null);
+    setCurrentWorkflowName(draft.workflowName || "");
+    setPerfSettings(draft.perfSettings || {});
+    setSelectedProxy(draft.proxy || null);
+    setUrlInput(draft.url || "");
+    // Carry the baseline forward too: a draft of an already-saved, unmodified
+    // workflow must not come back looking like unsaved work.
+    setSavedSignature(draft.savedSignature ?? null);
+    setTemplateGuide(draft.meta?.template || null);
+    setRestoredDraftAt(draft.updatedAt || Date.now());
+    // The dashboard is the landing screen, and its "Currently editing" banner
+    // is where the restored draft surfaces — no modal needed.
+  }, [draftScope, setSteps]);
+
+  // Debounced mirror of the editor into local storage. Writing on every
+  // keystroke would serialise the whole step tree per character.
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    // The tour owns its own persistence (see handleTourProgress) precisely so
+    // its throwaway workflow never lands in the user's drafts.
+    if (isTourWorkflow || tourOpen) return;
+    const t = setTimeout(() => {
+      // saveDraft clears the slot when there are no steps, so emptying the
+      // editor also empties the stored draft.
+      saveDraft(draftScope, {
+        steps,
+        variables: workflowVariables,
+        meta: sessionMetaRef.current || {},
+        workflowId: currentWorkflowId,
+        workflowName: currentWorkflowName,
+        perfSettings,
+        proxy: selectedProxy,
+        url: urlInput,
+        savedSignature,
+      });
+    }, 700);
+    return () => clearTimeout(t);
+  }, [
+    steps, workflowVariables, currentWorkflowId, currentWorkflowName,
+    perfSettings, selectedProxy, urlInput, savedSignature,
+    isTourWorkflow, tourOpen, draftScope,
+  ]);
+
+  // Last line of defence for the cases localStorage can't cover — a browser
+  // that refuses to persist, or a close while the debounce is still pending.
+  useEffect(() => {
+    if (!hasUnsavedWork) return;
+    const onBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = "";   // Chrome/Firefox require this to show the prompt
+      return "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasUnsavedWork]);
+
+  // Leaving the dashboard for the editor. A restored draft has steps but no
+  // live page behind them, so reopen the workflow's start URL rather than
+  // dropping the user in front of a blank canvas.
+  const resumeEditing = useCallback(() => {
+    setDashboardOpen(false);
+    setActiveTab("stream");
+    // Once they're back in it, it's just the workflow they're working on —
+    // the "recovered" tag has done its job.
+    setRestoredDraftAt(null);
+    if (!isStreamingRef.current && resolvedPinnedUrl) {
+      setUrlInput(resolvedPinnedUrl);
+      performNavigate(resolvedPinnedUrl);
+    }
+  }, [resolvedPinnedUrl, performNavigate]);
+
+  /* ── Guided tour lifecycle ───────────────────────────────────────────────
+     The tour persists itself — step position plus the demo workflow it has
+     built — in its own storage slot. Nothing it does reaches the user's
+     drafts, and nothing it built is offered back as one of their scrapers. */
+
+  // Called by GuidedTour on every move. Stable identity (it reads live values
+  // through refs) because GuidedTour invokes it from an effect.
+  const handleTourProgress = useCallback(({ idx, maxIdx, total }) => {
+    const progress = {
+      idx, maxIdx, total,
+      steps: stepsRef.current || [],
+      variables: workflowVariablesRef.current || [],
+    };
+    saveTourProgress(draftScope, progress);
+    setTourProgress(progress);
+  }, [draftScope]);
+
+  const startTour = useCallback((opts = {}) => {
+    if (hasUnsavedWork && !confirm(
+      "Start the guided tour? It opens a practice shop — your unsaved scraper will be discarded."
+    )) return;
+    const resuming = !!opts.resume;
+    const saved = resuming ? loadTourProgress(draftScope) : null;
+    // resetWorkflow clears the draft and the tour flag; re-set the flag after
+    // it so the session is marked tour-derived from here on.
+    resetWorkflow();
+    setIsTourWorkflow(true);
+    if (resuming && saved) {
+      // Put the demo workflow back so the tour's step gates (which read live
+      // editor state) see what the user had already built.
+      setSteps(saved.steps || []);
+      setWorkflowVariables(saved.variables || []);
+      setTourResumeFrom({ idx: saved.idx || 0, maxIdx: saved.maxIdx || 0 });
+      // A mid-tour step assumes a live page behind it, and the reload that
+      // interrupted the tour closed it — so reopen the practice shop. Only on
+      // resume: on a fresh start the tour teaches this itself (its second step
+      // prefills the URL and waits for the user to click Go, and arriving
+      // pre-navigated would satisfy that gate before they ever saw it).
+      setUrlInput(demoUrl);
+      performNavigate(demoUrl);
+    } else {
+      clearTourProgress(draftScope);
+      setTourProgress(null);
+      setTourResumeFrom({ idx: 0, maxIdx: 0 });
+    }
+    setDashboardOpen(false);
+    setActiveTab("stream");
+    setTourOpen(true);
+  }, [hasUnsavedWork, draftScope, resetWorkflow, setSteps, demoUrl, performNavigate]);
+
+  // Finished the last step — the walkthrough is done, so drop the saved
+  // position and stop offering it.
+  const finishTour = useCallback(() => {
+    setTourOpen(false);
+    clearTourProgress(draftScope);
+    setTourProgress(null);
+    saveTourPrefs(draftScope, { completed: true });
+    setTourPrefs(loadTourPrefs(draftScope));
+  }, [draftScope]);
+
+  // Exited early — keep the position so the dashboard can offer "Resume".
+  const exitTour = useCallback(() => setTourOpen(false), []);
+
+  const dismissTourPrompt = useCallback(() => {
+    saveTourPrefs(draftScope, { promptDismissed: true });
+    setTourPrefs(loadTourPrefs(draftScope));
+  }, [draftScope]);
+
   return (
     <div className="app-container">
       {/* ── Header ────────────────────────────────────────────────────────── */}
@@ -2028,7 +2629,9 @@ function AppShell({ user, token, onLogout }) {
           </div>
         </div>
         <div className="header-center">
-          <div className="connection-status">
+          {/* The status text can be an arbitrarily long run message, so it
+              truncates rather than pushing the action buttons off the row. */}
+          <div className="connection-status" title={status || (isConnected ? "Ready" : "Connecting…")}>
             <span className={`status-dot ${isConnected ? "connected" : "disconnected"}`} />
             <span className="status-text">{status || (isConnected ? "Ready" : "Connecting…")}</span>
           </div>
@@ -2057,51 +2660,103 @@ function AppShell({ user, token, onLogout }) {
               </svg>
             </button>
           </div>
-          <button className="header-btn secondary" onClick={() => setDashboardOpen(true)}
-            title="Back to the dashboard">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 9.5L12 3l9 6.5"/><path d="M5 10v10h14V10"/>
-            </svg>
-            Home
-          </button>
-          <button className="header-btn secondary"
-            onClick={() => {
-              if (steps.length > 0 && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
-              resetWorkflow();
-            }}
-            title="Start a fresh workflow (closes the current page)">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-            New
-          </button>
-          <button className="header-btn secondary" onClick={() => setWorkflowsOpen(true)}
-            title="Save or open workflows">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-              <polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/>
-            </svg>
-            Workflows{currentWorkflowName ? `: ${currentWorkflowName}` : ""}
-          </button>
-          <button className="header-btn secondary" onClick={() => setCustomActionsOpen(true)}
-            title="Create reusable custom actions">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/>
-            </svg>
-            Custom Actions
-            {customActions.length > 0 && <span className="tab-badge">{customActions.length}</span>}
-          </button>
-          <button className="header-btn secondary" onClick={handleDownloadCode}
-            disabled={steps.length === 0} title="Download as Node.js script">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Download Code
-          </button>
+          {/* Secondary actions. Wide: icon + label. Medium: icons only (CSS
+              hides .btn-label). Narrow: folded into the ⋯ menu below, so every
+              action stays reachable instead of wrapping onto a second row. */}
+          {!headerCompact && (
+            <>
+              <button className="header-btn secondary" onClick={() => setDashboardOpen(true)}
+                title="Back to the dashboard">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M3 9.5L12 3l9 6.5"/><path d="M5 10v10h14V10"/>
+                </svg>
+                <span className="btn-label">Home</span>
+              </button>
+              <button className="header-btn secondary"
+                onClick={() => {
+                  if (hasUnsavedWork && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+                  resetWorkflow();
+                }}
+                title="Start a fresh workflow (closes the current page)">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                <span className="btn-label">New</span>
+              </button>
+              <button className="header-btn secondary" onClick={() => setWorkflowsOpen(true)}
+                title={currentWorkflowName ? `Workflows — ${currentWorkflowName}` : "Save or open workflows"}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                  <polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/>
+                </svg>
+                {/* A loaded workflow's name can be long — it gets its own
+                    truncating span so it can never widen the header. */}
+                <span className="btn-label">
+                  Workflows
+                  {currentWorkflowName && <span className="btn-label-detail">{currentWorkflowName}</span>}
+                </span>
+              </button>
+              <button className="header-btn secondary" onClick={() => setCustomActionsOpen(true)}
+                title="Create reusable custom actions">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/>
+                </svg>
+                <span className="btn-label">Custom Actions</span>
+                {customActions.length > 0 && <span className="tab-badge">{customActions.length}</span>}
+              </button>
+              <button className="header-btn secondary" onClick={handleDownloadCode}
+                disabled={steps.length === 0} title="Download as Node.js script">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                <span className="btn-label">Download Code</span>
+              </button>
+            </>
+          )}
+
+          {headerCompact && (
+            <div style={{ position: "relative", display: "inline-flex" }}>
+              <button
+                className="header-btn secondary header-more-btn"
+                onClick={() => setHeaderMenuOpen(v => !v)}
+                title="More actions"
+                aria-label="More actions"
+                aria-expanded={headerMenuOpen}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/>
+                </svg>
+              </button>
+              {headerMenuOpen && (
+                <>
+                  <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setHeaderMenuOpen(false)} />
+                  <div className="user-popover" style={{ right: 0, top: "100%", marginTop: 4, minWidth: 200 }}>
+                    <button className="item" onClick={() => { setHeaderMenuOpen(false); setDashboardOpen(true); }}>Home</button>
+                    <button className="item" onClick={() => {
+                      setHeaderMenuOpen(false);
+                      if (hasUnsavedWork && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+                      resetWorkflow();
+                    }}>New workflow</button>
+                    <button className="item" onClick={() => { setHeaderMenuOpen(false); setWorkflowsOpen(true); }}>
+                      Workflows{currentWorkflowName ? `: ${currentWorkflowName}` : ""}
+                    </button>
+                    <button className="item" onClick={() => { setHeaderMenuOpen(false); setCustomActionsOpen(true); }}>
+                      Custom actions{customActions.length > 0 ? ` (${customActions.length})` : ""}
+                    </button>
+                    <button className="item" disabled={steps.length === 0}
+                            onClick={() => { setHeaderMenuOpen(false); handleDownloadCode(); }}>
+                      Download code
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <div style={{ position: "relative", display: "inline-flex" }}>
             <button
-              className={`header-btn run-btn ${execStatus === "running" ? "running" : ""}${spot("run")}`}
+              data-tour="run"
+              className={`header-btn run-btn ${execStatus === "running" ? "running" : ""}`}
               onClick={execStatus === "running" ? () => setExecPanelOpen(true) : handleRun}
               disabled={isRunDisabled && execStatus !== "running"}
               style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
@@ -2153,13 +2808,16 @@ function AppShell({ user, token, onLogout }) {
                 <div className="user-popover">
                   <button className="item" onClick={() => {
                     setUserMenuOpen(false);
-                    if (steps.length > 0 && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+                    if (hasUnsavedWork && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
                     resetWorkflow();
                   }}>New workflow</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setWorkflowsOpen(true); }}>Workflows…</button>
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setDataHomeOpen(true); }}>Your data…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setCustomActionsOpen(true); }}>Custom actions…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setProxiesOpen(true); }}>Proxies…</button>
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setPerfOpen(true); }}>Speed…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setApiKeysOpen(true); }}>API keys…</button>
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setNotificationsOpen(true); }}>E-mail alerts…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setWebhooksOpen(true); }}>Webhooks…</button>
                   <button className="item danger" onClick={() => { setUserMenuOpen(false); onLogout(); }}>Sign out</button>
                 </div>
@@ -2177,7 +2835,7 @@ function AppShell({ user, token, onLogout }) {
           </svg>
           Live Browser
         </button>
-        <button className={`tab-btn ${activeTab === "workflow" ? "active" : ""}`} onClick={() => setActiveTab("workflow")}>
+        <button data-tour="tab-workflow" className={`tab-btn ${activeTab === "workflow" ? "active" : ""}`} onClick={() => setActiveTab("workflow")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <polyline points="16,3 21,3 21,8"/><line x1="4" y1="20" x2="21" y2="3"/>
             <polyline points="21,16 21,21 16,21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/>
@@ -2185,7 +2843,7 @@ function AppShell({ user, token, onLogout }) {
           Workflow
           {totalCount > 0 && <span className="tab-badge">{totalCount}</span>}
         </button>
-        <button className={`tab-btn ${activeTab === "data" ? "active" : ""}`} onClick={() => setActiveTab("data")}>
+        <button data-tour="tab-data" className={`tab-btn ${activeTab === "data" ? "active" : ""}`} onClick={() => setActiveTab("data")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
           </svg>
@@ -2194,13 +2852,19 @@ function AppShell({ user, token, onLogout }) {
         </button>
       </div>
 
+      {/* Template setup checklist — a template arrives with empty selectors by
+          design, so this says which ones to fill in. Sits above the tabs so it
+          is visible whichever one you're on. */}
+      <TemplateSetupBanner guide={templateGuide} onDismiss={() => setTemplateGuide(null)} />
+
       {/* ── Main ──────────────────────────────────────────────────────────── */}
       <main className="main-content">
         <div className={`stream-panel ${activeTab !== "stream" ? "hidden-panel" : ""}`}>
           {/* Control bar */}
           <div className="control-bar">
-            <div className={`mode-toggle${spot("mode")}`}>
+            <div className="mode-toggle" data-tour="mode">
               <button
+                data-tour="mode-navigate"
                 className={`mode-btn ${mode === "navigation" ? "active" : ""}`}
                 onClick={() => { if (!forEachCtx) changeMode("navigation"); }}
                 disabled={!!forEachCtx}
@@ -2209,7 +2873,7 @@ function AppShell({ user, token, onLogout }) {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>
                 Navigate
               </button>
-              <button className={`mode-btn ${mode === "selection" ? "active" : ""}`} onClick={() => changeMode("selection")}>
+              <button data-tour="mode-select" className={`mode-btn ${mode === "selection" ? "active" : ""}`} onClick={() => changeMode("selection")}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 9l7 7 7-7"/></svg>
                 Select
               </button>
@@ -2221,6 +2885,7 @@ function AppShell({ user, token, onLogout }) {
                 // inspector actions) back to the page the workflow was built
                 // on without forcing them to retype the URL.
                 <button
+                  data-tour="url-back"
                   className="url-back-btn"
                   title={`Back to start URL — ${resolvedPinnedUrl}`}
                   onClick={() => { setUrlInput(resolvedPinnedUrl); performNavigate(pinnedUrl); }}
@@ -2238,7 +2903,7 @@ function AppShell({ user, token, onLogout }) {
                 onChange={e => setUrlInput(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && handleNavigate()}
                 placeholder="Enter URL to navigate…" />
-              <button className="go-btn" onClick={handleNavigate}>
+              <button data-tour="go" className="go-btn" onClick={handleNavigate}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/>
                 </svg>
@@ -2283,18 +2948,9 @@ function AppShell({ user, token, onLogout }) {
               Source
             </button>
             {/* Guided coach — walks the real controls; toggleable any time. */}
-            <button
-              className={`inspector-toggle-btn quick-scrape-btn ${coachOpen ? "active" : ""}`}
-              onClick={() => setCoachOpen(v => !v)}
-              title="Step-by-step guide to building your first scraper"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-              </svg>
-              Guide
-            </button>
             {/* Pagination detector */}
             <button
+              data-tour="pagination"
               className="inspector-toggle-btn"
               onClick={() => {
                 setPaginationOpen(true);
@@ -2484,6 +3140,7 @@ function AppShell({ user, token, onLogout }) {
                 {/* Tab bar */}
                 <div className="sidebar-tab-bar">
                   <button
+                    data-tour="side-inspector"
                     className={`sidebar-tab-btn ${sidebarTab === "inspector" ? "active" : ""}`}
                     onClick={() => setSidebarTab("inspector")}
                     title="Element Inspector"
@@ -2494,6 +3151,7 @@ function AppShell({ user, token, onLogout }) {
                     <span className="sidebar-tab-label">Inspector</span>
                   </button>
                   <button
+                    data-tour="side-workflow"
                     className={`sidebar-tab-btn ${sidebarTab === "workflow" ? "active" : ""}`}
                     onClick={() => setSidebarTab("workflow")}
                     title="Workflow"
@@ -2504,6 +3162,7 @@ function AppShell({ user, token, onLogout }) {
                     <span className="sidebar-tab-label">Workflow</span>
                   </button>
                   <button
+                    data-tour="side-html"
                     className={`sidebar-tab-btn ${sidebarTab === "html" ? "active" : ""}`}
                     onClick={() => setSidebarTab("html")}
                     title="HTML Inspector"
@@ -2676,6 +3335,10 @@ function AppShell({ user, token, onLogout }) {
       {/* ── Pagination Detector ──────────────────────────────────────────── */}
       {paginationOpen && (
         <PaginationDetector
+          // The workflow's own url for this page — variables intact — so a
+          // detected pagination pattern is parameterised, not pinned to the
+          // sample value the preview happened to load.
+          baseUrlRaw={rawUrlForCurrentPage(steps, currentPageUrl, workflowVariables, resolveVars)}
           isDetecting={paginationDetecting}
           suggestions={paginationSuggestions}
           error={paginationError}
@@ -2740,6 +3403,26 @@ function AppShell({ user, token, onLogout }) {
         />
       )}
 
+      {/* ── Still-running runs (survive reload / closing the workflow) ───── */}
+      {resumableRuns.length > 0 && !resumeDismissed && (
+        <div className="run-resume-bar">
+          <span className="run-resume-dot" />
+          <span className="run-resume-text">
+            {resumableRuns.length === 1
+              ? <>Run <strong>#{resumableRuns[0].id}</strong> is still {resumableRuns[0].status === "queued" ? "queued" : "running"} in the background.</>
+              : <><strong>{resumableRuns.length}</strong> runs are still in progress in the background.</>}
+          </span>
+          <button className="wf-save-btn" onClick={() => watchRun(resumableRuns[0].id)}>
+            View progress
+          </button>
+          <button className="wf-icon-btn" onClick={() => setResumeDismissed(true)} aria-label="Dismiss">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* ── Execution Panel ──────────────────────────────────────────────── */}
       <ExecutionPanel
         isOpen={execPanelOpen} onClose={() => setExecPanelOpen(false)}
@@ -2750,6 +3433,12 @@ function AppShell({ user, token, onLogout }) {
         stepStates={execStepStates}
         iterations={execIterations}
         lastStepId={execLastStepId}
+        rowsCaptured={execPartialRows}
+        stepTimes={execStepTimes}
+        workers={execWorkers}
+        lanes={execLanes}
+        laneTotals={execLaneTotals}
+        stalled={execStalled}
       />
 
       {/* ── URL-change confirmation ────────────────────────────────────── */}
@@ -2783,7 +3472,7 @@ function AppShell({ user, token, onLogout }) {
             resetWorkflow();
             setUrlInput(url);
             // Start a fresh workflow on the new URL.
-            const step = createAction("NAVIGATE", { url });
+            const step = createAction("NAVIGATE", { url: unresolveVars(url, workflowVariablesRef.current) });
             step.pinned = true;
             addStep(step, [], null);
             performNavigate(url);
@@ -2799,7 +3488,7 @@ function AppShell({ user, token, onLogout }) {
             setUrlChangeDialog(null);
             resetWorkflow();
             setUrlInput(url);
-            const step = createAction("NAVIGATE", { url });
+            const step = createAction("NAVIGATE", { url: unresolveVars(url, workflowVariablesRef.current) });
             step.pinned = true;
             addStep(step, [], null);
             performNavigate(url);
@@ -2809,7 +3498,7 @@ function AppShell({ user, token, onLogout }) {
             // movable (non-pinned) NAVIGATE step at the end of the workflow.
             const url = urlChangeDialog.newUrl;
             setUrlChangeDialog(null);
-            addStep(createAction("NAVIGATE", { url }), [], null);
+            addStep(createAction("NAVIGATE", { url: unresolveVars(url, workflowVariablesRef.current) }), [], null);
             performNavigate(url);
             // Revert the URL bar back to the pinned step's URL — it represents
             // the workflow's start URL, not the current page.
@@ -2842,6 +3531,14 @@ function AppShell({ user, token, onLogout }) {
         }}
       />
 
+      {/* ── Speed (per-workflow performance switches) ────────────────────── */}
+      <PerformanceSettings
+        open={perfOpen}
+        onClose={() => setPerfOpen(false)}
+        value={perfSettings}
+        onChange={setPerfSettings}
+      />
+
       {/* ── API keys (public /v1 API credentials) ───────────────────────── */}
       <ApiKeysMenu
         open={apiKeysOpen}
@@ -2856,6 +3553,13 @@ function AppShell({ user, token, onLogout }) {
         showToast={showToast}
       />
 
+      {/* ── E-mail alerts (failures + change monitoring, without a webhook) ── */}
+      <NotificationsMenu
+        open={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
+        showToast={showToast}
+      />
+
       {/* ── Run with inputs / bulk run (queued background runs) ───────────── */}
       <RunInputsDialog
         open={runInputsOpen}
@@ -2864,6 +3568,32 @@ function AppShell({ user, token, onLogout }) {
         workflowName={currentWorkflowName || "workflow"}
         variables={workflowVariables}
         showToast={showToast}
+      />
+
+      {/* ── Your data (every scraper's collected rows in one place) ───────── */}
+      <DataHome
+        open={dataHomeOpen}
+        onClose={() => setDataHomeOpen(false)}
+        showToast={showToast}
+        onOpenWorkflow={(id) => {
+          if (hasUnsavedWork && !confirm("Open that scraper? Unsaved changes to the current one will be lost.")) return;
+          setDataHomeOpen(false);
+          openWorkflowById(id);
+        }}
+      />
+
+      {/* ── Template gallery (ready-made starting points) ─────────────────── */}
+      <TemplateGallery
+        open={templatesOpen}
+        onClose={() => setTemplatesOpen(false)}
+        showToast={showToast}
+        onUsed={async (wf, template) => {
+          setTemplatesOpen(false);
+          // The template is already saved server-side, so this is a normal
+          // open — which also lands its setup checklist via wf.meta.template.
+          await openWorkflowById(wf.id, { navigate: false });
+          showToast(`✓ Started from “${template.name}”`, "success");
+        }}
       />
 
       {/* ── Selector debugger (test a selector against the live page) ─────── */}
@@ -2879,54 +3609,69 @@ function AppShell({ user, token, onLogout }) {
         open={dashboardOpen}
         userName={user.username}
         onNewScrape={() => {
-          if (steps.length > 0 && !confirm("Start a new scrape? Unsaved changes to the current workflow will be lost.")) return;
-          resetWorkflow();
-          setDashboardOpen(false);
-          setActiveTab("stream");
-          setCoachOpen(true);
-        }}
-        onNewBlank={() => {
-          if (steps.length > 0 && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+          if (hasUnsavedWork && !confirm("Start a new scraper? Unsaved changes to the current one will be lost.")) return;
           resetWorkflow();
           setDashboardOpen(false);
           setActiveTab("stream");
         }}
+        onOpenData={() => setDataHomeOpen(true)}
+        onBrowseTemplates={() => {
+          if (hasUnsavedWork && !confirm("Start from a template? Unsaved changes to the current scraper will be lost.")) return;
+          setTemplatesOpen(true);
+        }}
+        onStartTour={() => startTour()}
+        onResumeTour={tourProgress ? () => startTour({ resume: true }) : null}
+        tourProgress={tourProgress}
+        tourCompleted={tourPrefs.completed}
+        tourPromptDismissed={tourPrefs.promptDismissed}
+        onDismissTourPrompt={dismissTourPrompt}
         onOpenWorkflow={openWorkflowById}
+        onWatchRun={watchRun}
         onManageWorkflows={() => setWorkflowsOpen(true)}
         showToast={showToast}
         reloadKey={dashboardOpen ? currentWorkflowId : null}
         openWorkflow={steps.length > 0 ? {
           name: currentWorkflowName || "Untitled draft",
           stepCount: totalCount,
-          saved: !!currentWorkflowId,
+          saved: !!currentWorkflowId && !hasUnsavedWork,
           url: pinnedUrl || currentPageUrl || "",
+          // A draft recovered from local storage — worth saying so, since the
+          // user didn't put it there in this session.
+          restored: !!restoredDraftAt,
+          isTour: isTourWorkflow,
         } : null}
-        onResumeEditing={() => setDashboardOpen(false)}
+        onResumeEditing={resumeEditing}
       />
 
-      {/* ── First-scrape coach (guides the real controls, not a wizard) ─────── */}
-      <GuidedCoach
-        open={coachOpen}
-        stepIndex={coachStep}
-        onClose={() => setCoachOpen(false)}
-        onFocusUrl={() => { setActiveTab("stream"); setTimeout(() => document.querySelector(".url-input")?.focus(), 0); }}
-        onSelectMode={() => { if (!forEachCtx) changeMode("selection"); }}
-        onOpenInspector={() => { setShowSidebar(true); setSidebarTab("inspector"); }}
-        onRun={() => { if (!isRunDisabled) handleRun(); }}
-        onOpenData={() => setActiveTab("data")}
+      {/* ── Guided tour (forced walkthrough on the DemoMart demo site) ─────── */}
+      <GuidedTour
+        open={tourOpen}
+        steps={basicsSteps}
+        state={tourState}
+        socket={socket}
+        mapPageRectToScreen={mapPageRectToScreen}
+        api={tourApi}
+        startIdx={tourResumeFrom.idx}
+        startMaxIdx={tourResumeFrom.maxIdx}
+        onProgress={handleTourProgress}
+        onClose={exitTour}
+        onFinish={finishTour}
       />
 
       <WorkflowsMenu
         open={workflowsOpen}
         onClose={() => setWorkflowsOpen(false)}
         currentSteps={steps}
-        currentMeta={{ ...sessionMetaRef.current, variables: workflowVariables, proxy: selectedProxy }}
+        currentMeta={{ ...sessionMetaRef.current, variables: workflowVariables, proxy: selectedProxy, performance: perfSettings }}
         currentWorkflowId={currentWorkflowId}
         currentName={currentWorkflowName}
         showToast={showToast}
         onSaved={(wf) => {
           setCurrentWorkflowId(wf.id);
           setCurrentWorkflowName(wf.name);
+          // The server now has exactly what's in the editor — re-baseline so
+          // the unsaved-work guard stops flagging it.
+          setSavedSignature(workflowSignature(steps, workflowVariables));
           refreshAvailableWorkflows();   // make the new/updated workflow pickable as a subflow
         }}
         onLoaded={(wf) => { loadWorkflowIntoEditor(wf); setDashboardOpen(false); }}

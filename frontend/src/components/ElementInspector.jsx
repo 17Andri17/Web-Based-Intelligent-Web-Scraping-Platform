@@ -216,7 +216,7 @@ function FallbackChipList({ selectors }) {
 // user who prefers a leaner panel collapses it ONCE and it stays that way.
 // The details are all still there — one click away — but the action cards
 // (the reason the inspector exists) keep the prime real estate.
-function Section({ id, title, badge, defaultOpen = true, children }) {
+function Section({ id, title, badge, defaultOpen = true, children, dataTour }) {
   const storageKey = `ei.sec.${id}`;
   const [open, setOpen] = useState(() => {
     try {
@@ -229,7 +229,7 @@ function Section({ id, title, badge, defaultOpen = true, children }) {
     return !o;
   });
   return (
-    <div className={`ei-section ${open ? "open" : ""}`}>
+    <div className={`ei-section ${open ? "open" : ""}`} data-tour={dataTour}>
       <button type="button" className="ei-section-head" onClick={toggle}>
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
           style={{ transform: open ? "rotate(90deg)" : "rotate(0)", transition: "120ms" }}>
@@ -377,6 +377,7 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
         <div className="ei-tabs">
           {CATEGORIES.map(c => (
             <button key={c.id}
+              data-tour={c.id === "extraction" ? "cat-extraction" : undefined}
               className={`ei-tab ${activeCategory === c.id ? "active" : ""}`}
               style={activeCategory === c.id ? { borderColor: c.color, color: c.color } : {}}
               onClick={() => { setActiveCategory(c.id); setSelectedAction(null); }}>
@@ -394,6 +395,7 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
             const isFlashing = addedFlash === actionMeta.type;
             return (
               <div key={actionMeta.type}
+                data-tour={actionMeta.type === "EXTRACT_TEXT" ? "capture-text" : undefined}
                 className={`ei-action-card ${isSelected ? "selected" : ""} ${isFlashing ? "flash" : ""}`}
                 style={isSelected ? { borderColor: cat.color } : {}}
                 onClick={() => setSelectedAction(actionMeta)}>
@@ -463,7 +465,7 @@ function SingleInspector({ element, childrenList, forEachCtx, onClose, onAddStep
         )}
 
         {element.breadcrumb?.length > 0 && (
-          <Section id="structure" title="Page structure" badge={element.breadcrumb.length} defaultOpen={false}>
+          <Section id="structure" title="Page structure" badge={element.breadcrumb.length} defaultOpen={false} dataTour="page-structure">
             <InteractiveBreadcrumb
               breadcrumb={element.breadcrumb}
               element={element}
@@ -618,6 +620,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
                 <PlusIcon /> Add &amp; pick fields
               </button>
               <button
+                data-tour="use-ai"
                 className="ei-extract-list-ai-btn"
                 onClick={() => setAiMode(true)}
                 title="Add with AI-detected fields">
@@ -635,7 +638,7 @@ function MultiInspector({ selection, forEachCtx, onClose, onAddStep, onClearForE
                 onChange={e => setAiHint(e.target.value)}
               />
               <div className="ei-extract-list-ai-actions">
-                <button className="ei-foreach-btn" onClick={handleAddExtractListWithAI}>
+                <button data-tour="add-ai" className="ei-foreach-btn" onClick={handleAddExtractListWithAI}>
                   ✨ Add with AI
                 </button>
                 <button
@@ -1075,12 +1078,19 @@ function InteractiveBreadcrumb({ breadcrumb, element, childrenList, onSelectAnce
 
 function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
   const def = actionDefinitions[actionMeta.type];
-  if (!def) return null;
 
+  // All hooks run before the `!def` bail-out below — a hook that only runs on
+  // some renders changes the hook count and makes React throw "Rendered more
+  // hooks than during the previous render", which unmounts the whole app.
+  // The lazy initialisers keep buildDefaultParams/Advanced off the hot path
+  // and safe to call when `def` is missing (they run only on first render).
   const smartDefaults = actionMeta.smartDefault ? actionMeta.smartDefault(element) : {};
-  const [params,   setParams]   = useState({ ...buildDefaultParams(def),   ...smartDefaults });
-  const [advanced, setAdvanced] = useState(buildDefaultAdvanced(def));
+  const [params,   setParams]   = useState(() => (def ? { ...buildDefaultParams(def), ...smartDefaults } : {}));
+  const [advanced, setAdvanced] = useState(() => (def ? buildDefaultAdvanced(def) : {}));
   const [added,    setAdded]    = useState(false);
+  const [showAdv,  setShowAdv]  = useState(false);
+
+  if (!def) return null;
 
   const setParam = (k, v) => setParams(p => ({ ...p, [k]: v }));
   const setAdv   = (k, v) => setAdvanced(a => ({ ...a, [k]: v }));
@@ -1092,7 +1102,6 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
   };
 
   const hasAdvanced = def.advanced && Object.keys(def.advanced).length > 0;
-  const [showAdv, setShowAdv] = useState(false);
 
   return (
     <div className="ei-configurator">
@@ -1156,7 +1165,7 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
         </div>
       )}
 
-      <button className="ei-add-btn" style={{ background: added ? "#3fb950" : accentColor }} onClick={handleAdd}>
+      <button data-tour="add-step" className="ei-add-btn" style={{ background: added ? "#3fb950" : accentColor }} onClick={handleAdd}>
         {added ? <><CheckIcon /> Added!</> : <><PlusIcon /> Add to workflow</>}
       </button>
     </div>

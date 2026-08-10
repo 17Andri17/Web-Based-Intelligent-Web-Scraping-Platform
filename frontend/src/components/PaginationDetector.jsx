@@ -73,7 +73,12 @@ function ConfidenceBar({ value, color }) {
 // container with one "run on each page" body and a handful of simple
 // parameters — no While + If/Break + click/wait machinery to untangle.
 
-export function generatePaginationSteps(suggestion) {
+// `baseUrlRaw` is the url the workflow will actually navigate to, with any
+// `{{variable}}` still in it. The detector runs in the browser and can only
+// report the CONCRETE url that loaded, so a workflow parameterised on
+// `{{targetUrl}}` would otherwise get a pagination pattern hard-wired to
+// whatever sample value was previewed.
+export function generatePaginationSteps(suggestion, baseUrlRaw) {
   const { type, selector, containerSelector, hasNextButton } = suggestion;
 
   // URL-based pagination → PAGINATE_URL. Stitch the detected before/after
@@ -85,9 +90,14 @@ export function generatePaginationSteps(suggestion) {
     // startPage is the CURRENT page's number — the loop scrapes it first
     // (no navigation) and only then advances to nextPage, nextPage+1, …. The
     // detector reports the NEXT page it found, so the current page is one less.
-    const startPage = Number.isFinite(suggestion.nextPage) ? Math.max(1, suggestion.nextPage - 1) : 1;
+    const startPage = Number.isFinite(suggestion.startPage)
+      ? suggestion.startPage
+      : (Number.isFinite(suggestion.nextPage) ? Math.max(1, suggestion.nextPage - 1) : 1);
+    // Rebuild the template on the workflow's own (possibly variable-bearing)
+    // url when the detected one is just its resolved form.
+    const { before: b2, after: a2 } = rebaseTemplate(before, after, baseUrlRaw);
     return createControl(CONTROL_TYPES.PAGINATE_URL, {
-      urlPattern: `${before}{n}${after}`,
+      urlPattern: `${b2}{n}${a2}`,
       contentSelector: containerSelector || selector || "",
       startPage,
       step: 1,
@@ -115,14 +125,29 @@ export function generatePaginationSteps(suggestion) {
   });
 }
 
+// Swap the concrete origin+path of a detected pagination template for the raw
+// url the workflow uses, so `{{var}}` survives. Only the part BEFORE the page
+// number is rebased — the query/suffix after it is pagination structure, not
+// something the variable should cover.
+function rebaseTemplate(before, after, baseUrlRaw) {
+  if (!baseUrlRaw || !baseUrlRaw.includes("{{")) return { before, after };
+  // The raw url minus any query string is the stable prefix to graft on.
+  const rawPrefix = baseUrlRaw.split("?")[0].replace(/\/$/, "");
+  // Everything in `before` after the concrete path is pagination syntax
+  // (e.g. "?page="), which we keep verbatim.
+  const q = before.indexOf("?");
+  if (q === -1) return { before, after };
+  return { before: rawPrefix + before.slice(q), after };
+}
+
 // ─── Suggestion card ──────────────────────────────────────────────────────────
 
-function SuggestionCard({ suggestion, onAdd }) {
+function SuggestionCard({ suggestion, onAdd, baseUrlRaw }) {
   const [added, setAdded] = useState(false);
   const info = TYPE_INFO[suggestion.type] || {};
 
   const handleAdd = () => {
-    const step = generatePaginationSteps(suggestion);
+    const step = generatePaginationSteps(suggestion, baseUrlRaw);
     if (step) {
       onAdd(step, suggestion.type);
       setAdded(true);
@@ -138,6 +163,7 @@ function SuggestionCard({ suggestion, onAdd }) {
           <ConfidenceBar value={suggestion.confidence} color={info.color} />
         </div>
         <button
+          data-tour="pagination-add"
           className={`pd-add-btn ${added ? "pd-add-btn--added" : ""}`}
           onClick={handleAdd}
           disabled={added}
@@ -235,7 +261,7 @@ function ManualCard({ type, onSelect, isWaiting, onAdd }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function PaginationDetector({ isDetecting, suggestions, error, manualWaiting, onDetect, onClose, onAdd, onManualButton, onManualInfinite }) {
+export default function PaginationDetector({ isDetecting, suggestions, error, manualWaiting, onDetect, onClose, onAdd, onManualButton, onManualInfinite, baseUrlRaw }) {
   if (!isDetecting && suggestions === null) return null;
 
   return (
@@ -290,7 +316,7 @@ export default function PaginationDetector({ isDetecting, suggestions, error, ma
             </p>
             <div className="pd-cards">
               {suggestions.map((s, i) => (
-                <SuggestionCard key={i} suggestion={s} onAdd={onAdd} />
+                <SuggestionCard key={i} suggestion={s} onAdd={onAdd} baseUrlRaw={baseUrlRaw} />
               ))}
             </div>
             <div className="pd-manual-section">

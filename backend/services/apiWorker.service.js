@@ -3,6 +3,7 @@
 const runStore          = require('./runStore.service');
 const executionPipeline = require('./executionPipeline.service');
 const webhookDispatcher = require('./webhookDispatcher.service');
+const emailNotifier     = require('./emailNotifier.service');
 const workflowsRepo     = require('../db/repositories/workflows.repo');
 const { resolveCustomActions, resolveSubflows } = require('../workflow/dependencyResolver');
 
@@ -101,6 +102,7 @@ async function executeOne(row) {
     });
     const finalRow = await runStore.getRun(row.id);
     webhookDispatcher.dispatchRunEvent(finalRow).catch(() => {});
+    emailNotifier.notifyRunFailed(finalRow).catch(() => {});
     return;
   }
 

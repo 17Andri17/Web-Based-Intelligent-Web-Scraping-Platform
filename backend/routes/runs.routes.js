@@ -4,7 +4,11 @@ const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const runStore = require('../services/runStore.service');
 const workflows = require('../db/repositories/workflows.repo');
-const { resultsToCsv } = require('../utils/resultsExport');
+const resume = require('../services/resume.service');
+const runEvents = require('../services/runEvents.service');
+const executionPipeline = require('../services/executionPipeline.service');
+const { resolveCustomActions, resolveSubflows } = require('../workflow/dependencyResolver');
+const { resultsToCsv, resultsToCsvZip } = require('../utils/resultsExport');
 const { resultsToXlsx } = require('../utils/resultsXlsx');
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -35,6 +39,12 @@ function serialize(row) {
     } : null,
     hasResults:        !!row.results_json,
     hasPatchedSteps:   !!row.patched_steps_json,
+    // Rows this run captured. On a 'partial' run this is what survived the
+    // interruption — the reason the run is still worth opening.
+    rowsCaptured:      row.rows_captured ?? 0,
+    // Whether a per-item ledger exists at all. The full resumability check
+    // (workflow unchanged, items actually done) lives on /:id/resume-info.
+    hasProgress:       !!row.progress_json,
     // The workflow version this run executed — present means it can be
     // restored (rolled back to) with one click from run history.
     versionId:         row.version_id ?? null,
@@ -56,11 +66,31 @@ router.get('/', async (req, res) => {
   res.json({ runs: rows.map(serialize) });
 });
 
+// Runs that are still going (queued or running), newest first.
+//
+// A run outlives the page that started it — it executes on the server, so
+// closing the workflow or reloading the browser doesn't stop it. Without this
+// the progress was only visible to the tab that launched it, and coming back
+// looked like the run had vanished. The UI polls this on load to re-attach.
+//
+// Declared BEFORE '/:id' so "active" isn't swallowed as a run id.
+router.get('/active', async (req, res) => {
+  const queued  = await runStore.listRunsForUserPage(req.user.id, { limit: 20, status: 'queued' });
+  const running = await runStore.listRunsForUserPage(req.user.id, { limit: 20, status: 'running' });
+  const rows = [...running, ...queued].sort((a, b) => b.id - a.id);
+  res.json({ runs: rows.map(serialize) });
+});
+
 // Full run detail (results, repairs, logs summary)
 router.get('/:id', async (req, res) => {
   const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
   if (!row) return res.status(404).json({ error: 'Run not found' });
   const out = serialize(row);
+  /* Is anything actually executing this, or does the row just SAY running?
+     A run whose owning process died leaves the row untouched, so the status
+     alone can't be trusted — this is what lets the client tell "working" from
+     "abandoned" instead of spinning forever. */
+  out.live = row.status === 'running' ? !!runEvents.viewerSnapshot(row.id) : null;
   out.results = row.results_json ? safeJson(row.results_json) : null;
   // Inputs this run was triggered with (bulk / run-with-inputs / API), so the
   // history shows which values produced these results.
@@ -119,6 +149,21 @@ router.get('/:id/data.csv', async (req, res) => {
   res.send(resultsToCsv(results));
 });
 
+// Download results as a ZIP of one CSV per table.
+// A single concatenated CSV is unusable once a run captures more than one
+// table — the columns change partway down the file and no spreadsheet opens it
+// correctly. This gives each output its own well-formed CSV.
+router.get('/:id/data.csv.zip', async (req, res) => {
+  const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
+  if (!row) return res.status(404).json({ error: 'Run not found' });
+  const results = safeJson(row.results_json);
+  if (!results) return res.status(404).json({ error: 'No results for this run' });
+  const buf = await resultsToCsvZip(results);
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="run-${row.id}-csv.zip"`);
+  res.send(buf);
+});
+
 // Download results as an .xlsx workbook (one worksheet per result key)
 router.get('/:id/data.xlsx', async (req, res) => {
   const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
@@ -170,6 +215,120 @@ router.post('/:id/restore', async (req, res) => {
     stepsJson: version.steps_json, metaJson: version.meta_json,
   });
   res.json({ workflow: serializeWorkflow(updated), restoredVersionId: version.id });
+});
+
+/* Can this run be continued rather than re-run from scratch, and if not, why?
+   Split from the resume action itself so the UI can show the button (or the
+   reason it can't) without committing to anything. */
+router.get('/:id/resume-info', async (req, res) => {
+  const row = await runStore.getRunForUser(Number(req.params.id), req.user.id);
+  if (!row) return res.status(404).json({ error: 'Run not found' });
+
+  const wf = await workflows.getForUser(row.workflow_id, req.user.id);
+  if (!wf) return res.json({ resumable: false, reason: 'The workflow this run belongs to no longer exists.' });
+
+  // Compare against the CURRENT workflow content, not just the stored version
+  // id: unsaved edits change what a resumed run would execute.
+  const currentVersionId = await runStore.findVersionIdByContent(
+    row.workflow_id, req.user.id, safeJson(wf.steps_json) || []
+  );
+  const check = resume.eligibility(row, currentVersionId);
+  res.json(check);
+});
+
+/* Resume: re-run the workflow with the items this run already captured skipped
+   and its rows restored. A new run row is created, linked back via
+   parent_run_id, so both halves stay independently inspectable. */
+router.post('/:id/resume', async (req, res) => {
+  const runId = Number(req.params.id);
+  const row = await runStore.getRunForUser(runId, req.user.id);
+  if (!row) return res.status(404).json({ error: 'Run not found' });
+
+  const wf = await workflows.getForUser(row.workflow_id, req.user.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow no longer exists' });
+
+  const steps = safeJson(wf.steps_json) || [];
+  const currentVersionId = await runStore.findVersionIdByContent(row.workflow_id, req.user.id, steps);
+  const prep = await resume.prepare(runId, req.user.id, currentVersionId);
+  if (!prep.ok) return res.status(400).json({ error: prep.reason });
+
+  const meta = wf.meta_json ? (safeJson(wf.meta_json) || {}) : {};
+  const [customActions, subflows] = await Promise.all([
+    resolveCustomActions(steps, req.user.id),
+    resolveSubflows(steps, req.user.id, row.workflow_id),
+  ]);
+
+  // Fire and forget: a resumed run can take hours, so respond with the new run
+  // id immediately and let the client follow it like any other run.
+  const started = executionPipeline.executeAndPersist({
+    workflow: { id: row.workflow_id, steps, meta, customActions, subflows },
+    userId: req.user.id,
+    workflowId: row.workflow_id,
+    trigger: 'resume',
+    parentRunId: runId,
+    resume: prep.payload,
+  });
+  started.catch(() => { /* surfaced on the run row itself */ });
+
+  res.status(202).json({
+    resumedFrom: runId,
+    skipping: prep.info.items,
+    message: `Resuming — ${prep.info.items} already-captured item(s) will be skipped.`,
+  });
+});
+
+/* Shard a workflow across several independent runs.
+
+   Each shard executes the whole workflow but claims only its slice of the
+   per-item loops, decided by hashing each item's URL — so the shards need no
+   coordination and no shared cursor. They are ordinary runs producing ordinary
+   results, which means the existing cross-run dataset view already unions
+   them; there is no bespoke merge step to keep correct.
+
+   Worth being clear about the trade: every shard re-runs the steps BEFORE the
+   loop (the list-producing part), so this pays for itself only when the
+   per-item work dominates — which on a job big enough to want sharding it
+   does. In-run concurrency is the cheaper lever and should be turned up first;
+   sharding is for going wider than one process can. */
+const MAX_SHARDS = 8;
+
+router.post('/shard', async (req, res) => {
+  const workflowId = Number(req.body?.workflowId);
+  const shards = Math.floor(Number(req.body?.shards));
+  if (!Number.isFinite(workflowId)) return res.status(400).json({ error: '"workflowId" is required' });
+  if (!Number.isFinite(shards) || shards < 2 || shards > MAX_SHARDS) {
+    return res.status(400).json({ error: `"shards" must be between 2 and ${MAX_SHARDS}` });
+  }
+
+  const wf = await workflows.getForUser(workflowId, req.user.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+  const steps = safeJson(wf.steps_json) || [];
+  const meta = wf.meta_json ? (safeJson(wf.meta_json) || {}) : {};
+  const [customActions, subflows] = await Promise.all([
+    resolveCustomActions(steps, req.user.id),
+    resolveSubflows(steps, req.user.id, workflowId),
+  ]);
+
+  // Launched together; the global run-slot semaphore (runner.service) decides
+  // how many actually execute at once, so this can't stampede the machine.
+  const started = [];
+  for (let i = 0; i < shards; i++) {
+    const p = executionPipeline.executeAndPersist({
+      workflow: { id: workflowId, steps, meta, customActions, subflows },
+      userId: req.user.id,
+      workflowId,
+      trigger: 'shard',
+      resume: { steps: {}, shard: { index: i, count: shards } },
+    });
+    p.catch(() => { /* each shard reports on its own run row */ });
+    started.push(p);
+  }
+
+  res.status(202).json({
+    shards,
+    message: `Started ${shards} shards. Each captures part of the list; the dataset view combines them.`,
+  });
 });
 
 function serializeWorkflow(w) {

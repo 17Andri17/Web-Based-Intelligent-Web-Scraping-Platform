@@ -114,7 +114,7 @@ export default function CustomActionsMenu({ open, onClose, showToast, onChanged 
 
           {!editing && (
             <>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="wf-section-head">
                 <div className="wf-section-title">Your custom actions</div>
                 <button className="wf-save-btn" onClick={startNew}>+ New action</button>
               </div>

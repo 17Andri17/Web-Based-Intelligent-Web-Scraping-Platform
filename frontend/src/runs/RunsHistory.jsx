@@ -123,11 +123,24 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
     }
   };
 
+  // Continue a run that stopped early. The server starts it in the background
+  // and answers with the new run id, so we just refresh the list and let the
+  // normal in-progress polling take over.
+  const resumeRun = async (runId) => {
+    try {
+      const r = await runsApi.resume(runId);
+      showToast?.(`✓ ${r.message || "Resuming run"}`, "success");
+      await refresh();
+    } catch (err) {
+      showToast?.(`✗ ${err?.response?.data?.error || err.message}`, "error");
+    }
+  };
+
   return (
     <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 1000, width: "92vw", maxHeight: "85vh" }}>
+      <div className="wf-modal wf-modal-xl" onClick={e => e.stopPropagation()}>
         <div className="wf-header">
-          <h2>History — {workflowName}</h2>
+          <div className="wf-header-titles"><h2>Run history</h2><span className="wf-header-sub">{workflowName}</span></div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button className="wf-save-btn" onClick={refresh} disabled={loading} style={{ padding: "4px 10px" }}>
               {loading ? "…" : "Refresh"}
@@ -197,8 +210,9 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
                   <Summary detail={detail}
                     onDownloadJson={() => downloadBlob("json")}
                     onDownloadCsv={() => downloadBlob("csv")}
+                    onDownloadCsvZip={() => downloadBlob("csv.zip")}
                     onDownloadXlsx={() => downloadBlob("xlsx")}
-                    onAdopt={adoptPatch} onRestore={restoreVersion} />
+                    onAdopt={adoptPatch} onRestore={restoreVersion} onResume={resumeRun} />
                 )}
                 {tab === "data" && <ResultsView results={detail.results} />}
                 {tab === "repairs" && <RepairsView repairs={detail.repairs} />}
@@ -256,7 +270,23 @@ function DetailTab({ name, tab, setTab, disabled, children }) {
   );
 }
 
-function Summary({ detail, onDownloadJson, onDownloadCsv, onDownloadXlsx, onAdopt, onRestore }) {
+function Summary({ detail, onDownloadJson, onDownloadCsv, onDownloadCsvZip, onDownloadXlsx, onAdopt, onRestore, onResume }) {
+  // Whether this run can be continued rather than re-run. Asked lazily, and
+  // only for runs that stopped early — a successful run has nothing to resume.
+  const [resumeState, setResumeState] = useState(null);
+  const [resuming, setResuming] = useState(false);
+  const canAsk = detail.status === "partial" || detail.status === "error" || detail.status === "cancelled";
+
+  useEffect(() => {
+    let cancelled = false;
+    setResumeState(null);
+    if (!canAsk) return;
+    runsApi.resumeInfo(detail.id)
+      .then(info => { if (!cancelled) setResumeState(info); })
+      .catch(() => { if (!cancelled) setResumeState(null); });
+    return () => { cancelled = true; };
+  }, [detail.id, canAsk]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
@@ -264,13 +294,27 @@ function Summary({ detail, onDownloadJson, onDownloadCsv, onDownloadXlsx, onAdop
         <Stat label="Trigger"   value={detail.trigger} />
         <Stat label="Started"   value={formatDate(detail.startedAt)} />
         <Stat label="Duration"  value={formatDuration(detail.durationMs)} />
+        {detail.rowsCaptured > 0 && <Stat label="Rows kept" value={detail.rowsCaptured.toLocaleString()} />}
         {detail.retryCount > 0 && <Stat label="Retries" value={detail.retryCount} />}
         {detail.versionId != null && <Stat label="Version" value={`v${detail.versionId}`} />}
+        {detail.parentRunId != null && <Stat label="Resumed from" value={`#${detail.parentRunId}`} />}
       </div>
+
+      {detail.status === "partial" && (
+        <Note label="Partial run" tone="warn">
+          This run stopped before finishing, but the {detail.rowsCaptured ? detail.rowsCaptured.toLocaleString() : ""} row(s)
+          it had already captured were saved and are downloadable below.
+          {resumeState && resumeState.resumable
+            ? ` You can continue it — ${resumeState.items.toLocaleString()} item(s) already done will be skipped.`
+            : resumeState && resumeState.reason ? ` ${resumeState.reason}` : ""}
+        </Note>
+      )}
 
       {detail.aiSummary && (
         <Note label="Analysis" tone={
-          detail.status === "success" ? "ok" : detail.status === "needs_review" ? "warn" : "err"
+          detail.status === "success" ? "ok"
+            : (detail.status === "needs_review" || detail.status === "partial") ? "warn"
+            : "err"
         }>
           {detail.aiSummary}
         </Note>
@@ -302,11 +346,27 @@ function Summary({ detail, onDownloadJson, onDownloadCsv, onDownloadXlsx, onAdop
       )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {resumeState && resumeState.resumable && (
+          <button className="wf-save-btn"
+                  disabled={resuming}
+                  onClick={async () => { setResuming(true); try { await onResume(detail.id); } finally { setResuming(false); } }}
+                  style={{ background: "var(--accent-primary, #4f9cf9)", color: "#fff" }}
+                  title={`Continue this run — the ${resumeState.items} item(s) it already captured will be skipped`}>
+            {resuming ? "Resuming…" : `▶ Resume (skip ${resumeState.items.toLocaleString()} done)`}
+          </button>
+        )}
         {detail.hasResults && (
           <>
             <button className="wf-save-btn" onClick={onDownloadXlsx}
                     style={{ background: "var(--accent-success, #3fb950)", color: "#fff" }}>Download Excel (.xlsx)</button>
-            <button className="wf-save-btn" onClick={onDownloadCsv}>Download data (CSV)</button>
+            <button className="wf-ghost-btn" onClick={onDownloadCsvZip}
+                    title="One properly-formed CSV per table, zipped — the right choice when a run captures more than one table">
+              CSV per table (.zip)
+            </button>
+            <button className="wf-ghost-btn" onClick={onDownloadCsv}
+                    title="All tables concatenated into one file, separated by # headings">
+              Single CSV
+            </button>
             <button className="wf-save-btn" onClick={onDownloadJson}>Download data (JSON)</button>
           </>
         )}
@@ -470,6 +530,8 @@ function StatusBadge({ status }) {
     error:        { label: "error",        color: "#e6776a" },
     needs_review: { label: "needs review", color: "#e89a4f" },
     cancelled:    { label: "cancelled",    color: "#888"    },
+    // Stopped early but kept what it captured — the results ARE viewable.
+    partial:      { label: "partial",      color: "#e89a4f" },
   };
   const m = map[status] || { label: status, color: "#888" };
   return (

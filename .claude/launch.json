@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "scraper",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
+      "cwd": "backend",
+      "port": 3001,
+      "autoPort": true
+    }
+  ]
+}

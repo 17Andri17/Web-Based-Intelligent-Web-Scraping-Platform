@@ -72,18 +72,75 @@ function diffResults(prevResults, currResults, { output, keyField = null } = {})
 
 // A compact, storable version of a diff (counts + a bounded sample of the
 // affected rows/keys), so a run row can carry it without holding whole tables.
-function summarizeDiff(diff, { sample = 20 } = {}) {
+//
+// The changed sample carries the old and new value of each field that moved —
+// that is the whole point of monitoring, so a stored summary must be readable
+// on its own without re-running the diff. Values are truncated (maxValue) and
+// only the *changed* fields are kept, which keeps a summary roughly the size of
+// the added/removed samples that already store whole rows.
+function summarizeDiff(diff, { sample = 20, maxValue = 300 } = {}) {
   return {
     output: diff.output,
     keyField: diff.keyField,
     counts: diff.summary,
     hasChanges: diff.hasChanges,
+    // Which fields moved, and in how many rows — "price changed in 42 rows".
+    fieldStats: fieldStats(diff),
     sample: {
-      added: diff.added.slice(0, sample),
-      removed: diff.removed.slice(0, sample),
-      changed: diff.changed.slice(0, sample).map(c => ({ key: c.key, fields: c.fields })),
+      added: diff.added.slice(0, sample).map(r => truncateRow(r, maxValue)),
+      removed: diff.removed.slice(0, sample).map(r => truncateRow(r, maxValue)),
+      changed: diff.changed.slice(0, sample).map(c => ({
+        key: c.key,
+        fields: c.fields,
+        // { field: { before, after } } for exactly the fields that changed.
+        values: fieldValues(c, maxValue),
+      })),
     },
   };
+}
+
+// How many changed rows each field accounts for, most-changed first. Cheap to
+// compute here and it is the one bit of analysis a feed row can't derive.
+function fieldStats(diff) {
+  const counts = new Map();
+  for (const c of diff.changed) {
+    for (const f of c.fields) counts.set(f, (counts.get(f) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([field, rows]) => ({ field, rows }))
+    .sort((a, b) => b.rows - a.rows || a.field.localeCompare(b.field));
+}
+
+// Before/after pairs for the changed fields of one row, values truncated.
+function fieldValues(change, maxValue) {
+  const out = {};
+  for (const f of change.fields) {
+    out[f] = {
+      before: truncateValue(change.before ? change.before[f] : undefined, maxValue),
+      after: truncateValue(change.after ? change.after[f] : undefined, maxValue),
+    };
+  }
+  return out;
+}
+
+// Keep a stored row readable without letting one long description blow up the
+// runs table. Objects/arrays are JSON-stringified before measuring so a deeply
+// nested value can't sneak past the cap.
+function truncateValue(v, maxValue) {
+  if (v == null) return v === undefined ? null : v;
+  if (typeof v === 'object') {
+    const json = JSON.stringify(v);
+    return json.length <= maxValue ? v : json.slice(0, maxValue) + '…';
+  }
+  const s = String(v);
+  return s.length <= maxValue ? v : s.slice(0, maxValue) + '…';
+}
+
+function truncateRow(row, maxValue) {
+  if (!isRecord(row)) return row;
+  const out = {};
+  for (const [k, v] of Object.entries(row)) out[k] = truncateValue(v, maxValue);
+  return out;
 }
 
 // ── internals ───────────────────────────────────────────────────────────────
@@ -135,4 +192,4 @@ function isRecord(v) {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-module.exports = { diffResults, summarizeDiff };
+module.exports = { diffResults, summarizeDiff, truncateValue };

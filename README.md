@@ -72,6 +72,9 @@ All configuration is via environment variables (copy `backend/.env.example` to
 | `GROQ_API_KEY` / `LLM_API_KEY` | — | Enables AI field suggestion and self-healing (free tier: console.groq.com). |
 | `PROXY_ENCRYPTION_KEY` | — | Required to store proxy passwords (AES-256-GCM at rest). |
 | `CAPTCHA_PROVIDER` / `CAPTCHA_API_KEY` | — | Optional auto-solving; detection is always on and free. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | — | Enables e-mail alerts for failed runs and change monitoring. Without it those alerts are webhook-only. Each user sets their own address in-app. |
+| `MAIL_FROM` | `WebScraper <SMTP_USER>` | From address on alert e-mails. |
+| `PUBLIC_APP_URL` | — | Public URL of this instance, used only to link back from alert e-mails. Omitted from the mail when unset. |
 
 See `backend/.env.example` for the full annotated list (LLM model fallback,
 webhook/rate-limit tuning, etc.).

@@ -23,6 +23,7 @@ const runStore = require('./runStore.service');
 const dataset = require('./dataset.service');
 const changeDiff = require('./changeDiff.service');
 const webhookDispatcher = require('./webhookDispatcher.service');
+const emailNotifier     = require('./emailNotifier.service');
 
 // Evaluate change monitoring for a just-finished run.
 //   runRow  : the persisted run row ({ id, user_id, workflow_id, status, … })
@@ -66,6 +67,9 @@ async function evaluateRun(runRow, results) {
   if (!summary.baseline && diff.hasChanges) {
     // Fire-and-forget push; never let a delivery problem surface to the run.
     try { await webhookDispatcher.dispatchChangeEvent(runRow, summary); } catch (_) {}
+    // Same alert by e-mail. Change monitoring was webhook-only, which put it
+    // out of reach of the people it was built for.
+    try { await emailNotifier.notifyRunChanged(runRow, summary); } catch (_) {}
   }
 
   return summary;

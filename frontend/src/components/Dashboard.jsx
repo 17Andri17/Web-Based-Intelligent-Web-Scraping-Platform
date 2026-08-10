@@ -14,12 +14,18 @@ import "../styles/Dashboard.css";
    Props:
      open
      userName
-     onNewScrape()            start the guided Quick Scrape wizard
-     onNewBlank()             start an empty workflow in the editor
+     onNewScrape()            start a new scraper in the editor
      onOpenWorkflow(id)       load a workflow into the editor
      onManageWorkflows()      open the full Workflows menu (rename/delete/…)
      showToast(msg, type)
      reloadKey                bump to force a data refresh
+
+     onStartTour()            run the guided walkthrough from the beginning
+     onResumeTour()           continue a tour that was left part-way (or null)
+     tourProgress             { idx, total } of a part-finished tour, or null
+     tourCompleted            the user has finished the tour before
+     tourPromptDismissed      the user waved away the first-run prompt
+     onDismissTourPrompt()    remember that dismissal
    ===================================================================== */
 
 const STATUS_META = {
@@ -29,29 +35,38 @@ const STATUS_META = {
   needs_review: { label: "Needs review", cls: "warn",   dot: "#d29922" },
   error:        { label: "Failed",       cls: "err",    dot: "#f85149" },
   cancelled:    { label: "Cancelled",    cls: "muted",  dot: "#8b949e" },
+  // Stopped early (crash / timeout / cancel) but kept the rows it had already
+  // captured. Data is usable; the run just isn't complete.
+  partial:      { label: "Partial",      cls: "warn",   dot: "#d29922" },
+  muted:        { label: "Unknown",      cls: "muted",  dot: "#8b949e" },
 };
 
 export default function Dashboard({
-  open, userName, onNewScrape, onNewBlank, onOpenWorkflow, onManageWorkflows, showToast, reloadKey,
-  openWorkflow = null, onResumeEditing,
+  open, userName, onNewScrape, onOpenWorkflow, onManageWorkflows, showToast, reloadKey,
+  openWorkflow = null, onResumeEditing, onWatchRun, onBrowseTemplates, onOpenData,
+  onStartTour, onResumeTour, tourProgress = null, tourCompleted = false,
+  tourPromptDismissed = false, onDismissTourPrompt,
 }) {
   const [workflows, setWorkflows] = useState([]);
   const [runs, setRuns]           = useState([]);
   const [schedules, setSchedules] = useState([]);
+  const [activeRuns, setActiveRuns] = useState([]);
   const [loading, setLoading]     = useState(false);
   const [err, setErr]             = useState(null);
 
   const refresh = useCallback(async () => {
     setLoading(true); setErr(null);
     try {
-      const [wf, rn, sc] = await Promise.all([
+      const [wf, rn, sc, act] = await Promise.all([
         workflowsApi.list().catch(() => []),
         runsApi.list().catch(() => []),
         schedulesApi.list().catch(() => []),
+        runsApi.active().catch(() => []),
       ]);
       setWorkflows(wf || []);
       setRuns(rn || []);
       setSchedules(sc || []);
+      setActiveRuns(act || []);
     } catch (e) {
       setErr(e?.response?.data?.error || e.message);
     } finally {
@@ -60,6 +75,17 @@ export default function Dashboard({
   }, []);
 
   useEffect(() => { if (open) refresh(); }, [open, reloadKey, refresh]);
+
+  // Keep the running/queued badges honest while the dashboard is on screen —
+  // a scheduled run can start, and a running one finish, with this tab idle.
+  // Only the cheap /active call is polled; the full refresh is not.
+  useEffect(() => {
+    if (!open) return;
+    const t = setInterval(async () => {
+      try { setActiveRuns((await runsApi.active()) || []); } catch (_) { /* offline */ }
+    }, 4000);
+    return () => clearInterval(t);
+  }, [open]);
 
   // Latest run per workflow id (runs come newest-first from the API).
   const latestByWorkflow = useMemo(() => {
@@ -87,6 +113,19 @@ export default function Dashboard({
     [cards]
   );
 
+  // A tour left part-way through can be picked up where it stopped. Step 0
+  // isn't "in progress" — that's just an unstarted tour.
+  const canResumeTour = !!(onResumeTour && tourProgress && tourProgress.idx > 0);
+  const tourStepLabel = canResumeTour && tourProgress.total
+    ? `step ${Math.min(tourProgress.idx + 1, tourProgress.total)} of ${tourProgress.total}`
+    : null;
+  // The first-run nudge: only for someone with nothing built who hasn't
+  // already done the tour or waved the prompt away. Waits for the workflow
+  // list to actually load, so it can't flash before the data arrives.
+  const showTourPrompt =
+    !!onStartTour && !loading && !err && workflows.length === 0 &&
+    !tourCompleted && !tourPromptDismissed;
+
   if (!open) return null;
 
   return (
@@ -101,10 +140,13 @@ export default function Dashboard({
               </svg>
             </span>
             <span className="dash-resume-body">
-              <span className="dash-resume-label">Currently editing</span>
+              <span className="dash-resume-label">
+                {openWorkflow.restored ? "Recovered from your last session" : "Currently editing"}
+              </span>
               <span className="dash-resume-name">
                 {openWorkflow.name}
                 {!openWorkflow.saved && <span className="dash-resume-tag">unsaved</span>}
+                {openWorkflow.isTour && <span className="dash-resume-tag">practice</span>}
               </span>
               <span className="dash-resume-meta">
                 {openWorkflow.stepCount} step{openWorkflow.stepCount === 1 ? "" : "s"}
@@ -126,18 +168,56 @@ export default function Dashboard({
             <h1 className="dash-title">Welcome{userName ? `, ${userName}` : ""}</h1>
             <p className="dash-subtitle">Build a scraper by pointing and clicking — or open one you already made.</p>
           </div>
+          {/* One way to start building. (These used to be two buttons —
+              "Scrape a page" and "Start from blank" — that ran identical
+              code, so the choice was a decision with no consequence.) */}
           <div className="dash-hero-actions">
             <button className="dash-cta primary" onClick={onNewScrape}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
               </svg>
-              Scrape a page
+              New scraper
             </button>
-            <button className="dash-cta ghost" onClick={onNewBlank}>
-              Start from blank
-            </button>
+            {onBrowseTemplates && (
+              <button className="dash-cta ghost" onClick={onBrowseTemplates}
+                title="Ready-made scrapers with the tricky parts already wired up">
+                📋 Start from a template
+              </button>
+            )}
+            {/* The tour stays reachable forever, not just on an empty
+                account — people come back for it long after their first day. */}
+            {canResumeTour ? (
+              <button className="dash-cta ghost" onClick={onResumeTour}
+                title={`Pick the walkthrough back up at ${tourStepLabel || "where you left it"}`}>
+                🧭 Resume the tour{tourStepLabel ? ` · ${tourStepLabel}` : ""}
+              </button>
+            ) : onStartTour && (
+              <button className="dash-cta ghost" onClick={onStartTour}
+                title="A short guided walkthrough on a practice shop">
+                🧭 {tourCompleted ? "Replay the tour" : "Take the tour"}
+              </button>
+            )}
           </div>
         </div>
+
+        {/* First-run: ask outright, rather than hoping the ghost button in
+            the hero gets noticed by someone who has never seen the app. */}
+        {showTourPrompt && (
+          <div className="dash-tour-prompt">
+            <span className="dash-tour-prompt-icon" aria-hidden="true">🧭</span>
+            <div className="dash-tour-prompt-body">
+              <strong>New here? Let's build one together.</strong>
+              <span>
+                A short guided walkthrough on a practice shop — you'll build and run a
+                real scraper in a few minutes. Nothing you do in it is saved to your account.
+              </span>
+            </div>
+            <div className="dash-tour-prompt-actions">
+              <button className="dash-cta primary" onClick={onStartTour}>Show me how</button>
+              <button className="dash-link" onClick={onDismissTourPrompt}>No thanks</button>
+            </div>
+          </div>
+        )}
 
         {/* Needs attention */}
         {needsAttention.length > 0 && (
@@ -167,7 +247,12 @@ export default function Dashboard({
         <div className="dash-section-head">
           <h2>Your workflows {workflows.length > 0 && <span className="dash-count">{workflows.length}</span>}</h2>
           {workflows.length > 0 && (
-            <button className="dash-link" onClick={onManageWorkflows}>Manage all…</button>
+            <div className="dash-section-links">
+              {/* The data a scraper collects is the reason it exists — it gets
+                  a first-class way in, not a 16px icon three modals deep. */}
+              {onOpenData && <button className="dash-link" onClick={onOpenData}>View all data</button>}
+              <button className="dash-link" onClick={onManageWorkflows}>Manage all…</button>
+            </div>
           )}
         </div>
 
@@ -178,20 +263,43 @@ export default function Dashboard({
         ) : cards.length === 0 ? (
           <div className="dash-empty-state">
             <div className="dash-empty-illustration">🕸️</div>
-            <h3>No workflows yet</h3>
+            <h3>No scrapers yet</h3>
             <p>Enter a page you want data from and let the platform detect the list for you.</p>
-            <button className="dash-cta primary" onClick={onNewScrape}>Scrape your first page</button>
+            <div className="dash-empty-actions">
+              <button className="dash-cta primary" onClick={onNewScrape}>Scrape your first page</button>
+              {onBrowseTemplates && (
+                <button className="dash-cta ghost" onClick={onBrowseTemplates}>Start from a template</button>
+              )}
+            </div>
+            {/* Only when the prompt above isn't already asking — otherwise
+                the same offer would appear twice on one screen. */}
+            {!showTourPrompt && onStartTour && (
+              <button className="dash-link" onClick={canResumeTour ? onResumeTour : onStartTour}>
+                {canResumeTour ? "…or pick the tour back up" : "…or walk through it with a guided tour"}
+              </button>
+            )}
           </div>
         ) : (
           <div className="dash-grid">
             {cards.map(c => {
               const st = c.latest ? (STATUS_META[c.latest.status] || STATUS_META.muted) : null;
+              // A run of this workflow that is still going. Clicking the card
+              // then means "show me what it's doing", not "open the editor" —
+              // opening the editor while a run is in flight is almost never
+              // what the user wanted, and it used to also fire a page load.
+              const live = activeRuns.find(r => r.workflowId === c.id);
+              const openCard = () => (live ? onWatchRun(live.id) : onOpenWorkflow(c.id));
               return (
-                <div key={c.id} className="dash-card" onClick={() => onOpenWorkflow(c.id)} role="button" tabIndex={0}
-                  onKeyDown={e => { if (e.key === "Enter") onOpenWorkflow(c.id); }}>
+                <div key={c.id} className="dash-card" onClick={openCard} role="button" tabIndex={0}
+                  onKeyDown={e => { if (e.key === "Enter") openCard(); }}>
                   <div className="dash-card-top">
                     <span className="dash-card-name" title={c.name}>{c.name}</span>
-                    {st && (
+                    {live ? (
+                      <span className="dash-status dash-status--run">
+                        <span className="dash-status-dot dash-status-dot--pulse" style={{ background: "#4f9cf9" }} />
+                        {live.status === "queued" ? "Queued" : "Running"}
+                      </span>
+                    ) : st && (
                       <span className={`dash-status dash-status--${st.cls}`}>
                         <span className="dash-status-dot" style={{ background: st.dot }} />
                         {st.label}
@@ -199,16 +307,26 @@ export default function Dashboard({
                     )}
                   </div>
                   <div className="dash-card-meta">
-                    {c.latest
-                      ? <span>Last run {relTime(c.latest.finishedAt || c.latest.startedAt)}</span>
-                      : <span className="dash-muted">Never run yet</span>}
-                    {c.schedule && c.schedule.isActive && c.schedule.nextRunAt && (
+                    {live
+                      ? <span>Started {relTime(live.startedAt || live.queuedAt)}
+                          {live.rowsCaptured > 0 ? ` · ${live.rowsCaptured.toLocaleString()} rows so far` : ""}</span>
+                      : c.latest
+                        ? <span>Last run {relTime(c.latest.finishedAt || c.latest.startedAt)}</span>
+                        : <span className="dash-muted">Never run yet</span>}
+                    {!live && c.schedule && c.schedule.isActive && c.schedule.nextRunAt && (
                       <span className="dash-next">· Next {relTime(c.schedule.nextRunAt)}</span>
                     )}
                   </div>
                   <ChangeLine summary={c.latest?.changeSummary} />
                   <div className="dash-card-actions" onClick={e => e.stopPropagation()}>
-                    <button className="dash-card-btn" onClick={() => onOpenWorkflow(c.id)}>Open</button>
+                    {live && (
+                      <button className="dash-card-btn dash-card-btn--primary" onClick={() => onWatchRun(live.id)}>
+                        View progress
+                      </button>
+                    )}
+                    <button className="dash-card-btn" onClick={() => onOpenWorkflow(c.id)}>
+                      {live ? "Edit" : "Open"}
+                    </button>
                   </div>
                 </div>
               );

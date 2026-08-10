@@ -14,6 +14,51 @@ const EXTRACT_WAIT_ADV = {
   },
 };
 
+// Shared advanced options for every step that scrolls to load more content
+// (Collect List, Infinite Scroll pagination). Accuracy mode is ON by default:
+// it traverses the page continuously instead of jumping (so lazy-load triggers
+// are never skipped), waits for the network and DOM to actually go quiet
+// instead of guessing a delay, and re-checks by sweeping the list again. That
+// is what makes two runs of the same page return the same number of records.
+export const SCROLL_ACCURACY_ADV = {
+  scrollAccuracy: {
+    type: "boolean",
+    label: "Accuracy mode (recommended)",
+    default: true,
+    help: "Scrolls continuously instead of jumping, waits for the page to genuinely finish loading rather than a fixed delay, gets more patient at the bottom, then sweeps again to verify. Slower, but the record count stops changing between runs. Turn off for the old fast behaviour.",
+  },
+  verifyPasses: {
+    type: "number",
+    label: "Verification passes",
+    default: 3,
+    help: "After reaching the end, scroll back to the top and sweep again. A pass that finds nothing new proves the list was fully collected. 1 disables verification.",
+  },
+  settleQuietMs: {
+    type: "number",
+    label: "Quiet period before a page counts as loaded (ms)",
+    default: 500,
+    help: "How long the network and the DOM must both be still before the scraper decides this batch has finished arriving.",
+  },
+  settleMaxMs: {
+    type: "number",
+    label: "Max wait for one batch (ms)",
+    default: 30000,
+    help: "Ceiling on the above, for pages that stream continuously and never go quiet. Reaching it is reported as an incomplete run rather than a silent truncation.",
+  },
+  debugScrolling: {
+    type: "boolean",
+    label: "Debug scrolling (log every step)",
+    default: false,
+    help: "Logs where the scroller actually reached on each step (position, page height, whether it moved, how many records so far). Turn this on when a page collects fewer records than it should and read the run log — it shows exactly where the sweep stopped.",
+  },
+  scrollStepPx: {
+    type: "number",
+    label: "Scroll step size (px)",
+    default: 250,
+    help: "How far each individual scroll moves. Smaller is safer on pages whose 'load more' trigger sits in a narrow band, at the cost of speed.",
+  },
+};
+
 export const actionDefinitions = {
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1260,6 +1305,7 @@ const ${outputVar} = await page.$$eval(
       },
     },
     advanced: {
+      ...SCROLL_ACCURACY_ADV,
       expectedCountSelector: {
         type: "string",
         label: "Expected-total selector (element showing the total, e.g. \"340 results\") — enables completeness check",
@@ -1282,12 +1328,12 @@ const ${outputVar} = await page.$$eval(
       },
       scrollDelay: {
         type: "number",
-        label: "Wait after each scroll (ms)",
+        label: "Wait after each scroll (ms) — only used when Accuracy mode is OFF",
         default: 1200,
       },
       maxNoNew: {
         type: "number",
-        label: "Stop after this many scrolls with no new items (only counted once at the bottom)",
+        label: "Stop after this many scrolls with no new items — only used when Accuracy mode is OFF",
         default: 3,
       },
       maxScrolls: {

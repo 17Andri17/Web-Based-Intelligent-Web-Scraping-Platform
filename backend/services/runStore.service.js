@@ -104,7 +104,7 @@ async function listRunsForUserPage(userId, { limit = 20, workflowId = null, stat
   return db.all(`
     SELECT id, workflow_id, schedule_id, trigger, status, queued_at, started_at,
            finished_at, duration_ms, error_message, error_category, ai_summary,
-           retry_count, api_key_id,
+           retry_count, api_key_id, rows_captured,
            CASE WHEN results_json IS NOT NULL THEN 1 ELSE 0 END AS has_results
     FROM runs
     WHERE ${where.join(' AND ')}
@@ -113,12 +113,93 @@ async function listRunsForUserPage(userId, { limit = 20, workflowId = null, stat
   `, params);
 }
 
+// Mid-run checkpoint of whatever the run has captured so far. Called
+// periodically (debounced) by executionPipeline as RESULT_CHUNK deltas arrive
+// from the child, so a run that is killed / crashes / OOMs still leaves its
+// data behind. Best-effort by design: a failed checkpoint must never take down
+// a healthy run, so callers don't await this for correctness.
+async function savePartialResults(runId, resultsJson, rowsCaptured = 0, progressJson = null) {
+  // progress rides along so a killed run leaves BOTH the rows it captured and
+  // the ledger of which items produced them — data without the ledger can be
+  // viewed but not resumed. Written only when the run has some, so a workflow
+  // with no per-item loop doesn't null out a column it never used.
+  if (progressJson != null) {
+    await db.run(
+      'UPDATE runs SET partial_results_json = ?, rows_captured = ?, progress_json = ? WHERE id = ?',
+      [resultsJson, rowsCaptured, progressJson, runId]
+    );
+    return;
+  }
+  await db.run(
+    'UPDATE runs SET partial_results_json = ?, rows_captured = ? WHERE id = ?',
+    [resultsJson, rowsCaptured, runId]
+  );
+}
+
+/* ── Liveness ──────────────────────────────────────────────────────────────
+   A run executes as a child process of the server, so a 'running' row is only
+   trustworthy while the process that owns it is alive to say so. The heartbeat
+   is that proof: refreshed while the run executes, and stale the moment its
+   owner is gone. Returns whether a cancel has been requested for this run, so
+   the caller can honour a stop that arrived from another tab or instance. */
+async function touchRun(runId) {
+  const row = await db.get(
+    `UPDATE runs SET heartbeat_at = CURRENT_TIMESTAMP
+     WHERE id = ? RETURNING cancel_requested`, [runId]
+  );
+  return !!(row && row.cancel_requested);
+}
+
+// Record a stop for a run this process doesn't own. Its owner picks this up on
+// the next heartbeat; if it has no owner, the reaper finalises it instead.
+async function requestCancel(runId, userId) {
+  const info = await db.run(
+    `UPDATE runs SET cancel_requested = 1
+     WHERE id = ? AND user_id = ? AND status IN ('running', 'queued')`,
+    [runId, userId]
+  );
+  return info.changes === 1;
+}
+
+/* Runs that claim to be running but have no live owner.
+
+   `staleMs` is measured against the heartbeat. A row with NO heartbeat is
+   included when it started before the cutoff — that covers rows written by an
+   older build, and the window between a run being created and its first beat.
+   Postgres and SQLite disagree on date arithmetic, so the cutoff is computed
+   here and compared as a string, which both engines order correctly on the
+   CURRENT_TIMESTAMP format they store. */
+async function findOrphanedRuns(staleMs) {
+  const cutoff = new Date(Date.now() - staleMs).toISOString().slice(0, 19).replace('T', ' ');
+  return db.all(
+    `SELECT id, user_id, workflow_id, rows_captured, partial_results_json, results_json, started_at
+     FROM runs
+     WHERE status = 'running'
+       AND (
+         (heartbeat_at IS NOT NULL AND heartbeat_at < ?)
+         OR (heartbeat_at IS NULL AND (started_at IS NULL OR started_at < ?))
+       )`,
+    [cutoff, cutoff]
+  );
+}
+
+// Every run still marked running, regardless of heartbeat. Used at boot: this
+// process spawns its runs as children, so if it has only just started, none of
+// them can still be alive.
+async function findRunningRuns() {
+  return db.all(
+    `SELECT id, user_id, workflow_id, rows_captured, partial_results_json, results_json, started_at
+     FROM runs WHERE status = 'running'`, []
+  );
+}
+
 async function finishRun(runId, patch) {
   const allowed = [
     'status', 'finished_at', 'duration_ms', 'results_json',
     'error_message', 'error_category', 'failed_step_id', 'failed_step_type',
     'failed_step_label', 'ai_summary', 'retry_count',
-    'patched_steps_json',
+    'patched_steps_json', 'partial_results_json', 'rows_captured', 'progress_json',
+    'cancel_requested',
   ];
   const fields = Object.keys(patch).filter(k => allowed.includes(k));
   if (fields.length === 0) return;
@@ -137,7 +218,8 @@ async function getRunForUser(runId, userId) {
 async function listRunsForUser(userId, { limit = 50, workflowId = null } = {}) {
   const cols = `id, workflow_id, schedule_id, trigger, status, started_at, finished_at,
                 duration_ms, error_message, error_category, failed_step_label,
-                ai_summary, retry_count, parent_run_id, version_id, change_summary_json`;
+                ai_summary, retry_count, parent_run_id, version_id, change_summary_json,
+                rows_captured`;
   if (workflowId) {
     return db.all(`
       SELECT ${cols} FROM runs
@@ -242,11 +324,22 @@ async function listRepairsForRun(runId) {
   `, [runId]);
 }
 
+/* ── "has usable data" status predicate ───────────────────────────────────
+   A 'partial' run (killed / crashed / timed out) DID capture rows — it just
+   never finished. That data is genuinely useful for history and comparison,
+   but including it by default would silently change what every existing diff
+   and baseline means: a partial run legitimately has fewer rows than a
+   complete one, so it would read as "records disappeared". So it stays
+   opt-in, per-caller. Default OFF preserves today's exact semantics. */
+function dataStatusSql(includePartial) {
+  return includePartial ? `status IN ('success', 'partial')` : `status = 'success'`;
+}
+
 // Parsed results_json from the most recent successful runs of a workflow.
-async function recentSuccessfulResults(workflowId, limit = 5) {
+async function recentSuccessfulResults(workflowId, limit = 5, { includePartial = false } = {}) {
   const rows = await db.all(`
     SELECT results_json FROM runs
-    WHERE workflow_id = ? AND status = 'success' AND results_json IS NOT NULL
+    WHERE workflow_id = ? AND ${dataStatusSql(includePartial)} AND results_json IS NOT NULL
     ORDER BY started_at DESC
     LIMIT ?
   `, [workflowId, limit]);
@@ -262,10 +355,10 @@ async function recentSuccessfulResults(workflowId, limit = 5) {
 // view (dataset.service). Newest-first from SQL (bounded by `limit`); returned
 // oldest→newest so first-seen accumulation is left-to-right. A retained run
 // whose results_json won't parse is skipped rather than aborting the view.
-async function recentSuccessfulRunsWithResults(workflowId, limit = 100) {
+async function recentSuccessfulRunsWithResults(workflowId, limit = 100, { includePartial = false } = {}) {
   const rows = await db.all(`
-    SELECT id, started_at, finished_at, results_json FROM runs
-    WHERE workflow_id = ? AND status = 'success' AND results_json IS NOT NULL
+    SELECT id, started_at, finished_at, status, results_json FROM runs
+    WHERE workflow_id = ? AND ${dataStatusSql(includePartial)} AND results_json IS NOT NULL
     ORDER BY started_at DESC
     LIMIT ?
   `, [workflowId, limit]);
@@ -273,7 +366,7 @@ async function recentSuccessfulRunsWithResults(workflowId, limit = 100) {
   for (const r of rows) {
     let results;
     try { results = JSON.parse(r.results_json); } catch (_) { continue; }
-    out.push({ id: r.id, startedAt: r.started_at, finishedAt: r.finished_at, results });
+    out.push({ id: r.id, startedAt: r.started_at, finishedAt: r.finished_at, status: r.status, results });
   }
   return out.reverse(); // oldest → newest
 }
@@ -282,10 +375,10 @@ async function recentSuccessfulRunsWithResults(workflowId, limit = 100) {
 // carries results — the baseline a monitored run is diffed against. Ordered by
 // id so it's stable regardless of started_at clock skew. Returns
 // { id, startedAt, results } or null when there's no prior run.
-async function previousSuccessfulRunWithResults(workflowId, beforeRunId) {
+async function previousSuccessfulRunWithResults(workflowId, beforeRunId, { includePartial = false } = {}) {
   const r = await db.get(`
     SELECT id, started_at, results_json FROM runs
-    WHERE workflow_id = ? AND status = 'success' AND results_json IS NOT NULL AND id < ?
+    WHERE workflow_id = ? AND ${dataStatusSql(includePartial)} AND results_json IS NOT NULL AND id < ?
     ORDER BY id DESC
     LIMIT 1
   `, [workflowId, beforeRunId]);
@@ -293,6 +386,44 @@ async function previousSuccessfulRunWithResults(workflowId, beforeRunId) {
   let results;
   try { results = JSON.parse(r.results_json); } catch (_) { return null; }
   return { id: r.id, startedAt: r.started_at, results };
+}
+
+// One run of a workflow with its parsed results — the input to an on-demand
+// diff between any two runs (the Compare view), as opposed to the automatic
+// previous-run diff above. Returns null when the run doesn't belong to this
+// workflow or its results won't parse.
+async function runWithResults(workflowId, runId) {
+  const r = await db.get(`
+    SELECT id, started_at, finished_at, status, results_json FROM runs
+    WHERE id = ? AND workflow_id = ?
+  `, [runId, workflowId]);
+  if (!r || !r.results_json) return null;
+  let results;
+  try { results = JSON.parse(r.results_json); } catch (_) { return null; }
+  return { id: r.id, startedAt: r.started_at, finishedAt: r.finished_at, status: r.status, results };
+}
+
+// Successful runs that carry results, newest first — just the metadata needed
+// to populate the "compare which two runs?" pickers. `changed` flags the runs
+// that already have a stored monitoring summary.
+async function successfulRunsBrief(workflowId, limit = 50, { includePartial = false } = {}) {
+  const rows = await db.all(`
+    SELECT id, started_at, finished_at, status, rows_captured,
+           (change_summary_json IS NOT NULL) AS changed
+    FROM runs
+    WHERE workflow_id = ? AND ${dataStatusSql(includePartial)} AND results_json IS NOT NULL
+    ORDER BY id DESC
+    LIMIT ?
+  `, [workflowId, limit]);
+  return rows.map(r => ({
+    id: r.id,
+    startedAt: r.started_at,
+    finishedAt: r.finished_at,
+    changed: !!r.changed,
+    status: r.status,
+    partial: r.status === 'partial',
+    rowsCaptured: r.rows_captured || 0,
+  }));
 }
 
 // Persist the change-monitoring diff summary onto a run row.
@@ -323,6 +454,21 @@ async function ensureVersion(workflowId, userId, steps, meta, source) {
     `, [workflowId, userId, hash, JSON.stringify(steps || []),
         meta == null ? null : JSON.stringify(meta), source || null]);
     return row.id;
+  } catch (_) { return null; }
+}
+
+/* The version id matching these steps, WITHOUT creating one.
+   Resume uses this to answer "is the workflow still exactly what that run
+   executed?" — comparing content hashes rather than trusting a timestamp, and
+   without the side effect of ensureVersion (a read-only eligibility check must
+   not mint version rows). Null when the current steps have never been run. */
+async function findVersionIdByContent(workflowId, userId, steps) {
+  try {
+    const row = await db.get(
+      'SELECT id FROM workflow_versions WHERE workflow_id = ? AND user_id = ? AND hash = ?',
+      [workflowId, userId, hashSteps(steps)]
+    );
+    return row ? row.id : null;
   } catch (_) { return null; }
 }
 
@@ -642,7 +788,9 @@ function truncate(s, n) {
 
 module.exports = {
   // runs
-  createRun, finishRun, getRun, getRunForUser, listRunsForUser,
+  createRun, finishRun, savePartialResults, getRun, getRunForUser, listRunsForUser,
+  // liveness / orphan recovery
+  touchRun, requestCancel, findOrphanedRuns, findRunningRuns,
   // queued runs (public API)
   createQueuedRun, findRunByIdempotencyKey, nextQueuedRuns,
   claimQueuedRun, cancelQueuedRun, startQueuedRun, listRunsForUserPage,
@@ -656,11 +804,12 @@ module.exports = {
   recentSuccessfulRunsWithResults,
   // change monitoring
   previousSuccessfulRunWithResults, saveChangeSummary,
+  runWithResults, successfulRunsBrief,
   getMonitorForWorkflow, getMonitorByWorkflow, upsertMonitor, deleteMonitor, recentChangedRuns,
   // Google Sheets delivery
   getSheetForWorkflow, getSheetByWorkflow, upsertSheet, deleteSheet, updateSheetStatus,
   // version history / rollback
-  ensureVersion, getVersionForUser, listVersionsForWorkflow,
+  ensureVersion, getVersionForUser, listVersionsForWorkflow, findVersionIdByContent,
   // schedules
   listSchedulesForUser, getScheduleByWorkflow, upsertSchedule,
   deleteSchedule, dueSchedules, bumpScheduleAfterRun, claimDueSchedule, getScheduleById,

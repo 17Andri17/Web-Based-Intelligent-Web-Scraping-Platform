@@ -96,7 +96,7 @@ test('before/after totals reported', () => {
 });
 
 console.log('summarizeDiff');
-test('bounds the stored sample and drops before/after bodies for changed', () => {
+test('bounds the stored sample', () => {
   const curr = { p: Array.from({ length: 50 }, (_, i) => ({ id: String(i) })) };
   const d = diffResults({ p: [] }, curr, { output: 'p', keyField: 'id' });
   const s = summarizeDiff(d, { sample: 20 });
@@ -105,11 +105,34 @@ test('bounds the stored sample and drops before/after bodies for changed', () =>
   assert.equal(s.hasChanges, true);
   assert.equal(s.output, 'p');
 });
-test('changed sample carries only key + fields', () => {
-  const prev = { p: [{ id: 'a', price: '1' }] };
-  const curr = { p: [{ id: 'a', price: '2' }] };
+test('changed sample carries the old and new value of each changed field', () => {
+  const prev = { p: [{ id: 'a', price: '1', name: 'Widget' }] };
+  const curr = { p: [{ id: 'a', price: '2', name: 'Widget' }] };
   const s = summarizeDiff(diffResults(prev, curr, { output: 'p', keyField: 'id' }));
-  assert.deepEqual(s.sample.changed[0], { key: 'a', fields: ['price'] });
+  const c = s.sample.changed[0];
+  assert.equal(c.key, 'a');
+  assert.deepEqual(c.fields, ['price']);
+  assert.deepEqual(c.values, { price: { before: '1', after: '2' } });
+  assert.equal('name' in c.values, false);        // unchanged fields omitted
+});
+test('a field that appeared reads as before:null', () => {
+  const prev = { p: [{ id: 'a' }] };
+  const curr = { p: [{ id: 'a', sale: 'yes' }] };
+  const s = summarizeDiff(diffResults(prev, curr, { output: 'p', keyField: 'id' }));
+  assert.deepEqual(s.sample.changed[0].values.sale, { before: null, after: 'yes' });
+});
+test('long values are truncated so a summary stays storable', () => {
+  const prev = { p: [{ id: 'a', desc: 'x'.repeat(500) }] };
+  const curr = { p: [{ id: 'a', desc: 'y'.repeat(500) }] };
+  const s = summarizeDiff(diffResults(prev, curr, { output: 'p', keyField: 'id' }), { maxValue: 50 });
+  assert.equal(s.sample.changed[0].values.desc.after.length, 51);  // 50 + ellipsis
+  assert.ok(s.sample.changed[0].values.desc.after.endsWith('…'));
+});
+test('fieldStats ranks fields by how many rows they changed', () => {
+  const prev = { p: [{ id: 'a', price: '1', stock: '1' }, { id: 'b', price: '1', stock: '1' }] };
+  const curr = { p: [{ id: 'a', price: '2', stock: '2' }, { id: 'b', price: '2', stock: '1' }] };
+  const s = summarizeDiff(diffResults(prev, curr, { output: 'p', keyField: 'id' }));
+  assert.deepEqual(s.fieldStats, [{ field: 'price', rows: 2 }, { field: 'stock', rows: 1 }]);
 });
 
 console.log(`\n${passed} assertions passed`);

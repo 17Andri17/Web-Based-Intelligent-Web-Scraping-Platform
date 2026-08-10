@@ -90,25 +90,43 @@ function classifyError(message) {
   return 'UNKNOWN';
 }
 
-// Human-readable summary tailored to each category. Shown to the user
-// alongside the raw error message.
+// Human-readable summary tailored to each category. This is the line a
+// non-technical user reads when a run fails, so it stays in plain language and
+// leads with what they can DO. Setup details that only make sense to whoever
+// administers the instance (environment variables, provider pricing) belong in
+// `adminHint`, which the UI shows behind a "technical details" disclosure —
+// never inline in the message. The raw error is surfaced separately.
 function summarise(category, message, stepLabel) {
   const stepRef = stepLabel ? `step "${stepLabel}"` : 'a step';
   switch (category) {
     case 'CONNECTION':
-      return `Network problem while running ${stepRef}. The platform retried automatically — if you're seeing this, the retries didn't succeed either.`;
+      return `Couldn't reach the site while running ${stepRef}. The platform already retried a few times, so the connection problem lasted a while — the site may be down, or your network may have dropped.`;
     case 'HTTP':
-      return `The target page returned an error response while running ${stepRef}. Check the URL is still reachable and not blocked / rate-limited.`;
+      return `The site returned an error page while running ${stepRef}. It may have moved the page, blocked the request, or asked you to slow down.`;
     case 'CAPTCHA':
-      return `A CAPTCHA / anti-bot challenge blocked ${stepRef}. Free options: solve it live while building the scraper, or lower your request rate and use a residential proxy so it stops appearing. For unattended runs, configure a solver (set CAPTCHA_PROVIDER + CAPTCHA_API_KEY — e.g. CapSolver ~$0.30–0.80 / 1000 solves) and add a "Solve CAPTCHA" step.`;
+      return `The site showed an "are you human?" check and blocked ${stepRef}. You can solve it yourself in the live browser while building the scraper, or slow the run down and use a proxy so it stops appearing. For runs that happen unattended, an automatic solver can be set up.`;
     case 'SELECTOR':
-      return `Could not locate the element used by ${stepRef}. The website's HTML may have changed — the platform attempted an automatic repair via the LLM.`;
+      return `Couldn't find the thing ${stepRef} was pointed at. The website has probably changed its layout — the platform tried to repair the step automatically.`;
     case 'EMPTY_RESULT':
-      return `${stepRef} ran without error but captured no data — its selector matched nothing, which almost always means the page structure changed. The platform attempted an automatic repair.`;
+      return `${stepRef} finished without error but came back empty — what it points at wasn't on the page. That nearly always means the site changed its layout. The platform tried to repair the step automatically.`;
     case 'LLM':
-      return `The AI repair service is unavailable right now (${truncate(message)}). This run has been flagged for manual review.`;
+      return `The automatic repair service couldn't be reached, so this run is waiting for you to look at it.`;
     default:
       return `${stepRef} failed: ${truncate(message)}`;
+  }
+}
+
+// Setup guidance for whoever runs this instance — environment variables,
+// providers, costs. Kept out of `summary` so the person who just wanted their
+// data isn't handed a configuration task written in shell.
+function adminHint(category, message) {
+  switch (category) {
+    case 'CAPTCHA':
+      return 'To solve CAPTCHAs on unattended runs, set CAPTCHA_PROVIDER and CAPTCHA_API_KEY (e.g. CapSolver, roughly $0.30–0.80 per 1000 solves) and add a "Solve CAPTCHA" step to the workflow.';
+    case 'LLM':
+      return `The LLM API call failed: ${truncate(message)}. Check LLM_API_KEY and the provider's status.`;
+    default:
+      return null;
   }
 }
 
@@ -124,4 +142,4 @@ function shouldAttemptRepair(category) {
   return category === 'SELECTOR' || category === 'UNKNOWN' || category === 'EMPTY_RESULT';
 }
 
-module.exports = { classifyError, summarise, shouldAttemptRepair };
+module.exports = { classifyError, summarise, adminHint, shouldAttemptRepair };

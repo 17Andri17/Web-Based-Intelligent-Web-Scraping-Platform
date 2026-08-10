@@ -11,7 +11,10 @@ const { checkCompiles } = require('./codeCheck');
 const llm               = require('./llm.service');
 const { generateCode }  = require('../workflow/workflowCodegen');
 const webhookDispatcher = require('./webhookDispatcher.service');
+const emailNotifier     = require('./emailNotifier.service');
 const changeMonitor     = require('./changeMonitor.service');
+const runEvents         = require('./runEvents.service');
+const { buildFlowTree } = require('../workflow/workflowUtils');
 const sheetsDelivery    = require('./sheetsDelivery.service');
 const {
   patchStepParams, setStepParams, removeStepById, clone,
@@ -49,6 +52,13 @@ const MAX_REPAIR_ATTEMPTS     = 3;     // total LLM repair passes per run
 const MAX_HEAL_PASSES         = 4;     // empty-result healing passes per run
 const MAX_CONNECTION_RETRIES  = 2;
 const CONNECTION_RETRY_DELAY_MS = 4000;
+// How often the accumulated partial results are written to the DB while a run
+// is in flight. The child already throttles its own emission; this bounds the
+// write rate independently so a fast run can't hammer the database.
+const PARTIAL_FLUSH_MS        = 3000;
+// How often a live run proves it is still alive. Must be comfortably shorter
+// than runReaper's stale threshold, so a busy event loop can't look dead.
+const HEARTBEAT_MS            = 10000;
 
 const EXTRACTION_TYPES = new Set([
   'EXTRACT_TEXT', 'EXTRACT_ATTRIBUTE', 'EXTRACT_HTML', 'EXTRACT_TABLE', 'EXTRACT_LIST',
@@ -66,6 +76,10 @@ function emit(callbacks, event, payload) {
 
 async function executeAndPersist(arg) {
   const { userId, workflowId, scheduleId = null, trigger = 'manual', signal, callbacks } = arg;
+  // Resume payload (services/resume.service.js) — the per-step sets of items an
+  // earlier run already captured, plus the rows to restore. Null for a normal run.
+  const resume = arg.resume || null;
+  let finalProgress = null;
   let currentSteps = clone(arg.workflow.steps || []);
   const meta = arg.workflow.meta || {};
   const customActions = arg.workflow.customActions || {};
@@ -96,27 +110,128 @@ async function executeAndPersist(arg) {
     runId = arg.runId;
     await runStore.startQueuedRun(runId, executedVersionId);
   } else {
-    runId = await runStore.createRun({ userId, workflowId, scheduleId, trigger, versionId: executedVersionId });
+    runId = await runStore.createRun({
+      userId, workflowId, scheduleId, trigger, versionId: executedVersionId,
+      // A resumed run links back to the one it continues, so the pair stays
+      // traceable instead of looking like two unrelated runs of the same job.
+      parentRunId: arg.parentRunId || null,
+    });
   }
+  /* One controller for every way this run can be stopped: the caller's signal
+     (the launching socket), a cancel issued from another tab or instance
+     (picked up by the heartbeat), or the reaper. Registering it centrally here
+     rather than in WorkflowExecutor means a scheduled or API run is just as
+     cancellable as an interactive one — previously only the interactive path
+     wired up a canceller at all. */
+  const cancelController = new AbortController();
+  const cancelSignal = cancelController.signal;
+  if (signal) {
+    if (signal.aborted) cancelController.abort();
+    else signal.addEventListener('abort', () => cancelController.abort(), { once: true });
+  }
+  runEvents.registerCanceller(runId, () => cancelController.abort());
+
+  // onStart FIRST: it is how the launching socket joins this run's room, and
+  // it has to be in the room before begin() publishes anything or that tab
+  // misses the opening events of its own run.
   emit(callbacks, 'onStart', { runId });
+
+  // Publish this run so ANY tab can watch it — not just the socket that
+  // started it, and including runs with no socket at all (scheduler, API,
+  // resume, shards). The flow tree is built once here so a watcher never has
+  // to reconstruct it and every run has one.
+  safeCall(() => runEvents.begin(runId, {
+    userId,
+    workflowId,
+    workflowName: arg.workflowName || null,
+    trigger,
+    flowTree: buildFlowTree(currentSteps, subflows, rootWorkflowId),
+  }), null);
 
   const log = (line, level = 'info') => {
     runStore.appendLog(runId, level, line);
     emit(callbacks, 'onLog', { line, level });
+    runEvents.log(runId, { line, level });
   };
+
+  /* ── Liveness ────────────────────────────────────────────────────────────
+     A 'running' row means nothing on its own: if this process dies, the row
+     stays running forever and the run becomes un-cancellable. The heartbeat is
+     what makes the claim checkable — while it keeps arriving the run is alive;
+     once it stops, runReaper finalises the row.
+
+     The same beat carries cancels the other way. A stop issued against a run
+     this process doesn't own (another tab, another instance) is recorded on
+     the row and picked up here, so Cancel works from anywhere rather than only
+     where the run was launched. */
+  let heartbeat = null;
+  const stopHeartbeat = () => { if (heartbeat) { clearInterval(heartbeat); heartbeat = null; } };
+  const beat = async () => {
+    try {
+      const cancelRequested = await runStore.touchRun(runId);
+      if (cancelRequested && !cancelSignal.aborted) {
+        log('🛑 Cancel requested — stopping.', 'error');
+        cancelController.abort();
+      }
+    } catch (_) { /* a missed beat is recoverable; the reaper is the backstop */ }
+  };
+  heartbeat = setInterval(beat, HEARTBEAT_MS);
+  if (heartbeat.unref) heartbeat.unref();
+  beat();
 
   log(`▶ Run #${runId} started (trigger: ${trigger})`);
 
   // Prior successful results — baselines + "what a field used to contain".
   const priorResults = await safeCall(() => runStore.recentSuccessfulResults(workflowId, 5), []);
 
+  // ── Partial-results checkpointing ──────────────────────────────────────
+  // Deliberately fire-and-forget: a checkpoint is an optimisation, and a
+  // failed one (locked DB, transient error) must never take down a healthy
+  // run. `inFlight` keeps a slow write from stacking up behind itself.
+  let lastPartialFlush = 0;
+  let partialWrite = null;    // in-flight checkpoint write, or null
+  let finishingRun = false;   // set before finishRun — stops new checkpoints
+  let latestPartial = null;   // { results, rows, progress } — newest seen
+  const flushPartial = () => {
+    if (finishingRun || partialWrite || !latestPartial) return;
+    const now = nowMs();
+    if (now - lastPartialFlush < PARTIAL_FLUSH_MS) return;
+    lastPartialFlush = now;
+    const { results, rows, progress } = latestPartial;
+    let encoded, encodedProgress = null;
+    try {
+      encoded = JSON.stringify(results);
+      // Progress rides the same write: a run that dies must leave BOTH the
+      // rows it captured and the ledger of which items produced them, or it
+      // can be viewed but not resumed.
+      if (progress) encodedProgress = JSON.stringify(progress);
+    } catch (_) { return; }
+    partialWrite = Promise.resolve(runStore.savePartialResults(runId, encoded, rows, encodedProgress))
+      .catch(() => {})
+      .then(() => { partialWrite = null; });
+  };
+  // Close the checkpoint window before the run is finalised. Without this an
+  // already-dispatched write can land AFTER finishRun clears
+  // partial_results_json and resurrect a stale checkpoint on a finished run.
+  const stopCheckpointing = async () => {
+    finishingRun = true;
+    if (partialWrite) { try { await partialWrite; } catch (_) {} }
+  };
+
   let lastStep = null;
   const onRunnerEvents = (events) => {
     events.on('log',       ({ line, level }) => log(line, level));
-    events.on('stepBegin', (info) => { lastStep = info; emit(callbacks, 'onStepBegin', info); });
-    events.on('stepError', (info) => { emit(callbacks, 'onStepError', info); });
-    events.on('results',   (r)    => { emit(callbacks, 'onResults', r); });
-    events.on('iteration', (info) => emit(callbacks, 'onIteration', info));
+    events.on('stepBegin', (info) => { lastStep = info; emit(callbacks, 'onStepBegin', info); runEvents.stepBegin(runId, info); });
+    events.on('stepError', (info) => { emit(callbacks, 'onStepError', info); runEvents.stepError(runId, info); });
+    events.on('results',   (r)    => { emit(callbacks, 'onResults', r); runEvents.results(runId, r); });
+    events.on('iteration', (info) => { emit(callbacks, 'onIteration', info); runEvents.iteration(runId, info); });
+    events.on('workers',   (info) => { emit(callbacks, 'onWorkers', info); runEvents.workers(runId, info); });
+    events.on('partial',   (p)    => {
+      latestPartial = { results: p.results, rows: p.rows, progress: p.progress };
+      flushPartial();
+      emit(callbacks, 'onPartial', { rows: p.rows, times: p.times });
+      runEvents.partial(runId, { rows: p.rows, times: p.times });
+    });
   };
 
   // ── Run + recovery loop ────────────────────────────────────────────────
@@ -147,11 +262,20 @@ async function executeAndPersist(arg) {
     // prevents a healed-but-then-thrown run from carrying stale partial
     // data forward and being mis-recorded as 'success'.
     finalResults = null;
+    // Same reasoning for the checkpoint: each attempt runs a FRESH child that
+    // re-accumulates from zero, so carrying the previous attempt's rows over
+    // would double-count them against this attempt's.
+    latestPartial = null;
 
     const workflowForRun = { id: rootWorkflowId, steps: currentSteps, meta, customActions, subflows, proxy };
-    const { events, promise } = runner.runChild(workflowForRun, { signal });
+    const { events, promise } = runner.runChild(workflowForRun, { signal: cancelSignal, resume });
     onRunnerEvents(events);
     const result = await promise;
+    // The child's own ledger is authoritative at exit (it includes anything
+    // emitted after the last debounced checkpoint). On a resumed run, fold in
+    // what the ORIGINAL run had already done — those items weren't re-scraped
+    // this time, so only the union describes everything now captured.
+    finalProgress = mergeProgress(resume, result.progress);
 
     if (result.success) {
       // ── Empty-result detection: a "successful" run that captured nothing ──
@@ -174,7 +298,7 @@ async function executeAndPersist(arg) {
       const target = broken[0];
       log(`⚠ "${target.step.label || target.step.type}" captured no usable data — ${healingStats.describeBreakage(target.verdict, target.stat)}`, 'error');
 
-      if (signal && signal.aborted) break;
+      if (cancelSignal.aborted) break;
 
       if (target.wasHealed) {
         reviewMessage = `The fix for "${target.step.label || target.step.type}" was verified against the page snapshot but did not hold on a full re-run. Manual review needed — the page may behave differently than its captured snapshot.`;
@@ -247,7 +371,7 @@ async function executeAndPersist(arg) {
 
     log(`✗ attempt ${attempt} failed (${category}): ${truncate(errMsg, 300)}`, 'error');
 
-    if (lastError.cancelled || (signal && signal.aborted)) { log('🛑 cancelled — not retrying', 'error'); break; }
+    if (lastError.cancelled || cancelSignal.aborted) { log('🛑 cancelled — not retrying', 'error'); break; }
 
     if (category === 'CONNECTION' && connectionRetries < MAX_CONNECTION_RETRIES) {
       connectionRetries++;
@@ -436,11 +560,54 @@ async function executeAndPersist(arg) {
     failedStepInfo = stepInfoFrom(lastError.step);
   }
 
+  /* ── Partial outcome ─────────────────────────────────────────────────────
+     A run that died mid-flight but DID capture rows is not simply "failed" or
+     "cancelled" — the data it collected is real and usually the whole point
+     (think 8,000 of 10,000 product pages before a timeout). Record it as
+     'partial': a distinct status, so every existing `status = 'success'`
+     filter keeps its exact previous meaning and nothing silently starts
+     counting incomplete data. The error message and category are preserved so
+     the run still explains why it stopped.
+
+     Deliberately NOT applied to needs_review: that status already carries its
+     own results and is a call to action, which 'partial' would bury. */
+  const capturedRows = latestPartial ? latestPartial.rows : 0;
+  const usePartial = !finalResults && capturedRows > 0 &&
+                     (status === 'error' || status === 'cancelled');
+  if (usePartial) {
+    const stoppedBecause = status === 'cancelled' ? 'was cancelled' : 'failed';
+    status = 'partial';
+    aiSummary = `Run ${stoppedBecause} before finishing, but ${capturedRows} row(s) captured up to that point were saved. `
+              + (aiSummary || (finalErrorMessage ? `Stopped by: ${truncate(finalErrorMessage, 200)}` : ''));
+    log(`💾 kept ${capturedRows} row(s) captured before the run stopped — saved as a partial result.`);
+  }
+
+  // Setup guidance (environment variables, providers, per-solve costs) goes to
+  // the run LOG, not to aiSummary. The person reading "your scraper failed" on
+  // the dashboard shouldn't be handed a shell configuration task; whoever
+  // administers the instance still finds it one tab away.
+  const setupHint = errorClassifier.adminHint(errorCategory, finalErrorMessage);
+  if (setupHint) log(`ℹ ${setupHint}`);
+
+  const resultsToStore = finalResults || (usePartial ? latestPartial.results : null);
+
+  stopHeartbeat();
+  await stopCheckpointing();
+
   await runStore.finishRun(runId, {
     status,
     finished_at: new Date().toISOString(),
     duration_ms: duration,
-    results_json: finalResults ? JSON.stringify(finalResults) : null,
+    results_json: resultsToStore ? JSON.stringify(resultsToStore) : null,
+    // The in-flight checkpoint has served its purpose — it is either promoted
+    // into results_json above or superseded by the complete set. Clearing it
+    // keeps one authoritative copy per run instead of two diverging ones.
+    partial_results_json: null,
+    rows_captured: resultsToStore ? runner.countResultRows(resultsToStore) : 0,
+    // Keep the per-item ledger on the finished row — it is what makes the run
+    // resumable. Only written when the run actually has one, so a workflow
+    // with no per-item loop never overwrites the column with null.
+    ...(finalProgress ? { progress_json: JSON.stringify(finalProgress) } : {}),
     error_message: finalErrorMessage,
     error_category: errorCategory,
     failed_step_id:    failedStepInfo.id,
@@ -458,9 +625,17 @@ async function executeAndPersist(arg) {
 
   const finalRow = await runStore.getRun(runId);
   emit(callbacks, 'onDone', { run: finalRow });
+  // Tell every watcher the run ended, with the results, so a tab that never
+  // started it still lands on the same final view.
+  safeCall(() => runEvents.end(runId, {
+    status, run: serializeRunForWatchers(finalRow), results: resultsToStore,
+  }), null);
   // Push notification to any registered webhook endpoints (run.completed /
   // run.failed). Fire-and-forget: delivery problems must never fail a run.
   safeCall(() => webhookDispatcher.dispatchRunEvent(finalRow), null);
+  // The same event by e-mail, for people who don't have a webhook URL to give.
+  // No-op unless the instance has SMTP configured and the owner opted in.
+  safeCall(() => emailNotifier.notifyRunFailed(finalRow), null);
   // Change monitoring: diff a successful run against the previous one, store
   // the summary, and push run.changed. Also fire-and-forget — a monitoring
   // problem must never surface to the run. No-op unless the workflow has an
@@ -471,6 +646,58 @@ async function executeAndPersist(arg) {
   // run. No-op unless the workflow has active sheet delivery.
   safeCall(() => sheetsDelivery.deliverRun(finalRow, finalResults), null);
   return finalRow;
+}
+
+/* The subset of a finished run row a watching client needs. Deliberately not
+   the whole row: results_json / partial_results_json can be megabytes and are
+   delivered separately, and no watcher needs the internal bookkeeping. */
+function serializeRunForWatchers(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    status: row.status,
+    trigger: row.trigger,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    durationMs: row.duration_ms,
+    errorMessage: row.error_message,
+    errorCategory: row.error_category,
+    aiSummary: row.ai_summary,
+    rowsCaptured: row.rows_captured || 0,
+    retryCount: row.retry_count,
+    hasPatchedWorkflow: !!row.patched_steps_json,
+    failedStep: {
+      id: row.failed_step_id, type: row.failed_step_type, label: row.failed_step_label,
+    },
+  };
+}
+
+/* Union of what an earlier (resumed-from) run captured and what this attempt
+   captured. Without this, resuming a resume would forget the first run's items
+   and re-scrape them: the child only ever reports what IT did, and the skipped
+   items were, by definition, not done by it. */
+function mergeProgress(resume, fresh) {
+  const prior = (resume && resume.steps) || null;
+  const now   = (fresh && fresh.steps) || null;
+  // Steps the earlier run finished stay finished — this attempt skipped them
+  // rather than re-running, so it never reports them itself.
+  const priorDone = resume && resume.doneSteps ? Object.keys(resume.doneSteps) : [];
+  const freshDone = (fresh && fresh.doneSteps) || [];
+  const doneSteps = Array.from(new Set([...priorDone, ...freshDone]));
+
+  const steps = {};
+  for (const stepId of new Set([...Object.keys(prior || {}), ...Object.keys(now || {})])) {
+    const a = (prior && prior[stepId]) || {};
+    const b = (now && now[stepId]) || {};
+    const urls = Array.from(new Set([...(a.urls || []), ...(b.urls || [])]));
+    const entry = { urls };
+    const key = b.outKey || a.outKey;
+    if (key) entry.outKey = key;
+    steps[stepId] = entry;
+  }
+
+  if (!Object.keys(steps).length && !doneSteps.length) return null;
+  return doneSteps.length ? { steps, doneSteps } : { steps };
 }
 
 /* ── self-healing helpers ─────────────────────────────────────────────────── */

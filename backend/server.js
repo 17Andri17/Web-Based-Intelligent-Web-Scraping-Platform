@@ -14,7 +14,7 @@ const scraperServiceFactory = require('./services/scraper.service');
 const browserManager     = require('./browser/BrowserManager');
 const { executeWorkflow } = require('./workflow/WorkflowExecutor');
 const { generateCode, generateReadme } = require('./workflow/workflowCodegen');
-const { __ftMaterializeRow } = require('./workflow/fieldTransforms');
+const { __ftMaterializeRow, __ftCleanAny } = require('./workflow/fieldTransforms');
 const { verifyToken }    = require('./middleware/auth');
 const workflows          = require('./db/repositories/workflows.repo');
 const { resolveWorkflowProxy } = require('./services/proxyResolver.service');
@@ -31,6 +31,9 @@ const networkCapture     = require('./browser/networkCapture');
 const apiDiscovery       = require('./services/apiDiscovery.service');
 const apiReplay          = require('./services/apiReplay.service');
 const apiDiscoveryAI     = require('./services/apiDiscoveryAI.service');
+const runEvents          = require('./services/runEvents.service');
+const runStoreSvc        = require('./services/runStore.service');
+const runReaper          = require('./services/runReaper.service');
 
 // Codegen-time dependency resolution (custom actions + subflows) lives in
 // workflow/dependencyResolver.js and is shared with the scheduler.
@@ -97,6 +100,33 @@ const modeReapplyListeners = new Map();
 // frontend that the DOM has finished loading so it can re-fire its preview
 // queries against a settled page (e.g. after opening a saved workflow).
 const pageLoadListeners = new Map();
+
+/* ── Live run progress → socket rooms ──────────────────────────────────────
+   Every run publishes to runEvents regardless of what started it; this relays
+   those events to everyone watching that run. One room per run, so a viewer
+   subscribes to a RUN rather than depending on having been the connection that
+   launched it — which is what makes progress visible from a second tab, after
+   a reload, and for scheduled / API runs that have no socket at all.
+
+   The event names match what the frontend already listens for, so a watching
+   tab and the launching tab render through exactly the same path. */
+const runRoom = (runId) => `run:${runId}`;
+const RUN_EVENT_CHANNEL = {
+  started:   'executionStarted',
+  log:       'executionLog',
+  stepBegin: 'executionStepBegin',
+  stepError: 'executionStepError',
+  iteration: 'executionIteration',
+  workers:   'executionWorkers',
+  partial:   'executionPartial',
+  results:   'executionResults',
+  done:      'executionDone',
+};
+runEvents.bus.on('event', ({ runId, event, payload }) => {
+  const channel = RUN_EVENT_CHANNEL[event];
+  if (!channel) return;
+  try { io.to(runRoom(runId)).emit(channel, payload); } catch (_) {}
+});
 
 io.on('connection', async (socket) => {
   const userId = `u${socket.user.id}`;
@@ -319,6 +349,31 @@ io.on('connection', async (socket) => {
       socket.emit('manualSelectorResult', res || { ok: false, error: 'No result' });
     } catch (err) {
       socket.emit('manualSelectorResult', { ok: false, error: err.message });
+    }
+  });
+
+  // ── Guided tour: element rect on the live page ───────────────────────────
+  // Returns a demo element's bounding box (in the page's own CSS pixels) so the
+  // guided tour can draw a spotlight over it on the streamed canvas. Best-effort.
+  socket.on('getElementRect', async ({ selector, selectorType }) => {
+    const sel = String(selector || '').trim();
+    const type = selectorType === 'xpath' ? 'xpath' : 'css';
+    const page = await getActivePage();
+    if (!page || !sel) { socket.emit('elementRect', { ok: false, selector: sel }); return; }
+    try {
+      const rect = await page.evaluate((s, t) => {
+        let el = null;
+        try {
+          if (t === 'xpath') el = document.evaluate(s, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+          else el = document.querySelector(s);
+        } catch (_) { return null; }
+        if (!el || !el.getBoundingClientRect) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.left, y: r.top, width: r.width, height: r.height, vw: window.innerWidth, vh: window.innerHeight };
+      }, sel, type);
+      socket.emit('elementRect', rect ? { ok: true, selector: sel, rect } : { ok: false, selector: sel });
+    } catch (err) {
+      socket.emit('elementRect', { ok: false, selector: sel, error: err.message });
     }
   });
 
@@ -938,11 +993,113 @@ io.on('connection', async (socket) => {
       socket.emit('executionFlowTree', { steps: buildFlowTree(steps, subflows, workflowId) });
     } catch (_) {}
     try {
-      await executeWorkflow(workflow, socket, { userId: socket.user.id, workflowId });
+      await executeWorkflow(workflow, socket, {
+        userId: socket.user.id,
+        workflowId,
+        workflowName: data.workflowName || null,
+        // Put the launching tab in the run's room the moment the run row
+        // exists, so it receives progress through the same path as any other
+        // watcher — and keeps receiving it after a reload, by re-watching.
+        onRunId: (runId) => { try { socket.join(runRoom(runId)); } catch (_) {} },
+      });
     } catch (err) {
       socket.emit('executionLog', { line: `❌ Executor error: ${err.message}`, level: 'error' });
       socket.emit('executionDone', { success: false, results: null, error: err.message });
     }
+  });
+
+  /* ── Watch a run this socket didn't start ────────────────────────────────
+     Answers with a snapshot so the panel can be drawn as though this tab had
+     been watching all along — flow tree, which steps have run, loop counters,
+     the recent log tail — then joins the room for everything that follows.
+
+     A finished run isn't an error: its snapshot is briefly retained, and past
+     that the client falls back to the REST endpoints (/api/runs/:id and
+     /logs), which is the same data from the durable record. */
+  socket.on('watchRun', async (payload, ack) => {
+    const runId = Number(payload && payload.runId);
+    const reply = (v) => { if (typeof ack === 'function') { try { ack(v); } catch (_) {} } };
+    if (!Number.isFinite(runId)) return reply({ ok: false, error: 'runId required' });
+    try {
+      // Ownership from the durable record, never from the in-memory snapshot
+      // alone — a snapshot can have expired, and a run row is authoritative.
+      const row = await runStoreSvc.getRunForUser(runId, socket.user.id);
+      if (!row) return reply({ ok: false, error: 'Run not found' });
+      socket.join(runRoom(runId));
+      const snap = runEvents.viewerSnapshot(runId);
+      reply({
+        ok: true,
+        live: !!snap,
+        snapshot: snap,
+        // Present for a run that already ended (or whose snapshot expired), so
+        // the client can render the final state without a second round-trip.
+        status: row.status,
+        workflowId: row.workflow_id,
+        rowsCaptured: row.rows_captured || 0,
+      });
+    } catch (err) {
+      reply({ ok: false, error: err.message });
+    }
+  });
+
+  socket.on('unwatchRun', ({ runId } = {}) => {
+    if (Number.isFinite(Number(runId))) { try { socket.leave(runRoom(Number(runId))); } catch (_) {} }
+  });
+
+  /* Stop a run by id — from any tab, and never a dead end.
+
+     Cancel used to fail silently whenever this process didn't hold the run's
+     canceller, which is exactly the case for a run orphaned by a server
+     restart: the row says running, nothing is alive to stop, and the button
+     did nothing forever. Every case now resolves to something real. */
+  socket.on('cancelRun', async ({ runId } = {}, ack) => {
+    const reply = (v) => { if (typeof ack === 'function') { try { ack(v); } catch (_) {} } };
+    const id = Number(runId);
+    if (!Number.isFinite(id)) return reply({ ok: false, error: 'runId required' });
+
+    const row = await runStoreSvc.getRunForUser(id, socket.user.id);
+    if (!row) return reply({ ok: false, error: 'Run not found' });
+
+    // Already finished — say so rather than reporting a failure.
+    if (row.status !== 'running' && row.status !== 'queued') {
+      return reply({ ok: true, alreadyFinished: true, status: row.status });
+    }
+
+    // Queued: no child process yet, so it is cancelled on the row and the
+    // worker simply never claims it.
+    if (row.status === 'queued') {
+      const done = await runStoreSvc.cancelQueuedRun(id, socket.user.id);
+      return reply({ ok: done, queued: true });
+    }
+
+    // Owned by this process — abort it directly.
+    if (runEvents.cancel(id)) return reply({ ok: true, stopping: true });
+
+    // Not ours. Either its owner is gone (orphan), or another instance holds
+    // it. Distinguished by the heartbeat, so neither case leaves the user
+    // stuck: an orphan is finalised now, a live one is asked to stop.
+    const beat = row.heartbeat_at ? Date.parse(String(row.heartbeat_at).replace(' ', 'T') + 'Z') : NaN;
+    const stale = !Number.isFinite(beat) || (Date.now() - beat) > runReaper.STALE_MS;
+    if (stale) {
+      const status = await runReaper.reap(row, 'Stopped — this run was no longer reporting progress.');
+      return reply({ ok: true, orphaned: true, status });
+    }
+    const asked = await runStoreSvc.requestCancel(id, socket.user.id);
+    reply({ ok: asked, requested: true });
+  });
+
+  /* The Flow tab needs the step tree for a workflow this tab may never have
+     opened (watching someone else's scheduled run). Serving it from the saved
+     workflow means a watcher gets the same tree the run is executing. */
+  socket.on('requestFlowTree', async ({ workflowId } = {}, ack) => {
+    const reply = (v) => { if (typeof ack === 'function') { try { ack(v); } catch (_) {} } };
+    try {
+      const wf = await workflows.getForUser(Number(workflowId), socket.user.id);
+      if (!wf) return reply({ ok: false });
+      const steps = JSON.parse(wf.steps_json || '[]');
+      const subflows = await resolveSubflows(steps, socket.user.id, Number(workflowId));
+      reply({ ok: true, steps: buildFlowTree(steps, subflows, Number(workflowId)) });
+    } catch (_) { reply({ ok: false }); }
   });
 
   // ── Highlight elements for compact workflow hover ────────
@@ -982,9 +1139,16 @@ io.on('connection', async (socket) => {
         // for breadcrumbs/expanders). Arrows ›»→ and ">>" are pagination-specific.
         const NEXT_TEXT_RE  = /^(?:next\b|forward\s*$|load\s+next\s*$|next\s+page\s*$)/i;
         const NEXT_ARROW_RE = /^(?:[›»→]+|>>+)\s*$/;
-        const isNextLike    = (s) => NEXT_TEXT_RE.test(s) || NEXT_ARROW_RE.test(s);
+        // Non-English pagination labels, matched by CONTAINMENT rather than
+        // anchored: most languages put the verb first ("Pokaż następne",
+        // "Mehr laden", "Ver más"). Without these the detector finds no
+        // next-link on an ordinary paginated page and falls back to guessing
+        // infinite scroll — which then only ever collects the first page.
+        const NEXT_I18N_RE = /(nast[eę]pn|dalej|weiter|n[aä]chste|siguiente|suivant|successiv|pr[oó]xim|volgende|dal[sš][ií]|след|дал[еі]|sonraki|次のページ|下一)/i;
+        const isNextLike    = (s) => NEXT_TEXT_RE.test(s) || NEXT_ARROW_RE.test(s) || NEXT_I18N_RE.test(s);
         // Allow trailing words like "Load more posts" / "Show more results"
         const LOAD_MORE_RE  = /^(?:load|show|see|view)\s+(?:more|additional|all)(?:\s+\w+){0,3}\s*$|^more\s+(?:results?|items?|posts?)\s*$/i;
+        const MORE_I18N_RE  = /(poka[zż]\s+wi[eę]cej|za[lł]aduj\s+wi[eę]cej|mehr\s+(?:laden|anzeigen)|ver\s+m[aá]s|cargar\s+m[aá]s|voir\s+plus|charger\s+plus|mostra\s+altri|carica\s+altri|meer\s+laden|показать\s+ещ[её]|zobrazit\s+dal[sš][ií])/i;
 
         // Verified pagination containers — strict enough to avoid "pagerduty",
         // "swiper-pagination" (carousel), or random nav menus.
@@ -1172,6 +1336,7 @@ io.on('connection', async (socket) => {
 
           // Build a { before, after, mode, param } template, or leave null.
           let tmpl = null;
+          let firstPageNum = null;   // page number the loop should start at
 
           // (1) Strongest signal: an anchor pointing at page N+1. Learn the
           //     param name / path style from it so the template is exact.
@@ -1208,6 +1373,49 @@ io.on('connection', async (socket) => {
             }
           }
 
+          // (1b) Any same-origin link carrying a page-like param with a HIGHER
+          //      number than we're on — not just an exact next-page link. A site
+          //      whose only visible page link is "?page=7", or whose next link
+          //      is worded in a language the text matcher doesn't know, is still
+          //      unambiguously paginated: the URL pattern is the proof. Without
+          //      this the detector reported only "infinite scroll" on pages that
+          //      plainly navigate by URL, and the scrape silently got page one.
+          if (!tmpl) {
+            // When the current URL carries NO page param we cannot assume we are
+            // on page 1: plenty of sites treat the bare URL as page zero and
+            // link onward to "?page=1" (lock.me does exactly this). Requiring
+            // num > currentNum would reject that link and leave the page looking
+            // unpaginated. With no param present, ANY page-numbered link proves
+            // the pattern, so accept from 1 upward.
+            const minNum = pageParamUsed ? currentNum + 1 : 1;
+            let best = null, bestNum = Infinity;
+            for (const el of document.querySelectorAll('a[href]')) {
+              let u;
+              try { u = new URL(el.getAttribute('href'), location.href); } catch { continue; }
+              if (u.origin !== here.origin) continue;
+              // Same document, different page number only.
+              const samePath = u.pathname === here.pathname;
+              for (const [key, v] of u.searchParams.entries()) {
+                if (!isPageParamKey(key) || !/^\d+$/.test(v)) continue;
+                const num = parseInt(v, 10);
+                if (num < minNum) continue;
+                // Bare `p=` stays restricted — too generic to trust on its own.
+                if (key.toLowerCase() === 'p' && (pageParamUsed || '').toLowerCase() !== 'p') continue;
+                if (!samePath && !isNextLike(txt(el)) && !/^\d+$/.test(txt(el))) continue;
+                if (num < bestNum) { bestNum = num; best = { el, u, key, num }; }
+              }
+            }
+            if (best) {
+              const u = new URL(best.u.href);
+              u.searchParams.set(best.key, TOKEN);
+              const parts = u.href.split(TOKEN);
+              tmpl = { before: parts[0], after: parts[1] || '', mode: 'query', param: best.key };
+              // Loop from the number we actually found, not an assumed
+              // currentNum + 1 — on an un-numbered base URL that is page 1.
+              firstPageNum = best.num;
+            }
+          }
+
           // (2) Fallback: the current URL itself already carries an explicit
           //     page param (e.g. you're on ?page=1). Bare `p` only counts when
           //     we're already past page 1, to avoid hijacking unrelated `?p=`.
@@ -1219,16 +1427,18 @@ io.on('connection', async (socket) => {
           }
 
           if (tmpl) {
-            const sampleNextUrl = tmpl.before + nextNum + tmpl.after;
+            const loopFrom = firstPageNum != null ? firstPageNum : nextNum;
+            const sampleNextUrl = tmpl.before + loopFrom + tmpl.after;
             results.push({
               type: 'url_param', confidence: 0.96, selector: null,
               urlBefore: tmpl.before, urlAfter: tmpl.after,
-              startPage: currentNum, nextPage: nextNum,
+              startPage: firstPageNum != null ? firstPageNum : currentNum,
+              nextPage: loopFrom,
               paramName: tmpl.param, urlMode: tmpl.mode,
               previewText: sampleNextUrl,
               description: tmpl.param
-                ? `Pages change "?${tmpl.param}=" in the URL — navigating ?${tmpl.param}=${nextNum}, ${nextNum + 1}, … is the most reliable strategy.`
-                : `Pages change the URL path (…/${nextNum}) — navigating page-by-page is the most reliable strategy.`,
+                ? `Pages change "?${tmpl.param}=" in the URL — navigating ?${tmpl.param}=${loopFrom}, ${loopFrom + 1}, … is the most reliable strategy.`
+                : `Pages change the URL path (…/${loopFrom}) — navigating page-by-page is the most reliable strategy.`,
             });
           }
         }
@@ -1274,7 +1484,7 @@ io.on('connection', async (socket) => {
         const loadMoreEl = Array.from(document.querySelectorAll('a,button,[role="button"]'))
           .find(el => {
             if (!valid(el)) return false;
-            if (!LOAD_MORE_RE.test(txt(el))) return false;
+            if (!LOAD_MORE_RE.test(txt(el)) && !MORE_I18N_RE.test(txt(el))) return false;
             const y = el.getBoundingClientRect().top + window.scrollY;
             if (items.length > 2 && y < itemMedianY) return false;
             return true;
@@ -1440,6 +1650,24 @@ io.on('connection', async (socket) => {
 
     const page = await getActivePage();
     if (!page) return reply({ ok: false, error: 'No active page — navigate to a URL first.', code: 'NO_PAGE' });
+
+    // Guided-tour determinism: on the bundled DemoMart page, return a fixed,
+    // instant "AI" result so the tour's Extract-with-AI step always works and
+    // shows the same columns — no API key or live LLM needed.
+    try {
+      if (String(page.url() || '').includes('/demo/shop.html')) {
+        return reply({
+          ok: true, source: 'demo', name: 'Products',
+          fields: [
+            { name: 'title',  selector: '.title',       kind: 'text' },
+            { name: 'price',  selector: '.price',       kind: 'text' },
+            { name: 'rating', selector: '.rating',      kind: 'text' },
+            { name: 'link',   selector: 'a.detail',     kind: 'attr', attribute: 'href' },
+          ],
+          rejected: [],
+        });
+      }
+    } catch (_) { /* fall through to the real path */ }
 
     console.log(`${tag} container="${containerSelector}" type=${selectorType || 'css'} hint=${(hint || '').length}b existing=${Object.keys(existingFields || {}).length}`);
 
@@ -1963,7 +2191,7 @@ io.on('connection', async (socket) => {
           } catch(e) { return []; }
         }, containerSelector, selector, type, attribute);
         if (values && values.length > 0) {
-          socket.emit('previewResult', { stepId, previewValues: values });
+          socket.emit('previewResult', { stepId, previewValues: __ftCleanAny(values, params?.transforms) });
           return;
         }
       }
@@ -1990,12 +2218,21 @@ io.on('connection', async (socket) => {
           const els = getEls(sel);
           if (!els.length) return null;
           const targets = multiple ? els : [els[0]];
-          return multiple ? targets.map(extract).join(' | ') : extract(targets[0]);
+          // Values are joined for display AFTER cleaning (below), so return
+          // the raw list here rather than a pre-joined string.
+          return multiple ? targets.map(extract) : extract(targets[0]);
         } catch(e) { return null; }
       }, selector, type, multiple, attribute);
 
       if (result !== null) {
-        socket.emit('previewResult', { stepId, previewValue: String(result) });
+        // Apply the step's clean pipeline so the preview shows exactly what
+        // the executed workflow will store — the single-value counterpart of
+        // the __ftMaterializeRow call on the EXTRACT_LIST branch above.
+        const cleaned = __ftCleanAny(result, params?.transforms);
+        const display = Array.isArray(cleaned)
+          ? cleaned.map(v => (v == null ? '' : String(v))).join(' | ')
+          : String(cleaned == null ? '' : cleaned);
+        socket.emit('previewResult', { stepId, previewValue: display });
       } else {
         socket.emit('previewResult', { stepId, notFound: true });
       }
@@ -2086,6 +2323,10 @@ dbClient.init()
       const users = require('./db/repositories/users.repo');
       await users.syncAdminsFromUsernames(process.env.ADMIN_USERNAMES.split(','));
     }
+    // BEFORE the schedulers: recover runs left "running" by a process that is
+    // gone, so a restart clears stuck runs immediately rather than leaving
+    // them spinning forever with a Cancel button that can't reach anything.
+    runReaper.start();
     scheduler.start();
     apiWorker.start();
     maintenance.start();

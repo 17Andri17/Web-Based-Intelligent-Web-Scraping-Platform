@@ -99,7 +99,7 @@ export default function DatasetPanel({ open, onClose, workflowId, workflowName, 
     <div className="wf-overlay" onClick={onClose}>
       <div className="wf-modal ds-modal" onClick={e => e.stopPropagation()}>
         <div className="wf-header">
-          <h2>Data — {workflowName}</h2>
+          <div className="wf-header-titles"><h2>Data</h2><span className="wf-header-sub">{workflowName}</span></div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button className="wf-save-btn" onClick={() => gotoOffset(offset)} disabled={loading} style={{ padding: "4px 10px" }}>
               {loading ? "…" : "Refresh"}

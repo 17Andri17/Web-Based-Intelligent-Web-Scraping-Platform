@@ -56,12 +56,21 @@ body {
 
 /* ==================== HEADER ==================== */
 
+/* The header must stay a single 56px row at every width. Two things used to
+   break it: a long run-status message pushing the actions sideways, and button
+   labels wrapping onto a second line once space ran out. So: the status text
+   truncates, buttons never wrap, and the secondary actions shed their labels
+   (then collapse into a ⋯ menu — see HEADER_COMPACT_QUERY in
+   utils/useMediaQuery.js, which must match the 1180px breakpoint below). */
 .app-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
     padding: 0 20px;
     height: 56px;
+    flex-shrink: 0;
+    flex-wrap: nowrap;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-default);
 }
@@ -72,7 +81,13 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
+    min-width: 0;          /* let flex children shrink instead of overflowing */
 }
+
+.header-left  { flex: 0 0 auto; }
+/* The status is the only thing allowed to give up space. */
+.header-center { flex: 0 1 auto; overflow: hidden; }
+.header-right { flex: 0 0 auto; margin-left: auto; }
 
 .logo {
     display: flex;
@@ -81,10 +96,12 @@ body {
     font-weight: 600;
     font-size: 16px;
     color: var(--text-primary);
+    white-space: nowrap;
 }
 
 .logo svg {
     color: var(--accent-primary);
+    flex-shrink: 0;
 }
 
 .connection-status {
@@ -96,6 +113,16 @@ body {
     padding: 6px 12px;
     background: var(--bg-tertiary);
     border-radius: var(--radius-md);
+    min-width: 0;
+    max-width: 420px;
+}
+
+/* Long run messages ellipsise; the full text is on the element's title. */
+.connection-status .status-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
 }
 
 .status-dot {
@@ -103,6 +130,7 @@ body {
     height: 8px;
     border-radius: 50%;
     background: var(--text-muted);
+    flex-shrink: 0;
 }
 
 .status-dot.connected {
@@ -127,11 +155,65 @@ body {
     border-radius: var(--radius-md);
     cursor: pointer;
     transition: all var(--transition-fast);
+    /* Never let a label break onto a second line — that is what used to
+       blow the header out of its 56px row. */
+    white-space: nowrap;
+    flex-shrink: 0;
 }
+
+.header-btn svg { flex-shrink: 0; }
+
+.header-btn .btn-label {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The loaded workflow's name, appended to the Workflows button. */
+.btn-label-detail {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    font-weight: 400;
+}
+
+.btn-label-detail::before { content: "· "; }
 
 .header-btn:hover {
     filter: brightness(1.1);
     transform: translateY(-1px);
+}
+
+/* ── Header collapse stages ──────────────────────────────────────────────
+   1400px : the workflow-name suffix goes
+   1320px : secondary buttons lose their labels (icons + tooltips)
+   1180px : secondary buttons fold into the ⋯ menu (JS, HEADER_COMPACT_QUERY)
+    860px : the connection status hides; the user chip drops to its avatar  */
+@media (max-width: 1400px) {
+    .btn-label-detail { display: none; }
+}
+
+@media (max-width: 1320px) {
+    .header-btn.secondary .btn-label { display: none; }
+    .header-btn.secondary { padding: 8px 10px; }
+}
+
+@media (max-width: 1180px) {
+    .app-header { padding: 0 12px; gap: 8px; }
+    .header-left, .header-center, .header-right { gap: 8px; }
+}
+
+@media (max-width: 860px) {
+    .header-center { display: none; }
+    .logo span { display: none; }
+    .user-chip span:not(.avatar) { display: none; }
+    .user-chip { padding: 6px 8px; }
 }
 
 .header-btn.secondary {
@@ -3315,6 +3397,42 @@ body {
     color: var(--text-secondary);
 }
 
+/* ── "Clean the value" on single-element extraction steps ────────────────
+   Same collapsed-by-default treatment as the Advanced block, with the
+   configured pipeline summarised on the closed row. */
+.svc-clean {
+    border-top: 1px solid var(--border-muted);
+    padding-top: 8px;
+    margin-top: 4px;
+}
+
+.svc-clean .adv-toggle-btn {
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 12.5px;
+}
+
+.svc-clean .adv-toggle-btn:hover { color: var(--text-primary); }
+
+.svc-clean-count {
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 0 6px;
+    margin-left: 2px;
+    border-radius: 999px;
+    background: rgba(88, 166, 255, 0.16);
+    color: var(--accent-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.svc-clean-hint {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    line-height: 1.5;
+    padding: 2px 0 2px 16px;
+    overflow-wrap: anywhere;
+}
+
 
 /* ==================== EXECUTION & LABEL EXTRAS ==================== */
 
@@ -4184,3 +4302,38 @@ body {
   outline: 2px solid var(--accent-primary);
   outline-offset: 2px;
 }
+/* ── Still-running run banner ─────────────────────────────────────────────
+   A run executes on the server and outlives the tab that started it. This is
+   the way back into one after a reload or after closing the workflow. */
+.run-resume-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px 8px 14px;
+    max-width: min(680px, calc(100vw - 24px));
+    background: var(--bg-secondary);
+    border: 1px solid var(--accent-primary);
+    border-radius: 999px;
+    box-shadow: var(--shadow-lg);
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.run-resume-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.run-resume-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    flex-shrink: 0;
+    animation: run-resume-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes run-resume-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .run-resume-dot { animation: none; } }

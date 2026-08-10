@@ -138,6 +138,45 @@
 }
 .dash-cta.ghost:hover { background: var(--bg-secondary, #161b22); }
 
+/* First-run tour prompt — shown only to someone with nothing built who
+   hasn't taken or dismissed the tour. Uses the accent colour rather than the
+   amber "needs attention" treatment: this is an invitation, not a warning. */
+.dash-tour-prompt {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 30px;
+  padding: 16px 18px;
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  background: rgba(88, 166, 255, 0.07);
+  border-radius: var(--radius-lg, 12px);
+}
+.dash-tour-prompt-icon { font-size: 26px; line-height: 1; flex-shrink: 0; }
+.dash-tour-prompt-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 220px;
+  flex: 1;
+}
+.dash-tour-prompt-body strong {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary, #f0f6fc);
+}
+.dash-tour-prompt-body span {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary, #8b949e);
+}
+.dash-tour-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
 /* Needs attention */
 .dash-attention {
   margin-bottom: 30px;
@@ -205,6 +244,7 @@
   cursor: pointer;
 }
 .dash-link:hover { text-decoration: underline; }
+.dash-section-links { display: flex; align-items: center; gap: 16px; }
 
 /* Grid of cards */
 .dash-grid {
@@ -289,6 +329,23 @@
 }
 .dash-card-btn:hover { border-color: var(--accent-primary, #58a6ff); }
 
+/* "View progress" on a card whose run is still going — the primary action
+   there, since opening the editor mid-run is rarely what was wanted. */
+.dash-card-btn--primary {
+  background: var(--accent-primary, #58a6ff);
+  border-color: var(--accent-primary, #58a6ff);
+  color: #fff;
+}
+.dash-card-btn--primary:hover { filter: brightness(1.08); }
+
+/* Running/queued dot pulses so an in-flight run is visible at a glance
+   without reading the card. */
+.dash-status-dot--pulse { animation: dashDotPulse 1.4s ease-in-out infinite; }
+@keyframes dashDotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.82); }
+}
+
 /* Empty / loading */
 .dash-empty {
   padding: 40px;
@@ -306,3 +363,11 @@
 .dash-empty-illustration { font-size: 44px; margin-bottom: 12px; }
 .dash-empty-state h3 { margin: 0 0 6px; font-size: 17px; color: var(--text-primary, #f0f6fc); }
 .dash-empty-state p  { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #8b949e); }
+/* Secondary "…or take the tour" link under the empty-state CTA. */
+.dash-empty-state .dash-link { display: block; margin: 14px auto 0; }
+.dash-empty-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}

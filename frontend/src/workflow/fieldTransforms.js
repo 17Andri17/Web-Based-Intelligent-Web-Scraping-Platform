@@ -73,6 +73,15 @@ export function cleanValue(value, ops) {
   return v;
 }
 
+// Single-extraction counterpart of cleanValue: a Get Text / Get Attribute /
+// Get HTML step yields one value, or an array of them when multiple=true.
+// Mirrors __ftCleanAny in the backend copy.
+export function cleanAny(value, ops) {
+  if (!Array.isArray(ops) || ops.length === 0) return value;
+  if (Array.isArray(value)) return value.map(v => cleanValue(v, ops));
+  return cleanValue(value, ops);
+}
+
 export function splitValue(value, spec) {
   const out = {};
   if (!spec || typeof spec !== "object") return out;

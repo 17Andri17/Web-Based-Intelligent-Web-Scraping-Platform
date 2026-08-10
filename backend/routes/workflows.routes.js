@@ -4,12 +4,15 @@ const express = require('express');
 const workflows = require('../db/repositories/workflows.repo');
 const runStore = require('../services/runStore.service');
 const dataset = require('../services/dataset.service');
+const changeDiff = require('../services/changeDiff.service');
 const { resultsToCsv } = require('../utils/resultsExport');
 const { resultsToXlsx } = require('../utils/resultsXlsx');
 const sheets = require('../services/googleSheets.service');
 const customActionsRepo = require('../db/repositories/customActions.repo');
 const { collectCustomActionIds, collectSubflowIds } = require('../workflow/workflowUtils');
 const portable = require('../utils/workflowPortable');
+const workflowImport = require('../services/workflowImport.service');
+const templates = require('../services/templates.service');
 const { validateInputs } = require('../utils/workflowInputs');
 const { requireAuth } = require('../middleware/auth');
 
@@ -26,6 +29,11 @@ const MAX_PAYLOAD_BYTES = 2 * 1024 * 1024; // 2 MB cap per workflow
 // Cross-run dataset tuning.
 const DATASET_MAX_RUNS = 100;      // how many recent successful runs to union
 const DATASET_PAGE_MAX = 1000;     // hard cap on rows returned per JSON page
+// Run-to-run diff tuning.
+const DIFF_RUNS_LIMIT = 50;        // runs offered in the comparison pickers
+const DIFF_ROWS_DEFAULT = 200;     // rows returned per bucket (added/removed/changed)
+const DIFF_ROWS_MAX = 1000;
+const WHOLE_ROW_KEY = '__row__';   // same sentinel the dataset endpoint uses
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 // Human-labelled provenance columns appended to each exported dataset row.
 // Spaces make a collision with a scraped field name very unlikely.
@@ -186,6 +194,75 @@ function flattenForExport(built) {
 }
 
 // JSON: dataset metadata + a page of rows. ?output=&key=&limit=&offset=
+/* Cross-workflow data summary — one row per workflow for the global "Data"
+   screen, so "where is everything I've collected?" is one request instead of
+   opening each workflow's dataset in turn.
+
+   Costed deliberately: the per-workflow dataset is computed on read by
+   unioning run results, so doing it for EVERY workflow over the full
+   retention window would be the most expensive call in the app. This unions a
+   shorter window (SUMMARY_MAX_RUNS) and reports `runsConsidered` alongside the
+   count, exactly as the per-workflow view already does — the number stays
+   honest, it's just over a smaller window. Anyone who wants the full picture
+   clicks through to the workflow's own dataset. */
+const SUMMARY_MAX_RUNS = 25;      // runs unioned per workflow for the summary
+const SUMMARY_MAX_WORKFLOWS = 100; // workflows summarised in one request
+
+// Two segments on purpose: a single-segment "/data-summary" would be captured
+// by the "GET /:id" declared above it (Express matches in registration order).
+router.get('/dataset/summary', async (req, res) => {
+  const all = await workflows.listSummariesForUser(req.user.id);
+  const slice = all.slice(0, SUMMARY_MAX_WORKFLOWS);
+
+  const items = [];
+  for (const summary of slice) {
+    let entry = {
+      workflowId: summary.id,
+      name: summary.name,
+      updatedAt: summary.updated_at,
+      outputs: [],
+      primaryOutput: null,
+      totalRows: 0,
+      runsConsidered: 0,
+      error: null,
+    };
+    try {
+      const runs = await runStore.recentSuccessfulRunsWithResults(summary.id, SUMMARY_MAX_RUNS);
+      entry.runsConsidered = runs.length;
+      const outputs = dataset.listOutputs(runs);
+      if (outputs.length > 0) {
+        const chosen = outputs[0];
+        // The full row (for steps_json) rather than the summary: the dedupe
+        // key must be derived exactly as the per-workflow view derives it, or
+        // this screen would quote a row count the detail view then contradicts.
+        // Cheap next to the run-results union we just did.
+        const row = await workflows.getForUser(summary.id, req.user.id);
+        let steps = [];
+        try { steps = JSON.parse(row && row.steps_json); } catch (_) {}
+        const stepKeyHint = collectKeyFields(steps).find(k => chosen.fields.includes(k)) || null;
+        const built = dataset.buildDataset(runs, {
+          output: chosen.key,
+          keyField: dataset.defaultKeyField(chosen.fields, stepKeyHint),
+        });
+        entry.outputs = outputs.map(o => ({ key: o.key, fields: o.fields, latestCount: o.latestCount }));
+        entry.primaryOutput = chosen.key;
+        entry.totalRows = built.totalRows;
+      }
+    } catch (e) {
+      // One unreadable workflow must not blank the whole screen.
+      entry.error = e && e.message ? e.message : 'Could not read this dataset';
+    }
+    items.push(entry);
+  }
+
+  res.json({
+    items,
+    runsPerWorkflow: SUMMARY_MAX_RUNS,
+    truncated: all.length > slice.length,
+    totalWorkflows: all.length,
+  });
+});
+
 router.get('/:id/dataset', async (req, res) => {
   const r = await loadDataset(req.params.id, req.user.id, req.query);
   if (r.error) return res.status(r.status).json({ error: r.error });
@@ -291,6 +368,99 @@ router.delete('/:id/monitor', async (req, res) => {
   if (changes === 0) return res.status(404).json({ error: 'No monitor for this workflow' });
   res.json({ ok: true });
 });
+
+// ── Run-to-run diff (the Compare view) ──────────────────────────────────────
+// Computes a full diff on demand rather than reading the bounded summary stored
+// on the run row, so the UI can show every changed row with its old and new
+// values — and can compare *any* two runs, including runs that predate the
+// monitor being switched on.
+//
+//   GET /:id/diff?runId=&baseRunId=&output=&key=&limit=
+//     runId     — the "after" run (default: latest successful run with results)
+//     baseRunId — the "before" run (default: the successful run just before it)
+//     output    — which list to diff (default: the monitor's, else primary)
+//     key       — dedupe column, "__row__" for whole-row, omit for auto
+//     limit     — cap on rows returned per bucket (counts stay exact)
+router.get('/:id/diff', async (req, res) => {
+  const owned = await workflows.existsForUser(req.params.id, req.user.id);
+  if (!owned) return res.status(404).json({ error: 'Not found' });
+  const workflowId = Number(req.params.id);
+
+  const runs = await runStore.successfulRunsBrief(workflowId, DIFF_RUNS_LIMIT);
+  if (runs.length === 0) {
+    return res.json({ runs: [], run: null, base: null, outputs: [], diff: null });
+  }
+
+  const afterId = req.query.runId ? Number(req.query.runId) : runs[0].id;
+  const after = await runStore.runWithResults(workflowId, afterId);
+  if (!after) return res.status(404).json({ error: 'Run not found, or it has no stored results' });
+
+  // Default baseline: the successful run immediately before the chosen one.
+  let before = null;
+  if (req.query.baseRunId) {
+    before = await runStore.runWithResults(workflowId, Number(req.query.baseRunId));
+    if (!before) return res.status(404).json({ error: 'Comparison run not found, or it has no stored results' });
+  } else {
+    before = await runStore.previousSuccessfulRunWithResults(workflowId, afterId);
+  }
+
+  // Which list, and how rows are matched — same defaulting as the monitor and
+  // the Data view, so "changed" means the same thing everywhere.
+  const monitor = await runStore.getMonitorForWorkflow(req.user.id, workflowId);
+  const outputs = dataset.listOutputs([
+    ...(before ? [{ results: before.results }] : []),
+    { results: after.results },
+  ]);
+  if (outputs.length === 0) {
+    return res.json({ runs, run: runMeta(after), base: before ? runMeta(before) : null, outputs: [], diff: null });
+  }
+  const requested = req.query.output ? String(req.query.output) : (monitor && monitor.output_key) || null;
+  const chosen = (requested && outputs.find(o => o.key === requested)) || outputs[0];
+
+  let keyField;
+  if (req.query.key != null && req.query.key !== '') {
+    keyField = req.query.key === WHOLE_ROW_KEY ? null : String(req.query.key);
+  } else if (monitor && monitor.key_field != null) {
+    keyField = monitor.key_field === '' ? null : monitor.key_field;
+  } else {
+    keyField = dataset.defaultKeyField(chosen.fields, null);
+  }
+
+  const full = changeDiff.diffResults(before ? before.results : null, after.results, {
+    output: chosen.key,
+    keyField,
+  });
+
+  // Counts always describe the whole diff; the row arrays are capped so one
+  // enormous run can't produce a multi-megabyte response.
+  const limit = Math.min(Math.max(Number(req.query.limit) || DIFF_ROWS_DEFAULT, 1), DIFF_ROWS_MAX);
+  res.json({
+    runs,
+    run: runMeta(after),
+    base: before ? runMeta(before) : null,
+    outputs: outputs.map(o => ({ key: o.key, fields: o.fields })),
+    output: chosen.key,
+    // '' (not null) marks whole-row so the client can round-trip it as __row__.
+    keyField: keyField == null ? '' : keyField,
+    diff: {
+      counts: full.summary,
+      hasChanges: full.hasChanges,
+      fieldStats: changeDiff.summarizeDiff(full, { sample: 0 }).fieldStats,
+      truncated: {
+        added: full.added.length > limit,
+        removed: full.removed.length > limit,
+        changed: full.changed.length > limit,
+      },
+      added: full.added.slice(0, limit),
+      removed: full.removed.slice(0, limit),
+      changed: full.changed.slice(0, limit),
+    },
+  });
+});
+
+function runMeta(r) {
+  return { id: r.id, startedAt: r.startedAt, finishedAt: r.finishedAt || null };
+}
 
 // ── Bulk / parameterized runs ───────────────────────────────────────────────
 // Enqueue one background run per input row. Each row is an inputs object
@@ -411,42 +581,52 @@ router.get('/:id/export', async (req, res) => {
 });
 
 // Create a new workflow from an uploaded export envelope. Custom actions are
-// recreated (or reused by name) and their ids remapped in the steps.
+// recreated (or reused by name) and their ids remapped in the steps — see
+// workflowImport.service, which the template gallery shares.
 router.post('/import', async (req, res) => {
-  const env = req.body;
-  const v = portable.validateEnvelope(env);
-  if (!v.ok) return res.status(400).json({ error: v.error });
-  if (Buffer.byteLength(JSON.stringify(env.steps), 'utf8') > MAX_PAYLOAD_BYTES) {
-    return res.status(400).json({ error: 'Workflow is too large to import.' });
-  }
-
-  const existing = await customActionsRepo.listForUser(req.user.id);
-  const byName = new Map(existing.map(a => [a.name, a]));
-  const createAction = (def) => customActionsRepo.create({
-    userId: req.user.id, name: def.name, description: def.description || '',
-    inputsJson: JSON.stringify(Array.isArray(def.inputs) ? def.inputs : []),
-    outputsJson: JSON.stringify(Array.isArray(def.outputs) ? def.outputs : []),
-    code: def.code || '',
+  const out = await workflowImport.createFromEnvelope({
+    env: req.body,
+    userId: req.user.id,
+    // `targetName` is an explicit override (distinct from the envelope's own
+    // `name`, which would otherwise always suppress the "(imported)" suffix).
+    targetName: req.body.targetName,
+    suffix: ' (imported)',
   });
-
-  const { steps, created, missing } = await portable.remapCustomActions(env.steps, env.customActions, byName, createAction);
-  const meta = portable.stripMetaForExport(env.meta || {});
-  // `targetName` is an explicit override (distinct from the envelope's own
-  // `name`, which would otherwise always suppress the "(imported)" suffix).
-  const name = ((req.body.targetName && String(req.body.targetName).trim())
-    || `${env.name || 'Imported workflow'} (imported)`).slice(0, MAX_NAME_LEN);
-
-  const wf = await workflows.create({ userId: req.user.id, name, stepsJson: JSON.stringify(steps), metaJson: JSON.stringify(meta) });
-
+  if (!out.ok) return res.status(out.status).json({ error: out.error });
   // Notes the UI can surface: recreated actions, and any subflow references that
   // won't resolve unless the referenced workflows also exist in this account.
-  const subflowRefs = collectSubflowIds(steps).length;
-  res.status(201).json({
-    workflow: { id: wf.id, name: wf.name },
-    createdCustomActions: created,
-    unresolvedCustomActionRefs: missing.length,
-    subflowRefs,
+  const { ok, ...body } = out;
+  res.status(201).json(body);
+});
+
+/* ── Template gallery ──────────────────────────────────────────────────────
+   Declared AFTER the concrete /import route but the paths start with a
+   literal segment, so they can't be shadowed by /:id — Express matches in
+   declaration order and /templates is registered before nothing else that
+   could claim it. */
+
+// The catalogue (metadata only — no steps).
+router.get('/templates/list', (req, res) => {
+  res.json({ templates: templates.list() });
+});
+
+// Start a workflow from a template. Same import path as an uploaded file:
+// a template is just an envelope this instance ships with.
+router.post('/templates/:id/use', async (req, res) => {
+  const env = templates.buildEnvelope(req.params.id);
+  if (!env) return res.status(404).json({ error: 'Template not found' });
+
+  const out = await workflowImport.createFromEnvelope({
+    env,
+    userId: req.user.id,
+    targetName: req.body && req.body.targetName,
+    // No "(imported)" here — the user picked this deliberately and the
+    // template's own name is the one they just read on the card.
+    suffix: '',
   });
+  if (!out.ok) return res.status(out.status).json({ error: out.error });
+  const { ok, ...body } = out;
+  res.status(201).json(body);
 });
 
 // Copy a workflow within the same account ("start from a copy"). Custom-action

@@ -2,6 +2,9 @@
 
 const { RUNTIME_SRC: FIELD_TRANSFORM_RUNTIME, __ftHasPipeline } = require('./fieldTransforms');
 const { buildCodegenConsentHelper } = require('../browser/consent');
+const { buildCodegenResourceBlockHelper } = require('../browser/resourceBlock');
+const { buildCodegenPoolHelper } = require('../browser/pagePool');
+const { buildCodegenHttpExtractHelper, httpEligibleSteps } = require('./httpExtract');
 const { buildCodegenCaptchaHelper } = require('../browser/captcha');
 const { buildCodegenStealthHelper, getProxyLaunchArgs, PROXY_WEBRTC_GUARD_SCRIPT } = require('../browser/stealthCore');
 
@@ -46,6 +49,122 @@ function selectorList(params, declaredVars) {
     `{ value: ${qStr(s.value, declaredVars)}, type: ${JSON.stringify(s.type)} }`
   );
   return '[' + items.join(', ') + ']';
+}
+
+/* ─── Smart-wait lookahead ─────────────────────────────────────────────────
+   Which selector should a navigation wait for?
+
+   Every navigation currently uses waitUntil:'load', which blocks until the
+   LAST subresource lands — images, fonts, ad iframes — and then extraction
+   runs immediately with no wait of its own (there is not one waitForSelector
+   in the generated code). That is the worst of both worlds: slow, because it
+   waits for bytes nothing reads, and racy, because 'load' firing does not
+   mean the data is in the DOM. Some share of the "step captured nothing"
+   failures the healing pipeline exists to repair are this race.
+
+   So: navigate on domcontentloaded and wait for the selector the NEXT
+   extraction actually uses. Faster and strictly more reliable — but only when
+   we can identify that selector with confidence, hence how conservative this
+   walk is. No selector found ⇒ the caller keeps waitUntil:'load' exactly as
+   before.
+
+   Steps that change the page end the search: waiting on the current page for
+   something only a LATER page shows would hang until the timeout. Loop bodies
+   that run on the current page are descended into (the extraction after a
+   navigation is very often the first step inside a following loop); bodies
+   that run on a different page — a subflow, or a For-Each-Row that opens each
+   row's link — are not. */
+const PAGE_CHANGING_TYPES = new Set([
+  'NAVIGATE', 'GO_BACK', 'RELOAD_PAGE', 'OPEN_NEW_TAB', 'SWITCH_TAB',
+  'CLICK_ELEMENT', 'SUBMIT_FORM', 'RUN_SUBFLOW', 'PRESS_KEY',
+]);
+
+// Loop types whose body executes against the page we just navigated to.
+const SAME_PAGE_BODY_TYPES = new Set([
+  'FOR_EACH', 'FOR_EACH_ELEMENTS', 'REPEAT', 'WHILE', 'TRY_CATCH', 'IF',
+  'PAGINATE_URL', 'PAGINATE_CLICK', 'PAGINATE_SCROLL',
+]);
+
+// The selector params an extraction step waits on, by type.
+function extractionSelectorParams(step) {
+  const p = step.params || {};
+  if (step.type === 'EXTRACT_LIST')  return { selector: p.containerSelector, selectorType: p.selectorType, fallbackSelectors: p.fallbackSelectors };
+  if (step.type === 'EXTRACT_TABLE') return { selector: p.selector || p.tableSelector, selectorType: p.selectorType, fallbackSelectors: p.fallbackSelectors };
+  return { selector: p.selector, selectorType: p.selectorType, fallbackSelectors: p.fallbackSelectors };
+}
+
+/**
+ * Walk forward from `fromIndex` and return the selector-list literal of the
+ * first extraction that will run on the page being navigated to, or null when
+ * it can't be determined safely.
+ */
+function lookaheadExtractionSelectors(steps, fromIndex, declaredVars) {
+  const walk = (list, start) => {
+    for (let i = start; i < (list || []).length; i++) {
+      const s = list[i];
+      if (!s || !s.type) continue;
+
+      if (HEALABLE_EXTRACTION_TYPES.has(s.type)) {
+        const sp = extractionSelectorParams(s);
+        if (!sp.selector || !String(sp.selector).trim()) return null;
+        return selectorList(sp, declaredVars);
+      }
+      // A For-Each-Row that opens a link runs its body on a DIFFERENT page, so
+      // its selectors say nothing about the page we just navigated to. (The
+      // param is `openUrlField` — see the FOR_EACH_ROW generator.)
+      if (s.type === 'FOR_EACH_ROW' && s.params && s.params.openUrlField) return null;
+      if (SAME_PAGE_BODY_TYPES.has(s.type) || s.type === 'FOR_EACH_ROW') {
+        const inner = walk(s.body, 0);
+        if (inner) return inner;
+      }
+      if (PAGE_CHANGING_TYPES.has(s.type)) return null;
+    }
+    return null;
+  };
+  return walk(steps, fromIndex);
+}
+
+/* ─── Per-item loop scheduling + resume ────────────────────────────────────
+   Shared by the three loops that walk a list of detail pages: RUN_SUBFLOW
+   iterate, RUN_SUBFLOW enrich, and FOR_EACH_ROW in link-open mode. */
+
+// Workers for this step. A per-step `advanced.concurrency` beats the workflow
+// default, so one heavy loop can be throttled without slowing the rest.
+function concurrencyFor(step, ctx) {
+  const raw = Number(step && step.advanced && step.advanced.concurrency);
+  if (Number.isFinite(raw) && raw >= 1) return Math.floor(raw);
+  return (ctx.perf && ctx.perf.concurrency) || 1;
+}
+
+/**
+ * Code that applies a resume payload before a loop runs: restore the rows the
+ * previous run captured, then drop the items it already finished.
+ *
+ * `urlOf` is an expression over `_u` (the list element) yielding the same URL
+ * string the loop reports via __iterDone — the two must agree or resume either
+ * re-scrapes everything or skips too much.
+ */
+function resumeSkipCode({ listVar, outVar, stepId, urlOf, pad = '  ' }) {
+  if (!stepId) return '';
+  return [
+    `${pad}{`,
+    `${pad}  const _rs = __resumeFor(${JSON.stringify(stepId)});`,
+    `${pad}  if (_rs) {`,
+    `${pad}    const _seen = new Set(_rs.urls || []);`,
+    `${pad}    for (const _rr of (_rs.rows || [])) ${outVar}.push(_rr);`,
+    `${pad}    const _before = ${listVar}.length;`,
+    `${pad}    ${listVar} = ${listVar}.filter((_u) => !_seen.has(${urlOf}));`,
+    `${pad}    console.log('↻ Resume: skipping ' + (_before - ${listVar}.length) + ' already-captured item(s); restored ' + (_rs.rows || []).length + ' row(s).');`,
+    `${pad}  }`,
+    // Sharding rides the same filter: this run takes only its slice of the
+    // list. Applied AFTER resume so a shard can also be resumed.
+    `${pad}  {`,
+    `${pad}    const _pre = ${listVar}.length;`,
+    `${pad}    ${listVar} = ${listVar}.filter((_u) => __inShard(${urlOf}));`,
+    `${pad}    if (${listVar}.length !== _pre) console.log('⑃ Shard: handling ' + ${listVar}.length + ' of ' + _pre + ' item(s).');`,
+    `${pad}  }`,
+    `${pad}}`,
+  ].join('\n');
 }
 
 // ─── Indent helper ────────────────────────────────────────────────────────
@@ -213,6 +332,43 @@ function isXPathSelector(sel) {
 // so a per-item field selector resolves whether it is CSS or a container-
 // relative XPath. `__relChild('', el)` / a falsy selector means "the container
 // itself". Emitted as source text — it runs in the browser, not in Node.
+/* Normalise an EXTRACT_LIST / COLLECT_LIST `fields` map into two views:
+     evalFields — what the extraction itself needs (selector / kind / attribute)
+     postFields — the same plus per-field clean/split pipelines, which run
+                  Node-side after the raw values come back
+   Factored out so the browser path and the HTTP path read fields through the
+   SAME definition. Two copies would eventually disagree, and the whole
+   HTTP-mode safety argument rests on the two paths meaning the same thing. */
+function normaliseListFields(rawFields) {
+  const evalFields = {};
+  const postFields = {};
+  let hasPipeline = false;
+  for (const [name, v] of Object.entries(rawFields || {})) {
+    if (v == null) continue;
+    let spec;
+    if (typeof v === 'string') {
+      spec = { selector: v, kind: 'text', attribute: null };
+    } else if (typeof v === 'object') {
+      const kind = v.kind === 'attr' || v.kind === 'attribute' ? 'attr'
+                 : v.kind === 'html' ? 'html'
+                 : 'text';
+      spec = {
+        selector: typeof v.selector === 'string' ? v.selector : '',
+        kind,
+        attribute: kind === 'attr' && typeof v.attribute === 'string' ? v.attribute : null,
+      };
+      if (Array.isArray(v.transforms) && v.transforms.length) spec.transforms = v.transforms;
+      if (v.split && typeof v.split === 'object')             spec.split = v.split;
+    } else {
+      continue;
+    }
+    evalFields[name] = { selector: spec.selector, kind: spec.kind, attribute: spec.attribute };
+    postFields[name] = spec;
+    if (__ftHasPipeline(spec)) hasPipeline = true;
+  }
+  return { evalFields, postFields, hasPipeline };
+}
+
 const REL_CHILD_FN = `
       const __isX = (s) => { if (typeof s !== 'string') return false; s = s.replace(/^\\s+/, ''); return s[0] === '/' || s[0] === '(' || (s[0] === '.' && s[1] === '/'); };
       const __relChild = (root, s) => {
@@ -248,6 +404,17 @@ function genAction(step, ctx) {
   const EXTRACT_GRACE_DEFAULT = 4000;
   const grace = () => Math.max(0, num(advanced.waitTimeout, EXTRACT_GRACE_DEFAULT));
 
+  // Wrap a single-element extraction expression in its cleaning pipeline.
+  // List extraction cleans per field via __ftMaterializeRow; a Get Text / Get
+  // Attribute / Get HTML step has one value (or an array of them when
+  // multiple=true), so it uses __ftCleanAny. Returns the expression untouched
+  // when no ops are configured, so unchanged workflows generate identical code.
+  const cleanSingle = (expr, p) => {
+    const ops = Array.isArray(p.transforms) ? p.transforms.filter(o => o && typeof o === 'object') : [];
+    if (ops.length === 0) return expr;
+    return `__ftCleanAny(${expr}, ${JSON.stringify(ops)})`;
+  };
+
   // ── ForEach element context ─────────────────────────────────────────────
   // When inside a FOR_EACH_ELEMENTS loop that has extractions, generate
   // element-relative code using `el.$eval(selector)` instead of page-level
@@ -269,7 +436,7 @@ function genAction(step, ctx) {
           : isX
             ? `await ${feCtx.elVar}.evaluate((e, s) => { const n = (${xpChild})(e, s); return n ? (n.textContent || '').trim() : ''; }, ${q(sel)}).catch(() => '')`
             : `await ${feCtx.elVar}.$eval(${q(sel)}, e => (e.textContent || '').trim()).catch(() => '')`;
-        return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${expr};\n`;
+        return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${cleanSingle(expr, params)};\n`;
       }
       case 'EXTRACT_ATTRIBUTE': {
         const attr = params.attribute || '';
@@ -278,7 +445,7 @@ function genAction(step, ctx) {
           : isX
             ? `await ${feCtx.elVar}.evaluate((e, s, a) => { const n = (${xpChild})(e, s); return n ? (n.getAttribute(a) || '') : ''; }, ${q(sel)}, ${q(attr)}).catch(() => '')`
             : `await ${feCtx.elVar}.$eval(${q(sel)}, (e, a) => e.getAttribute(a) || '', ${q(attr)}).catch(() => '')`;
-        return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${expr};\n`;
+        return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${cleanSingle(expr, params)};\n`;
       }
       case 'EXTRACT_HTML': {
         const prop = params.mode === 'outer' ? 'outerHTML' : 'innerHTML';
@@ -287,13 +454,21 @@ function genAction(step, ctx) {
           : isX
             ? `await ${feCtx.elVar}.evaluate((e, s) => { const n = (${xpChild})(e, s); return n ? n.${prop} : ''; }, ${q(sel)}).catch(() => '')`
             : `await ${feCtx.elVar}.$eval(${q(sel)}, e => e.${prop}).catch(() => '')`;
-        return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${expr};\n`;
+        return `${feCtx.rowVar}[${JSON.stringify(fieldKey)}] = ${cleanSingle(expr, params)};\n`;
       }
       default:
         // Other extraction types (TABLE, LIST, JSON) fall through to page-level
         break;
     }
   }
+
+  // ── HTTP mode ───────────────────────────────────────────────────────────
+  // The same step list is compiled TWICE for an HTTP-eligible subflow: once
+  // against puppeteer, once against a fetched+parsed document. Reusing the
+  // generator (rather than writing a second one) is what keeps the two paths
+  // honestly comparable — the store/alias bookkeeping below is shared, so only
+  // the read differs, which is exactly what verification is testing.
+  const httpMode = !!ctx.httpMode;
 
   // ── Standard (page-level) code ──────────────────────────────────────────
   let store = '';
@@ -307,6 +482,11 @@ function genAction(step, ctx) {
     const includeInOutput = advanced.includeInOutput !== false;
     const key = (label && label.trim()) ? label : `extracted_${varName}`;
     const jkey = JSON.stringify(key);
+    // Record which result key this extraction feeds, against the TOP-LEVEL
+    // step currently being generated (this one, or the loop containing it).
+    // That mapping is what lets a resume restore a finished step's output
+    // instead of re-scraping to rebuild it — see stepResumeGuard.
+    if (includeInOutput && ctx.topOutputs) ctx.topOutputs.add(key);
     if (includeInOutput) {
       if (ctx.inLoop) {
         // Inside a loop (WHILE / REPEAT / pagination): accumulate into an
@@ -328,6 +508,9 @@ function genAction(step, ctx) {
       const alias = toJsIdent(label.trim());
       if (alias && !ctx.declaredVars?.has(alias)) {
         if (ctx.capturedAliases) ctx.capturedAliases.add(alias);
+        // Restoring a finished step means restoring the JS alias too — later
+        // steps read `products`, not `__results__["products"]`.
+        if (includeInOutput && ctx.topAliases) ctx.topAliases.set(alias, key);
         if (ctx.inLoop) {
           // CRITICAL for "paginate a list, THEN enrich it": inside a loop the
           // alias must ACCUMULATE across iterations too, not just hold the
@@ -352,9 +535,54 @@ function genAction(step, ctx) {
     // Emit record-count / field-fill stats so the execution pipeline can
     // detect a step that "succeeded" but captured nothing and trigger
     // self-healing. Only for selector-repairable extraction types.
-    if (HEALABLE_EXTRACTION_TYPES.has(type) && step.id) {
+    // Skipped in HTTP mode: that path is a candidate being verified, not the
+    // run's outcome, so its counts must not drive empty-result healing.
+    if (!httpMode && HEALABLE_EXTRACTION_TYPES.has(type) && step.id) {
       const statsKey = (label && label.trim()) ? label : `extracted_${varName}`;
       store += `  await __emitStepStats(page, { stepId: ${JSON.stringify(step.id)}, type: ${JSON.stringify(type)}, label: ${JSON.stringify(label || '')}, key: ${JSON.stringify(statsKey)}, multiple: ${!!params.multiple} }, ${varName});\n`;
+    }
+
+    // Check-point after every extraction so a linear (loop-free) workflow that
+    // dies later still leaves behind what it had already captured. Throttled
+    // internally, so this is nearly free. Not in HTTP mode — those results are
+    // per-item and reach the root only once the item is committed.
+    if (!httpMode) store += `  __checkpoint();\n`;
+  }
+
+  // HTTP mode handles only the pure-DOM extraction types; a body containing
+  // anything else is rejected at compile time (httpEligibleSteps), so reaching
+  // here with another type would be a bug rather than a fallback case.
+  if (httpMode) {
+    const hxSels = selList(params);
+    switch (type) {
+      case 'EXTRACT_TEXT':
+        return `const ${varName} = ${cleanSingle(`__hxText(__$, ${hxSels}, ${!!params.multiple})`, params)};\n` + store;
+      case 'EXTRACT_ATTRIBUTE':
+        return `const ${varName} = ${cleanSingle(`__hxAttr(__$, ${hxSels}, ${q(params.attribute)}, ${!!params.multiple})`, params)};\n` + store;
+      case 'EXTRACT_HTML':
+        return `const ${varName} = ${cleanSingle(`__hxHtml(__$, ${hxSels}, ${params.mode === 'outer'})`, params)};\n` + store;
+      case 'EXTRACT_TABLE': {
+        const tblSels = selList({
+          selector: params.selector || 'table',
+          selectorType: params.selectorType || 'css',
+          fallbackSelectors: params.fallbackSelectors || [],
+        });
+        return `const ${varName} = __hxTable(__$, ${tblSels}, ${params.hasHeader !== false});\n` + store;
+      }
+      case 'EXTRACT_LIST': {
+        const { evalFields, postFields, hasPipeline } = normaliseListFields(params.fields || {});
+        const listSels = selList({
+          selector: params.containerSelector,
+          selectorType: params.selectorType || 'css',
+          fallbackSelectors: params.fallbackSelectors || [],
+        });
+        const post = hasPipeline
+          ? `.map(_row => __ftMaterializeRow(_row, ${JSON.stringify(postFields)}))`
+          : '';
+        return `const ${varName} = __hxList(__$, ${listSels}, ${JSON.stringify(evalFields)})${post};\n` + store;
+      }
+      default:
+        return `// ⚠ ${type} is not available over HTTP — this body should not have been HTTP-eligible\n`;
     }
   }
 
@@ -381,11 +609,28 @@ function genAction(step, ctx) {
       const captchaCall = captchaPref === 'off'
         ? ''
         : `\nawait solveCaptcha(page, { onUnsolved: 'continue', stepLabel: ${JSON.stringify(label || 'navigate')} });`;
+      // Smart wait: only when the workflow opted in, the step hasn't pinned its
+      // own waitUntil, and we could actually identify what the next extraction
+      // reads. Any of those missing ⇒ unchanged waitUntil:'load' behaviour.
+      const navTimeout = num(advanced.timeout, 30000);
+      const smartSels = (ctx.perf && ctx.perf.smartWait && !advanced.waitUntil)
+        ? (ctx.__lookaheadSelectors || null)
+        : null;
+      if (smartSels) {
+        return `
+// Navigate (smart wait: ready when the data is, not when the last image is)
+await page.goto(${q(params.url)}, {
+  waitUntil: 'domcontentloaded',
+  timeout: ${navTimeout},
+});
+await smartWaitFor(page, ${smartSels}, ${navTimeout});${consentCall}${captchaCall}
+`.trim() + '\n';
+      }
       return `
 // Navigate
 await page.goto(${q(params.url)}, {
   waitUntil: ${q(advanced.waitUntil || 'load')},
-  timeout: ${num(advanced.timeout, 30000)},
+  timeout: ${navTimeout},
 });${consentCall}${captchaCall}
 `.trim() + '\n';
     }
@@ -396,8 +641,7 @@ await page.goto(${q(params.url)}, {
 
     case 'OPEN_NEW_TAB': return `
 {
-  const _newPage = await browser.newPage();
-  await applyStealthToPage(_newPage);
+  const _newPage = await __openPage(browser);
   await _newPage.goto(${q(params.url)}, { waitUntil: 'load' });
   page = _newPage;
   await dismissConsent(page);
@@ -558,8 +802,8 @@ await page.waitForNavigation({ waitUntil: ${q(advanced.waitUntil || 'load')}, ti
       const sels = selList(params);
       const g = grace();
       const code = params.multiple
-        ? `const ${varName} = await evalOnElements(page, ${sels}, el => el.textContent.trim(), ${g});\n`
-        : `const ${varName} = await evalOnElement(page, ${sels}, el => el.textContent.trim(), ${g}).catch(() => null);\n`;
+        ? `const ${varName} = ${cleanSingle(`await evalOnElements(page, ${sels}, el => el.textContent.trim(), ${g})`, params)};\n`
+        : `const ${varName} = ${cleanSingle(`await evalOnElement(page, ${sels}, el => el.textContent.trim(), ${g}).catch(() => null)`, params)};\n`;
       return code + store;
     }
 
@@ -570,16 +814,17 @@ await page.waitForNavigation({ waitUntil: ${q(advanced.waitUntil || 'load')}, ti
       // Wait (softly) for the element/elements to appear, then read the
       // attribute. Closures are used because page.evaluate only forwards one
       // extra arg to the browser-side fn.
-      const codeFinal = params.multiple
-        ? `const ${varName} = await (async () => { const _els = await resolveElementsSoft(page, ${sels}, ${g}); return Promise.all(_els.map(el => page.evaluate((e, a) => e.getAttribute(a), el, ${attr}))); })();\n`
-        : `const ${varName} = await (async () => { const _el = await resolveElementSoft(page, ${sels}, ${g}); return _el ? page.evaluate((e, a) => e.getAttribute(a), _el, ${attr}) : null; })();\n`;
-      return codeFinal + store;
+      const raw = params.multiple
+        ? `await (async () => { const _els = await resolveElementsSoft(page, ${sels}, ${g}); return Promise.all(_els.map(el => page.evaluate((e, a) => e.getAttribute(a), el, ${attr}))); })()`
+        : `await (async () => { const _el = await resolveElementSoft(page, ${sels}, ${g}); return _el ? page.evaluate((e, a) => e.getAttribute(a), _el, ${attr}) : null; })()`;
+      return `const ${varName} = ${cleanSingle(raw, params)};\n` + store;
     }
 
     case 'EXTRACT_HTML': {
       const prop = params.mode === 'outer' ? 'outerHTML' : 'innerHTML';
+      const raw = `await evalOnElement(page, ${selList(params)}, el => el.${prop}, ${grace()}).catch(() => null)`;
       return `
-const ${varName} = await evalOnElement(page, ${selList(params)}, el => el.${prop}, ${grace()}).catch(() => null);
+const ${varName} = ${cleanSingle(raw, params)};
 ${store}`.trim() + '\n';
     }
 
@@ -611,32 +856,7 @@ ${store}`.trim() + '\n';
       // (selector/kind/attribute). `postFields` additionally carries the
       // per-field clean/split pipelines, which run Node-side after the raw
       // values come back (custom JS, regex split, …).
-      const evalFields = {};
-      const postFields = {};
-      let hasPipeline = false;
-      for (const [name, v] of Object.entries(rawFields)) {
-        if (v == null) continue;
-        let spec;
-        if (typeof v === 'string') {
-          spec = { selector: v, kind: 'text', attribute: null };
-        } else if (typeof v === 'object') {
-          const kind = v.kind === 'attr' || v.kind === 'attribute' ? 'attr'
-                     : v.kind === 'html' ? 'html'
-                     : 'text';
-          spec = {
-            selector: typeof v.selector === 'string' ? v.selector : '',
-            kind,
-            attribute: kind === 'attr' && typeof v.attribute === 'string' ? v.attribute : null,
-          };
-          if (Array.isArray(v.transforms) && v.transforms.length) spec.transforms = v.transforms;
-          if (v.split && typeof v.split === 'object')             spec.split = v.split;
-        } else {
-          continue;
-        }
-        evalFields[name] = { selector: spec.selector, kind: spec.kind, attribute: spec.attribute };
-        postFields[name] = spec;
-        if (__ftHasPipeline(spec)) hasPipeline = true;
-      }
+      const { evalFields, postFields, hasPipeline } = normaliseListFields(rawFields);
       const fieldsJson = JSON.stringify(evalFields);
       const sels = selList({
         selector: params.containerSelector,
@@ -711,16 +931,11 @@ ${store}`.trim() + '\n';
       const containerExpr = q(params.containerSelector || '');   // supports {{var}}
       const scrollExpr    = q(params.scrollContainer || '');
       const keyJson = JSON.stringify((params.keyField && String(params.keyField).trim()) || '');
-      const overlapRaw = Number(advanced.scrollOverlap);
-      const optsJson = JSON.stringify({
-        scrollDelay: num(advanced.scrollDelay, 1200),
-        maxNoNew:    Math.max(1, num(advanced.maxNoNew, 3)),
+      const optsJson = JSON.stringify(scrollAccuracyOpts(params, advanced, {
+        legacyDelay: num(advanced.scrollDelay, 1200),
+        legacyNoNew: Math.max(1, num(advanced.maxNoNew, 3)),
         maxScrolls:  num(advanced.maxScrolls, 300),
-        overlap:     (Number.isFinite(overlapRaw) && overlapRaw >= 0 && overlapRaw < 0.95) ? overlapRaw : 0.35,
-        loadingSelector:  (advanced.loadingSelector  && String(advanced.loadingSelector).trim())  || '',
-        endSelector:      (advanced.endSelector      && String(advanced.endSelector).trim())      || '',
-        expectedSelector: (advanced.expectedCountSelector && String(advanced.expectedCountSelector).trim()) || '',
-      });
+      }));
       const postProcess = hasPipeline
         ? `.then(_rows => _rows.map(_row => __ftMaterializeRow(_row, ${JSON.stringify(postFields)})))`
         : '';
@@ -772,7 +987,8 @@ ${store}`.trim() + '\n';
       if (!paginate) {
         return `
 const ${varName} = await (async () => {
-  const _res = await fetch(${q(params.url)}, ${fetchInit});
+  await __rateGate();
+  const _res = await __apiFetch(${q(params.url)}, ${fetchInit});
   if (!_res.ok) throw new Error('API request failed: ' + _res.status + ' ${method} ' + ${q(params.url)});
   const _json = await _res.json();
   return ${pluck};
@@ -800,19 +1016,40 @@ ${store}`.trim() + '\n';
     const _url = _u.href;
     const _init = ${fetchInit};`;
 
+      // Walking an API is the one place a single step can be a whole scrape:
+      // 50 pages × 100 records is 5,000 rows from one step. So it gets the same
+      // treatment as the per-item loops — paced, check-pointed page by page,
+      // and reporting progress — rather than being an opaque blocking call
+      // whose output only exists if it runs to completion.
+      const apiIdJson = JSON.stringify(step.id || '');
+      // Publish the pages fetched so far, under the same key `store` will use
+      // at the end. Without this a run that dies on page 48 of 50 reports
+      // nothing at all — precisely the loss check-pointing exists to prevent.
+      // Guarded like `store`: omitted when the step is excluded from output.
+      // The __checkpoint call is dropped from downloaded scripts by the
+      // existing line filter (stripDownloadInstrumentation); the assignment
+      // itself is real behaviour and harmless there.
+      const apiPartialPublish = (advanced.includeInOutput !== false)
+        ? `    __results__[${JSON.stringify((label && label.trim()) ? label : `extracted_${varName}`)}] = _all.slice();\n`
+          + `    __checkpoint();\n`
+        : '';
       return `
 const ${varName} = await (async () => {
   const _all = [];
+  ${apiIdJson ? `__emitMark('ITER_START', {stepId: ${apiIdJson}, total: ${maxPages}});` : ''}
   let _p = ${startPage};
   for (let _i = 0; _i < ${maxPages}; _i++, _p += ${pageStep}) {${buildReq}
-    const _res = await fetch(_url, _init);
+    await __rateGate();
+    const _res = await __apiFetch(_url, _init);
     if (!_res.ok) break;
     const _json = await _res.json();
     const _data = ${pluck};
     const _items = Array.isArray(_data) ? _data : (_data == null ? [] : [_data]);
     ${stopEmpty ? 'if (_items.length === 0) break;' : ''}
     _all.push(..._items);
-  }
+    ${apiIdJson ? `__emitMark('ITER_TICK', {stepId: ${apiIdJson}, index: _i});` : ''}
+${apiPartialPublish}  }
+  ${apiIdJson ? `__emitMark('ITER_END', {stepId: ${apiIdJson}});` : ''}
   return _all;
 })();
 ${store}`.trim() + '\n';
@@ -943,6 +1180,9 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
                     || (label && label.trim())
                     || sub.name
                     || `subflow_${subflowId}`;
+      // A subflow loop that ran to completion is restorable like any other
+      // step: on resume its rows come back and it doesn't re-walk the list.
+      if (ctx.topOutputs) ctx.topOutputs.add(outKey);
 
       // Generate the subflow's step code with its OWN context. We pass
       // through declaredVars + customActions + subflows so the subflow
@@ -955,6 +1195,7 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         subflows: ctx.subflows,
         visitedSubflows: new Set(ctx.visitedSubflows || []),
         capturedAliases: new Set(),   // subflow gets its own alias scope
+        perf: ctx.perf,               // navigation strategy is workflow-wide
       };
       subCtx.visitedSubflows.add(String(subflowId));
 
@@ -1004,21 +1245,105 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
       // work and it evaluates in the parent's scope via closure (e.g. `row`).
       // Others fall back to their sample value. Names already produced as a
       // captured-output alias inside the subflow are skipped (no double `let`).
+      // In the PER-ROW modes (enrich / iterate) the subflow runs once per row, so
+      // an input written as a whole COLUMN — {{Some List[*].link}} — is a
+      // mistake: it seeds EVERY invocation with the joined value of all rows
+      // ("/a,/b,/c"), and any URL built from it is garbage. The user meant the
+      // current row's cell, which the surrounding loop already exposes as `row`.
+      // Rewrite it — but only when the column belongs to the list being walked,
+      // so a deliberate reference to a DIFFERENT table is left alone.
+      const perRow = params.mode === 'enrich' || params.mode === 'iterate';
+      const rowSourceName = String(params.mode === 'enrich' ? (params.sourceList || '') : (params.urlList || ''))
+        .replace(/^\s*\{\{\s*/, '').replace(/\s*\}\}\s*$/, '')
+        .replace(/\[\s*\*\s*\][\s\S]*$/, '').trim();
+      const COLUMN_RX = /^\s*\{\{\s*([^{}[\]]+?)\s*\[\s*\*\s*\]\s*\.\s*([A-Za-z_$][\w$]*)\s*\}\}\s*$/;
+      const scopeToRow = (expr) => {
+        if (!perRow || typeof expr !== 'string') return expr;
+        const m = expr.match(COLUMN_RX);
+        if (!m) return expr;
+        if (rowSourceName && m[1].trim() !== rowSourceName) return expr;
+        return '{{row.' + m[2] + '}}';
+      };
+
       const subVarSeeds = subVars.map(v => {
         if (!v || typeof v !== 'object') return null;
         const ident = toJsIdent(v.name);
         if (!ident || subCtx.capturedAliases.has(ident)) return null;
-        const mapExpr = inputMap[v.name];
+        const rawExpr = inputMap[v.name];
+        const mapExpr = scopeToRow(rawExpr);
         const seed = (typeof mapExpr === 'string' && mapExpr.trim())
           ? qStr(mapExpr)
           : renderVariableLiteral(v);
-        return `${seedIndent}let ${ident} = ${seed};`;
+        const note = mapExpr !== rawExpr
+          ? `${seedIndent}// Input "${v.name}" was mapped to a whole column (${String(rawExpr).trim()}) —\n` +
+            `${seedIndent}// scoped to the current row so each invocation gets its own value.\n`
+          : '';
+        return `${note}${seedIndent}let ${ident} = ${seed};`;
       }).filter(Boolean).join('\n');
       // Combined declarations injected at the top of the subflow closure.
       const subDecls = [subAliasDecls, subVarSeeds].filter(Boolean).join('\n');
 
       const safeSubName = (sub.name || 'unnamed').replace(/\*\//g, '*\\/');
       const timeoutMs   = num(advanced.timeout, 30000);
+      const concurrencyExpr = concurrencyFor(step, ctx);
+
+      /* ── HTTP-first candidate ──────────────────────────────────────────
+         When the subflow body is nothing but CSS extraction, the same body is
+         ALSO compiled against fetched HTML. Both versions ship; which one runs
+         is decided at runtime by scraping the first item both ways and
+         comparing (see __hxSameResult). Only offered where the parent supplies
+         the URL — a self-navigating subflow drives its own browser steps and
+         has no single page to fetch. */
+      const httpCandidate = (ctx.perf && ctx.perf.httpFirst && !selfNav)
+        ? httpEligibleSteps(subSteps)
+        : { eligible: false, reason: 'not enabled' };
+      let httpBody = '';
+      if (httpCandidate.eligible) {
+        const httpCtx = {
+          nextId: ctx.nextId,
+          declaredVars: ctx.declaredVars,
+          customActions: ctx.customActions,
+          subflows: ctx.subflows,
+          visitedSubflows: new Set(subCtx.visitedSubflows),
+          capturedAliases: new Set(),
+          perf: ctx.perf,
+          httpMode: true,
+        };
+        httpBody = genStepList(subSteps, httpCtx, subNested ? 5 : 4);
+      }
+      // Runs the HTTP body over a fetched document; null means "couldn't fetch"
+      // (never "no data"), so the caller can fall back rather than record a miss.
+      const httpRunner = httpCandidate.eligible ? [
+        `  const _httpRun_${subflowId} = async (_url) => {`,
+        `    const _html = await __hxFetch(_url);`,
+        `    if (_html == null) return null;`,
+        `    const __$ = __hxLoad(_html);`,
+        `    const __results__ = {};`,
+        subDecls,
+        `    try {`,
+        httpBody,
+        `    } catch (err) {`,
+        `      console.error(${JSON.stringify(`Subflow ${outKey} HTTP extraction error:`)}, err && err.message);`,
+        `      return null;`,
+        `    }`,
+        `    __results__._sourceUrl = String(_url);`,
+        `    return __results__;`,
+        `  };`,
+        `  const _httpState_${subflowId} = { mode: 'undecided', gate: null };`,
+      ].join('\n') : '';
+
+      // Smart wait for the per-item navigation. This is the highest-value
+      // instance of it by far: an iterate/enrich subflow performs ONE of these
+      // per URL, so on a run over thousands of detail pages the saving is
+      // multiplied by the row count. The selector comes from the subflow's own
+      // first extraction — exactly the data each page is opened for.
+      const subSmartSels = (ctx.perf && ctx.perf.smartWait)
+        ? lookaheadExtractionSelectors(sub.steps || [], 0, ctx.declaredVars)
+        : null;
+      const subNav = (pageVar, urlExpr, pad = '      ') => subSmartSels
+        ? `${pad}await ${pageVar}.goto(${urlExpr}, { waitUntil: 'domcontentloaded', timeout: ${timeoutMs} });\n`
+          + `${pad}await smartWaitFor(${pageVar}, ${subSmartSels}, ${timeoutMs});`
+        : `${pad}await ${pageVar}.goto(${urlExpr}, { waitUntil: 'load', timeout: ${timeoutMs} });`;
 
       // ── iterate mode: walk a list of URLs ────────────────────────────
       if (params.mode === 'iterate') {
@@ -1034,21 +1359,29 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `// Subflow (iterate): ${safeSubName} (id ${subflowId})`,
           `{`,
           `  const _urls = ${listExpr};`,
-          `  const _urlList = Array.isArray(_urls) ? _urls : [];`,
+          `  let _urlList = Array.isArray(_urls) ? _urls : [];`,
           `  if (!__results__[${JSON.stringify(outKey)}]) __results__[${JSON.stringify(outKey)}] = [];`,
-          `  console.log('ITER_START:' + JSON.stringify({stepId: ${subIdJson}, total: _urlList.length}));`,
-          `  for (let _i = 0; _i < _urlList.length; _i++) {`,
-          `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${subIdJson}, index: _i}));`,
+          `  const _out = __results__[${JSON.stringify(outKey)}];`,
+          // Resume: drop URLs a previous run already captured and pre-load its
+          // rows, so a resumed run picks up exactly where the last one stopped.
+          resumeSkipCode({ listVar: '_urlList', outVar: '_out', stepId: step.id, urlOf: 'String(_u)' }),
+          httpRunner,
+          `  __emitMark('ITER_START', {stepId: ${subIdJson}, total: _urlList.length, outKey: ${JSON.stringify(outKey)}});`,
+          // One task per URL; the scheduler decides sequential vs pooled and
+          // keeps `_out` in source order either way (browser/pagePool.js).
+          `  await __iterateInto(browser, _urlList.length, _out, ${concurrencyExpr}, ${subIdJson}, async (_i, _getPage) => {`,
           `    const ${itemVar} = _urlList[_i];`,
           `    const row = ${itemVar};`,
-          `    if (${itemVar} == null || ${itemVar} === '') continue;`,
-          `    const _subPage = await browser.newPage();`,
-          `    try {`,
-          `      await applyStealthToPage(_subPage);`,
+          `    if (${itemVar} == null || ${itemVar} === '') return [];`,
+          // Both runners close over this iteration's `row`, which the subflow's
+          // seeded input variables reference — so they're built per item rather
+          // than once for the loop.
+          `    const _browserRun = async () => {`,
+          `      const _subPage = await _getPage();`,
           // selfNavigate: the subflow's own Navigate steps drive _subPage from
           // the seeded input variables; otherwise open the iteration's URL here.
           selfNav ? `      // (self-navigate: the subflow opens its own page[s])`
-                  : `      await _subPage.goto(String(${itemVar}), { waitUntil: 'load', timeout: ${timeoutMs} });`,
+                  : subNav('_subPage', `String(${itemVar})`),
           selfNav ? `` : `      await dismissConsent(_subPage);`,
           `      const _subResults = await (async (page) => {`,
           `        const __results__ = {};`,
@@ -1063,17 +1396,24 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `      })(_subPage);`,
           selfNav ? `      try { _subResults._sourceUrl = _subPage.url(); } catch (_) {}`
                   : `      _subResults._sourceUrl = String(${itemVar});`,
-          `      __results__[${JSON.stringify(outKey)}].push(_subResults);`,
+          `      return _subResults;`,
+          `    };`,
+          `    try {`,
+          httpCandidate.eligible
+            ? `      const _subResults = await __hxDispatch(_httpState_${subflowId}, String(${itemVar}), () => _httpRun_${subflowId}(String(${itemVar})), _browserRun);`
+            : `      const _subResults = await _browserRun();`,
+          `      return [_subResults];`,
           `    } catch (err) {`,
           `      console.error(${JSON.stringify(`Subflow ${outKey} failed on URL`)}, ${itemVar}, '—', err && err.message);`,
-          `    } finally {`,
-          `      try { await _subPage.close(); } catch (_) {}`,
+          // null, not [] — the scheduler must not record a failed item as
+          // finished, or a resume would skip a page that was never captured.
+          `      return null;`,
           `    }`,
-          `  }`,
-          `  console.log('ITER_END:' + JSON.stringify({stepId: ${subIdJson}}));`,
+          `  }, (_i) => String(_urlList[_i] == null ? '' : _urlList[_i]));`,
+          `  __emitMark('ITER_END', {stepId: ${subIdJson}});`,
           `}`,
           ``,
-        ].join('\n');
+        ].filter(Boolean).join('\n');
       }
 
       // ── enrich mode: walk a TABLE's rows, open each row's link, and ──
@@ -1101,32 +1441,48 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `// Subflow (enrich rows): ${safeSubName} (id ${subflowId})`,
           `{`,
           `  const _srcRows = ${rowsExpr};`,
-          `  const _rows = Array.isArray(_srcRows) ? _srcRows : [];`,
+          `  let _rows = Array.isArray(_srcRows) ? _srcRows : [];`,   // let: resume filters it
           `  const _enrichBase = ${baseUrlExpr};`,
-          `  const _out = [];`,
-          `  console.log('ITER_START:' + JSON.stringify({stepId: ${subIdJson}, total: _rows.length}));`,
-          `  for (let _i = 0; _i < _rows.length; _i++) {`,
-          `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${subIdJson}, index: _i}));`,
+          // Accumulate straight into __results__ rather than into a local that
+          // is only assigned across at the end. Same final array, but now the
+          // rows are observable to __checkpoint WHILE the loop runs — which is
+          // the whole point for an enrich over thousands of detail pages.
+          // Assigned (not ||=) so a re-run of this step resets, exactly as the
+          // previous end-of-loop assignment did.
+          `  __results__[${JSON.stringify(outKey)}] = [];`,
+          `  const _out = __results__[${JSON.stringify(outKey)}];`,
+          // One definition of "this row's URL", used by BOTH the resume filter
+          // and the task. If these two ever disagreed, a resume would either
+          // re-scrape everything or skip rows it never captured.
+          selfNav
+            ? `  const _hrefOf = () => '';`
+            : `  const _hrefOf = (_r) => {\n`
+            + `    let _h = (_r && typeof _r === 'object' && !Array.isArray(_r)) ? _r[${urlFieldJson}] : null;\n`
+            + `    if (_h == null || _h === '') return '';\n`
+            + `    _h = String(_h);\n`
+            + `    if (_enrichBase && !/^https?:\\/\\//i.test(_h)) { try { _h = new URL(_h, _enrichBase).href; } catch (_) {} }\n`
+            + `    return _h;\n`
+            + `  };`,
+          selfNav ? '' : resumeSkipCode({ listVar: '_rows', outVar: '_out', stepId: step.id, urlOf: '_hrefOf(_u)' }),
+          httpRunner,
+          `  __emitMark('ITER_START', {stepId: ${subIdJson}, total: _rows.length, outKey: ${JSON.stringify(outKey)}});`,
+          `  await __iterateInto(browser, _rows.length, _out, ${concurrencyExpr}, ${subIdJson}, async (_i, _getPage) => {`,
           `    const _row = (_rows[_i] && typeof _rows[_i] === 'object' && !Array.isArray(_rows[_i])) ? _rows[_i] : { value: _rows[_i] };`,
           `    const row = _row;`,
           // ── link-open path (default): open the row's link column on _subPage
           //    and strip the subflow's own leading Navigate. ──
-          selfNav ? `    let _href = '';` : `    let _href = _row[${urlFieldJson}];`,
+          selfNav ? `    const _href = '';` : `    const _href = _hrefOf(_row);`,
           selfNav ? `` : `    // No link on this row → keep the row as-is (don't drop data).`,
-          selfNav ? `` : `    if (_href == null || _href === '') { _out.push(Object.assign({}, _row)); continue; }`,
-          selfNav ? `` : `    _href = String(_href);`,
-          selfNav ? `` : `    // Resolve relative links against the configured base URL.`,
-          selfNav ? `` : `    if (_enrichBase && !/^https?:\\/\\//i.test(_href)) { try { _href = new URL(_href, _enrichBase).href; } catch (_) {} }`,
-          `    const _subPage = await browser.newPage();`,
+          selfNav ? `` : `    if (!_href) return [Object.assign({}, _row)];`,
           `    let _subResults = {};`,
-          `    try {`,
-          `      await applyStealthToPage(_subPage);`,
+          `    const _browserRun = async () => {`,
+          `      const _subPage = await _getPage();`,
           // selfNavigate: the subflow's Navigate steps (built from seeded input
           // variables) open the page[s] themselves — the parent opens nothing.
           selfNav ? `      // (self-navigate: the subflow opens its own page[s])`
-                  : `      await _subPage.goto(_href, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+                  : subNav('_subPage', '_href'),
           selfNav ? `` : `      await dismissConsent(_subPage);`,
-          `      _subResults = await (async (page) => {`,
+          `      const _r = await (async (page) => {`,
           `        const __results__ = {};`,
           `        let __currentStep__ = null;`,
           subDecls,
@@ -1137,22 +1493,29 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           `        }`,
           `        return __results__;`,
           `      })(_subPage);`,
-          selfNav ? `      try { _subResults._sourceUrl = _subPage.url(); } catch (_) {}`
-                  : `      _subResults._sourceUrl = _href;`,
+          selfNav ? `      try { _r._sourceUrl = _subPage.url(); } catch (_) {}`
+                  : `      _r._sourceUrl = _href;`,
+          `      return _r;`,
+          `    };`,
+          `    try {`,
+          httpCandidate.eligible
+            ? `      _subResults = await __hxDispatch(_httpState_${subflowId}, _href, () => _httpRun_${subflowId}(_href), _browserRun);`
+            : `      _subResults = await _browserRun();`,
           `    } catch (err) {`,
           `      console.error(${JSON.stringify(`Subflow ${outKey} failed on URL`)}, _href, '—', err && err.message);`,
-          `    } finally {`,
-          `      try { await _subPage.close(); } catch (_) {}`,
+          // The source row is still emitted (dropping it would lose data the
+          // parent list already had), but the item is NOT recorded as
+          // finished, so a resume revisits this detail page.
+          `      return { __failed: true, rows: __enrichRows(_row, {}, ${optsJson}) };`,
           `    }`,
           `    // Merge the detail results back into this row (one or more output`,
           `    // rows, depending on the chosen strategy — see __enrichRows).`,
-          `    for (const _er of __enrichRows(_row, _subResults, ${optsJson})) _out.push(_er);`,
-          `  }`,
-          `  console.log('ITER_END:' + JSON.stringify({stepId: ${subIdJson}}));`,
-          `  __results__[${JSON.stringify(outKey)}] = _out;`,
+          `    return __enrichRows(_row, _subResults, ${optsJson});`,
+          `  }, (_i) => _hrefOf(_rows[_i]));`,
+          `  __emitMark('ITER_END', {stepId: ${subIdJson}});`,
           `}`,
           ``,
-        ].join('\n');
+        ].filter(Boolean).join('\n');
       }
 
       // ── single mode: one URL, one subflow invocation ─────────────────
@@ -1166,13 +1529,12 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         `// Subflow: ${safeSubName} (id ${subflowId})`,
         `{`,
         `  const _subUrl = ${subUrl};`,
-        `  const _subPage = await browser.newPage();`,
+        `  const _subPage = await __openPage(browser);`,
         `  try {`,
-        `    await applyStealthToPage(_subPage);`,
         // selfNavigate: the subflow's own Navigate steps open the page(s); the
         // parent doesn't pre-open _subUrl (which is optional in that case).
         selfNav ? `    // (self-navigate: the subflow opens its own page[s])`
-                : `    await _subPage.goto(_subUrl, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+                : subNav('_subPage', '_subUrl', '    '),
         selfNav ? `` : `    await dismissConsent(_subPage);`,
         `    const _subResults = await (async (page) => {`,
         `      const __results__ = {};`,
@@ -1234,7 +1596,7 @@ function genControl(step, ctx, depth) {
       // for each running loop. ITER_START gives the total upfront so the
       // UI can render a progress bar; ITER_TICK fires each iteration.
       const stepIdJson = JSON.stringify(step.id || '');
-      return `{\n  const _src = ${src};\n  const _arr = Array.isArray(_src) ? _src : (_src || []);\n  console.log('ITER_START:' + JSON.stringify({stepId: ${stepIdJson}, total: _arr.length}));\n  for (let ${idx} = 0; ${idx} < _arr.length; ${idx}++) {\n    console.log('ITER_TICK:' + JSON.stringify({stepId: ${stepIdJson}, index: ${idx}}));\n    const ${item} = _arr[${idx}];\n${body}  }\n  console.log('ITER_END:' + JSON.stringify({stepId: ${stepIdJson}}));\n}\n`;
+      return `{\n  const _src = ${src};\n  const _arr = Array.isArray(_src) ? _src : (_src || []);\n  __emitMark('ITER_START', {stepId: ${stepIdJson}, total: _arr.length});\n  for (let ${idx} = 0; ${idx} < _arr.length; ${idx}++) {\n    __emitMark('ITER_TICK', {stepId: ${stepIdJson}, index: ${idx}});\n    __checkpoint();\n    const ${item} = _arr[${idx}];\n${body}  }\n  __emitMark('ITER_END', {stepId: ${stepIdJson}});\n}\n`;
     }
 
     case 'FOR_EACH_ELEMENTS': {
@@ -1299,15 +1661,16 @@ function genControl(step, ctx, depth) {
           `const ${resultsVar} = [];`,
           `{`,
           `  const ${elsVar} = await page.$$(${sel});`,
-          `  console.log('ITER_START:' + JSON.stringify({stepId: ${feIdJson}, total: ${elsVar}.length}));`,
+          `  __emitMark('ITER_START', {stepId: ${feIdJson}, total: ${elsVar}.length});`,
           `  for (let ${idxVar} = 0; ${idxVar} < ${elsVar}.length; ${idxVar}++) {`,
-          `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${feIdJson}, index: ${idxVar}}));`,
+          `    __emitMark('ITER_TICK', {stepId: ${feIdJson}, index: ${idxVar}});`,
+        `    __checkpoint();`,
           `    const ${elVar} = ${elsVar}[${idxVar}];`,
           `    const ${rowVar} = { _index: ${idxVar} + 1 };`,
           body.trimEnd(),
           `    ${resultsVar}.push(${rowVar});`,
           `  }`,
-          `  console.log('ITER_END:' + JSON.stringify({stepId: ${feIdJson}}));`,
+          `  __emitMark('ITER_END', {stepId: ${feIdJson}});`,
           `}`,
           ...writebackLines,
           ...aliasLines,
@@ -1323,13 +1686,14 @@ function genControl(step, ctx, depth) {
       return [
         `{`,
         `  const ${elsVar} = await page.$$(${sel});`,
-        `  console.log('ITER_START:' + JSON.stringify({stepId: ${feIdJson}, total: ${elsVar}.length}));`,
+        `  __emitMark('ITER_START', {stepId: ${feIdJson}, total: ${elsVar}.length});`,
         `  for (let ${idxVar} = 0; ${idxVar} < ${elsVar}.length; ${idxVar}++) {`,
-        `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${feIdJson}, index: ${idxVar}}));`,
+        `    __emitMark('ITER_TICK', {stepId: ${feIdJson}, index: ${idxVar}});`,
+        `    __checkpoint();`,
         `    const ${elVar} = ${elsVar}[${idxVar}];`,
         body.trimEnd(),
         `  }`,
-        `  console.log('ITER_END:' + JSON.stringify({stepId: ${feIdJson}}));`,
+        `  __emitMark('ITER_END', {stepId: ${feIdJson}});`,
         `}`,
         ``,
       ].join('\n');
@@ -1369,16 +1733,26 @@ function genControl(step, ctx, depth) {
         customActions: ctx.customActions, subflows: ctx.subflows,
         visitedSubflows: new Set(ctx.visitedSubflows || []),
         capturedAliases: new Set(),
+        perf: ctx.perf,
       };
       const bodyCode = genStepList(step.body || [], subCtx, depth + 1);
       const bodyAliasDecls = subCtx.capturedAliases.size === 0 ? '' :
         Array.from(subCtx.capturedAliases).map(a => `        let ${a};`).join('\n');
+      // What the body's first extraction reads — the wait target for the
+      // per-row detail page (link-open mode only; current-page mode does not
+      // navigate, so there is nothing to wait on).
+      const rowSmartSels = (ctx.perf && ctx.perf.smartWait)
+        ? lookaheadExtractionSelectors(step.body || [], 0, ctx.declaredVars)
+        : null;
 
       // Expose the enriched table as a JS alias too (so you can chain another
       // FOR_EACH_ROW / FOR_EACH off it), mirroring FOR_EACH_ELEMENTS.
+      if (ctx.topOutputs) ctx.topOutputs.add(outKey);
       const aliasName = toJsIdent(outKey);
       const aliasLine = (aliasName && !ctx.declaredVars?.has(aliasName))
-        ? (ctx.capturedAliases && ctx.capturedAliases.add(aliasName), `  ${aliasName} = _out_${uid};`)
+        ? (ctx.capturedAliases && ctx.capturedAliases.add(aliasName),
+           ctx.topAliases && ctx.topAliases.set(aliasName, outKey),
+           `  ${aliasName} = _out_${uid};`)
         : '';
 
       // The shared per-row body IIFE — assigns into the pre-declared
@@ -1405,34 +1779,48 @@ function genControl(step, ctx, depth) {
           `{`,
           `  // For Each Row (enrich): open each row's link, run steps, merge back`,
           `  const _rows_${uid} = ${src};`,
-          `  const _arr_${uid} = Array.isArray(_rows_${uid}) ? _rows_${uid} : (_rows_${uid} || []);`,
+          `  let _arr_${uid} = Array.isArray(_rows_${uid}) ? _rows_${uid} : (_rows_${uid} || []);`,  // let: resume filters it
           `  const _base_${uid} = ${baseUrlExpr};`,
-          `  const _out_${uid} = [];`,
-          `  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: _arr_${uid}.length}));`,
-          `  for (let ${idxVar} = 0; ${idxVar} < _arr_${uid}.length; ${idxVar}++) {`,
-          `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: ${idxVar}}));`,
+          // Accumulate in place so rows are visible to __checkpoint DURING the
+          // loop (see the same note on RUN_SUBFLOW enrich). Same final array.
+          `  __results__[${JSON.stringify(outKey)}] = [];`,
+          `  const _out_${uid} = __results__[${JSON.stringify(outKey)}];`,
+          // Single definition of "this row's URL" — shared by the resume filter
+          // and the task so the two can't drift (see RUN_SUBFLOW enrich).
+          `  const _hrefOf_${uid} = (_r) => {`,
+          `    let _h = (_r && typeof _r === 'object' && !Array.isArray(_r)) ? _r[${JSON.stringify(openField)}] : null;`,
+          `    if (_h == null || _h === '') return '';`,
+          `    _h = String(_h);`,
+          `    if (_base_${uid} && !/^https?:\\/\\//i.test(_h)) { try { _h = new URL(_h, _base_${uid}).href; } catch (_) {} }`,
+          `    return _h;`,
+          `  };`,
+          resumeSkipCode({ listVar: `_arr_${uid}`, outVar: `_out_${uid}`, stepId: step.id, urlOf: `_hrefOf_${uid}(_u)` }),
+          `  __emitMark('ITER_START', {stepId: ${idJson}, total: _arr_${uid}.length, outKey: ${JSON.stringify(outKey)}});`,
+          `  await __iterateInto(browser, _arr_${uid}.length, _out_${uid}, ${concurrencyFor(step, ctx)}, ${idJson}, async (${idxVar}, _getPage_${uid}) => {`,
           rowDecl,
           `    let _body_${uid} = {};`,
-          `    let _href_${uid} = ${itemVar}[${JSON.stringify(openField)}];`,
-          `    if (_href_${uid} == null || _href_${uid} === '') { _out_${uid}.push(Object.assign({}, ${itemVar})); continue; }`,
-          `    _href_${uid} = String(_href_${uid});`,
-          `    if (_base_${uid} && !/^https?:\\/\\//i.test(_href_${uid})) { try { _href_${uid} = new URL(_href_${uid}, _base_${uid}).href; } catch (_) {} }`,
-          `    const _rowPage_${uid} = await browser.newPage();`,
+          `    const _href_${uid} = _hrefOf_${uid}(${itemVar});`,
+          `    if (!_href_${uid}) return [Object.assign({}, ${itemVar})];`,
+          `    const _rowPage_${uid} = await _getPage_${uid}();`,
           `    try {`,
-          `      await applyStealthToPage(_rowPage_${uid});`,
-          `      await _rowPage_${uid}.goto(_href_${uid}, { waitUntil: 'load', timeout: ${timeoutMs} });`,
+          // Smart wait on the per-row detail page — same reasoning as the
+          // subflow enrich path: one navigation per row, so the saving scales
+          // with the table size. Selector comes from the body's first extraction.
+          ...(rowSmartSels
+            ? [`      await _rowPage_${uid}.goto(_href_${uid}, { waitUntil: 'domcontentloaded', timeout: ${timeoutMs} });`,
+               `      await smartWaitFor(_rowPage_${uid}, ${rowSmartSels}, ${timeoutMs});`]
+            : [`      await _rowPage_${uid}.goto(_href_${uid}, { waitUntil: 'load', timeout: ${timeoutMs} });`]),
           `      await dismissConsent(_rowPage_${uid});`,
           runBody(`_rowPage_${uid}`, '      '),
           `      _body_${uid}._sourceUrl = _href_${uid};`,
           `    } catch (err) {`,
           `      console.error(${JSON.stringify(`For Each Row "${outKey}" failed on URL`)}, _href_${uid}, '—', err && err.message);`,
-          `    } finally {`,
-          `      try { await _rowPage_${uid}.close(); } catch (_) {}`,
+          // Keep the source row, but don't record the item as finished.
+          `      return { __failed: true, rows: __enrichRows(${itemVar}, {}, ${optsJson}) };`,
           `    }`,
-          mergeLine,
-          `  }`,
-          `  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));`,
-          `  __results__[${JSON.stringify(outKey)}] = _out_${uid};`,
+          `    return __enrichRows(${itemVar}, _body_${uid}, ${optsJson});`,
+          `  }, (${idxVar}) => _hrefOf_${uid}(_arr_${uid}[${idxVar}]));`,
+          `  __emitMark('ITER_END', {stepId: ${idJson}});`,
           aliasLine,
           `}`,
           ``,
@@ -1447,10 +1835,12 @@ function genControl(step, ctx, depth) {
         `  // For Each Row (enrich): run steps per row on the current page, merge back`,
         `  const _rows_${uid} = ${src};`,
         `  const _arr_${uid} = Array.isArray(_rows_${uid}) ? _rows_${uid} : (_rows_${uid} || []);`,
-        `  const _out_${uid} = [];`,
-        `  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: _arr_${uid}.length}));`,
+        // In-place accumulation — see the link-open branch above.
+        `  __results__[${JSON.stringify(outKey)}] = [];`,
+        `  const _out_${uid} = __results__[${JSON.stringify(outKey)}];`,
+        `  __emitMark('ITER_START', {stepId: ${idJson}, total: _arr_${uid}.length});`,
         `  for (let ${idxVar} = 0; ${idxVar} < _arr_${uid}.length; ${idxVar}++) {`,
-        `    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: ${idxVar}}));`,
+        `    __emitMark('ITER_TICK', {stepId: ${idJson}, index: ${idxVar}});`,
         rowDecl,
         `    let _body_${uid} = {};`,
         `    try {`,
@@ -1459,9 +1849,9 @@ function genControl(step, ctx, depth) {
         `      console.error(${JSON.stringify(`For Each Row "${outKey}" body error:`)}, err && err.message);`,
         `    }`,
         mergeLine,
+        `    __checkpoint();`,
         `  }`,
-        `  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));`,
-        `  __results__[${JSON.stringify(outKey)}] = _out_${uid};`,
+        `  __emitMark('ITER_END', {stepId: ${idJson}});`,
         aliasLine,
         `}`,
         ``,
@@ -1480,12 +1870,13 @@ function genControl(step, ctx, depth) {
       const stepIdJson = JSON.stringify(step.id || '');
       return `{
   let _whileGuard = 0;
-  console.log('ITER_START:' + JSON.stringify({stepId: ${stepIdJson}, total: 0}));
+  __emitMark('ITER_START', {stepId: ${stepIdJson}, total: 0});
   while ((${expr}) && _whileGuard < ${max}) {
-    console.log('ITER_TICK:' + JSON.stringify({stepId: ${stepIdJson}, index: _whileGuard}));
+    __emitMark('ITER_TICK', {stepId: ${stepIdJson}, index: _whileGuard});
+    __checkpoint();
     _whileGuard++;
 ${body}  }
-  console.log('ITER_END:' + JSON.stringify({stepId: ${stepIdJson}}));
+  __emitMark('ITER_END', {stepId: ${stepIdJson}});
 }
 `.trim() + '\n';
     }
@@ -1505,11 +1896,12 @@ ${body}  }
       const stepIdJson = JSON.stringify(step.id || '');
       return `{
   const _rep_total = ${count};
-  console.log('ITER_START:' + JSON.stringify({stepId: ${stepIdJson}, total: _rep_total}));
+  __emitMark('ITER_START', {stepId: ${stepIdJson}, total: _rep_total});
   for (let ${idx} = 0; ${idx} < _rep_total; ${idx}++) {
-    console.log('ITER_TICK:' + JSON.stringify({stepId: ${stepIdJson}, index: ${idx}}));
+    __emitMark('ITER_TICK', {stepId: ${stepIdJson}, index: ${idx}});
+    __checkpoint();
 ${body}  }
-  console.log('ITER_END:' + JSON.stringify({stepId: ${stepIdJson}}));
+  __emitMark('ITER_END', {stepId: ${stepIdJson}});
 }
 `.trim() + '\n';
     }
@@ -1520,25 +1912,27 @@ ${body}  }
     // fully-loaded page. Body keeps the parent's inLoop semantics (it runs a
     // single time here, so a top-level scroll extraction just overwrites).
     case 'PAGINATE_SCROLL': {
-      const delay       = num(params.scrollDelay, 1500);
-      const maxNoChange = Math.max(1, num(params.maxNoChange, 3));
-      const max         = num(params.maxIterations, 100);
-      const body        = genStepList(step.body || [], ctx, depth + 1);
-      const idJson      = JSON.stringify(step.id || '');
+      // Runs on the shared scroll engine (exhaustScroll → harvestWhileScrolling).
+      // The old loop here teleported to document.body.scrollHeight and waited a
+      // fixed delay, which skipped IntersectionObserver sentinels and gave up
+      // whenever the site was slower than the guess — the two things that made
+      // record counts vary between runs. It also only measured document.body,
+      // so pages that scroll inside a div never advanced at all.
+      const body   = genStepList(step.body || [], ctx, depth + 1);
+      const idJson = JSON.stringify(step.id || '');
+      const scrollExpr = qStr(params.scrollContainer || '', ctx.declaredVars);
+      // A control step keeps everything on `params` (it has no `advanced` bag),
+      // so the shared options builder reads its knobs from there.
+      const optsJson = JSON.stringify(scrollAccuracyOpts(params, params, {
+        legacyDelay: num(params.scrollDelay, 1500),
+        legacyNoNew: Math.max(1, num(params.maxNoChange, 3)),
+        maxScrolls:  num(params.maxIterations, 100) * 10,  // now counts scroll steps, not full-page jumps
+      }));
       return `{
   // Pagination — Infinite Scroll
-  let _noChange = 0, _prevH = 0, _scrollGuard = 0;
-  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
-  while (_noChange < ${maxNoChange} && _scrollGuard < ${max}) {
-    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _scrollGuard}));
-    _scrollGuard++;
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await new Promise(r => setTimeout(r, ${delay}));
-    const _h = await page.evaluate(() => document.body.scrollHeight);
-    if (_h <= _prevH + 10) _noChange++; else _noChange = 0;
-    _prevH = _h;
-  }
-  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
+  __emitMark('ITER_START', {stepId: ${idJson}, total: 0});
+  await exhaustScroll(page, ${scrollExpr}, ${optsJson});
+  __emitMark('ITER_END', {stepId: ${idJson}});
 ${body}}
 `;
     }
@@ -1560,9 +1954,10 @@ ${body}}
       return `{
   // Pagination — Click Button
   let _pageGuard = 0;
-  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
+  __emitMark('ITER_START', {stepId: ${idJson}, total: 0});
   while (_pageGuard < ${max}) {
-    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _pageGuard}));
+    __emitMark('ITER_TICK', {stepId: ${idJson}, index: _pageGuard});
+    __checkpoint();
     _pageGuard++;
 ${body}    const _nextBtn = await resolveElement(page, ${sels});
     if (!_nextBtn) break;
@@ -1571,7 +1966,7 @@ ${body}    const _nextBtn = await resolveElement(page, ${sels});
     } catch (_) { break; }
     await new Promise(r => setTimeout(r, ${delay}));
   }
-  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
+  __emitMark('ITER_END', {stepId: ${idJson}});
 }
 `;
     }
@@ -1612,9 +2007,28 @@ ${body}    const _nextBtn = await resolveElement(page, ${sels});
   // Pagination — URL Pages (while-loop; scrapes the current page first, then
   // advances page-by-page until a page has none of the desired elements)
   let _pageNo = ${startPage}, _urlGuard = 0;
-  console.log('ITER_START:' + JSON.stringify({stepId: ${idJson}, total: 0}));
+  // "Scrape the current page first" only holds if we are actually ON the
+  // pattern's first page. Inside a subflow the parent may have opened a
+  // DIFFERENT page (e.g. it opened /room while this loop paginates
+  // /room/reviews) — the first iteration would then extract from the wrong
+  // page, and with a low page cap that is the only iteration, so the step
+  // silently returns nothing. Compare paths (not the query) so an ordinary
+  // "?page=1 vs no query" start is still scraped in place without a
+  // redundant re-navigation.
+  try {
+    const _wantUrl = ${urlExpr};
+    const _cur = new URL(page.url()), _want = new URL(_wantUrl);
+    const _norm = (p) => p.replace(/\\/+$/, '');
+    if (_cur.origin !== _want.origin || _norm(_cur.pathname) !== _norm(_want.pathname)) {
+      await page.goto(_wantUrl, { waitUntil: 'load', timeout: 30000 });
+      await dismissConsent(page);
+      await new Promise(r => setTimeout(r, ${delay}));
+    }
+  } catch (_) { /* unparseable url → just scrape where we are */ }
+  __emitMark('ITER_START', {stepId: ${idJson}, total: 0});
   while (_urlGuard < ${max}) {
-    console.log('ITER_TICK:' + JSON.stringify({stepId: ${idJson}, index: _urlGuard}));
+    __emitMark('ITER_TICK', {stepId: ${idJson}, index: _urlGuard});
+    __checkpoint();
     _urlGuard++;
 ${body}    _pageNo += ${stepInc};
     const _pageUrl = ${urlExpr};
@@ -1624,7 +2038,7 @@ ${body}    _pageNo += ${stepInc};
     await dismissConsent(page);
     await new Promise(r => setTimeout(r, ${delay}));
 ${contentCheck}  }
-  console.log('ITER_END:' + JSON.stringify({stepId: ${idJson}}));
+  __emitMark('ITER_END', {stepId: ${idJson}});
 }
 `;
     }
@@ -1656,19 +2070,84 @@ function stepMarker(step) {
     kind:  step.kind  || 'action',
     label: step.label || '',
   };
-  const json = JSON.stringify(info);
-  // Embed the json as a JS string literal — JSON is valid JS for objects
-  // but we use JSON.stringify of the literal to be safe against odd chars.
-  return `__currentStep__ = ${JSON.stringify(info)};\nconsole.log('STEP_BEGIN:' + ${JSON.stringify(json)});\n`;
+  // Routed through __emitMark so a step running inside a parallel worker is
+  // tagged with its lane — otherwise N workers executing the same subflow body
+  // all report the same step ids and the parent can't tell them apart.
+  return `__currentStep__ = ${JSON.stringify(info)};\n__emitMark('STEP_BEGIN', ${JSON.stringify(info)});\n`;
 }
 
-function genStepList(steps, ctx, depth = 0) {
+/* Wrap a finished top-level step so a resume restores its output instead of
+   re-running it.
+
+   The motivating shape: paginate three pages to collect 30 links, then walk
+   those links with a subflow. If the run dies during the subflow, the links
+   are already captured — regenerating them costs three page loads and proves
+   nothing. Restoring the saved value and skipping straight to the remaining
+   links is both faster and more faithful to what the interrupted run saw.
+
+   Applied ONLY to top-level steps that produced output. A step with nothing
+   captured can't be restored, and re-running it (a navigation, a login) is
+   both cheap and the safe default — so those always execute again. */
+function stepResumeGuard(step, body, outputs, aliases, clean) {
+  // A downloaded script has no platform to resume into, so it gets the plain
+  // step code rather than a guard that can only ever take the else branch.
+  if (clean) return body;
+  const id = step && step.id;
+  if (!id || !outputs || outputs.size === 0) {
+    return body + (id ? `__stageStepDone(${JSON.stringify(id)});\n` : '');
+  }
+  const restore = [];
+  for (const key of outputs) {
+    restore.push(`  __results__[${JSON.stringify(key)}] = __resumeValue(${JSON.stringify(key)});`);
+  }
+  for (const [alias, key] of aliases) {
+    restore.push(`  ${alias} = __results__[${JSON.stringify(key)}];`);
+  }
+  const name = (step.label && step.label.trim()) || step.type;
+  return [
+    `if (__resumeStepDone(${JSON.stringify(id)})) {`,
+    ...restore,
+    `  console.log(${JSON.stringify(`↻ Resume: "${name}" already finished last time — restored its data instead of re-running it.`)});`,
+    `} else {`,
+    body.replace(/\n(?=.)/g, '\n  ').replace(/^(?=.)/, '  '),
+    `  __stageStepDone(${JSON.stringify(id)});`,
+    `}`,
+    ``,
+  ].join('\n');
+}
+
+function genStepList(steps, ctx, depth = 0, isRoot = false) {
   const pad = '  '.repeat(depth);
-  return steps.map(step => {
+  return steps.map((step, i) => {
     const marker = stepMarker(step);
-    const raw = step.kind === 'control'
+    // Collect this top-level step's outputs while its code (and any loop body
+    // inside it) is generated, so the guard knows what to restore.
+    if (isRoot) { ctx.topOutputs = new Set(); ctx.topAliases = new Map(); }
+    // Smart wait needs to know what the NEXT extraction reads, which only the
+    // enclosing list can see. Computed here and handed to the step through ctx
+    // (generation is synchronous and depth-first, so NAVIGATE consumes it
+    // immediately); cleared afterwards so it can never leak to another step.
+    if (step.type === 'NAVIGATE' && ctx.perf && ctx.perf.smartWait) {
+      ctx.__lookaheadSelectors = lookaheadExtractionSelectors(steps, i + 1, ctx.declaredVars);
+    }
+    let raw = step.kind === 'control'
       ? genControl(step, ctx, depth)
       : genAction(step, ctx);
+    ctx.__lookaheadSelectors = null;
+    // Time the step. Deliberately two bare statements rather than a wrapping
+    // block: steps declare `const`s that later steps read, so introducing a
+    // scope here would break the workflow. Both lines are standalone, so the
+    // download filter can strip them cleanly.
+    if (!ctx.clean && step.id) {
+      const tVar = `__ts_${ctx.nextId()}`;
+      raw = `const ${tVar} = Date.now();\n${raw}`
+          + `__stepTime(${JSON.stringify(step.id)}, Date.now() - ${tVar});\n`;
+    }
+    if (isRoot) {
+      raw = stepResumeGuard(step, raw, ctx.topOutputs, ctx.topAliases, ctx.clean);
+      ctx.topOutputs = null;
+      ctx.topAliases = null;
+    }
     const combined = marker + raw;
     return combined.split('\n').map(l => (l.trim() ? pad + l : l)).join('\n');
   }).join('');
@@ -1751,7 +2230,164 @@ async function __emitStepStats(page, info, value) {
     }
     console.log('STEP_RESULT:' + JSON.stringify(Object.assign({}, info, { count: st.count, fields: st.fields })));
   } catch (_) {}
-}`;
+}
+
+/* ── Durable partial results ───────────────────────────────────────────────
+   Everything a run captures used to live ONLY here, in this process's memory,
+   and was serialised exactly once — the single WORKFLOW_RESULTS: line at the
+   end. A crash / timeout / OOM / cancel anywhere before that lost the lot. On
+   a job spanning thousands of detail pages that is hours of work gone.
+
+   Now the parent accumulates these deltas as they arrive, so the data is out
+   of this process long before it dies — which is why it survives even SIGKILL.
+
+   DELTAS, not snapshots: re-emitting the whole result set every iteration
+   would be O(n²) stdout on a run with thousands of rows. Array keys send only
+   their new tail; scalars only when they change.
+
+   __rootResults is captured once by run() so that call sites nested inside a
+   subflow closure — which shadows __results__ with its own object — still
+   checkpoint the ROOT results, never the subflow's private ones. A subflow's
+   rows land in the root right after its closure returns, so the next
+   checkpoint picks them up. */
+let __rootResults = null;
+const __sentCounts  = Object.create(null);   // key → array elements already sent
+const __sentScalars = Object.create(null);   // key → last encoding sent
+let __lastCheckpointMs = 0;
+const __CHECKPOINT_MS = 1500;
+
+/* ── "Done" means SAVED ────────────────────────────────────────────────────
+   Completed items and completed steps are staged here and only leave the
+   process inside a RESULT_CHUNK — the same message that carries their rows.
+
+   They used to be announced the instant a task returned, independently of the
+   data. That is a data-loss bug on resume: the parent could be told "these 3
+   URLs are finished" while only the first one's row had actually made it out,
+   so the resume skipped two items whose data was never stored. Staging them
+   here means the ledger and the rows are published together or not at all —
+   if the run dies in between, BOTH are lost and the resume re-scrapes those
+   items, which is the safe direction to be wrong in. */
+const __pendingItems = Object.create(null);  // stepId → [url] finished + committed
+let   __pendingSteps = [];                   // [stepId] whole steps finished
+
+/* ── Per-step timing ───────────────────────────────────────────────────────
+   Measured inside the generated code rather than inferred from the gap
+   between STEP_BEGIN markers, because under parallelism those interleave
+   across workers and can't be attributed to anything.
+
+   Both a count and a total are kept, which is what lets the UI say the right
+   thing in each place: a step that ran once reports its duration, a step
+   inside a loop ran N times and reports the average, and the loop itself ran
+   once and reports the whole thing. */
+const __stepTimes = Object.create(null);     // stepId → { n, ms }
+function __stepTime(id, ms) {
+  if (!id) return;
+  const e = __stepTimes[id] || (__stepTimes[id] = { n: 0, ms: 0 });
+  e.n += 1;
+  e.ms += ms;
+}
+
+/* ── Worker lane context ───────────────────────────────────────────────────
+   When a loop runs N workers, all N execute the SAME subflow body, so every
+   marker they emit carries the same step ids. A nested loop's counter then
+   reads as one sequence when it is really N interleaved ones — the "11, 6, 2,
+   4, 12…" jumping — and tells you nothing about any of them.
+
+   AsyncLocalStorage carries which lane the currently-executing code belongs
+   to, without threading a parameter through every generated call. Markers
+   emitted inside a worker are tagged with it, so the parent can keep the lanes
+   apart instead of overwriting one with another. */
+const __laneStore = new (require('async_hooks').AsyncLocalStorage)();
+function __inLane(owner, lane, item, fn) {
+  return __laneStore.run({ owner: owner, lane: lane, item: item }, fn);
+}
+
+// Emit a structured marker, tagged with the worker lane when inside one.
+function __emitMark(kind, obj) {
+  try {
+    const s = __laneStore.getStore();
+    if (s) { obj.owner = s.owner; obj.lane = s.lane; obj.item = s.item; }
+    console.log(kind + ':' + JSON.stringify(obj));
+  } catch (_) {}
+}
+
+function __stageItemDone(stepId, url) {
+  if (!stepId || url == null || url === '') return;
+  (__pendingItems[stepId] || (__pendingItems[stepId] = [])).push(String(url));
+}
+function __stageStepDone(stepId) {
+  if (stepId) __pendingSteps.push(String(stepId));
+}
+
+function __checkpoint(force) {
+  try {
+    if (!__rootResults) return;
+    const now = Date.now();
+    if (!force && now - __lastCheckpointMs < __CHECKPOINT_MS) return;
+    __lastCheckpointMs = now;
+    const delta = {};
+    let has = false;
+    for (const k of Object.keys(__rootResults)) {
+      const v = __rootResults[k];
+      if (Array.isArray(v)) {
+        const sent = __sentCounts[k] || 0;
+        if (v.length > sent) {
+          delta[k] = { append: v.slice(sent) };
+          __sentCounts[k] = v.length;
+          has = true;
+        } else if (v.length < sent) {
+          // Shrank ⇒ the array was replaced wholesale (a step re-ran and reset
+          // it). Resend in full so the parent doesn't keep stale rows. A
+          // replacement of equal-or-greater length isn't detectable here and
+          // is accepted: on a clean finish WORKFLOW_RESULTS is authoritative,
+          // and partial data is best-effort by definition.
+          delta[k] = { set: v.slice() };
+          __sentCounts[k] = v.length;
+          has = true;
+        }
+      } else if (v !== null && v !== undefined) {
+        const enc = JSON.stringify(v);
+        if (__sentScalars[k] !== enc) {
+          delta[k] = { set: v };
+          __sentScalars[k] = enc;
+          has = true;
+        }
+      }
+    }
+    // Drain the ledger INTO this chunk. Reading __rootResults and the staged
+    // ledger in one synchronous pass is what makes them consistent: anything
+    // staged is already in the results above, because a slot commits its rows
+    // before staging its url.
+    const doneItems = {};
+    let hasDone = false;
+    for (const k of Object.keys(__pendingItems)) {
+      if (__pendingItems[k].length) { doneItems[k] = __pendingItems[k]; __pendingItems[k] = []; hasDone = true; }
+    }
+    const doneSteps = __pendingSteps;
+    if (doneSteps.length) { __pendingSteps = []; hasDone = true; }
+
+    // Timings ride along whole rather than as a delta — one entry per step is
+    // a few hundred bytes at most, so the parent can simply take the latest.
+    const hasTimes = Object.keys(__stepTimes).length > 0;
+
+    if (has || hasDone || hasTimes) {
+      console.log('RESULT_CHUNK:' + JSON.stringify({
+        rows: has ? delta : undefined,
+        doneItems: hasDone && Object.keys(doneItems).length ? doneItems : undefined,
+        doneSteps: doneSteps.length ? doneSteps : undefined,
+        times: hasTimes ? __stepTimes : undefined,
+      }));
+    }
+  } catch (_) {}
+}
+
+/* Graceful cancel: the parent sends SIGTERM and only escalates to SIGKILL
+   after a grace window, so flush the tail of the data first. Belt-and-braces
+   — the parent already holds everything up to the last checkpoint. */
+process.on('SIGTERM', () => {
+  try { __checkpoint(true); } catch (_) {}
+  process.exit(143);
+});`;
 
 /* =========================================================================
    ENRICH RUNTIME — merge a subflow's per-page results back into a source row
@@ -1820,6 +2456,40 @@ function __enrichRows(row, sub, opts) {
   return [Object.assign({}, base, detail)];
 }`;
 
+/* Build the scroll-engine options shared by COLLECT_LIST and PAGINATE_SCROLL.
+
+   Accuracy mode is ON by default — it is what makes a run reproducible, and a
+   scrape that quietly returns a different number of records each time is worse
+   than a slow one. Untick "Accuracy mode" to get the old fast-but-approximate
+   behaviour, which the same engine reproduces from these parameters.
+
+   `legacy*` are the pre-existing per-step settings; they only take effect when
+   accuracy mode is off, so turning it off restores the previous timings exactly. */
+function scrollAccuracyOpts(params, advanced, { legacyDelay, legacyNoNew, maxScrolls }) {
+  const a = advanced || {};
+  const accuracy = a.scrollAccuracy !== false;
+  const overlapRaw = Number(a.scrollOverlap);
+  const trimmed = (v) => (v && String(v).trim()) || '';
+  return {
+    accuracy,
+    // Legacy timing knobs (used verbatim when accuracy is off).
+    scrollDelay: legacyDelay,
+    maxNoNew:    legacyNoNew,
+    maxScrolls,
+    overlap: (Number.isFinite(overlapRaw) && overlapRaw >= 0 && overlapRaw < 0.95) ? overlapRaw : 0.35,
+    // Accuracy knobs.
+    stepPx:        Math.max(24, num(a.scrollStepPx, 250)),
+    settleQuietMs: Math.max(50, num(a.settleQuietMs, 500)),
+    settleMaxMs:   Math.max(500, num(a.settleMaxMs, 30000)),
+    maxPasses:     Math.max(1, num(a.verifyPasses, 3)),
+    debug:         a.debugScrolling === true,
+    // Page-provided completion signals.
+    loadingSelector:  trimmed(a.loadingSelector),
+    endSelector:      trimmed(a.endSelector),
+    expectedSelector: trimmed(a.expectedCountSelector),
+  };
+}
+
 /* =========================================================================
    HARVEST RUNTIME — collect a list WHILE scrolling (infinite / virtual lists)
    -------------------------------------------------------------------------
@@ -1830,48 +2500,163 @@ function __enrichRows(row, sub, opts) {
    Included on demand in both platform and downloaded scripts.
    ========================================================================= */
 const HARVEST_RUNTIME_SRC = `/**
- * Collect a repeating list while scrolling — robust against lazy-load and
- * virtualized/recycling lists, and honest about completeness.
+ * Collect a repeating list while scrolling — built for accuracy first.
  *   page         – puppeteer page
  *   containerSel – CSS selector for each repeating item
  *   fields       – { name: { selector, kind:'text'|'attr'|'html', attribute } }
- *   keyField     – field to de-dupe on ('' → de-dupe on the whole row)
+ *   keyField     – field to de-dupe on ('' → intrinsic row id, else whole row)
  *   scrollSel    – scroll container selector ('' → scroll the window)
- *   opts         – { scrollDelay, maxNoNew, maxScrolls, overlap,
- *                    loadingSelector, endSelector, expectedSelector }
+ *   opts         – { accuracy, scrollDelay, maxNoNew, maxScrolls, overlap,
+ *                    stepPx, settleQuietMs, settleMaxMs, bottomWaitsMs,
+ *                    maxPasses, loadingSelector, endSelector, expectedSelector }
+ *
+ * WHY THIS IS NOT A SIMPLE LOOP
+ * Three things silently lose records on real infinite-scroll pages:
+ *   1. Jumping the scroll position. Most sites load more via an
+ *      IntersectionObserver on a sentinel near the list end. The browser only
+ *      fires those callbacks when intersection state changes BETWEEN FRAMES, so
+ *      a one-assignment jump over the sentinel can be missed entirely and the
+ *      next batch never loads. We therefore TRAVERSE every scroll distance in
+ *      small steps with a rAF yield between them (accuracy mode).
+ *   2. Waiting a fixed number of milliseconds. If the site's fetch is slower
+ *      than the guess, the harvest sees nothing new and starts counting toward
+ *      "done" — so the record count tracks network latency and varies run to
+ *      run. We instead settle on real signals: zero in-flight requests AND no
+ *      DOM mutations for a quiet window.
+ *   3. Giving up at the bottom too early. We escalate patience (1s→2s→4s…) and
+ *      JIGGLE between tries — scroll up and back down — because a loader that
+ *      already fired at this position will only fire again on a NEW crossing.
  *
  * How it knows it's "done" (strongest → weakest):
  *   1. expectedSelector  → a total shown on the page ("340 results"); stop when
  *      collected ≥ that number, and REPORT if we fall short.
  *   2. endSelector       → an explicit "no more results" element appears.
- *   3. bottom-stable     → we're at the bottom AND no new unique items appear
- *      for maxNoNew consecutive settles (loading indicator, if any, cleared).
- * "No new items" is only counted when we're actually AT THE BOTTOM, so a slow
- * loader mid-list never stops us early. Scrolling advances by (1-overlap) of a
- * viewport so consecutive windows OVERLAP — no item window is skipped, which is
- * what would otherwise drop items from the middle of a virtualized list.
- * Emits a COLLECT_SUMMARY log line with { collected, expected, complete, reason }.
- * Returns the de-duplicated array of items, in first-seen order.
+ *   3. bottom-stable     → at the bottom, the full patience ladder elapsed with
+ *      no new items AND no growth in scroll height.
+ * Then, in accuracy mode, it VERIFIES: return to the top and sweep again. A
+ * pass that adds nothing proves the previous pass saw everything reachable;
+ * a pass that adds something proves it did not, and we sweep again.
+ *
+ * Emits COLLECT_SUMMARY with { collected, expected, complete, reason, passes,
+ * verified }. Returns the de-duplicated items in first-seen order.
  */
 async function harvestWhileScrolling(page, containerSel, fields, keyField, scrollSel, opts) {
   opts = opts || {};
-  const delay      = opts.scrollDelay || 1200;
-  const maxNoNew   = Math.max(1, opts.maxNoNew || 3);
-  const maxScrolls = opts.maxScrolls || 300;
-  const overlap    = (typeof opts.overlap === 'number' && opts.overlap >= 0 && opts.overlap < 0.95) ? opts.overlap : 0.35;
-  const loadingSel = opts.loadingSelector || '';
-  const endSel     = opts.endSelector || '';
-  const expectSel  = opts.expectedSelector || '';
+  // Accuracy mode is the default. accuracy:false reproduces the old fast
+  // behaviour by degrading the same engine's parameters — one code path.
+  const accurate    = opts.accuracy !== false;
+  const legacyDelay = Math.max(0, opts.scrollDelay || 1200);
+  const maxNoNew    = Math.max(1, opts.maxNoNew || 3);
+  const maxScrolls  = opts.maxScrolls || 300;
+  const overlap     = (typeof opts.overlap === 'number' && opts.overlap >= 0 && opts.overlap < 0.95) ? opts.overlap : 0.35;
+  const stepPx      = Math.max(24, opts.stepPx || 250);
+  const settleQuiet = Math.max(50, opts.settleQuietMs || 500);
+  const settleMax   = Math.max(500, opts.settleMaxMs || 30000);
+  const loadingSel  = opts.loadingSelector || '';
+  const endSel      = opts.endSelector || '';
+  const expectSel   = opts.expectedSelector || '';
+  // Escalating patience at the bottom (accuracy) vs a flat retry count (legacy).
+  const ladder = accurate
+    ? (Array.isArray(opts.bottomWaitsMs) && opts.bottomWaitsMs.length ? opts.bottomWaitsMs : [1000, 2000, 4000, 8000, 15000])
+    : new Array(maxNoNew).fill(legacyDelay);
+  const maxPasses = accurate ? Math.max(1, opts.maxPasses || 3) : 1;
+  // Per-step trace. Turn on with the "Debug scrolling" advanced option when a
+  // page collects fewer records than it should — each line shows where the
+  // scroller actually got to, so a stall is visible instead of guessed at.
+  const dbg = !!opts.debug;
+
   const seen = new Set();
   const out  = [];
-  let noNew  = 0;
+  let dupInBatch = 0;     // proof that whole-row de-duping is collapsing records
+  let lastGrowth = 0;     // px the page grew on the last load — sizes the back-off
+  let totalGrowth = 0;    // px added since the sweep began — bounds it
+  let stuck = false;      // the scroll container never moved
 
+  // ── Network activity tracker ────────────────────────────────────────────
+  // Passive listeners (no interception), so nothing about the page changes.
+  let inflight = 0;
+  let netAt = Date.now();
+  const onReq  = () => { inflight++; netAt = Date.now(); };
+  const onDone = () => { inflight = Math.max(0, inflight - 1); netAt = Date.now(); };
+  page.on('request', onReq);
+  page.on('requestfinished', onDone);
+  page.on('requestfailed', onDone);
+  const disposeNet = () => {
+    try {
+      page.removeListener('request', onReq);
+      page.removeListener('requestfinished', onDone);
+      page.removeListener('requestfailed', onDone);
+    } catch (_) {}
+  };
+
+  // ── DOM mutation probe (page side) ──────────────────────────────────────
+  // Re-installed on demand: a navigation wipes it.
+  const installProbe = () => page.evaluate(() => {
+    if (window.__hvProbe) return;
+    window.__hvMutAt = Date.now();
+    var mo = new MutationObserver(function () { window.__hvMutAt = Date.now(); });
+    mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
+    window.__hvProbe = mo;
+  }).catch(() => {});
+  const domIdleFor = () => page.evaluate(() => Date.now() - (window.__hvMutAt || 0)).catch(() => 1e9);
+
+  // A short wait for the browser to RENDER what the scroll just revealed —
+  // enough for a virtualized list to paint its new rows. Deliberately not the
+  // full network settle: doing that after every scroll step is what made the
+  // sweep crawl. Real load-waiting happens at the bottom, where it matters.
+  const renderTick = async () => {
+    if (!accurate) { await new Promise(r => setTimeout(r, legacyDelay)); return; }
+    await new Promise(r => setTimeout(r, 60));
+    const t0 = Date.now();
+    while (Date.now() - t0 < 900) {
+      if (await domIdleFor() >= 80) return;
+      await new Promise(r => setTimeout(r, 50));
+    }
+  };
+
+  const present = (sel) => sel
+    ? page.evaluate(s => !!document.querySelector(s), sel).catch(() => false)
+    : Promise.resolve(false);
+
+  // Wait until the page is genuinely quiet: no in-flight requests, no DOM
+  // mutations, no loading indicator — each for settleQuiet ms. Returns false
+  // if the hard cap was hit (page never went quiet), which is reported.
+  const settle = async () => {
+    if (!accurate) { await new Promise(r => setTimeout(r, legacyDelay)); return true; }
+    await installProbe();
+    const t0 = Date.now();
+    while (Date.now() - t0 < settleMax) {
+      await new Promise(r => setTimeout(r, 100));
+      if (inflight > 0) continue;
+      if (Date.now() - netAt < settleQuiet) continue;
+      if (loadingSel && await present(loadingSel)) continue;
+      if (await domIdleFor() < settleQuiet) continue;
+      return true;
+    }
+    return false;
+  };
+
+  // ── Extraction ──────────────────────────────────────────────────────────
+  // __hvKey is an INTRINSIC row identity (id / data-* / first link href). It
+  // survives virtualization — unlike a DOM index — and distinguishes two rows
+  // whose visible text happens to match, which a whole-row hash cannot.
   const extractVisible = () => page.evaluate((sel, fieldMap) => {
-    const __isX = (s) => { if (typeof s !== 'string') return false; s = s.replace(/^\s+/, ''); return s[0] === '/' || s[0] === '(' || (s[0] === '.' && s[1] === '/'); };
+    const __isX = (s) => { if (typeof s !== 'string') return false; s = s.replace(/^\\s+/, ''); return s[0] === '/' || s[0] === '(' || (s[0] === '.' && s[1] === '/'); };
     const __relChild = (root, s) => {
       if (!s) return root;
       if (__isX(s)) { try { return document.evaluate(s, root, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (_) { return null; } }
       try { return root.querySelector(s); } catch (_) { return null; }
+    };
+    const __identity = (el) => {
+      try {
+        var a = el.id || el.getAttribute('data-id') || el.getAttribute('data-key')
+             || el.getAttribute('data-item-id') || el.getAttribute('data-testid')
+             || el.getAttribute('data-index') || el.getAttribute('data-sku');
+        if (a) return 'a:' + a;
+        var link = el.matches && el.matches('a[href]') ? el : el.querySelector('a[href]');
+        if (link) { var h = link.getAttribute('href'); if (h) return 'h:' + h; }
+      } catch (_) {}
+      return null;
     };
     return Array.from(document.querySelectorAll(sel)).map(el => {
       const item = {};
@@ -1883,6 +2668,8 @@ async function harvestWhileScrolling(page, containerSel, fields, keyField, scrol
         else if (spec.kind === 'html') item[name] = (child.innerHTML || '').trim();
         else item[name] = (child.textContent || '').trim();
       }
+      const id = __identity(el);
+      if (id) item.__hvKey = id;
       return item;
     });
   }, containerSel, fields);
@@ -1890,52 +2677,187 @@ async function harvestWhileScrolling(page, containerSel, fields, keyField, scrol
   const keyOf = (row) => {
     if (keyField && row && Object.prototype.hasOwnProperty.call(row, keyField)) {
       const v = row[keyField];
-      if (v != null && String(v).trim() !== '') return String(v);
+      if (v != null && String(v).trim() !== '') return 'k:' + String(v);
     }
+    if (row && row.__hvKey) return row.__hvKey;
     return JSON.stringify(row);
   };
 
   const harvest = async () => {
     let added = 0, rows = [];
     try { rows = await extractVisible(); } catch (_) { rows = []; }
+    const batch = new Set();
     for (const row of rows) {
       const k = keyOf(row);
+      // Two rows on screen AT THE SAME TIME sharing a key proves the key is not
+      // unique — real records are being merged away. Surfaced in the summary.
+      if (batch.has(k)) dupInBatch++; else batch.add(k);
       if (seen.has(k)) continue;
-      seen.add(k); out.push(row); added++;
+      seen.add(k);
+      if (row && row.__hvKey !== undefined) delete row.__hvKey;
+      out.push(row); added++;
     }
     return added;
   };
 
-  // Advance by an OVERLAPPING step (never a whole viewport) so no window of
-  // items is skipped; report whether we've reached the bottom.
-  const scrollAndSense = () => page.evaluate((sSel, ov) => {
+  // ── Scrolling ───────────────────────────────────────────────────────────
+  // Advance by one OVERLAPPING window (so consecutive harvests overlap and no
+  // band of a virtualized list is skipped), but TRAVERSE that distance in small
+  // rAF-separated steps so every sentinel gets an intersecting frame.
+  const scrollBy = (deltaFactor) => page.evaluate(async (sSel, ov, px, smooth, factor) => {
     const t = sSel ? document.querySelector(sSel) : null;
     const view = t ? t.clientHeight : window.innerHeight;
-    const max  = t ? t.scrollHeight : (document.scrollingElement || document.documentElement || document.body).scrollHeight;
-    const before = t ? t.scrollTop : window.scrollY;
-    const stepPx = Math.max(40, Math.round(view * (1 - ov)));
-    const next = Math.min(before + stepPx, max);
-    if (t) t.scrollTop = next; else window.scrollTo(0, next);
-    const after = t ? t.scrollTop : window.scrollY;
-    // At the bottom if the viewport reaches the content end, or the position
-    // couldn't advance any further.
-    return { atBottom: (after + view >= max - 2) || (after <= before + 1) };
-  }, scrollSel, overlap);
-
-  const present = (sel) => sel
-    ? page.evaluate(s => !!document.querySelector(s), sel).catch(() => false)
-    : Promise.resolve(false);
-
-  // Wait for a loading indicator (if configured) to clear, so "no new items"
-  // isn't declared while the next batch is still fetching.
-  const waitLoadingGone = async () => {
-    if (!loadingSel) return;
-    const t0 = Date.now();
-    while (Date.now() - t0 < 8000) {
-      if (!(await present(loadingSel))) return;
-      await new Promise(r => setTimeout(r, 150));
+    const getMax = () => t ? t.scrollHeight : (document.scrollingElement || document.documentElement || document.body).scrollHeight;
+    const getPos = () => t ? t.scrollTop : (window.scrollY || 0);
+    const setPos = (v) => { if (t) t.scrollTop = v; else window.scrollTo(0, v); };
+    if (sSel && !t) return { missing: true, atBottom: false, moved: false, max: 0, view: 0, fits: false };
+    // CSS smooth scrolling turns every position assignment into an ANIMATION.
+    // The scraper would then advance ~30px per step instead of a viewport, read
+    // its own position wrong, and burn the whole scroll budget a fifth of the
+    // way down the page. Force instant scrolling for the duration of the run.
+    try {
+      (t ? [t] : [document.documentElement, document.body]).forEach(function (e) {
+        if (e && e.style) e.style.scrollBehavior = 'auto';
+      });
+    } catch (_) {}
+    // Yield a frame, but never hang: requestAnimationFrame is paused entirely in
+    // a backgrounded or non-composited tab (which is how the platform often runs
+    // the page), and a traversal that waits forever on it would stall the run.
+    const frame = () => new Promise(r => {
+      let done = false;
+      const fin = () => { if (!done) { done = true; r(); } };
+      try { requestAnimationFrame(fin); } catch (_) {}
+      setTimeout(fin, 250);
+    });
+    const before = getPos();
+    const span = Math.max(40, Math.round(view * (1 - ov))) * (factor || 1);
+    // The furthest a scroller can actually go is scrollHeight - clientHeight;
+    // clamping to scrollHeight would walk the traversal past reachable ground.
+    const limit = Math.max(0, getMax() - view);
+    const target = Math.max(0, Math.min(before + span, limit));
+    if (smooth && Math.abs(target - before) > px) {
+      const dir = target > before ? 1 : -1;
+      let p = before;
+      while ((dir > 0 && p < target) || (dir < 0 && p > target)) {
+        p = dir > 0 ? Math.min(p + px, target) : Math.max(p - px, target);
+        setPos(p);
+        await frame();
+      }
+    } else {
+      setPos(target);
     }
+    const after = getPos();
+    const max = getMax();
+    return {
+      atBottom: (after + view >= max - 2) || (after <= before + 1 && factor > 0),
+      moved: Math.abs(after - before) > 1,
+      max, view, before, after,
+      fits: max <= view + 2,      // nothing to scroll: content fits the viewport
+      missing: false,
+    };
+  }, scrollSel, overlap, stepPx, accurate, deltaFactor);
+
+  const scrollToTop = () => page.evaluate(async (sSel, px, smooth) => {
+    const t = sSel ? document.querySelector(sSel) : null;
+    const setPos = (v) => { if (t) t.scrollTop = v; else window.scrollTo(0, v); };
+    const getPos = () => t ? t.scrollTop : (window.scrollY || 0);
+    if (!smooth) { setPos(0); return; }
+    const frame = () => new Promise(r => {
+      let done = false;
+      const fin = () => { if (!done) { done = true; r(); } };
+      try { requestAnimationFrame(fin); } catch (_) {}
+      setTimeout(fin, 250);
+    });
+    // Traverse upward too — some lists lazy-load on upward crossings as well.
+    let p = getPos();
+    while (p > 0) { p = Math.max(0, p - px * 4); setPos(p); await frame(); }
+  }, scrollSel, stepPx, accurate).catch(() => {});
+
+  const scrollHeight = () => page.evaluate((sSel) => {
+    const t = sSel ? document.querySelector(sSel) : null;
+    return t ? t.scrollHeight : (document.scrollingElement || document.documentElement || document.body).scrollHeight;
+  }, scrollSel).catch(() => 0);
+
+  // Scroll to an ABSOLUTE position, traversed in steps so every band between
+  // here and there gets a frame (a lazy-load trigger can sit anywhere).
+  const scrollTo = (y) => page.evaluate(async (sSel, target, px, smooth) => {
+    const t = sSel ? document.querySelector(sSel) : null;
+    const setPos = (v) => { if (t) t.scrollTop = v; else window.scrollTo(0, v); };
+    const getPos = () => t ? t.scrollTop : (window.scrollY || 0);
+    try {
+      (t ? [t] : [document.documentElement, document.body]).forEach(function (e) {
+        if (e && e.style) e.style.scrollBehavior = 'auto';
+      });
+    } catch (_) {}
+    const frame = () => new Promise(r => {
+      let done = false;
+      const fin = () => { if (!done) { done = true; r(); } };
+      try { requestAnimationFrame(fin); } catch (_) {}
+      setTimeout(fin, 250);
+    });
+    if (!smooth) { setPos(target); return getPos(); }
+    let p = getPos();
+    const dir = target > p ? 1 : -1;
+    while ((dir > 0 && p < target) || (dir < 0 && p > target)) {
+      p = dir > 0 ? Math.min(p + px, target) : Math.max(p - px, target);
+      setPos(p);
+      await frame();
+    }
+    return getPos();
+  }, scrollSel, Math.max(0, Math.round(y)), stepPx, accurate).catch(() => 0);
+
+  // Re-walk the TAIL of the page slowly, pausing at each stop.
+  //
+  // Sitting at the very bottom is not enough: the element that triggers the next
+  // load is often well ABOVE the page end (on lock.me it sits 809px above it, so
+  // at the bottom it is off-screen and never fires). Backing off by a fixed
+  // amount is a guess that can miss by pixels. Instead, cover the whole final
+  // stretch — every position in the last ~2.5 viewports gets real viewport time,
+  // so a trigger anywhere in that band is seen. Stops as soon as content grows.
+  //
+  // How far back it goes ESCALATES with each failed attempt, because the right
+  // distance is unknowable up front: a batch that added 8000px moved the trigger
+  // 8000px away from where we are standing.
+  //
+  // It never goes back further than the page has GROWN, though. Everything added
+  // since this sweep began lies inside the last totalGrowth px; anything above
+  // that was already walked on the way down and cannot hold a trigger we have
+  // not already crossed. Re-walking from the top would burn a lot of time to
+  // cover ground that is provably uninteresting.
+  const tailSweep = async (attempt) => {
+    const m = await metrics();
+    if (!m.view || m.max <= m.view) return false;
+    const bottom = Math.max(0, m.max - m.view);
+    const a = attempt || 0;
+    const back = a === 0 ? m.view * 1.5
+               : a === 1 ? m.view * 3
+               : a === 2 ? Math.max(m.view * 6, lastGrowth)
+               : Math.max(m.view * 6, totalGrowth);   // never past what grew
+    const start = Math.max(0, bottom - back);
+    // Keep the number of stops bounded when the span is huge (a whole page).
+    const stride = Math.max(Math.round(m.view * 0.5), Math.ceil((bottom - start) / 40));
+    for (let y = start; y <= bottom; y += stride) {
+      const landed = await scrollTo(y);
+      // If the scroller will not move at all there is no point walking the rest
+      // of the tail — every stop would be the same position.
+      if (y > start + stride && Math.abs(landed - y) > m.view && landed === 0) return false;
+      await new Promise(r => setTimeout(r, 220));
+      if (await scrollHeight() > m.max + 8) return true;   // something loaded
+    }
+    await scrollTo(bottom);
+    await new Promise(r => setTimeout(r, 220));
+    return (await scrollHeight()) > m.max + 8;
   };
+
+  // Current geometry, read fresh. The first sense reading goes stale as soon as
+  // content loads, and the "is this list actually short?" verdict must be made
+  // on what the page looks like NOW, not on what it looked like before waiting.
+  const metrics = () => page.evaluate((sSel) => {
+    const t = sSel ? document.querySelector(sSel) : null;
+    const view = t ? t.clientHeight : window.innerHeight;
+    const max = t ? t.scrollHeight : (document.scrollingElement || document.documentElement || document.body).scrollHeight;
+    return { view, max, fits: max <= view + 2, pos: t ? t.scrollTop : (window.scrollY || 0) };
+  }, scrollSel).catch(() => ({ view: 0, max: 0, fits: false, pos: 0 }));
 
   // First number in the expected-total element ("Showing 1–20 of 340" → 340;
   // takes the largest number so "1-20 of 340" resolves to the total).
@@ -1947,52 +2869,224 @@ async function harvestWhileScrolling(page, containerSel, fields, keyField, scrol
     return nums.map(Number).reduce((a, b) => Math.max(a, b), 0);
   }, expectSel).catch(() => null) : null;
 
-  await harvest();   // grab whatever is on screen before scrolling
-  let reason = 'safety-cap';
-  for (let i = 0; i < maxScrolls; i++) {
-    if (expected != null && out.length >= expected) { reason = 'reached-expected-total'; break; }
-    if (await present(endSel)) { reason = 'end-marker'; break; }
-    let sense = { atBottom: false };
-    try { sense = await scrollAndSense(); } catch (_) {}
-    await new Promise(r => setTimeout(r, delay));
-    await waitLoadingGone();
-    const added = await harvest();
-    if (added > 0) { noNew = 0; continue; }
-    // Nothing new this step. Only start counting toward "done" once we're
-    // genuinely at the bottom — mid-list empty steps are just slow loads.
-    if (sense.atBottom) { if (++noNew >= maxNoNew) { reason = 'bottom-stable'; break; } }
-    else { noNew = 0; }
+  // ── One downward sweep, from wherever we are to the end of the list ──────
+  const sweepDown = async (isVerify) => {
+    let reason = 'safety-cap';
+    let everMoved = false;
+    let noProgress = 0;
+    for (let i = 0; i < maxScrolls; i++) {
+      if (expected != null && out.length >= expected) return 'reached-expected-total';
+      if (await present(endSel)) return 'end-marker';
+
+      let sense = { atBottom: false, moved: false, fits: false, missing: false };
+      try { sense = await scrollBy(1); } catch (_) {}
+
+      if (sense.missing) { stuck = true; return 'scroll-container-missing'; }
+      // NEVER conclude anything from the first step. An infinite-scroll page
+      // very often starts with barely one screen of content, so the first
+      // attempt cannot move and the content "fits" — concluding there is
+      // nothing to scroll would end the run before a single batch had loaded.
+      // Whether the page is genuinely short, genuinely stuck, or just has not
+      // loaded yet is decided AFTER the patience ladder below, which gives
+      // lazy loading a real chance to produce something.
+      if (dbg) console.log('SCROLL_STEP:' + JSON.stringify({
+        i, pos: sense.after, was: sense.before, max: sense.max, view: sense.view,
+        moved: sense.moved, atBottom: sense.atBottom, fits: sense.fits, have: out.length,
+      }));
+      if (sense.moved) { everMoved = true; noProgress = 0; }
+      else if (!sense.atBottom) {
+        // Asked to move and nothing happened, but we are not at the end either:
+        // the site is fighting the scroll (hijacked wheel, snap points, a
+        // rewritten position). Jump straight to the bottom rather than spending
+        // the whole step budget inching forward.
+        if (++noProgress >= 2) { await scrollBy(99); noProgress = 0; }
+      }
+
+      await renderTick();
+      if (await harvest() > 0) continue;
+      if (!sense.atBottom) continue;    // mid-list quiet step: keep going
+
+      // Only now, at the end of the content, is it worth waiting for the
+      // network and the DOM to genuinely go quiet.
+      const settled = await settle();
+      if (await harvest() > 0) continue;
+
+      // At the bottom with nothing new. Escalate patience, and re-arm the
+      // loader between tries — an IntersectionObserver that already fired here
+      // will not fire again without a fresh crossing.
+      let recovered = false;
+      const hBefore = await scrollHeight();
+      let attempt = 0;
+      // A page that has never scrolled AND still fits cannot be waiting on a
+      // scroll-triggered loader, so it only gets the first few rungs — enough
+      // for a slow async render, without making every short list cost the full
+      // ladder. Anything that has scrolled gets the whole budget.
+      const fitsNow = (await metrics()).fits;
+      const rungs = (!everMoved && fitsNow) ? ladder.slice(0, 3) : ladder;
+      for (const wait of rungs) {
+        if (accurate && await tailSweep(attempt++)) { recovered = true; break; }
+        await new Promise(r => setTimeout(r, wait));
+        await settle();
+        if (await harvest() > 0) { recovered = true; break; }
+        // Growth means content IS arriving even though no new key surfaced yet
+        // (it may be below us, or we are not harvesting at all — exhaustScroll).
+        // Checked per rung, not just after the ladder: otherwise every batch of
+        // a long list would cost the ladder's whole budget.
+        const hNow = await scrollHeight();
+        if (hNow > hBefore + 8) {
+          lastGrowth = Math.max(lastGrowth, hNow - hBefore);
+          totalGrowth += hNow - hBefore;
+          recovered = true; break;
+        }
+        if (await present(endSel)) return 'end-marker';
+      }
+      if (recovered) continue;
+      if (dbg) console.log('SCROLL_LADDER_EXHAUSTED:' + JSON.stringify({
+        i, everMoved, have: out.length, height: await scrollHeight(),
+      }));
+      // Ladder exhausted with no growth. NOW it is safe to say why we stopped.
+      if (!everMoved) {
+        const m = await metrics();
+        // Content fits and never needed to scroll: complete, not a failure.
+        if (m.fits) return 'no-scroll-needed';
+        // Content overflows but the element refuses to scroll — a misconfigured
+        // Scroll container. Reported loudly rather than mistaken for the end.
+        stuck = true;
+        return 'scroll-container-stuck';
+      }
+      return settled ? 'bottom-stable' : 'settle-timeout';
+    }
+    return reason;
+  };
+
+  await installProbe();
+  await harvest();                        // whatever is on screen before scrolling
+  let reason = await sweepDown(false);
+
+  // ── Verification passes ─────────────────────────────────────────────────
+  // A pass that adds nothing proves the previous one saw everything reachable.
+  let passes = 1;
+  let verified = false;
+  if (!stuck && reason !== 'reached-expected-total') {
+    while (passes < maxPasses) {
+      const before = out.length;
+      await scrollToTop();
+      await settle();
+      await harvest();
+      await sweepDown(true);
+      passes++;
+      if (out.length === before) { verified = true; break; }
+    }
+  } else if (reason === 'reached-expected-total') {
+    verified = true;
   }
 
-  const complete = expected != null ? out.length >= expected : reason !== 'safety-cap';
+  disposeNet();
+  try { await page.evaluate(() => { if (window.__hvProbe) { window.__hvProbe.disconnect(); delete window.__hvProbe; } }); } catch (_) {}
+
+  const complete = expected != null
+    ? out.length >= expected
+    : (!stuck && reason !== 'safety-cap' && reason !== 'settle-timeout' && (verified || reason === 'no-scroll-needed' || maxPasses === 1));
+  // A page that stops growing may simply not be an infinite-scroll page at all.
+  // Look for a real "next page" link — if one exists, scrolling was never going
+  // to load anything and the user needs a pagination step instead. Saying so is
+  // the difference between a confusing "success" and an actionable answer.
+  let nextPageHref = null;
+  try {
+    nextPageHref = await page.evaluate(() => {
+      const cur = Number(new URLSearchParams(location.search).get('page') || 1);
+      const links = Array.from(document.querySelectorAll('a[href]'));
+      const rel = links.find(a => (a.getAttribute('rel') || '').toLowerCase() === 'next');
+      if (rel) return rel.href;
+      for (const a of links) {
+        const m = (a.getAttribute('href') || '').match(/[?&]page=(\d+)/);
+        if (m && Number(m[1]) > cur) return a.href;
+      }
+      const byText = links.find(a => /next|następn|nastepn|weiter|siguiente|suivant/i.test(a.textContent || ''));
+      return byText ? byText.href : null;
+    });
+  } catch (_) {}
+
+  if (opts.silent) return out;
   try {
     const ofExp = expected != null ? (' of ' + expected + ' expected') : '';
-    console.log(complete
-      ? ('✓ Collect List: collected ' + out.length + ' item(s)' + ofExp + ' (' + reason + ').')
-      : ('⚠ Collect List may be INCOMPLETE — collected ' + out.length + ' item(s)' + ofExp + ' (' + reason + '). ' +
-         (expected == null && reason === 'safety-cap'
-           ? 'Raise "Max scroll steps", or set an expected-total / end-of-list selector to confirm completeness.'
-           : 'The page reported more items than were collected.')));
+    if (stuck) {
+      console.log('✗ Collect List: the scroll container ' +
+        (reason === 'scroll-container-missing'
+          ? 'selector matched no element'
+          : 'never moved, so nothing could load') +
+        ' — collected only ' + out.length + ' item(s)' + ofExp +
+        '. Check the "Scroll container" setting (leave it empty to scroll the page itself).');
+    } else if (complete) {
+      console.log('✓ Collect List: collected ' + out.length + ' item(s)' + ofExp +
+        ' (' + reason + (verified ? ', verified over ' + passes + ' pass(es)' : '') + ').');
+    } else {
+      console.log('⚠ Collect List may be INCOMPLETE — collected ' + out.length + ' item(s)' + ofExp +
+        ' (' + reason + ', ' + passes + ' pass(es)). ' +
+        (reason === 'settle-timeout'
+          ? 'The page kept loading past the settle timeout — raise it, or the site may be streaming continuously.'
+          : reason === 'safety-cap'
+            ? 'Raise "Max scroll steps", or set an expected-total / end-of-list selector to confirm completeness.'
+            : expected != null
+              ? 'The page reported more items than were collected.'
+              : 'A verification pass was still finding new items — raise "Verification passes".'));
+    }
+    if (nextPageHref && !stuck) {
+      console.log('⚠ Collect List: this page has a NEXT-PAGE link (' + nextPageHref + '), so it is ' +
+        'paginated rather than infinite-scroll — scrolling can never load the rest. Use a ' +
+        '"More pages — Numbered web addresses" or "More pages — Click Next" step with an Extract List ' +
+        'inside it, instead of collecting while scrolling.');
+    }
+    if (dupInBatch > 0) {
+      console.log('⚠ Collect List: ' + dupInBatch + ' row(s) on screen shared an identity, so distinct records ' +
+        'were merged. Set a "Key field" (a unique id / URL / SKU column) to stop losing them.');
+    }
     // Machine-readable twin (suppressed from the platform log; kept for tools).
     console.log('COLLECT_SUMMARY:' + JSON.stringify({
       collected: out.length,
       expected: expected == null ? undefined : expected,
-      complete, reason,
+      complete, reason, passes, verified,
+      nextPageHref: nextPageHref || undefined,
+      duplicateKeyRows: dupInBatch || undefined,
     }));
   } catch (_) {}
   return out;
+}
+
+/**
+ * Scroll to the very end of a page (or container) WITHOUT collecting anything —
+ * used by PAGINATE_SCROLL, whose body extracts from the fully-loaded DOM once
+ * this returns. It reuses the harvester's engine rather than re-implementing a
+ * cruder loop, so it gets the same continuous traversal (no teleporting past an
+ * IntersectionObserver sentinel), the same network+DOM idle settling instead of
+ * a fixed guess, and the same escalating patience with jiggle at the bottom.
+ *
+ * Passing a selector that is valid but matches nothing reduces the sweep's
+ * "did anything new appear?" test to pure scroll-height growth — exactly the
+ * right stop condition when nothing is being harvested along the way. One pass:
+ * there is no per-window state to verify, the DOM is read afterwards.
+ */
+async function exhaustScroll(page, scrollSel, opts) {
+  await harvestWhileScrolling(page, '__hv_nothing__', {}, '', scrollSel,
+    Object.assign({}, opts || {}, { silent: true, maxPasses: 1 }));
 }`;
+
 
 // Remove the per-step / per-iteration marker lines and the stats calls from
 // generated step code. Every such marker is emitted as its own standalone
 // line, so a line-level filter is exact and safe.
 function stripDownloadInstrumentation(code) {
   const DROP = [
+    /^\s*__emitMark\('(?:STEP_BEGIN|ITER_START|ITER_TICK|ITER_END)'/,
     /^\s*console\.log\('STEP_BEGIN:/,
     /^\s*console\.log\('ITER_(?:START|TICK|END):/,
     /^\s*__currentStep__\s*=/,
     /^\s*let __currentStep__\s*=\s*null;\s*$/,
     /^\s*await __emitStepStats\(/,
+    /^\s*__checkpoint\(/,
+    /^\s*__stageStepDone\(/,
+    /^\s*const __ts_[a-z0-9]+ = Date\.now\(\);\s*$/,
+    /^\s*__stepTime\(/,
   ];
   return code.split('\n').filter(l => !DROP.some(rx => rx.test(l))).join('\n');
 }
@@ -2017,6 +3111,67 @@ function pruneRedundantLeadingNavigations(steps) {
 }
 
 /* =========================================================================
+   PERFORMANCE SETTINGS  (workflow.meta.performance)
+   -------------------------------------------------------------------------
+   Everything here changes how a page is fetched or waited on, so every switch
+   defaults OFF: an existing saved workflow must keep behaving exactly as it
+   did until its owner opts in. `WS_*` env vars move the INSTANCE default for
+   an operator who wants a whole deployment fast by default; the per-workflow
+   value always wins over the env var.
+
+     blockResources   — skip images / media / fonts / trackers (browser/resourceBlock.js)
+     blockStylesheets — also skip CSS (needs blockResources)
+     smartWait        — navigate on domcontentloaded + wait for the selector the
+                        next extraction actually needs, instead of waiting for
+                        every subresource via 'load'
+     concurrency      — parallel workers for per-item loops (1 = sequential,
+                        which is the historical behaviour)
+     requestsPerSecond— global pacing cap shared by all workers (0 = unlimited)
+     jitterMs         — random extra delay per request, so pacing isn't
+                        perfectly regular
+   ========================================================================= */
+// Hard ceiling on workers. Each holds a Chrome tab (~50-80MB), so an
+// unbounded value entered in the UI would OOM the box rather than go faster.
+// WS_MAX_CONCURRENCY lets an operator raise it for a well-resourced server.
+const CONCURRENCY_HARD_MAX = (() => {
+  const n = Number(process.env.WS_MAX_CONCURRENCY);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 16;
+})();
+
+function envFlag(name) {
+  const v = process.env[name];
+  if (v == null || v === '') return false;
+  return /^(1|true|yes|on)$/i.test(String(v));
+}
+
+function envNum(name) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+function resolvePerf(meta) {
+  const p = (meta && typeof meta.performance === 'object' && meta.performance) || {};
+  const pick = (key, envName) => (p[key] === undefined ? envFlag(envName) : !!p[key]);
+  const pickNum = (key, envName, dflt) => {
+    const raw = p[key] === undefined || p[key] === null || p[key] === ''
+      ? envNum(envName)
+      : Number(p[key]);
+    return Number.isFinite(raw) && raw >= 0 ? raw : dflt;
+  };
+  return {
+    blockResources:    pick('blockResources',   'WS_BLOCK_RESOURCES'),
+    blockStylesheets:  pick('blockStylesheets', 'WS_BLOCK_STYLESHEETS'),
+    smartWait:         pick('smartWait',        'WS_SMART_WAIT'),
+    httpFirst:         pick('httpFirst',        'WS_HTTP_FIRST'),
+    concurrency:       Math.max(1, Math.min(
+                         Math.floor(pickNum('concurrency', 'WS_CONCURRENCY', 1)) || 1,
+                         CONCURRENCY_HARD_MAX)),
+    requestsPerSecond: pickNum('requestsPerSecond', 'WS_REQUESTS_PER_SECOND', 0),
+    jitterMs:          Math.floor(pickNum('jitterMs', 'WS_JITTER_MS', 0)),
+  };
+}
+
+/* =========================================================================
    MAIN EXPORT: generateCode(workflow) → string
    workflow = { steps: [...], meta: { startUrl, viewport } }
    ========================================================================= */
@@ -2034,6 +3189,8 @@ function generateCode(workflow, options = {}) {
   // server.js's downloadCode handler (which omits it; see the `clean`
   // branch below). { protocol, host, port, username?, password? } | null.
   const proxy = workflow.proxy || null;
+  // Performance switches for this workflow (all default off — see resolvePerf).
+  const perf = resolvePerf(workflow.meta);
 
   // Picked fresh on every call — generateCode() runs once per execution
   // (see runner.service.js), so scheduled/repeated runs of the same
@@ -2079,15 +3236,25 @@ function generateCode(workflow, options = {}) {
     // label becomes a top-level `let <name>;` declaration so the data
     // it captures is visible to subsequent steps as a JS variable.
     capturedAliases: new Set(),
+    // Per-workflow performance switches (see resolvePerf). Read by NAVIGATE
+    // to decide its wait strategy; passed down to subflow/loop contexts so a
+    // nested navigation makes the same choice as a top-level one.
+    perf,
+    // Download mode — suppresses platform-only scaffolding that a line-level
+    // filter can't remove (the multi-line resume guard).
+    clean,
   };
 
-  let stepCode = genStepList(steps, ctx, 2);
+  // isRoot: only top-level steps get a resume guard (see stepResumeGuard).
+  let stepCode = genStepList(steps, ctx, 2, true);
   if (clean) stepCode = stripDownloadInstrumentation(stepCode);
 
   // ── Conditional prelude / wrapper pieces ────────────────────────────────
   // Only inline the field-transform runtime when a step actually uses it,
   // and the self-healing instrumentation only for in-platform runs.
-  const usesFieldRuntime = /__ftMaterializeRow\(/.test(stepCode);
+  // Either entry point pulls in the runtime: list rows go through
+  // materializeRow, single extractions through cleanAny.
+  const usesFieldRuntime = /__ft(?:MaterializeRow|CleanAny)\(/.test(stepCode);
   const fieldRuntimeSrc = usesFieldRuntime
     ? `\n// ─── Field transform runtime (clean / split per-field pipelines) ──────────\n${FIELD_TRANSFORM_RUNTIME}\n`
     : '';
@@ -2099,7 +3266,7 @@ function generateCode(workflow, options = {}) {
     ? `\n// ─── Enrich runtime (merge subflow detail results back into list rows) ────\n${ENRICH_RUNTIME_SRC}\n`
     : '';
   // Harvest runtime (COLLECT_LIST) — behaviour, included in both modes on demand.
-  const usesHarvestRuntime = /harvestWhileScrolling\(/.test(stepCode);
+  const usesHarvestRuntime = /(?:harvestWhileScrolling|exhaustScroll)\(/.test(stepCode);
   const harvestRuntimeSrc = usesHarvestRuntime
     ? `\n// ─── Harvest runtime (collect a list while scrolling; virtual lists) ──────\n${HARVEST_RUNTIME_SRC}\n`
     : '';
@@ -2108,12 +3275,20 @@ function generateCode(workflow, options = {}) {
   // (initial, pagination, subflow, new tab) clears CMP banners. Honours the
   // SCRAPER_CONSENT env var ('accept' default | 'reject' | 'off').
   const consentHelperSrc = buildCodegenConsentHelper();
+  // Request blocking — emitted for downloaded scripts too (it's behaviour, not
+  // instrumentation), and a no-op helper when the workflow hasn't opted in.
+  const resourceBlockSrc = buildCodegenResourceBlockHelper({
+    enabled: perf.blockResources,
+    blockStylesheets: perf.blockStylesheets,
+  });
   // CAPTCHA detection + (opt-in) solving helper. Always inlined so NAVIGATE
   // auto-handling and the SOLVE_CAPTCHA step work; the machine-readable
   // CAPTCHA_DETECTED marker is only emitted for in-platform runs (!clean) so
   // downloaded scripts stay quiet.
   const captchaHelperSrc = buildCodegenCaptchaHelper(!clean);
   const currentStepDecl = clean ? '' : '  let __currentStep__ = null;\n';
+  // Point the checkpoint runtime at the ROOT results object (see __checkpoint).
+  const rootResultsDecl = clean ? '' : '  __rootResults = __results__;\n';
   const workflowResultsMarker = clean
     ? ''
     : `    console.log('\\nWORKFLOW_RESULTS:' + JSON.stringify(__results__));\n`;
@@ -2145,6 +3320,9 @@ function generateCode(workflow, options = {}) {
     ? `    console.error('❌ Workflow error:', err.message);
     process.exitCode = 1;`
     : `    console.error('❌ Workflow error:', err.message);
+    // Flush the tail before reporting the failure: a step that throws halfway
+    // through a 5,000-URL loop still captured everything up to that point.
+    try { __checkpoint(true); } catch (_) {}
     try {
       const __html__ = await __snapshotPageHtml(page);
       const __payload__ = {
@@ -2188,20 +3366,25 @@ function generateCode(workflow, options = {}) {
     ? `${JSON.stringify(launchArgs, null, 6).replace(/\n/g, '\n    ')}.concat(process.env.SCRAPER_PROXY_SERVER ? ['--proxy-server=' + process.env.SCRAPER_PROXY_SERVER, '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'] : [])`
     : JSON.stringify(launchArgs, null, 6).replace(/\n/g, '\n    ');
 
+  /* Proxy setup now lives inside __openPage (browser/pagePool.js) rather than
+     being applied once to the first page in run(). That is a fix, not just a
+     move: every tab a run opens goes through a proxy, but only the first one
+     was ever authenticated, so an authenticated proxy silently failed on every
+     subflow / per-row detail page. Centralising the page factory means the
+     100th tab is set up exactly like the 1st. */
   let proxyAuthCode = '';
   if (clean) {
-    proxyAuthCode = `
-  // Proxy support: set SCRAPER_PROXY_SERVER (e.g. "http://host:port" or
+    proxyAuthCode = `  // Proxy support: set SCRAPER_PROXY_SERVER (e.g. "http://host:port" or
   // "socks5://host:port") to route through a proxy, and — if it needs
   // auth — SCRAPER_PROXY_USERNAME / SCRAPER_PROXY_PASSWORD. SOCKS5 proxy
   // auth isn't supported by Chrome itself (page.authenticate() only
   // answers HTTP(S) proxy challenges).
   if (process.env.SCRAPER_PROXY_USERNAME) {
-    await page.authenticate({ username: process.env.SCRAPER_PROXY_USERNAME, password: process.env.SCRAPER_PROXY_PASSWORD || '' });
+    await _p.authenticate({ username: process.env.SCRAPER_PROXY_USERNAME, password: process.env.SCRAPER_PROXY_PASSWORD || '' });
   }
 `;
   } else if (proxy && proxy.username) {
-    proxyAuthCode = `  await page.authenticate(${JSON.stringify({ username: proxy.username, password: proxy.password || '' })});\n`;
+    proxyAuthCode = `  await _p.authenticate(${JSON.stringify({ username: proxy.username, password: proxy.password || '' })});\n`;
   }
 
   // WebRTC's own STUN-based IP discovery doesn't go through --proxy-server —
@@ -2209,11 +3392,25 @@ function generateCode(workflow, options = {}) {
   let proxyWebRtcGuardCode = '';
   if (clean) {
     proxyWebRtcGuardCode = `  if (process.env.SCRAPER_PROXY_SERVER) {
-    await page.evaluateOnNewDocument(${JSON.stringify(PROXY_WEBRTC_GUARD_SCRIPT)});
+    await _p.evaluateOnNewDocument(${JSON.stringify(PROXY_WEBRTC_GUARD_SCRIPT)});
   }\n`;
   } else if (proxy) {
-    proxyWebRtcGuardCode = `  await page.evaluateOnNewDocument(${JSON.stringify(PROXY_WEBRTC_GUARD_SCRIPT)});\n`;
+    proxyWebRtcGuardCode = `  await _p.evaluateOnNewDocument(${JSON.stringify(PROXY_WEBRTC_GUARD_SCRIPT)});\n`;
   }
+
+  // Only inlined when some subflow actually compiled an HTTP path — it pulls
+  // in cheerio, which a browser-only script has no reason to require.
+  const httpExtractSrc = perf.httpFirst
+    ? buildCodegenHttpExtractHelper({ userAgent: stealth.profile && stealth.profile.userAgent })
+    : '';
+
+  const poolHelperSrc = buildCodegenPoolHelper({
+    instrument: !clean,
+    proxyAuth: proxyAuthCode,
+    proxyWebRtc: proxyWebRtcGuardCode,
+    requestsPerSecond: perf.requestsPerSecond,
+    jitterMs: perf.jitterMs,
+  });
 
   return `#!/usr/bin/env node
 'use strict';
@@ -2309,6 +3506,26 @@ async function resolveElementsSoft(page, selectors, graceMs = 0) {
  * briefly for it to settle) so a subsequent click/hover/type lands on a visible,
  * stable element. Pass { reveal: false } for a pure wait that must not scroll.
  */
+/**
+ * Smart wait: return as soon as the data we're about to extract is present,
+ * instead of waiting for every last subresource of the page.
+ *
+ * Used with goto(waitUntil:'domcontentloaded'). Cannot be slower or less
+ * reliable than the waitUntil:'load' it replaces — if the selector never
+ * appears on the fast path it falls back to waiting for the load event and
+ * polls once more, so the worst case is the old behaviour plus a poll.
+ * Never throws: a genuinely absent element is data (an empty field), and the
+ * empty-result healing pipeline is what handles that.
+ */
+async function smartWaitFor(page, selectors, timeout = 15000) {
+  if (!selectors || !selectors.length) return false;
+  if (await resolveElementSoft(page, selectors, timeout)) return true;
+  try {
+    await page.waitForFunction('document.readyState === "complete"', { timeout: 5000 });
+  } catch (_) {}
+  return !!(await resolveElement(page, selectors));
+}
+
 async function waitForAny(page, selectors, timeout = 10000, opts = {}) {
   const reveal = opts.reveal !== false;
   const deadline = Date.now() + timeout;
@@ -2425,22 +3642,21 @@ async function evalOnElements(page, selectors, fn, graceMs = 0) {
   if (!els.length) return [];
   return Promise.all(els.map(el => page.evaluate(fn, el)));
 }
-${fieldRuntimeSrc}${enrichRuntimeSrc}${harvestRuntimeSrc}${instrumentationSrc}${consentHelperSrc}${captchaHelperSrc}
+${fieldRuntimeSrc}${enrichRuntimeSrc}${harvestRuntimeSrc}${instrumentationSrc}${consentHelperSrc}${resourceBlockSrc}${httpExtractSrc}${poolHelperSrc}${captchaHelperSrc}
 async function run() {
   const __results__ = {};
-${currentStepDecl}${variablesCode}${capturedAliasesCode}
+${rootResultsDecl}${currentStepDecl}${variablesCode}${capturedAliasesCode}
   const browser = await puppeteer.launch({
     // Honour CHROME_PATH when set (Linux servers / CI / containers); fall back
     // to the local Chrome install used during development.
     executablePath: process.env.CHROME_PATH || 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
-    headless: 'new',
+    headless: false,
     defaultViewport: null,
     args: ${launchArgsCode},
     ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
   });
 
-  let page = await browser.newPage();
-${proxyAuthCode}${proxyWebRtcGuardCode}  await applyStealthToPage(page);
+  let page = await __openPage(browser);
   await page.setViewport({ width: ${vpW}, height: ${vpH}, deviceScaleFactor: 1 });
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
@@ -2743,4 +3959,15 @@ function generateReadme(workflow) {
   return L.join('\n');
 }
 
-module.exports = { generateCode, generateReadme };
+module.exports = {
+  generateCode, generateReadme,
+  // Exported so test/scroll-harvest.test.js can eval the runtime and drive it
+  // against real fixture pages — the engine is where the accuracy lives.
+  HARVEST_RUNTIME_SRC,
+  // Exported so test/resume-e2e.test.js drives the REAL emitted resume filter
+  // rather than a lookalike — the whole point of that test is that a resumed
+  // run reproduces an uninterrupted one, which only means something if the
+  // code under test is the code that actually ships.
+  resumeSkipCode,
+  resolvePerf,
+};

@@ -1,0 +1,169 @@
+/* Global "Your data" screen. A full-surface view like the dashboard rather
+   than a dialog — it is a destination, not an interruption. */
+
+.dh {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  overflow-y: auto;
+  background: var(--bg-primary, #0d1117);
+}
+
+.dh-inner {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+.dh-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.dh-title {
+  margin: 0 0 6px;
+  font-size: 26px;
+  font-weight: 650;
+  color: var(--text-primary, #f0f6fc);
+}
+
+.dh-subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary, #8b949e);
+}
+.dh-subtitle strong { color: var(--text-primary, #f0f6fc); }
+
+.dh-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #f0f6fc);
+  background: transparent;
+  border: 1px solid var(--border-default, #30363d);
+  border-radius: var(--radius-md, 8px);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.dh-close:hover { background: var(--bg-secondary, #161b22); }
+
+.dh-search {
+  width: 100%;
+  margin-bottom: 16px;
+  padding: 9px 12px;
+  font-size: 13px;
+  color: var(--text-primary, #f0f6fc);
+  background: var(--bg-secondary, #161b22);
+  border: 1px solid var(--border-default, #30363d);
+  border-radius: var(--radius-md, 8px);
+}
+.dh-search:focus { outline: none; border-color: var(--accent-primary, #58a6ff); }
+
+.dh-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dh-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 13px 16px;
+  border: 1px solid var(--border-default, #30363d);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--bg-secondary, #161b22);
+  transition: border-color 120ms;
+}
+.dh-row:hover { border-color: var(--accent-primary, #58a6ff); }
+/* A scraper with nothing collected recedes rather than disappearing — it is
+   still a real scraper, just not what you came here for. */
+.dh-row--empty { opacity: 0.62; }
+.dh-row--empty:hover { opacity: 1; }
+
+.dh-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 200px;
+  flex: 1;
+}
+
+.dh-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #f0f6fc);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dh-meta {
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+}
+.dh-meta strong { color: var(--accent-success, #3fb950); font-weight: 650; }
+
+.dh-muted { color: var(--text-muted, #6e7681); }
+.dh-error { color: var(--accent-danger, #f85149); }
+
+.dh-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.dh-btn {
+  padding: 6px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #f0f6fc);
+  background: var(--bg-tertiary, #21262d);
+  border: 1px solid var(--border-default, #30363d);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+.dh-btn:hover:not(:disabled) { border-color: var(--accent-primary, #58a6ff); }
+.dh-btn:disabled { opacity: 0.5; cursor: default; }
+.dh-btn--primary {
+  color: #fff;
+  background: var(--accent-primary, #58a6ff);
+  border-color: transparent;
+}
+.dh-btn--primary:hover { filter: brightness(1.08); }
+
+.dh-empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-secondary, #8b949e);
+  font-size: 14px;
+}
+
+.dh-empty-state {
+  text-align: center;
+  padding: 56px 20px;
+  border: 1px dashed var(--border-default, #30363d);
+  border-radius: var(--radius-lg, 12px);
+}
+.dh-empty-illustration { font-size: 44px; margin-bottom: 12px; }
+.dh-empty-state h3 { margin: 0 0 6px; font-size: 17px; color: var(--text-primary, #f0f6fc); }
+.dh-empty-state p  { margin: 0; font-size: 13px; color: var(--text-secondary, #8b949e); }
+
+.dh-note {
+  margin: 16px 0 0;
+  font-size: 12px;
+  color: var(--text-muted, #6e7681);
+  text-align: center;
+}

@@ -1,0 +1,383 @@
+/* ChangeDiffViewer — run-to-run diff.
+   Builds on the shared .wf-overlay / .wf-modal / .wf-body system in auth.css.
+
+   Colour carries status (added / changed / removed), never identity, and never
+   alone: every tile has a sign glyph and a word, every table column is headed,
+   and each bucket sits behind a labelled tab. Green and amber are hard to tell
+   apart under protanopia, so nothing here depends on distinguishing them. */
+
+.diff-modal { max-height: 88vh; }
+
+/* ── What's being compared (pinned under the header) ─────────────────────── */
+.diff-controls {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-default);
+    background: var(--bg-primary);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px 24px;
+    /* Sits between the header and the scrolling body inside a flex column —
+       without this it gets squeezed when the diff is long. */
+    flex-shrink: 0;
+}
+
+.diff-compare {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    min-width: 0;
+}
+
+.diff-compare label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.diff-compare label > span {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.diff-compare select {
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 12.5px;
+    max-width: 260px;
+    outline: none;
+}
+
+.diff-compare select:focus { border-color: var(--accent-primary); }
+.diff-compare select:disabled { opacity: 0.55; }
+
+.diff-arrow {
+    color: var(--text-muted);
+    font-size: 15px;
+    padding-bottom: 6px;
+}
+
+.diff-body { gap: 16px; }
+
+.diff-note {
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-left: 2px solid var(--accent-primary);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    line-height: 1.5;
+}
+
+/* ── Headline counts ─────────────────────────────────────────────────────── */
+.diff-stats {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.diff-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 8px 14px;
+    min-width: 92px;
+    border: 1px solid var(--border-default);
+    border-left-width: 3px;
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+}
+
+.diff-stat .n {
+    font-size: 19px;
+    font-weight: 650;
+    line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Labels stay in text ink — the coloured edge and the sign glyph carry status. */
+.diff-stat .l {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.diff-stat.add  { border-left-color: var(--accent-success); }
+.diff-stat.chg  { border-left-color: var(--accent-warning); }
+.diff-stat.del  { border-left-color: var(--accent-danger); }
+.diff-stat.same { border-left-color: var(--border-default); }
+
+.diff-stat.add  .n { color: var(--accent-success); }
+.diff-stat.chg  .n { color: var(--accent-warning); }
+.diff-stat.del  .n { color: var(--accent-danger); }
+.diff-stat.same .n { color: var(--text-secondary); }
+
+.diff-stat.zero { opacity: 0.5; }
+.diff-stat.zero .n { color: var(--text-muted); }
+
+.diff-totals {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.diff-arrow-sm { margin: 0 6px; color: var(--text-muted); }
+
+/* ── Which fields moved (magnitude bars, one hue, all direct-labelled) ───── */
+.diff-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.diff-field-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.diff-field-bar {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    cursor: pointer;
+    overflow: hidden;
+    text-align: left;
+    font: inherit;
+    color: var(--text-primary);
+}
+
+.diff-field-bar .fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: rgba(210, 153, 34, 0.22);
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+}
+
+.diff-field-bar .name {
+    position: relative;
+    flex: 1;
+    font-size: 12.5px;
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.diff-field-bar .count {
+    position: relative;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.diff-field-bar:hover { border-color: var(--border-default); }
+.diff-field-bar.active { border-color: var(--accent-warning); }
+
+/* ── Bucket tabs ─────────────────────────────────────────────────────────── */
+.diff-tabs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border-default);
+    padding-bottom: 10px;
+}
+
+.diff-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid var(--border-default);
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.diff-tab-count {
+    font-size: 11px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.diff-tab:hover:not(:disabled) { color: var(--text-primary); }
+.diff-tab:disabled { opacity: 0.45; cursor: default; }
+
+.diff-tab.add.active     { border-color: var(--accent-success); color: var(--accent-success); background: rgba(63, 185, 80, 0.10); }
+.diff-tab.chg.active     { border-color: var(--accent-warning); color: var(--accent-warning); background: rgba(210, 153, 34, 0.10); }
+.diff-tab.del.active     { border-color: var(--accent-danger);  color: var(--accent-danger);  background: rgba(248, 81, 73, 0.10); }
+.diff-tab.active .diff-tab-count { background: rgba(0, 0, 0, 0.28); color: inherit; }
+
+.diff-tools {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.diff-filter {
+    padding: 6px 10px;
+    width: 180px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 12.5px;
+    outline: none;
+}
+
+.diff-filter:focus { border-color: var(--accent-primary); }
+
+/* ── Changed rows ────────────────────────────────────────────────────────── */
+.diff-changed-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.diff-row-card {
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.diff-row-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-default);
+}
+
+.diff-row-key {
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 45%;
+}
+
+.diff-row-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+}
+
+.diff-chip {
+    font-size: 10.5px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid rgba(210, 153, 34, 0.45);
+    color: var(--accent-warning);
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+.diff-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+}
+
+.diff-table th {
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    font-weight: 600;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border-default);
+    background: var(--bg-secondary);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.diff-table td {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border-muted);
+    vertical-align: top;
+    max-width: 320px;
+}
+
+.diff-table tr:last-child td { border-bottom: none; }
+
+.diff-table .col-field {
+    width: 24%;
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+}
+
+.diff-table .col-num {
+    width: 40px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Only the fields that actually moved get tinted; the rest are context. */
+.diff-table tr.moved .col-before { background: rgba(248, 81, 73, 0.08); }
+.diff-table tr.moved .col-after  { background: rgba(63, 185, 80, 0.08); }
+.diff-table tr.same td { opacity: 0.6; }
+
+.diff-val {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+
+.diff-val.del { color: var(--accent-danger); text-decoration: line-through; text-decoration-thickness: 1px; }
+.diff-val.add { color: var(--accent-success); }
+
+.diff-empty-val { color: var(--text-muted); font-style: italic; font-size: 11.5px; }
+
+.diff-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary);
+}
+
+.diff-rows th { white-space: nowrap; }
+.diff-rows td { white-space: nowrap; }
+.diff-rows.add tbody tr:hover td { background: rgba(63, 185, 80, 0.07); }
+.diff-rows.del tbody tr:hover td { background: rgba(248, 81, 73, 0.07); }
+
+@media (max-width: 720px) {
+    .diff-controls { gap: 10px 12px; }
+    .diff-compare select { max-width: 160px; }
+    .diff-tools { margin-left: 0; width: 100%; }
+    .diff-filter { flex: 1; width: auto; }
+}

@@ -6,6 +6,8 @@ import { createAction, createControl } from "../workflow/stepFactory";
 import { DndContext, DragOverlay, useDroppable, useDraggable, closestCenter } from "@dnd-kit/core";
 import { findStepLocation, attachedGroupSize, attachedGroupLeader, getContainer } from "../workflow/useWorkflow";
 import ExtractListFieldsEditor from "./ExtractListFieldsEditor";
+import TransformPipelineEditor from "./TransformPipelineEditor";
+import { opSummary } from "../workflow/fieldTransforms";
 import WorkflowVariables from "./WorkflowVariables";
 import VariablePicker from "./VariablePicker";
 import ConditionBuilder from "./ConditionBuilder";
@@ -30,6 +32,14 @@ function dzCollision(args) {
 const EXTRACTION_TYPES = new Set([
   "EXTRACT_TEXT", "EXTRACT_ATTRIBUTE", "EXTRACT_HTML",
   "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON", "COLLECT_LIST",
+]);
+
+// Extraction steps that produce ONE value (or a flat array of them with
+// multiple=true) rather than rows. These get a clean pipeline on the step
+// itself — `params.transforms` — where list extraction has one per field.
+// Splitting into columns is deliberately not offered: there are no columns.
+const SINGLE_VALUE_EXTRACTION_TYPES = new Set([
+  "EXTRACT_TEXT", "EXTRACT_ATTRIBUTE", "EXTRACT_HTML",
 ]);
 
 // Walk the workflow tree and return every named extraction step as a
@@ -119,6 +129,29 @@ function typeForExtractType(t) {
 // picker doesn't lie about object fields that won't exist at runtime.
 //
 // Shape: { name, source, sourceColumn?, itemKind: 'row'|'scalar'|'unknown', columns? }
+// A Run Subflow in a per-row mode runs the subflow once for EACH row of its
+// source list, and the generated loop exposes that row as `row`. That is the
+// value its input mappings almost always want — mapping an input to the whole
+// column instead ({{List[*].link}}) seeds every invocation with all the rows
+// joined together. The variable is therefore offered on the step itself, not
+// just inside enclosing loops, so it is discoverable in the picker rather than
+// something you have to know to type.
+function selfRowVarForStep(s, colsByName) {
+  if (!s || s.type !== "RUN_SUBFLOW") return null;
+  const mode = s.params?.mode;
+  if (mode !== "enrich" && mode !== "iterate") return null;
+  const src = String(s.params?.sourceList || s.params?.urlList || "")
+    .replace(/^\s*\{\{\s*/, "").replace(/\s*\}\}\s*$/, "")
+    .replace(/\[\s*\*\s*\][\s\S]*$/, "").trim();
+  return {
+    name: "row",
+    source: src || null,
+    itemKind: "row",
+    columns: colsByName[src] || null,
+    loopType: "RUN_SUBFLOW",
+  };
+}
+
 function iterationVarsForStep(steps, stepId, capturedOutputs) {
   const out = [];
   const colsByName = {};
@@ -127,7 +160,12 @@ function iterationVarsForStep(steps, stepId, capturedOutputs) {
   function walk(arr, ancestors) {
     for (const s of arr || []) {
       if (!s || typeof s !== "object") continue;
-      if (s.id === stepId) { out.push(...ancestors); return true; }
+      if (s.id === stepId) {
+        out.push(...ancestors);
+        const selfRow = selfRowVarForStep(s, colsByName);
+        if (selfRow) out.push(selfRow);
+        return true;
+      }
 
       let here = ancestors;
       if (s.kind === "control" && (s.type === "FOR_EACH" || s.type === "FOR_EACH_ELEMENTS")) {
@@ -953,9 +991,9 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, drag
   // and label so the block reads as a single semantic "Pagination"
   // step instead of as a raw While + If.
   const PAGINATION_STRATEGY_LABEL = {
-    next_button:  'Pagination — Next button',
-    page_numbers: 'Pagination — Page numbers',
-    load_more:    'Pagination — Load more',
+    next_button:  'More pages — Click “Next”',
+    page_numbers: 'More pages — Numbered web addresses',
+    load_more:    'More pages — Click “Load more”',
   };
   // Native containers already carry a descriptive label/icon/colour in their
   // definition, so we use those directly. Legacy loops get the strategy-based
@@ -1258,6 +1296,41 @@ function StepPicker({ onSelect, onClose, customActions = [] }) {
 }
 
 /* ── Step Editor Modal ── */
+/* Collapsible "Clean the value" block for a single-element extraction step.
+   Wraps TransformPipelineEditor with split disabled — a scalar output has no
+   columns to split into. Shows the op count when collapsed so a configured
+   pipeline is visible without expanding. */
+function SingleValueCleanSection({ transforms, sample, onChange }) {
+  const ops = Array.isArray(transforms) ? transforms : [];
+  const [open, setOpen] = useState(ops.length > 0);
+
+  return (
+    <div className="form-group svc-clean">
+      <button type="button" className="adv-toggle-btn" onClick={() => setOpen(v => !v)}>
+        {open ? "▾" : "▸"} Clean the value
+        {ops.length > 0 && <span className="svc-clean-count">{ops.length}</span>}
+      </button>
+      {!open && (
+        <div className="svc-clean-hint">
+          {ops.length > 0
+            ? ops.map(o => opSummary(o)).join(" → ")
+            : "Trim whitespace, strip currency symbols, convert to a number, run a regex…"}
+        </div>
+      )}
+      {open && (
+        <TransformPipelineEditor
+          fieldName="value"
+          transforms={transforms}
+          split={null}
+          allowSplit={false}
+          sample={sample}
+          onChange={({ transforms: next }) => onChange(next)}
+        />
+      )}
+    </div>
+  );
+}
+
 function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
   const isCtrl = isControlStep(step);
   const isCustom = !isCtrl && step.type === "CUSTOM_ACTION";
@@ -1279,6 +1352,15 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
           }])),
         }
       : actionDefinitions[step.type];
+
+  // Every hook must run on every render, so these sit ABOVE the `!def` early
+  // return below. `def` is resolved from the `customActions` prop and flips
+  // from undefined to defined once that list loads — declaring state after the
+  // return would change the hook count between renders and throw
+  // "Rendered more hooks than during the previous render", which unmounts the
+  // whole app (taking main.jsx's stream ResizeObserver with it).
+  const [local, setLocal] = useState(step);
+  const [showAdv, setShowAdv] = useState(false);
 
   if (!def) {
     // Custom action was deleted — let the user remove the orphan step.
@@ -1303,8 +1385,6 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
     );
   }
 
-  const [local, setLocal] = useState(step);
-  const [showAdv, setShowAdv] = useState(false);
   const setParam = (k, v) => {
     if (isCustom) {
       // For custom actions, params.inputs holds the user's values.
@@ -1402,6 +1482,17 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
             <div style={{ color: "var(--text-muted)", fontSize: 13, padding: "8px 0" }}>
               This custom action has no declared inputs.
             </div>
+          )}
+
+          {/* Clean the extracted value — the single-value counterpart of the
+              per-field pipelines in the Extract List editor. Collapsed by
+              default so the step form stays short until it's wanted. */}
+          {!isCtrl && SINGLE_VALUE_EXTRACTION_TYPES.has(step.type) && (
+            <SingleValueCleanSection
+              transforms={local.params?.transforms}
+              sample={step.previewValue}
+              onChange={(next) => setParam("transforms", next)}
+            />
           )}
           {/* Every extraction step gets an extra "Include in final output"
               toggle that the underlying action definitions don't have to
@@ -1850,6 +1941,14 @@ function EnrichSummary({ step, config }) {
 
 /* ── Field Renderer ── */
 function FieldRenderer({ label, type, value, options, placeholder, onChange, step, fieldKey, onName, conditionBuilder, spec }) {
+  // Panel-wide context (socket, preview rows, saved workflows, list-pick
+  // handlers). Read once at the top: several `type` branches below need it,
+  // and calling useContext inside those branches makes the hook count depend
+  // on which field type is rendered — a Rules-of-Hooks violation that throws
+  // "Rendered more hooks than during the previous render" the moment a field's
+  // type changes. One call up here is behaviour-identical and always safe.
+  const wpCtx = useContext(WPCtx) || {};
+
   // hidden fields are stored in params but not shown in UI
   if (type === "hidden") return null;
 
@@ -1903,7 +2002,7 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
   // and the latest preview rows out of WPCtx so the AI auto-detect
   // button and per-field sample values work without prop-drilling.
   if (type === "keyvalue") {
-    const { socket, previewData, listPickStepId, onStartListPick, onStopListPick } = useContext(WPCtx) || {};
+    const { socket, previewData, listPickStepId, onStartListPick, onStopListPick } = wpCtx;
     const previewRows = step && previewData && previewData[step.id]?.previewRows;
     const containerSelector = step?.params?.containerSelector || "";
     const selectorType      = step?.params?.selectorType || "css";
@@ -1933,7 +2032,7 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
   // {{…}}-aware text box; the collected map is stored on params.inputs and the
   // backend seeds it into the inlined subflow (see workflowCodegen RUN_SUBFLOW).
   if (type === "subflowInputs") {
-    const { availableWorkflows } = useContext(WPCtx) || {};
+    const { availableWorkflows } = wpCtx;
     const wfId = step?.params?.[spec?.subflowParam || "workflowId"];
     const wf = (availableWorkflows || []).find(w => w.id === wfId);
     const wfInputs = Array.isArray(wf?.inputs) ? wf.inputs : [];
@@ -1961,7 +2060,11 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
           ))}
         </div>
         <div className="enrich-hint">
-          Map each input to a column of the list (e.g. <code>{"{{row.url}}"}</code>) or any expression. Leave blank to keep the subflow's sample value.
+          Use <code>{"{{row.column}}"}</code> — pick it from the <strong>{"{x}"}</strong> button — so each
+          invocation gets <em>its own</em> row's value. Mapping to a whole column
+          (<code>{"{{List[*].url}}"}</code>) would give every invocation all the rows joined together.
+          Relative links need a prefix: <code>{"https://site.com{{row.url}}"}</code>.
+          Leave blank to keep the subflow's sample value.
         </div>
       </div>
     );
@@ -1972,7 +2075,7 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
   // the user can't accidentally call into themselves (the runtime cycle
   // guard is the real safety net, but hiding the option is friendlier).
   if (type === "workflowSelect") {
-    const { availableWorkflows, currentWorkflowId } = useContext(WPCtx) || {};
+    const { availableWorkflows, currentWorkflowId } = wpCtx;
     const list = (availableWorkflows || []).filter(w => w.id !== currentWorkflowId);
     return (
       <div className="form-group">
@@ -2018,7 +2121,18 @@ function FieldRenderer({ label, type, value, options, placeholder, onChange, ste
         />
       )}
       {type === "number"  && <input type="number" value={value ?? ""}   onChange={e => onChange(Number(e.target.value))} />}
-      {type === "boolean" && <label style={{ display: "flex", alignItems: "center", gap: 8 }}><input type="checkbox" checked={!!value} onChange={e => onChange(e.target.checked)} /><span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{value ? "Enabled" : "Disabled"}</span></label>}
+      {/* An unset boolean shows its schema default, not false — otherwise a
+          step saved before the field existed renders as "Disabled" while the
+          backend is actually applying the default (e.g. Accuracy mode). */}
+      {type === "boolean" && (() => {
+        const on = value === undefined || value === null ? !!spec?.default : !!value;
+        return (
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input type="checkbox" checked={on} onChange={e => onChange(e.target.checked)} />
+            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>{on ? "Enabled" : "Disabled"}</span>
+          </label>
+        );
+      })()}
       {type === "select"  && <select value={value ?? ""} onChange={e => onChange(e.target.value)}>{(options || []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>}
       {type === "array"   && <input type="text" value={(value || []).join(", ")} placeholder="Comma-separated values" onChange={e => onChange(e.target.value.split(",").map(v => v.trim()).filter(Boolean))} />}
       {type === "selectorList" && <SelectorListEditor value={value} onChange={onChange} />}

@@ -180,7 +180,7 @@ export default function ProxiesMenu({ open, onClose, showToast, isAdmin, selecte
                 </div>
               </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
+              <div className="wf-section-head" style={{ marginTop: 18 }}>
                 <div className="wf-section-title">Your proxies</div>
                 <button className="wf-save-btn" onClick={() => startNewProxy(false)}>+ New proxy</button>
               </div>
@@ -192,7 +192,7 @@ export default function ProxiesMenu({ open, onClose, showToast, isAdmin, selecte
                 <ProxyList items={ownProxies} busy={busy} onEdit={startEditProxy} onRemove={removeProxy} />
               )}
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
+              <div className="wf-section-head" style={{ marginTop: 18 }}>
                 <div className="wf-section-title">Your pools <span className="ca-hint">(rotate through several of your proxies)</span></div>
                 <button className="wf-save-btn" onClick={() => startNewPool(false)} disabled={ownProxies.length + sharedProxies.length === 0}>+ New pool</button>
               </div>
@@ -208,7 +208,7 @@ export default function ProxiesMenu({ open, onClose, showToast, isAdmin, selecte
 
               {isAdmin && (
                 <>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
+                  <div className="wf-section-head" style={{ marginTop: 18 }}>
                     <div className="wf-section-title">Platform proxies <span className="ca-hint">(shared with every user)</span></div>
                     <button className="wf-save-btn" onClick={() => startNewProxy(true)}>+ New shared proxy</button>
                   </div>
@@ -218,7 +218,7 @@ export default function ProxiesMenu({ open, onClose, showToast, isAdmin, selecte
                     <ProxyList items={sharedProxies} busy={busy} onEdit={startEditProxy} onRemove={removeProxy} />
                   )}
 
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
+                  <div className="wf-section-head" style={{ marginTop: 18 }}>
                     <div className="wf-section-title">Platform pools</div>
                     <button className="wf-save-btn" onClick={() => startNewPool(true)} disabled={sharedProxies.length === 0}>+ New shared pool</button>
                   </div>

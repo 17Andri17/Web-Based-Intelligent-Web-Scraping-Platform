@@ -366,6 +366,9 @@ function buildIterVarNode(iv) {
     : iv.loopType === "FOR_EACH_ELEMENTS" ? "from for-each-elements"
     : iv.loopType === "REPEAT" ? "from repeat"
     : iv.loopType === "WHILE" ? "from while"
+    // The subflow runs once per row of the list it enriches — this is the row
+    // that invocation is for, and what its inputs should almost always map to.
+    : iv.loopType === "RUN_SUBFLOW" ? "this subflow runs once per row"
     : "from for-each";
   const typeLabel = `${baseLabel} · ${loopTag}`;
 

@@ -361,4 +361,9 @@ function analyze(records, opts = {}) {
   return { sources: sources.slice(0, maxSources), capturedCount, consideredCount };
 }
 
-module.exports = { analyze, classifyAuth, findPrimaryCollection, isTracker, scoreValueMatch };
+module.exports = {
+  analyze, classifyAuth, findPrimaryCollection, isTracker, scoreValueMatch,
+  // Shared with browser/resourceBlock.js so runtime request blocking and API
+  // discovery agree on what counts as a tracker rather than drifting apart.
+  TRACKER_HOST_PATTERNS, TRACKER_PATH_RE,
+};

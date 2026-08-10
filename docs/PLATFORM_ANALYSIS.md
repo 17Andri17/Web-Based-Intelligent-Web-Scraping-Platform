@@ -50,7 +50,7 @@ Grouped by the competitor concept it matches.
 | Capability | Status | Notes |
 |---|---|---|
 | Visual point-and-click builder on a live streamed browser | ✅ strong | Real Chromium pixel stream w/ input forwarding, HiDPI, selector tool, breadcrumb/ancestor picker, HTML source tree inspector |
-| Guided onboarding for non-technical users | ✅ shipped | **Inline first-scrape coach** (`GuidedCoach.jsx`) — spotlights the *real* controls (URL bar → Select → click → Inspector → Run) and auto-advances from live state, teaching the actual UI. Replaced the earlier floating Quick Scrape wizard, which duplicated the inspector/workflow in a weaker parallel path |
+| Guided onboarding for non-technical users | ✅ shipped | **Interactive forced tour** (`GuidedTour.jsx`) on a bundled deterministic demo shop (`backend/public/demo`): dims the screen, spotlights one target (app control *or* a region on the streamed canvas via `getElementRect`), blocks clicks elsewhere, and advances only when the user does the exact action. Basics guide covers navigate/select/list/AI-extract/pagination/run; a Power-Features guide is the next phase. Replaced the earlier inline coach (which only pointed at controls without driving a real, reproducible scenario) |
 | Home dashboard | ✅ shipped | Post-login landing with per-workflow status cards, "Needs attention" inbox, and (new) change indicators (`Dashboard.jsx`) |
 | AI field suggestion for lists | ✅ strong | LLM proposal + live-DOM verification + heuristic fallback + "intent rescue" merging — degrades gracefully with no API key |
 | Pagination handling | ✅ strong | Three native containers (scroll/button/URL) + a two-phase detector (static DOM scan + empirical scroll test) with confidence scores |
@@ -70,7 +70,9 @@ Grouped by the competitor concept it matches.
 | **Data delivery — Excel** | ✅ shipped | `.xlsx` workbook (one sheet per output list) from run results and datasets; JSON/CSV also (`resultsXlsx.js`) |
 | **Monitoring / change alerts** | ✅ shipped | Per-workflow "watch for changes": row-level diff vs previous run, stored summary, `run.changed` webhook, dashboard + history change feed (`changeMonitor.service.js`, `MonitorEditor.jsx`) |
 | Data delivery — Google Sheets | ✅ shipped | Per-workflow "append to a Google Sheet" on each successful run, via an instance-wide service account (`googleSheets.service.js`, `SheetDeliveryEditor.jsx`); Zapier/Make still open (need a public URL) |
-| Templates / prebuilt robots | ❌ gap | Both competitors lead onboarding with a template gallery |
+| Templates / prebuilt robots | ✅ shipped | Eight site-agnostic starting shapes (list+next-page, numbered pages, infinite scroll, list→detail, parameterised search, article index, directory, table) served from `templates.service.js` and created through the *same* import path as an uploaded export, plus an in-editor setup checklist. Deliberately not tied to named real sites — those rot the moment a site changes its markup |
+| Notifications — e-mail | ✅ shipped | Account-level "e-mail me when a scraper fails / when a watched page changes", over one instance-wide SMTP account (`mailer.service.js`, `emailNotifier.service.js`, migration 0010). Successful runs are never mailed by design. Previously these alerts were webhook-only, which put the platform's flagship monitoring feature out of reach of the users it was built for |
+| Data as a destination | ✅ shipped | A global "Your data" screen (`DataHome.jsx`, `GET /api/workflows/dataset/summary`) — every scraper's accumulated row count, with one-click CSV/Excel, instead of Workflows → row → icon → modal-on-modal |
 | Workflow export / import / duplicate | ✅ shipped | Portable JSON envelope (bundles referenced custom actions; strips per-user proxy), cross-account import that remaps custom-action ids, and same-account duplicate (`workflowPortable.js`, `WorkflowsMenu.jsx`). The prerequisite for templates is now in place |
 | Bulk input (run per URL list) | ✅ shipped | "Run with inputs" (one) and "Bulk run from a list" (many) enqueue background runs per input row (`RunInputsDialog.jsx`, `POST /api/workflows/:id/bulk-run`), executed by the API worker |
 
@@ -152,16 +154,17 @@ volume for `backend/data/` and pm2/systemd notes (documented, not yet shipped).
 
 | # | Original friction | Status |
 |---|---|---|
-| 1 | Empty-state drops user into an editor | ✅ Quick Scrape wizard + Dashboard |
-| 2 | Navigate vs Select mode invisible | ✅ the inline coach spotlights the mode toggle and can switch it for the user |
-| 3 | Engineer-speak step names (`FOR_EACH_ELEMENTS`) | ⚠️ control descriptions added; JS-expression field labels softened with help text; a full step-name pass is still open |
+| 1 | Empty-state drops user into an editor | ✅ Dashboard landing + template gallery + a first-run prompt offering the guided tour. *(The Quick Scrape wizard this row used to credit was removed when GuidedTour landed; its two dashboard buttons survived it and ran identical code until the P0 pass merged them.)* |
+| 2 | Navigate vs Select mode invisible | ✅ the guided tour spotlights the mode toggle on a live demo shop |
+| 3 | Engineer-speak step names (`FOR_EACH_ELEMENTS`) | ✅ done. Action labels were already plain; the control blocks have now had the same pass — "For Each Matching Item" → "Repeat for every match on the page", "Source variable (array)" → "Which list?", "Element handle variable name" → "Call each element", pagination containers → "More pages — …". Error copy no longer prints environment-variable names at end users (those moved to `errorClassifier.adminHint`, logged for whoever administers the instance) |
 | 4 | Raw JS expression fields | ✅ Condition builder for IF/WHILE + friendlier labels/help; ⚠️ SET_VARIABLE / TRANSFORM custom still raw |
 | 5 | Bare selector text inputs | ✅ "Pick on page" now on every single-element selector field (generalized reselect); match-count badge on the primary selector |
 | 6 | No home screen | ✅ Dashboard landing |
-| 7 | No templates | ❌ still open (§6.3) |
-| 8 | Failures buried | ✅ Needs-attention inbox + AI summaries on the dashboard |
-| 9 | Schedule = minutes math | ✅ presets + "start at" time; ⚠️ no weekdays |
-| 10 | Results are per-run snapshots | ✅ Dataset view + change monitoring |
+| 7 | No templates | ✅ shipped (§6.3) |
+| 8 | Failures buried | ✅ Needs-attention inbox + AI summaries on the dashboard + optional e-mail alerts |
+| 9 | Schedule = minutes math | ✅ presets + "start at" time + weekdays + cron |
+| 10 | Results are per-run snapshots | ✅ Dataset view + change monitoring + a global "Your data" screen |
+| 11 | *(new)* Unsaved work died on refresh | ✅ drafts autosave to local storage and are offered back on the next load; a `beforeunload` guard covers the gap when the debounce hasn't flushed. Scoped per user; the guided tour is excluded and persists its own progress instead |
 
 ### 5.2 Technical users — what's still missing
 
@@ -188,24 +191,76 @@ cross-run datasets, change-diff webhooks. Gaps:
 
 ## 6. Feature additions
 
-### 6.1 ✅ Guided first-scrape coach — shipped (replaced the Quick Scrape wizard)
-The original Quick Scrape wizard was a floating panel that re-implemented
-navigate + selection + field detection + pagination in a weaker parallel path
-and overlapped the sidebar. It was replaced by an **inline coach**
-(`GuidedCoach.jsx`) that docks over the canvas and spotlights the *real*
-controls in sequence (URL bar → Select toggle → click an item → Inspector →
-Run → Data), auto-advancing as the user acts and offering a "do it for me"
-button per step. It teaches the actual UI, so the second scrape needs no guide.
+### 6.1 ✅ Interactive guided tour — shipped (replaced the inline coach)
+Two iterations preceded this: a floating Quick Scrape wizard (weaker parallel
+path) and an inline coach that only pointed at controls. The current design is
+a real **forced product tour** (`GuidedTour.jsx`) run on a bundled, fully
+deterministic demo shop, **DemoMart** (`backend/public/demo/shop.html`, served
+at `/demo`):
+
+- Two step styles: **forced** steps put a *light* click-guard around the one
+  highlighted target — the platform stays fully visible (only faintly dimmed) so
+  the user can follow along, but clicks land only on the target, and the step
+  advances only once the right thing happened (mode change, the correct element
+  selected, an EXTRACT_LIST appearing, `executionDone`, …). It **never** covers
+  the whole screen: if a target isn't measured yet it blocks nothing and keeps
+  polling, so the user can't get stuck behind an overlay. **Soft "tip"** steps
+  add only a gentle amber highlight, block nothing, and advance with Next. Going
+  Back is safe — only the frontier step auto-advances.
+- Targets are either app-chrome DOM (via `data-tour` attributes / CSS) **or a
+  region on the streamed canvas** — resolved by a new `getElementRect` socket
+  handler that returns the demo element's page rect, mapped to screen coords
+  (inverse of `scaled()`).
+- Determinism: the demo catalog is fixed, and the "Extract with AI" step
+  returns a **canned field set** for the demo URL (server-side), so it always
+  works with no API key.
+- **Basics guide** (shipped): open the demo shop → Navigate vs Select (soft) →
+  browse a category and **return via the orange back-to-start button** →
+  Select mode → **single-element capture** (grab the page title with "Extract
+  Text") → the list: pick a product → **"Page structure" (parent/child) to
+  select the whole product box** → pick a second to grab the whole list →
+  Extract-with-AI (forced through the exact "Use AI" → "Add with AI" buttons;
+  the AI result is a fixed demo response) → **a soft "tweak the columns" tip**
+  where the user can freely rename/remove columns or add one by picking it on
+  the page (e.g. "in stock") → pagination (**waits for the pattern** before
+  adding) → a soft **"here’s what you built"** review that opens the Workflow
+  and invites editing a step → Data preview → Run → soft notes about code
+  export / scheduling / monitoring / Sheets → a **free-play finale** (nothing
+  locked). Plain-language throughout, deterministic (demo-only), Back-safe. Soft
+  explainers can point out **several controls at once** with small labels (the
+  Navigate/Select buttons; the three sidebar tabs); callouts are auto-placed in
+  the largest free area so they never cover what they point at. Launched only
+  from the Dashboard ("Take the tour") — deliberately not in the scraper toolbar,
+  since it isn't needed while building real scrapers. Step logic covered by
+  `tour-basics.test.js` (24 steps).
+- **Power Features guide**: next phase (variables/bulk, conditions, transforms,
+  API discovery, self-healing, monitoring, Sheets, scheduling, export/import,
+  selector debugger, code download).
 
 ### 6.2 ✅ Dashboard home — shipped
 Post-login landing: per-workflow cards with last-run status, needs-attention
 inbox, schedule/next-run, and change indicators. `Dashboard.jsx`.
 
-### 6.3 ❌ Template gallery — open (now unblocked)
-Ship 6–10 saved workflows as JSON seeds + a "start from template" flow. The
-workflow export/import format (§5.2.2, now shipped) IS the template format — a
-template is just a bundled export, imported on demand — so this is now mostly a
-gallery UI + a handful of seed `.workflow.json` files.
+### 6.3 ✅ Template gallery — shipped
+Eight templates (`services/templates.service.js`), reached from the dashboard
+hero and the empty state. As predicted, the export envelope *is* the template
+format: `services/workflowImport.service.js` was extracted so "use this
+template" and "import this file" run the exact same create-and-remap path
+rather than two that could drift.
+
+The templates are deliberately **site-agnostic**. A gallery of named real-site
+scrapers looks better in a screenshot and rots the first time one of those
+sites changes its markup — and it would ship this project with an opinion about
+which sites to point at. What a beginner genuinely can't assemble alone is the
+*structure*: a pagination container wrapped around an extraction, a list paired
+with a per-row detail pass, a search URL parameterised on a variable. Each
+template ships that skeleton with empty selectors plus a `setup` checklist,
+which the editor then shows as a banner (`TemplateSetupBanner`) so a workflow
+that arrives with blank fields reads as intentional rather than broken.
+
+`test/templates.test.js` asserts every template still validates as an
+envelope, keeps the step shape the editor expects, and — the one that matters —
+still generates syntactically valid Node through the real code generator.
 
 ### 6.4 ✅ Dataset view — shipped
 Per-workflow "Data across runs": rows unioned and de-duplicated across retained
@@ -219,8 +274,27 @@ previous run (row-level add/remove/change, keyed the same way the dataset view
 dedupes), store the summary on the run, and fire `run.changed` through the
 webhook dispatcher when something changed. Change feed on the dashboard, in run
 history, and in the monitor editor. `changeDiff.service.js`,
-`changeMonitor.service.js`, `MonitorEditor.jsx`. E-mail delivery is still
-future; webhook (ntfy/Slack/Discord via URL) + UI feed ship today.
+`changeMonitor.service.js`, `MonitorEditor.jsx`.
+
+**E-mail delivery is now shipped too**, and it mattered more than its size
+suggests: until it existed, the only way to *receive* a change alert was to
+supply a webhook URL, which is not something the non-technical user this
+feature was built for can produce. The feature had been made unreachable by its
+own delivery mechanism.
+
+Settings are account-level (`notification_settings`, migration 0010) rather
+than per-workflow — the question people actually have is "tell me when my
+scrapers break or find something new", not "configure delivery for scraper #7",
+and that keeps it to one form. Delivery hangs off the same two dispatch points
+as the webhook dispatcher and is driven by the same event vocabulary
+(`webhookEvents`), so the two channels can't disagree about what happened.
+Successful runs are never mailed: a scraper that works is not news, and daily
+"all fine" mail is how real alerts get ignored. Transport is one instance-wide
+SMTP account (`SMTP_HOST`…), mirroring the Google Sheets service account; the
+settings screen hides its switches entirely when the instance has no SMTP, so
+nobody is offered a toggle that would silently do nothing.
+`test/email-notify.test.js` covers the gating — the assertions are mostly about
+*not* sending.
 
 ### 6.6 Data delivery integrations
 1. ✅ **Excel (.xlsx) export** — shipped (`resultsXlsx.js`), one sheet per output
@@ -272,11 +346,11 @@ DOM scrape of the same data, show a non-blocking "this site serves this as JSON
 13. ⚠️ selector "pick on page" everywhere ✅ + JS-expression labels softened ✅;
     a full plain-language step-name pass is still open
 
-**P2 — competitive feature parity — mostly done**
-14. ✅ Dataset view (§6.4)
-15. ✅ Monitoring & change alerts (§6.5)
+**P2 — competitive feature parity — done**
+14. ✅ Dataset view (§6.4) + a global "Your data" destination
+15. ✅ Monitoring & change alerts (§6.5), now deliverable by e-mail as well as webhook
 16. ✅ Excel export (§6.6.1)
-17. ✅ Workflow export/import/duplicate (§5.2.2); ❌ template gallery (§6.3, now unblocked)
+17. ✅ Workflow export/import/duplicate (§5.2.2); ✅ template gallery (§6.3)
 18. ✅ Webhook management UI (§5.2.1)
 19. ✅ Google Sheets delivery (§6.6.2)
 20. ✅ Bulk input lists (§6.7)

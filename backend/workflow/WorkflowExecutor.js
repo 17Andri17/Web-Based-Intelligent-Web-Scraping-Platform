@@ -1,6 +1,7 @@
 'use strict';
 
 const pipeline = require('../services/executionPipeline.service');
+const runEvents = require('../services/runEvents.service');
 
 /* ===========================================================================
    WorkflowExecutor (socket-attached wrapper)
@@ -24,6 +25,12 @@ const pipeline = require('../services/executionPipeline.service');
 async function executeWorkflow(workflow, socket, opts = {}) {
   const userId     = opts.userId     ?? socket?.user?.id;
   const workflowId = opts.workflowId ?? null;
+  // Progress now reaches this socket through the run's room (server.js bridges
+  // runEvents → rooms), so the callbacks below no longer emit it themselves —
+  // that would deliver every line twice to the launching tab. They remain for
+  // the two things that are per-caller rather than per-run: joining the room
+  // as soon as the run id exists, and cancellation.
+  const onRunId = typeof opts.onRunId === 'function' ? opts.onRunId : null;
 
   if (!userId || !workflowId) {
     // Without persistence context we can still run, but we'd lose the
@@ -47,25 +54,15 @@ async function executeWorkflow(workflow, socket, opts = {}) {
       scheduleId: null,
       trigger: 'manual',
       signal: controller.signal,
+      workflowName: opts.workflowName || null,
       callbacks: {
+        // Join the room BEFORE any progress is published, so the launching tab
+        // misses nothing between the run row being created and its first log.
+        // Also register the abort by run id, so any watching tab can stop it —
+        // not only the connection that happened to launch it.
         onStart: ({ runId }) => {
-          socket?.emit('executionStarted', { runId });
-        },
-        onLog: (entry) => socket?.emit('executionLog', entry),
-        onStepBegin: (info) => socket?.emit('executionStepBegin', info),
-        onStepError: (info) => socket?.emit('executionStepError', info),
-        onIteration: (info) => socket?.emit('executionIteration', info),
-        onResults:   (r) => socket?.emit('executionResults', r),
-        onDone: ({ run }) => {
-          const results = run.results_json ? safeJson(run.results_json) : null;
-          socket?.emit('executionDone', {
-            success: run.status === 'success',
-            status:  run.status,
-            results,
-            exitCode: run.status === 'success' ? 0 : 1,
-            runId: run.id,
-            run:    serializeRun(run),
-          });
+          if (onRunId) onRunId(runId);
+          runEvents.registerCanceller(runId, () => controller.abort());
         },
       },
     });
@@ -77,30 +74,6 @@ async function executeWorkflow(workflow, socket, opts = {}) {
   } finally {
     socket?.off?.('cancelExecution', onCancel);
   }
-}
-
-function safeJson(s) { try { return JSON.parse(s); } catch (_) { return null; } }
-
-function serializeRun(row) {
-  if (!row) return null;
-  return {
-    id: row.id,
-    status: row.status,
-    trigger: row.trigger,
-    startedAt:  row.started_at,
-    finishedAt: row.finished_at,
-    durationMs: row.duration_ms,
-    errorMessage:  row.error_message,
-    errorCategory: row.error_category,
-    aiSummary:     row.ai_summary,
-    failedStep: {
-      id:    row.failed_step_id,
-      type:  row.failed_step_type,
-      label: row.failed_step_label,
-    },
-    retryCount: row.retry_count,
-    hasPatchedWorkflow: !!row.patched_steps_json,
-  };
 }
 
 module.exports = { executeWorkflow };

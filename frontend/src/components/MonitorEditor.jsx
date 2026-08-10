@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { workflowsApi } from "../api/client";
+import ChangeDiffViewer from "./ChangeDiffViewer";
 import "../styles/MonitorEditor.css";
 
 /* =====================================================================
@@ -36,6 +37,7 @@ export default function MonitorEditor({ open, onClose, workflowId, workflowName,
   const [keyMode, setKeyMode] = useState(AUTO);     // AUTO | WHOLE_ROW | column
   const [outputs, setOutputs] = useState([]);       // [{ key, fields }]
   const [changes, setChanges] = useState([]);
+  const [diffRunId, setDiffRunId] = useState(null); // run whose diff is open, or "latest"
 
   const refresh = useCallback(async () => {
     if (!workflowId) return;
@@ -106,7 +108,7 @@ export default function MonitorEditor({ open, onClose, workflowId, workflowName,
     <div className="wf-overlay" onClick={onClose}>
       <div className="wf-modal mon-modal" onClick={e => e.stopPropagation()}>
         <div className="wf-header">
-          <h2>Monitor "{workflowName}"</h2>
+          <div className="wf-header-titles"><h2>Monitor for changes</h2><span className="wf-header-sub">{workflowName}</span></div>
           <button className="wf-close" onClick={onClose} aria-label="Close">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -162,30 +164,54 @@ export default function MonitorEditor({ open, onClose, workflowId, workflowName,
               </div>
 
               {/* Recent change feed */}
-              <div className="wf-section-title" style={{ marginTop: 18 }}>Recent changes</div>
+              <div className="wf-section-head" style={{ marginTop: 18 }}>
+                <div className="wf-section-title">Recent changes</div>
+                <button className="wf-ghost-btn" onClick={() => setDiffRunId("latest")}>
+                  Compare runs…
+                </button>
+              </div>
               {changes.length === 0 ? (
                 <div className="mon-feed-empty">
-                  No changes recorded yet. Changes appear here after the workflow runs at least twice while monitored.
+                  No changes recorded yet. Changes appear here after the workflow runs at least twice while
+                  monitored — or use <strong>Compare runs…</strong> to diff any two runs right now.
                 </div>
               ) : (
                 <div className="mon-feed">
-                  {changes.map(c => <ChangeRow key={c.runId} change={c} />)}
+                  {changes.map(c => (
+                    <ChangeRow key={c.runId} change={c} onOpen={() => setDiffRunId(c.runId)} />
+                  ))}
                 </div>
               )}
             </>
           )}
         </div>
       </div>
+
+      {/* Full field-level diff for one run (or the latest pair) */}
+      <ChangeDiffViewer
+        open={diffRunId != null}
+        onClose={() => setDiffRunId(null)}
+        workflowId={workflowId}
+        workflowName={workflowName}
+        initialRunId={diffRunId === "latest" ? null : diffRunId}
+        showToast={showToast}
+      />
     </div>
   );
 }
 
-function ChangeRow({ change }) {
+// One entry in the feed. The counts come from the summary stored on the run;
+// clicking re-diffs that run live so every changed field is shown with its old
+// and new value.
+function ChangeRow({ change, onOpen }) {
   const s = change.summary;
   const counts = s?.counts || {};
   const baseline = s?.baseline;
+  const fields = s?.fieldStats || [];
+  const quiet = !(counts.added || counts.changed || counts.removed);
+
   return (
-    <div className="mon-feed-row">
+    <button className="mon-feed-row" onClick={onOpen} title="See exactly what changed">
       <span className="mon-feed-when">{formatDate(change.at)}</span>
       {baseline ? (
         <span className="mon-feed-baseline">baseline · {counts.after ?? 0} rows</span>
@@ -194,10 +220,18 @@ function ChangeRow({ change }) {
           {counts.added   > 0 && <span className="mon-chip add">+{counts.added} new</span>}
           {counts.changed > 0 && <span className="mon-chip chg">~{counts.changed} changed</span>}
           {counts.removed > 0 && <span className="mon-chip del">−{counts.removed} removed</span>}
-          {!(counts.added || counts.changed || counts.removed) && <span className="mon-chip none">no change</span>}
+          {quiet && <span className="mon-chip none">no change</span>}
         </span>
       )}
-    </div>
+      {/* Which fields moved — the question you ask before opening anything. */}
+      {fields.length > 0 && (
+        <span className="mon-feed-fields">
+          {fields.slice(0, 3).map(f => <span className="mon-field" key={f.field}>{f.field}</span>)}
+          {fields.length > 3 && <span className="mon-field more">+{fields.length - 3}</span>}
+        </span>
+      )}
+      <span className="mon-feed-go" aria-hidden="true">→</span>
+    </button>
   );
 }
 

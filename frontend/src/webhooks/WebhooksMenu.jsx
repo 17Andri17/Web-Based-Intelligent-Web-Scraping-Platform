@@ -133,7 +133,7 @@ export default function WebhooksMenu({ open, onClose, showToast }) {
                 or your own server.
               </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
+              <div className="wf-section-head" style={{ marginTop: 18 }}>
                 <div className="wf-section-title">Your endpoints</div>
                 {!creating && <button className="wf-save-btn" onClick={() => { setCreating(true); setError(null); }}>+ New webhook</button>}
               </div>

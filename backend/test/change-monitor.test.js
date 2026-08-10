@@ -99,6 +99,9 @@ async function main() {
     ok('diff: 1 changed, 1 added', s2 && !s2.baseline && s2.counts.changed === 1 && s2.counts.added === 1 && s2.counts.removed === 0, JSON.stringify(s2 && s2.counts));
     ok('diff compares to the previous run', s2.comparedToRunId === run1.id);
     ok('changed sample names the field', s2.sample.changed[0].key === 'b' && s2.sample.changed[0].fields.includes('price'));
+    ok('changed sample carries old and new value',
+       s2.sample.changed[0].values.price.before === '20' && s2.sample.changed[0].values.price.after === '25',
+       JSON.stringify(s2.sample.changed[0].values));
   }
 
   console.log('change feed');
@@ -106,6 +109,32 @@ async function main() {
     const feed = await req('GET', `/api/workflows/${wf.id}/monitor`, { token });
     ok('feed lists runs with summaries, newest first', feed.status === 200 && feed.json.changes.length === 2);
     ok('newest feed item has the diff counts', feed.json.changes[0].summary.counts.added === 1);
+  }
+
+  console.log('run-to-run diff endpoint');
+  {
+    const d = await req('GET', `/api/workflows/${wf.id}/diff`, { token });
+    ok('defaults to the latest run vs the one before it', d.status === 200 && d.json.run && d.json.base && d.json.base.id < d.json.run.id);
+    ok('lists the runs available to compare', Array.isArray(d.json.runs) && d.json.runs.length === 2);
+    ok('reports the same counts as the stored summary', d.json.diff.counts.changed === 1 && d.json.diff.counts.added === 1);
+    ok('changed rows carry whole before and after rows',
+       d.json.diff.changed[0].before.price === '20' && d.json.diff.changed[0].after.price === '25',
+       JSON.stringify(d.json.diff.changed[0]));
+    ok('added rows are returned in full', d.json.diff.added[0].id === 'c');
+    ok('fieldStats names the fields that moved', d.json.diff.fieldStats[0].field === 'price');
+    ok('reports the output and key used', d.json.output === 'products' && d.json.keyField === 'id');
+
+    const foreign = await req('GET', `/api/workflows/${wf.id}/diff`, { token: otherToken });
+    ok('another user cannot diff it → 404', foreign.status === 404);
+
+    // Explicit whole-row keying turns the price change into a remove + add.
+    const wholeRow = await req('GET', `/api/workflows/${wf.id}/diff?key=__row__`, { token });
+    ok('whole-row keying reads a changed field as remove+add',
+       wholeRow.json.diff.counts.changed === 0 && wholeRow.json.diff.counts.added === 2 && wholeRow.json.diff.counts.removed === 1,
+       JSON.stringify(wholeRow.json.diff.counts));
+
+    const missing = await req('GET', `/api/workflows/${wf.id}/diff?runId=999999`, { token });
+    ok('unknown run → 404', missing.status === 404);
   }
 
   console.log('run.changed webhook');
