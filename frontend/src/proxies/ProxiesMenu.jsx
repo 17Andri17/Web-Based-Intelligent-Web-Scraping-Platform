@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { proxiesApi, proxyPoolsApi } from "../api/client";
+import { useConfirm } from "../components/ConfirmDialog";
+import useDialog from "../components/useDialog";
 
 function emptyProxyDraft(isShared) {
   return { kind: "proxy", label: "", protocol: "http", host: "", port: "", username: "", password: "", isShared };
@@ -28,6 +30,9 @@ function decodeSpec(value) {
 }
 
 export default function ProxiesMenu({ open, onClose, showToast, isAdmin, selectedProxy, onSelectProxy }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
+  const confirm = useConfirm();
   const [proxyList, setProxyList] = useState([]);
   const [poolList,  setPoolList]  = useState([]);
   const [editing,   setEditing]   = useState(null); // { kind: 'proxy'|'pool', ... }
@@ -102,7 +107,11 @@ export default function ProxiesMenu({ open, onClose, showToast, isAdmin, selecte
   };
 
   const removeProxy = async (proxy) => {
-    if (!confirm(`Delete proxy "${proxy.label}"? Any pool it's a member of will lose it, and workflows pointed directly at it will run without a proxy.`)) return;
+    if (!(await confirm({
+      title: `Delete proxy "${proxy.label}"?`,
+      message: "Any pool it belongs to loses it, and workflows pointed straight at it will run with no proxy at all.",
+      confirmLabel: "Delete proxy", danger: true,
+    }))) return;
     setBusy(true);
     setError(null);
     try {
@@ -117,7 +126,12 @@ export default function ProxiesMenu({ open, onClose, showToast, isAdmin, selecte
   };
 
   const removePool = async (pool) => {
-    if (!confirm(`Delete pool "${pool.label}"? Workflows rotating through it will run without a proxy.`)) return;
+    if (!(await confirm({
+      title: `Delete pool "${pool.label}"?`,
+      message: "Workflows rotating through it will run with no proxy at all.",
+      detail: "The proxies themselves are kept.",
+      confirmLabel: "Delete pool", danger: true,
+    }))) return;
     setBusy(true);
     setError(null);
     try {
@@ -132,8 +146,8 @@ export default function ProxiesMenu({ open, onClose, showToast, isAdmin, selecte
   };
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal ca-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal ca-modal" {...dialogProps}>
         <div className="wf-header">
           <h2>{editing ? headerFor(editing) : "Proxy servers"}</h2>
           <button className="wf-close" onClick={onClose} aria-label="Close">

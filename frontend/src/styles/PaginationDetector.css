@@ -5,7 +5,7 @@
 .pd-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.55);
+  background: var(--bg-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -23,7 +23,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  box-shadow: 0 20px 60px var(--shadow-color);
 }
 
 /* Header */
@@ -310,7 +310,7 @@
 }
 .pd-pulse {
   width: 7px; height: 7px; border-radius: 50%;
-  background: var(--accent-primary);
+  background: var(--accent-primary-fill);
   animation: pdPulse 1.2s ease-in-out infinite;
 }
 @keyframes pdPulse {
@@ -332,7 +332,7 @@
   background: var(--bg-secondary);
   border: 1px solid var(--accent-primary);
   border-radius: 10px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  box-shadow: 0 8px 32px var(--shadow-color);
   font-size: 13px;
   font-weight: 500;
   color: var(--accent-primary);

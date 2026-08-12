@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import "../styles/SelectorDebugger.css";
+import Modal from "./Modal";
 
 /* =====================================================================
    SelectorDebugger
@@ -20,11 +21,11 @@ import "../styles/SelectorDebugger.css";
    ===================================================================== */
 
 const VERDICT_META = {
-  ok:      { label: "Looks good",         color: "#3fb950", icon: "✓" },
-  hidden:  { label: "Matches, but hidden", color: "#d29922", icon: "◐" },
-  iframe:  { label: "Inside an iframe",    color: "#d29922", icon: "▤" },
-  partial: { label: "Partly wrong",        color: "#e89a4f", icon: "◑" },
-  none:    { label: "No match",            color: "#f85149", icon: "✕" },
+  ok:      { label: "Looks good",         color: "var(--accent-success)", icon: "✓" },
+  hidden:  { label: "Matches, but hidden", color: "var(--accent-warning)", icon: "◐" },
+  iframe:  { label: "Inside an iframe",    color: "var(--accent-warning)", icon: "▤" },
+  partial: { label: "Partly wrong",        color: "var(--accent-orange)", icon: "◑" },
+  none:    { label: "No match",            color: "var(--accent-danger)", icon: "✕" },
 };
 
 export default function SelectorDebugger({ open, onClose, socket, initialSelector = "", initialType = "css" }) {
@@ -58,7 +59,6 @@ export default function SelectorDebugger({ open, onClose, socket, initialSelecto
     return () => socket.off("debugSelectorResult", onResult);
   }, [socket]);
 
-  if (!open) return null;
 
   const test = () => {
     const sel = selector.trim();
@@ -71,18 +71,7 @@ export default function SelectorDebugger({ open, onClose, socket, initialSelecto
   const vm = result ? (VERDICT_META[result.verdict] || VERDICT_META.none) : null;
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal sd-modal" onClick={e => e.stopPropagation()}>
-        <div className="wf-header">
-          <h2>Selector debugger</h2>
-          <button className="wf-close" onClick={onClose} aria-label="Close">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
-
-        <div className="wf-body">
+    <Modal open={open} onClose={onClose} title="Selector debugger" modalClassName="sd-modal">
           <div className="sd-hint">
             Test a selector against the page in the Live Browser tab. If it matches nothing,
             we'll tell you which part is wrong.
@@ -150,8 +139,6 @@ export default function SelectorDebugger({ open, onClose, socket, initialSelecto
               )}
             </div>
           )}
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

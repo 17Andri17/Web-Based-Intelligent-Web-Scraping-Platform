@@ -2,6 +2,8 @@ import React, { useEffect, useState, useCallback } from "react";
 import { workflowsApi } from "../api/client";
 import ChangeDiffViewer from "./ChangeDiffViewer";
 import "../styles/MonitorEditor.css";
+import { useConfirm } from "./ConfirmDialog";
+import useDialog from "./useDialog";
 
 /* =====================================================================
    MonitorEditor
@@ -27,6 +29,9 @@ const AUTO = "auto";          // let the backend default the key
 const WHOLE_ROW = "__row__";  // match on the entire row
 
 export default function MonitorEditor({ open, onClose, workflowId, workflowName, showToast }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
+  const confirm = useConfirm();
   const [loading, setLoading] = useState(false);
   const [busy, setBusy]       = useState(false);
   const [error, setError]     = useState(null);
@@ -90,7 +95,11 @@ export default function MonitorEditor({ open, onClose, workflowId, workflowName,
   };
 
   const remove = async () => {
-    if (!confirm(`Stop watching "${workflowName}" for changes?`)) return;
+    if (!(await confirm({
+      title: "Stop watching for changes?",
+      message: `"${workflowName}" will keep running, it just won’t tell you when its data changes.`,
+      confirmLabel: "Stop watching",
+    }))) return;
     setBusy(true); setError(null);
     try {
       await workflowsApi.removeMonitor(workflowId);
@@ -105,8 +114,8 @@ export default function MonitorEditor({ open, onClose, workflowId, workflowName,
   };
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal mon-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal mon-modal" {...dialogProps}>
         <div className="wf-header">
           <div className="wf-header-titles"><h2>Monitor for changes</h2><span className="wf-header-sub">{workflowName}</span></div>
           <button className="wf-close" onClick={onClose} aria-label="Close">

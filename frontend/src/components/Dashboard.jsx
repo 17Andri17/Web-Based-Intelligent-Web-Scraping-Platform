@@ -29,16 +29,16 @@ import "../styles/Dashboard.css";
    ===================================================================== */
 
 const STATUS_META = {
-  success:      { label: "Succeeded",    cls: "ok",     dot: "#3fb950" },
-  running:      { label: "Running",      cls: "run",    dot: "#4f9cf9" },
-  queued:       { label: "Queued",       cls: "run",    dot: "#4f9cf9" },
-  needs_review: { label: "Needs review", cls: "warn",   dot: "#d29922" },
-  error:        { label: "Failed",       cls: "err",    dot: "#f85149" },
-  cancelled:    { label: "Cancelled",    cls: "muted",  dot: "#8b949e" },
+  success:      { label: "Succeeded",    cls: "ok",     dot: "var(--accent-success)" },
+  running:      { label: "Running",      cls: "run",    dot: "var(--accent-primary)" },
+  queued:       { label: "Queued",       cls: "run",    dot: "var(--accent-primary)" },
+  needs_review: { label: "Needs review", cls: "warn",   dot: "var(--accent-warning)" },
+  error:        { label: "Failed",       cls: "err",    dot: "var(--accent-danger)" },
+  cancelled:    { label: "Cancelled",    cls: "muted",  dot: "var(--text-secondary)" },
   // Stopped early (crash / timeout / cancel) but kept the rows it had already
   // captured. Data is usable; the run just isn't complete.
-  partial:      { label: "Partial",      cls: "warn",   dot: "#d29922" },
-  muted:        { label: "Unknown",      cls: "muted",  dot: "#8b949e" },
+  partial:      { label: "Partial",      cls: "warn",   dot: "var(--accent-warning)" },
+  muted:        { label: "Unknown",      cls: "muted",  dot: "var(--text-secondary)" },
 };
 
 export default function Dashboard({
@@ -296,7 +296,7 @@ export default function Dashboard({
                     <span className="dash-card-name" title={c.name}>{c.name}</span>
                     {live ? (
                       <span className="dash-status dash-status--run">
-                        <span className="dash-status-dot dash-status-dot--pulse" style={{ background: "#4f9cf9" }} />
+                        <span className="dash-status-dot dash-status-dot--pulse" style={{ background: "var(--accent-primary)" }} />
                         {live.status === "queued" ? "Queued" : "Running"}
                       </span>
                     ) : st && (

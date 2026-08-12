@@ -1,0 +1,115 @@
+/* Settings hub — rows that read as destinations, not menu entries. The old
+   avatar-menu items were bare words; the description is most of the value. */
+
+.set-modal { max-width: 600px; }
+
+.set-intro {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.set-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: 100%;
+  text-align: left;
+  padding: 13px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.set-row:hover { border-color: var(--accent-primary); background: var(--bg-hover); }
+.set-row:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+
+.set-row-icon { font-size: 20px; line-height: 1; flex-shrink: 0; }
+
+.set-row-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+
+.set-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.set-row-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.set-row-detail {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.set-row-go { flex-shrink: 0; color: var(--text-muted); }
+.set-row:hover .set-row-go { color: var(--accent-primary); }
+
+.set-section {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-muted);
+}
+
+.set-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.set-theme {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(84px, 1fr));
+  gap: 3px;
+  padding: 3px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+}
+
+.set-theme-opt {
+  padding: 7px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.set-theme-opt:hover { color: var(--text-primary); }
+.set-theme-opt.active {
+  color: var(--text-on-accent);
+  background: var(--accent-primary-fill);
+}
+
+.set-section-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 560px) {
+  .set-theme { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; }
+}

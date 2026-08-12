@@ -138,7 +138,7 @@
 .dh-btn:hover:not(:disabled) { border-color: var(--accent-primary, #58a6ff); }
 .dh-btn:disabled { opacity: 0.5; cursor: default; }
 .dh-btn--primary {
-  color: #fff;
+  color: var(--text-on-accent);
   background: var(--accent-primary, #58a6ff);
   border-color: transparent;
 }
@@ -166,4 +166,19 @@
   font-size: 12px;
   color: var(--text-muted, #6e7681);
   text-align: center;
+}
+
+/* ── Narrow screens ─────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .dh-inner { padding: 20px 14px 44px; }
+  .dh-title { font-size: 21px; }
+
+  .dh-head { gap: 14px; }
+  .dh-close { align-self: flex-start; }
+
+  /* Name above, actions below — four buttons and a filename do not share a
+     375px row without one of them becoming unreadable. */
+  .dh-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .dh-row-actions { justify-content: flex-start; }
+  .dh-name { white-space: normal; }
 }

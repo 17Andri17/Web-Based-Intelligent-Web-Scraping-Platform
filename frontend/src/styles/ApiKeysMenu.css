@@ -37,7 +37,7 @@
   padding: 10px 12px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--bg-active);
   word-break: break-all;
   user-select: all; /* one click selects the whole key for manual copy */
 }
@@ -49,7 +49,7 @@
   margin: 6px 0 0;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--bg-active);
   overflow-x: auto;
   white-space: pre;
 }
@@ -59,7 +59,7 @@
   font-size: 11.5px;
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-hover);
 }
 
 .ak-create {

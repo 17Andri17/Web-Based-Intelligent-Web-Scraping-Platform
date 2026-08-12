@@ -9,7 +9,7 @@ const healing           = require('./healing.service');
 const healingStats      = require('./healingStats');
 const { checkCompiles } = require('./codeCheck');
 const llm               = require('./llm.service');
-const { generateCode }  = require('../workflow/workflowCodegen');
+const { generateCode, resolveExecution } = require('../workflow/workflowCodegen');
 const webhookDispatcher = require('./webhookDispatcher.service');
 const emailNotifier     = require('./emailNotifier.service');
 const changeMonitor     = require('./changeMonitor.service');
@@ -50,7 +50,6 @@ const {
 
 const MAX_REPAIR_ATTEMPTS     = 3;     // total LLM repair passes per run
 const MAX_HEAL_PASSES         = 4;     // empty-result healing passes per run
-const MAX_CONNECTION_RETRIES  = 2;
 const CONNECTION_RETRY_DELAY_MS = 4000;
 // How often the accumulated partial results are written to the DB while a run
 // is in flight. The child already throttles its own emission; this bounds the
@@ -94,6 +93,15 @@ async function executeAndPersist(arg) {
   // empty pool, ...) rather than failing the whole run over it — see
   // services/proxyResolver.service.js.
   const proxy = await safeCall(() => resolveWorkflowProxy(meta, userId), null);
+
+  // Per-workflow reliability settings. Same resolver the code generator
+  // uses, so the run and the script it runs can't disagree about them.
+  const execCfg = resolveExecution(meta);
+  const maxConnectionRetries = execCfg.connectionRetries;
+  // Healing off = a DETERMINISTIC run: it fails rather than quietly
+  // rewriting a selector. Wanted when the output feeds something
+  // downstream, where a silent change is worse than a visible gap.
+  const healingEnabled = execCfg.healing;
 
   const t0 = nowMs();
   // Record the workflow version this run executes (deduped by content) so run
@@ -300,6 +308,15 @@ async function executeAndPersist(arg) {
 
       if (cancelSignal.aborted) break;
 
+      if (!healingEnabled) {
+        // Deterministic run: report the empty step instead of rewriting it.
+        reviewMessage = `"${target.step.label || target.step.type}" captured no data, and self-healing is off for this workflow. ${healingStats.describeBreakage(target.verdict, target.stat)}`;
+        stepDisposition.set(target.step.id, 'manual');
+        lastError = emptyResultError(target, reviewMessage);
+        log(`• ${reviewMessage}`, 'error');
+        break;
+      }
+
       if (target.wasHealed) {
         reviewMessage = `The fix for "${target.step.label || target.step.type}" was verified against the page snapshot but did not hold on a full re-run. Manual review needed — the page may behave differently than its captured snapshot.`;
         stepDisposition.set(target.step.id, 'manual');
@@ -373,16 +390,20 @@ async function executeAndPersist(arg) {
 
     if (lastError.cancelled || cancelSignal.aborted) { log('🛑 cancelled — not retrying', 'error'); break; }
 
-    if (category === 'CONNECTION' && connectionRetries < MAX_CONNECTION_RETRIES) {
+    if (category === 'CONNECTION' && connectionRetries < maxConnectionRetries) {
       connectionRetries++;
       const wait = CONNECTION_RETRY_DELAY_MS * connectionRetries;
-      log(`↻ connection error — retrying in ${wait}ms (${connectionRetries}/${MAX_CONNECTION_RETRIES})`);
+      log(`↻ connection error — retrying in ${wait}ms (${connectionRetries}/${maxConnectionRetries})`);
       await delay(wait);
       continue;
     }
     if (category === 'HTTP') { log('• HTTP error from target — no automatic repair possible.', 'error'); break; }
     if (category === 'CAPTCHA') { log('• CAPTCHA / anti-bot challenge — selector repair can\'t help. Configure a solver (CAPTCHA_PROVIDER + CAPTCHA_API_KEY) or solve it while building the scraper.', 'error'); break; }
     if (category === 'LLM')  { log('• LLM service unreachable — flagging for manual review.', 'error'); break; }
+    if (!healingEnabled) {
+      log('• self-healing is off for this workflow — failing instead of rewriting the step.', 'error');
+      break;
+    }
     if (!errorClassifier.shouldAttemptRepair(category)) { log(`• error category "${category}" is not repairable — stopping.`, 'error'); break; }
     if (repairAttempts >= MAX_REPAIR_ATTEMPTS) { log(`• reached repair budget (${MAX_REPAIR_ATTEMPTS}) — flagging for manual review.`, 'error'); break; }
 

@@ -19,6 +19,8 @@ import TemplateGallery, { TemplateSetupBanner } from "./components/TemplateGalle
 import DataHome from "./components/DataHome";
 import { makeBasicsTour } from "./tours/basicsTour";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
+import { ConfirmProvider, useConfirm } from "./components/ConfirmDialog";
+import useDialog from "./components/useDialog";
 import AuthScreen from "./auth/AuthScreen";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
 import CustomActionsMenu from "./customActions/CustomActionsMenu";
@@ -26,11 +28,13 @@ import ProxiesMenu from "./proxies/ProxiesMenu";
 import ApiKeysMenu from "./apiKeys/ApiKeysMenu";
 import WebhooksMenu from "./webhooks/WebhooksMenu";
 import NotificationsMenu from "./components/NotificationsMenu";
+import SettingsMenu from "./components/SettingsMenu";
 import RunInputsDialog from "./components/RunInputsDialog";
 import PerformanceSettings from "./components/PerformanceSettings";
 import SelectorDebugger from "./components/SelectorDebugger";
 import { API_BASE, customActionsApi, workflowsApi, aiApi, runsApi } from "./api/client";
 import { useMediaQuery, HEADER_COMPACT_QUERY } from "./utils/useMediaQuery";
+import { getThemePreference, applyTheme, onSystemThemeChange } from "./utils/theme";
 import { unresolveVars, rawUrlForCurrentPage } from "./utils/urlVars";
 import {
   saveDraft, loadDraft, clearDraft,
@@ -106,6 +110,18 @@ function buildApiStepFromSource(source) {
 // AND it's an object. (Iteration variables like `product.link` only exist at
 // run time, so the live preview leaves them as literal text — the user can
 // still verify them once they hit Run.)
+/* API-discovery nudge thresholds.
+
+   The bar is deliberately high. This interrupts someone mid-build to say
+   "there's a better way to do what you're doing" — worth it when true, and
+   corrosive when it isn't. So: replay-VERIFIED only (the endpoint actually
+   returned the data when called again), and a confidence well above the
+   "might be relevant" band the panel is happy to list. */
+const API_NUDGE_MIN_CONFIDENCE = 0.65;
+// Step types that mean "I am scraping a list out of the DOM" — the exact case
+// where calling the site's own JSON endpoint instead is a real upgrade.
+const LIST_STEP_TYPES = new Set(["EXTRACT_LIST", "COLLECT_LIST"]);
+
 const VAR_RX = /\{\{\s*([^.[\]{}]+(?:\.[^.[\]{}]+)*)\s*\}\}/g;
 function resolveVars(s, vars) {
   if (typeof s !== "string" || !s.includes("{{")) return s;
@@ -250,6 +266,8 @@ function App() {
 }
 
 function AppShell({ user, token, onLogout }) {
+  // Replaces window.confirm — see components/ConfirmDialog.jsx.
+  const confirm = useConfirm();
   const { steps, totalCount, setSteps, addStep, updateStep, deleteStep, reorderSteps, updateLabelById, updateParamsById, addStepAt, moveStepById, setAttachById, undo, redo, canUndo, canRedo } = useWorkflow();
   const [activeTab, setActiveTab] = useState("stream");
 
@@ -300,6 +318,8 @@ function AppShell({ user, token, onLogout }) {
   // in sync with where the page actually is, and to flag mismatches against
   // the workflow's pinned start URL.
   const [currentPageUrl,  setCurrentPageUrl]  = useState("");
+  // Read from socket handlers, which close over their first render.
+  const currentPageUrlRef = useRef("");
   // Bumped every time the backend says the page's `load` event has fired.
   // Used as a dependency of the preview effect so previews re-fire against
   // a fully-loaded page (rather than racing the navigation).
@@ -395,13 +415,33 @@ function AppShell({ user, token, onLogout }) {
     return Array.from(new Set(out)).slice(0, 60);
   }, [previewData, selectedElement]);
 
-  const runApiAnalysis = useCallback(() => {
-    setApiPanelOpen(true);
-    setApiAnalyzing(true);
-    setApiSources(null);
-    setApiError(null);
+  /* API discovery.
+
+     `quiet` runs the same analysis WITHOUT opening the panel, so the editor can
+     check whether the site serves the data as JSON while the user is busy
+     building a DOM scrape. The socket reply carries no correlation id, and
+     analyses are sequential per connection, so a ref records which kind of
+     request is in flight. */
+  const apiQuietRef = useRef(false);
+  const runApiAnalysis = useCallback(({ quiet = false } = {}) => {
+    apiQuietRef.current = quiet;
+    if (!quiet) {
+      setApiPanelOpen(true);
+      setApiAnalyzing(true);
+      setApiSources(null);
+      setApiError(null);
+    }
     socketRef.current?.emit("analyzeApiSources", { sampleValues: collectSampleValues() });
   }, [collectSampleValues]);
+
+  /* The nudge: { source } once a high-confidence, replay-VERIFIED endpoint is
+     found for data being scraped from the DOM. Verified matters — proposing an
+     endpoint that turns out to 403 would be worse than staying quiet. */
+  const [apiNudge, setApiNudge] = useState(null);
+  // Pages the user has already waved away, so it asks once and not again.
+  const apiNudgeDismissedRef = useRef(new Set());
+  // Pages already probed, so adding a fifth list step doesn't re-run analysis.
+  const apiNudgeCheckedRef = useRef(new Set());
   const [reselectStepId,  setReselectStepId]  = useState(null); // step id awaiting element re-pick
   const [reselectIsLoop,  setReselectIsLoop]  = useState(false);
   // Which param the next page-pick writes to. null = the step's primary
@@ -417,6 +457,9 @@ function AppShell({ user, token, onLogout }) {
   const [forEachCtx, setForEachCtx] = useState(null); // { stepId }
   const stepsRef = useRef(steps);
   useEffect(() => { stepsRef.current = steps; }, [steps]);
+  useEffect(() => { currentPageUrlRef.current = currentPageUrl; }, [currentPageUrl]);
+  // A nudge belongs to the page it was found on.
+  useEffect(() => { setApiNudge(null); }, [currentPageUrl]);
   // Stable refs for reselect (avoid stale closures in socket handler)
   const reselectStepIdRef            = useRef(null);
   const reselectFieldRef             = useRef(null);
@@ -604,8 +647,21 @@ function AppShell({ user, token, onLogout }) {
   // Set when a draft is recovered at mount, so the editor can say so.
   const [restoredDraftAt, setRestoredDraftAt] = useState(null);
 
+  // ── Appearance ───────────────────────────────────────────────────────────
+  // "system" | "light" | "dark". Per-browser, not per-account: it's a property
+  // of the screen you're looking at.
+  const [themePref, setThemePref] = useState(() => getThemePreference());
+  const chooseTheme = useCallback((pref) => setThemePref(applyTheme(pref)), []);
+  // While on "system", an OS switch mid-session must be picked up live. The
+  // CSS media query already handles the repaint; this only keeps the menu's
+  // "(currently light)" hint honest.
+  const [systemTheme, setSystemTheme] = useState(null);
+  useEffect(() => onSystemThemeChange(setSystemTheme), []);
+
   // ── E-mail alerts (account-level "tell me when…") ────────────────────────
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  // ── Settings hub (account-level; per-workflow settings stay out of it) ───
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // ── Global data view ─────────────────────────────────────────────────────
   // Extracted data used to be reachable only through Workflows → row → icon →
@@ -633,6 +689,9 @@ function AppShell({ user, token, onLogout }) {
   // components/PerformanceSettings.jsx and backend workflowCodegen resolvePerf.
   // All default off, so an untouched workflow runs exactly as it always has.
   const [perfSettings, setPerfSettings] = useState({});
+  // Per-workflow reliability (meta.execution): nav timeout, retry budget,
+  // self-healing on/off, pinned device profile. See backend resolveExecution.
+  const [execSettings, setExecSettings] = useState({});
   const [perfOpen, setPerfOpen] = useState(false);
 
   // ── API keys (public /v1 API credentials) ────────────────────────────────
@@ -1083,6 +1142,18 @@ function AppShell({ user, token, onLogout }) {
       if (readme) setTimeout(() => downloadTextFile(readme, "README.md", "text/markdown"), 300);
     });
     socket.on("apiSourcesDetected", ({ sources, error, capturedCount, consideredCount, aiAvailable }) => {
+      // A quiet probe must not disturb the panel's state — it only decides
+      // whether the nudge is worth showing.
+      if (apiQuietRef.current) {
+        apiQuietRef.current = false;
+        if (error) return;
+        const best = (sources || [])
+          .filter(s => s.verified && (s.confidence ?? 0) >= API_NUDGE_MIN_CONFIDENCE)
+          .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))[0];
+        const page = currentPageUrlRef.current || "";
+        if (best && !apiNudgeDismissedRef.current.has(page)) setApiNudge({ source: best });
+        return;
+      }
       setApiAnalyzing(false);
       setApiSources(sources || []);
       setApiError(error || null);
@@ -1324,6 +1395,7 @@ function AppShell({ user, token, onLogout }) {
     setWorkflowVariables([]);
     setSelectedProxy(null);
     setPerfSettings({});
+    setExecSettings({});
     socketRef.current?.emit("stopStreaming");
     isStreamingRef.current = false;
     setStatus("");
@@ -1552,6 +1624,7 @@ function AppShell({ user, token, onLogout }) {
     setTemplateGuide(wf.meta?.template || null);
     setSelectedProxy(wf.meta?.proxy || (wf.meta?.proxyId ? { mode: "single", id: wf.meta.proxyId } : null));
     setPerfSettings(wf.meta?.performance || {});
+    setExecSettings(wf.meta?.execution || {});
     if (navigate) {
       setExecResults(null);
       setExecRunId(null);
@@ -1723,6 +1796,24 @@ function AppShell({ user, token, onLogout }) {
     "EXTRACT_TABLE", "EXTRACT_LIST", "EXTRACT_JSON",
     "FOR_EACH_ELEMENTS",
   ]);
+  /* Probe for a JSON endpoint once the user starts scraping a list out of the
+     DOM. Deliberately AFTER they've built it rather than before: until there's
+     an extraction there are no sample values to match a response against, so
+     an earlier probe would have nothing to be confident about.
+
+     Once per page, and never again on a page the user has waved away. */
+  const maybeSuggestApi = useCallback((step) => {
+    if (!step || !LIST_STEP_TYPES.has(step.type)) return;
+    const page = currentPageUrlRef.current || "";
+    if (!page) return;
+    if (apiNudgeCheckedRef.current.has(page)) return;
+    if (apiNudgeDismissedRef.current.has(page)) return;
+    apiNudgeCheckedRef.current.add(page);
+    // Let the step land (and its fields fill in) so collectSampleValues has
+    // real values to match the captured responses against.
+    setTimeout(() => runApiAnalysis({ quiet: true }), 1200);
+  }, [runApiAnalysis]);
+
   const maybeAutoNameStep = useCallback((step) => {
     if (!step) { console.debug('[ai-name] no step'); return; }
     if (step.label) { console.debug('[ai-name] step already labelled:', step.label); return; }
@@ -1887,6 +1978,7 @@ function AppShell({ user, token, onLogout }) {
       setMode('selection');
       socketRef.current?.emit("setMode", { mode: 'selection' });
       maybeAutoNameStep(step);
+      maybeSuggestApi(step);
       return;
     }
 
@@ -2118,7 +2210,7 @@ function AppShell({ user, token, onLogout }) {
     // backend will auto-create a draft and emit `workflowAutoCreated`.
     socketRef.current.emit("executeWorkflow", {
       steps,
-      meta: { ...sessionMetaRef.current, variables: workflowVariables, performance: perfSettings },
+      meta: { ...sessionMetaRef.current, variables: workflowVariables, performance: perfSettings, execution: execSettings },
       workflowId: currentWorkflowId || null,
       workflowName: currentWorkflowName || null,
     });
@@ -2128,7 +2220,7 @@ function AppShell({ user, token, onLogout }) {
     if (!socketRef.current) return;
     socketRef.current.emit("downloadCode", {
       steps,
-      meta: { ...sessionMetaRef.current, variables: workflowVariables, performance: perfSettings },
+      meta: { ...sessionMetaRef.current, variables: workflowVariables, performance: perfSettings, execution: execSettings },
     });
   };
 
@@ -2480,6 +2572,7 @@ function AppShell({ user, token, onLogout }) {
     setCurrentWorkflowId(draft.workflowId ?? null);
     setCurrentWorkflowName(draft.workflowName || "");
     setPerfSettings(draft.perfSettings || {});
+    setExecSettings(draft.execSettings || {});
     setSelectedProxy(draft.proxy || null);
     setUrlInput(draft.url || "");
     // Carry the baseline forward too: a draft of an already-saved, unmodified
@@ -2508,6 +2601,7 @@ function AppShell({ user, token, onLogout }) {
         workflowId: currentWorkflowId,
         workflowName: currentWorkflowName,
         perfSettings,
+        execSettings,
         proxy: selectedProxy,
         url: urlInput,
         savedSignature,
@@ -2516,7 +2610,7 @@ function AppShell({ user, token, onLogout }) {
     return () => clearTimeout(t);
   }, [
     steps, workflowVariables, currentWorkflowId, currentWorkflowName,
-    perfSettings, selectedProxy, urlInput, savedSignature,
+    perfSettings, execSettings, selectedProxy, urlInput, savedSignature,
     isTourWorkflow, tourOpen, draftScope,
   ]);
 
@@ -2565,10 +2659,14 @@ function AppShell({ user, token, onLogout }) {
     setTourProgress(progress);
   }, [draftScope]);
 
-  const startTour = useCallback((opts = {}) => {
-    if (hasUnsavedWork && !confirm(
-      "Start the guided tour? It opens a practice shop — your unsaved scraper will be discarded."
-    )) return;
+  const startTour = useCallback(async (opts = {}) => {
+    if (hasUnsavedWork && !(await confirm({
+      title: "Start the guided tour?",
+      message: "It opens a practice shop to build on.",
+      detail: "Your unsaved scraper will be discarded.",
+      confirmLabel: "Start the tour",
+      danger: true,
+    }))) return;
     const resuming = !!opts.resume;
     const saved = resuming ? loadTourProgress(draftScope) : null;
     // resetWorkflow clears the draft and the tour flag; re-set the flag after
@@ -2596,7 +2694,7 @@ function AppShell({ user, token, onLogout }) {
     setDashboardOpen(false);
     setActiveTab("stream");
     setTourOpen(true);
-  }, [hasUnsavedWork, draftScope, resetWorkflow, setSteps, demoUrl, performNavigate]);
+  }, [confirm, hasUnsavedWork, draftScope, resetWorkflow, setSteps, demoUrl, performNavigate]);
 
   // Finished the last step — the walkthrough is done, so drop the saved
   // position and stop offering it.
@@ -2673,8 +2771,12 @@ function AppShell({ user, token, onLogout }) {
                 <span className="btn-label">Home</span>
               </button>
               <button className="header-btn secondary"
-                onClick={() => {
-                  if (hasUnsavedWork && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+                onClick={async () => {
+                  if (hasUnsavedWork && !(await confirm({
+                    title: "Start a new workflow?",
+                    message: "Unsaved changes to the current one will be lost.",
+                    confirmLabel: "Discard and start new", danger: true,
+                  }))) return;
                   resetWorkflow();
                 }}
                 title="Start a fresh workflow (closes the current page)">
@@ -2696,14 +2798,9 @@ function AppShell({ user, token, onLogout }) {
                   {currentWorkflowName && <span className="btn-label-detail">{currentWorkflowName}</span>}
                 </span>
               </button>
-              <button className="header-btn secondary" onClick={() => setCustomActionsOpen(true)}
-                title="Create reusable custom actions">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <polyline points="16,18 22,12 16,6"/><polyline points="8,6 2,12 8,18"/>
-                </svg>
-                <span className="btn-label">Custom Actions</span>
-                {customActions.length > 0 && <span className="tab-badge">{customActions.length}</span>}
-              </button>
+              {/* Custom actions moved into Settings — it's a library you set up
+                  occasionally, not something you reach for mid-build, and it was
+                  costing a permanent slot in a 56px row that had eleven. */}
               <button className="header-btn secondary" onClick={handleDownloadCode}
                 disabled={steps.length === 0} title="Download as Node.js script">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2733,16 +2830,20 @@ function AppShell({ user, token, onLogout }) {
                   <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setHeaderMenuOpen(false)} />
                   <div className="user-popover" style={{ right: 0, top: "100%", marginTop: 4, minWidth: 200 }}>
                     <button className="item" onClick={() => { setHeaderMenuOpen(false); setDashboardOpen(true); }}>Home</button>
-                    <button className="item" onClick={() => {
+                    <button className="item" onClick={async () => {
                       setHeaderMenuOpen(false);
-                      if (hasUnsavedWork && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+                      if (hasUnsavedWork && !(await confirm({
+                    title: "Start a new workflow?",
+                    message: "Unsaved changes to the current one will be lost.",
+                    confirmLabel: "Discard and start new", danger: true,
+                  }))) return;
                       resetWorkflow();
                     }}>New workflow</button>
                     <button className="item" onClick={() => { setHeaderMenuOpen(false); setWorkflowsOpen(true); }}>
                       Workflows{currentWorkflowName ? `: ${currentWorkflowName}` : ""}
                     </button>
-                    <button className="item" onClick={() => { setHeaderMenuOpen(false); setCustomActionsOpen(true); }}>
-                      Custom actions{customActions.length > 0 ? ` (${customActions.length})` : ""}
+                    <button className="item" onClick={() => { setHeaderMenuOpen(false); setSettingsOpen(true); }}>
+                      Settings
                     </button>
                     <button className="item" disabled={steps.length === 0}
                             onClick={() => { setHeaderMenuOpen(false); handleDownloadCode(); }}>
@@ -2806,19 +2907,28 @@ function AppShell({ user, token, onLogout }) {
               <>
                 <div style={{position:"fixed",inset:0,zIndex:40}} onClick={() => setUserMenuOpen(false)} />
                 <div className="user-popover">
-                  <button className="item" onClick={() => {
+                  <button className="item" onClick={async () => {
                     setUserMenuOpen(false);
-                    if (hasUnsavedWork && !confirm("Start a new workflow? Unsaved changes will be lost.")) return;
+                    if (hasUnsavedWork && !(await confirm({
+                    title: "Start a new workflow?",
+                    message: "Unsaved changes to the current one will be lost.",
+                    confirmLabel: "Discard and start new", danger: true,
+                  }))) return;
                     resetWorkflow();
                   }}>New workflow</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setWorkflowsOpen(true); }}>Workflows…</button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setDataHomeOpen(true); }}>Your data…</button>
-                  <button className="item" onClick={() => { setUserMenuOpen(false); setCustomActionsOpen(true); }}>Custom actions…</button>
-                  <button className="item" onClick={() => { setUserMenuOpen(false); setProxiesOpen(true); }}>Proxies…</button>
-                  <button className="item" onClick={() => { setUserMenuOpen(false); setPerfOpen(true); }}>Speed…</button>
-                  <button className="item" onClick={() => { setUserMenuOpen(false); setApiKeysOpen(true); }}>API keys…</button>
-                  <button className="item" onClick={() => { setUserMenuOpen(false); setNotificationsOpen(true); }}>E-mail alerts…</button>
-                  <button className="item" onClick={() => { setUserMenuOpen(false); setWebhooksOpen(true); }}>Webhooks…</button>
+
+                  {/* Settings that belong to THIS scraper and travel with it on
+                      export — kept apart from the account ones below, because
+                      listing them together implied changing Speed was global. */}
+                  <div className="user-popover-sep" />
+                  <div className="user-popover-label">This scraper</div>
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setPerfOpen(true); }}>Run settings…</button>
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setProxiesOpen(true); }}>Proxy…</button>
+
+                  <div className="user-popover-sep" />
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setSettingsOpen(true); }}>Settings…</button>
                   <button className="item danger" onClick={() => { setUserMenuOpen(false); onLogout(); }}>Sign out</button>
                 </div>
               </>
@@ -2969,7 +3079,7 @@ function AppShell({ user, token, onLogout }) {
             {/* API discovery */}
             <button
               className="inspector-toggle-btn"
-              onClick={runApiAnalysis}
+              onClick={() => runApiAnalysis()}
               title="Analyze the page's network calls and propose its data API"
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -3095,6 +3205,47 @@ function AppShell({ user, token, onLogout }) {
                   </div>
                 </div>
               )}
+              {/* API-discovery nudge — the site turned out to serve this data as
+                  JSON. Non-blocking on purpose: the DOM scrape they just built
+                  still works, this is an upgrade, not an error. */}
+              {apiNudge && (
+                <div className="cookie-teach-prompt api-nudge-prompt">
+                  <span className="cookie-teach-emoji">⚡</span>
+                  <div className="cookie-teach-body">
+                    <strong>This site serves that list as data</strong>
+                    <div className="cookie-teach-sub">
+                      There's an endpoint behind the page returning the same items as JSON, and we
+                      checked it still answers. Reading it directly is faster, pages cleanly, and
+                      doesn't break when the layout changes.
+                      {apiNudge.source?.path ? <> <code>{apiNudge.source.path}</code></> : null}
+                    </div>
+                  </div>
+                  <div className="cookie-teach-actions">
+                    <button className="cookie-teach-add" onClick={() => {
+                      const step = buildApiStepFromSource(apiNudge.source);
+                      addStep(step);
+                      setApiNudge(null);
+                      setStatus(`Added "Call Data API" step: ${step.label}`);
+                      showToast("✓ Added a Call Data API step — check its settings", "success");
+                    }}>Use it</button>
+                    <button className="cookie-teach-dismiss" onClick={() => {
+                      setApiNudge(null);
+                      // Show the full panel so they can compare sources rather
+                      // than take our word for the best one.
+                      setApiPanelOpen(true);
+                      setApiAnalyzing(true);
+                      setApiSources(null);
+                      setApiError(null);
+                      runApiAnalysis();
+                    }}>Show me</button>
+                    <button className="cookie-teach-dismiss" onClick={() => {
+                      apiNudgeDismissedRef.current.add(currentPageUrlRef.current || "");
+                      setApiNudge(null);
+                    }}>No thanks</button>
+                  </div>
+                </div>
+              )}
+
               {captchaPrompt && (
                 <div className="cookie-teach-prompt captcha-prompt">
                   <span className="cookie-teach-emoji">🧩</span>
@@ -3282,7 +3433,7 @@ function AppShell({ user, token, onLogout }) {
         {activeTab === "workflow" && (
           <WorkflowPanel
             steps={steps} totalCount={totalCount} setSteps={setSteps}
-            onAdd={(step, ...rest) => { addStep(step, ...rest); maybeAutoNameStep(step); }} onUpdate={updateStep} onDelete={deleteStep} onReorder={reorderSteps}
+            onAdd={(step, ...rest) => { addStep(step, ...rest); maybeAutoNameStep(step); maybeSuggestApi(step); }} onUpdate={updateStep} onDelete={deleteStep} onReorder={reorderSteps}
             insertTarget={insertTarget}
             onSetInsertTarget={setInsertTarget}
             onMoveStep={moveStepById}
@@ -3386,7 +3537,7 @@ function AppShell({ user, token, onLogout }) {
           capturedCount={apiCaptured}
           consideredCount={apiConsidered}
           aiAvailable={apiAiAvailable}
-          onAnalyze={runApiAnalysis}
+          onAnalyze={() => runApiAnalysis()}
           onClose={() => setApiPanelOpen(false)}
           onUse={(source) => {
             const step = buildApiStepFromSource(source);
@@ -3537,6 +3688,8 @@ function AppShell({ user, token, onLogout }) {
         onClose={() => setPerfOpen(false)}
         value={perfSettings}
         onChange={setPerfSettings}
+        execution={execSettings}
+        onExecutionChange={setExecSettings}
       />
 
       {/* ── API keys (public /v1 API credentials) ───────────────────────── */}
@@ -3551,6 +3704,19 @@ function AppShell({ user, token, onLogout }) {
         open={webhooksOpen}
         onClose={() => setWebhooksOpen(false)}
         showToast={showToast}
+      />
+
+      {/* ── Settings (account-level hub) ─────────────────────────────────── */}
+      <SettingsMenu
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        themePref={themePref}
+        onChooseTheme={chooseTheme}
+        customActionCount={customActions.length}
+        onOpenCustomActions={() => setCustomActionsOpen(true)}
+        onOpenApiKeys={() => setApiKeysOpen(true)}
+        onOpenWebhooks={() => setWebhooksOpen(true)}
+        onOpenNotifications={() => setNotificationsOpen(true)}
       />
 
       {/* ── E-mail alerts (failures + change monitoring, without a webhook) ── */}
@@ -3575,8 +3741,12 @@ function AppShell({ user, token, onLogout }) {
         open={dataHomeOpen}
         onClose={() => setDataHomeOpen(false)}
         showToast={showToast}
-        onOpenWorkflow={(id) => {
-          if (hasUnsavedWork && !confirm("Open that scraper? Unsaved changes to the current one will be lost.")) return;
+        onOpenWorkflow={async (id) => {
+          if (hasUnsavedWork && !(await confirm({
+            title: "Open that scraper?",
+            message: "Unsaved changes to the one you have open will be lost.",
+            confirmLabel: "Discard and open", danger: true,
+          }))) return;
           setDataHomeOpen(false);
           openWorkflowById(id);
         }}
@@ -3608,19 +3778,27 @@ function AppShell({ user, token, onLogout }) {
       <Dashboard
         open={dashboardOpen}
         userName={user.username}
-        onNewScrape={() => {
-          if (hasUnsavedWork && !confirm("Start a new scraper? Unsaved changes to the current one will be lost.")) return;
+        onNewScrape={async () => {
+          if (hasUnsavedWork && !(await confirm({
+            title: "Start a new scraper?",
+            message: "Unsaved changes to the current one will be lost.",
+            confirmLabel: "Discard and start new", danger: true,
+          }))) return;
           resetWorkflow();
           setDashboardOpen(false);
           setActiveTab("stream");
         }}
         onOpenData={() => setDataHomeOpen(true)}
-        onBrowseTemplates={() => {
-          if (hasUnsavedWork && !confirm("Start from a template? Unsaved changes to the current scraper will be lost.")) return;
+        onBrowseTemplates={async () => {
+          if (hasUnsavedWork && !(await confirm({
+            title: "Start from a template?",
+            message: "Unsaved changes to the current scraper will be lost.",
+            confirmLabel: "Discard and browse", danger: true,
+          }))) return;
           setTemplatesOpen(true);
         }}
-        onStartTour={() => startTour()}
-        onResumeTour={tourProgress ? () => startTour({ resume: true }) : null}
+        onStartTour={() => { startTour(); }}
+        onResumeTour={tourProgress ? () => { startTour({ resume: true }); } : null}
         tourProgress={tourProgress}
         tourCompleted={tourPrefs.completed}
         tourPromptDismissed={tourPrefs.promptDismissed}
@@ -3662,7 +3840,7 @@ function AppShell({ user, token, onLogout }) {
         open={workflowsOpen}
         onClose={() => setWorkflowsOpen(false)}
         currentSteps={steps}
-        currentMeta={{ ...sessionMetaRef.current, variables: workflowVariables, proxy: selectedProxy, performance: perfSettings }}
+        currentMeta={{ ...sessionMetaRef.current, variables: workflowVariables, proxy: selectedProxy, performance: perfSettings, execution: execSettings }}
         currentWorkflowId={currentWorkflowId}
         currentName={currentWorkflowName}
         showToast={showToast}
@@ -3698,9 +3876,11 @@ function AppShell({ user, token, onLogout }) {
    another Navigate step on the same workflow.
    ────────────────────────────────────────────────────────────────────────── */
 function UrlChangeDialog({ newUrl, currentName, canSaveCurrent, onCancel, onSaveAndStartNew, onSaveAs, onDiscardAndStartNew, onAddAsStep }) {
+  // Mounted only while the confirmation is pending.
+  const { overlayProps, dialogProps } = useDialog({ open: true, onClose: onCancel });
   return (
-    <div className="wf-overlay" onClick={onCancel}>
-      <div className="wf-modal url-change-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal url-change-modal" {...dialogProps}>
         <div className="wf-header">
           <h2>Change URL?</h2>
           <button className="wf-close" onClick={onCancel} aria-label="Close">
@@ -3758,8 +3938,16 @@ function SpinnerIcon() {
   );
 }
 
+// Before the first paint, so a light-theme user doesn't get a dark flash on
+// every load. Re-applying the stored value is a no-op when it's "system".
+applyTheme(getThemePreference(), { persist: false });
+
 createRoot(document.getElementById("root")).render(
   <AuthProvider>
-    <App />
+    {/* Above App so every screen — including the auth screen — can ask for a
+        confirmation without reaching for window.confirm. */}
+    <ConfirmProvider>
+      <App />
+    </ConfirmProvider>
   </AuthProvider>
 );

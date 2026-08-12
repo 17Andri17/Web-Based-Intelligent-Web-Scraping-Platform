@@ -12,7 +12,7 @@
   border: 1px solid var(--border-soft, #2a2a2a);
   border-radius: 8px;
   padding: 10px;
-  background: var(--bg-soft, rgba(255, 255, 255, 0.02));
+  background: var(--bg-soft, var(--bg-hover));
 }
 
 .tpe-section-head {
@@ -45,7 +45,7 @@
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 50%;
   background: rgba(88, 166, 255, 0.15);
-  color: #58a6ff;
+  color: var(--accent-primary);
   font-size: 10px; font-weight: 700;
   flex: 0 0 auto;
 }
@@ -63,9 +63,9 @@
   font-size: 12px;
   line-height: 1;
 }
-.tpe-icon:hover:not(:disabled) { color: var(--text-primary, #e6e6e6); border-color: #58a6ff; }
+.tpe-icon:hover:not(:disabled) { color: var(--text-primary, #e6e6e6); border-color: var(--accent-primary); }
 .tpe-icon:disabled { opacity: 0.35; cursor: default; }
-.tpe-icon--danger:hover:not(:disabled) { color: #f85149; border-color: #f85149; }
+.tpe-icon--danger:hover:not(:disabled) { color: var(--accent-danger); border-color: var(--accent-danger); }
 
 .tpe-op-fields,
 .tpe-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -83,7 +83,7 @@
   padding: 5px 7px;
   font-size: 12px;
 }
-.tpe-input:focus { outline: none; border-color: #58a6ff; }
+.tpe-input:focus { outline: none; border-color: var(--accent-primary); }
 .tpe-input--mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
 
 .tpe-add-btn,
@@ -92,7 +92,7 @@
   width: 100%;
   background: rgba(88, 166, 255, 0.08);
   border: 1px dashed rgba(88, 166, 255, 0.4);
-  color: #58a6ff;
+  color: var(--accent-primary);
   border-radius: 6px;
   padding: 7px;
   cursor: pointer;
@@ -113,14 +113,14 @@
   cursor: pointer;
   font-size: 11px;
 }
-.tpe-mode.is-active { border-color: #58a6ff; color: #58a6ff; }
+.tpe-mode.is-active { border-color: var(--accent-primary); color: var(--accent-primary); }
 .tpe-checkline { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer; }
 .tpe-cols { font-size: 11px; color: var(--text-secondary, #9aa0a6); display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .tpe-col-chip,
 .tpe-test-label code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   background: rgba(63, 185, 80, 0.12);
-  color: #3fb950;
+  color: var(--accent-success);
   border-radius: 4px;
   padding: 1px 5px;
   font-size: 11px;
@@ -148,5 +148,5 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
   word-break: break-word;
-  color: #3fb950;
+  color: var(--accent-success);
 }

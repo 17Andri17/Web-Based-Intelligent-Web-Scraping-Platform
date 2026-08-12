@@ -1,5 +1,6 @@
 import React from "react";
 import "../styles/ApiKeysMenu.css";
+import Modal from "./Modal";
 
 /*
   Performance settings — per-workflow speed switches (workflow.meta.performance).
@@ -67,8 +68,9 @@ function clampInt(raw, min, max, dflt) {
   return Math.max(min, Math.min(max, n));
 }
 
-export default function PerformanceSettings({ open, onClose, value, onChange }) {
-  if (!open) return null;
+export default function PerformanceSettings({ open, onClose, value, onChange, execution, onExecutionChange }) {
+  const exec = execution || {};
+  const setExec = (key, v) => onExecutionChange({ ...exec, [key]: v });
 
   const perf = value || {};
   const set = (key, on) => {
@@ -84,22 +86,19 @@ export default function PerformanceSettings({ open, onClose, value, onChange }) 
   const anyOn = OPTIONS.some(o => perf[o.key]);
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal ca-modal" onClick={e => e.stopPropagation()}>
-        <div className="wf-header">
-          <h2>Speed</h2>
-          <button className="wf-close" onClick={onClose} aria-label="Close">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="wf-body">
+    <Modal open={open} onClose={onClose} title="Run settings" modalClassName="ca-modal">
           <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 0, lineHeight: 1.6 }}>
-            Options for large scrapes. Each one changes how pages are fetched, so they start off — turn them
-            on when you are scraping many pages and want the run to finish sooner. Settings are saved with
-            this workflow.
+            How this scraper runs. Everything here is saved with the workflow and travels with it
+            when you export it.
+          </p>
+
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+                        color: "var(--text-muted)", marginTop: 18, marginBottom: 2 }}>
+            Speed
+          </div>
+          <p style={{ fontSize: 11.5, color: "var(--text-secondary)", margin: "0 0 4px", lineHeight: 1.55 }}>
+            For large scrapes. Each changes how pages are fetched, so they start off — turn them on
+            when you're doing many pages and want the run to finish sooner.
           </p>
 
           {OPTIONS.map(opt => {
@@ -192,11 +191,88 @@ export default function PerformanceSettings({ open, onClose, value, onChange }) 
             </label>
 
             {(perf.concurrency ?? 1) > 4 && !(perf.requestsPerSecond > 0) && (
-              <div style={{ fontSize: 11.5, color: "#d29922", marginTop: 10, lineHeight: 1.55 }}>
+              <div style={{ fontSize: 11.5, color: "var(--accent-warning)", marginTop: 10, lineHeight: 1.55 }}>
                 {perf.concurrency} pages at once with no rate limit is a lot of traffic for one site. Consider
                 setting a requests/second cap, or routing through a proxy pool.
               </div>
             )}
+          </div>
+
+          {/* ── Reliability ─────────────────────────────────────────────
+              Separate from speed: these don't make a run faster, they change
+              what it does when something goes wrong. */}
+          <div style={{ borderTop: "1px solid var(--border-muted)", paddingTop: 16, marginTop: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+                          color: "var(--text-muted)", marginBottom: 10 }}>
+              Reliability
+            </div>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+              <span style={{ fontSize: 12, width: 170 }}>Give up on a page after</span>
+              <input
+                type="number" min={1} max={600} step={5}
+                value={Math.round((exec.navTimeoutMs ?? 30000) / 1000)}
+                onChange={e => setExec("navTimeoutMs", clampInt(e.target.value, 1, 600, 30) * 1000)}
+                style={numStyle}
+              />
+              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                seconds · steps with their own timeout keep it
+              </span>
+            </label>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <span style={{ fontSize: 12, width: 170 }}>Retry network failures</span>
+              <input
+                type="number" min={0} max={10} step={1}
+                value={exec.connectionRetries ?? 2}
+                onChange={e => setExec("connectionRetries", clampInt(e.target.value, 0, 10, 2))}
+                style={numStyle}
+              />
+              <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                times before failing · 0 = fail on the first dropped connection
+              </span>
+            </label>
+
+            <label style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "12px 0",
+                            borderTop: "1px solid var(--border-muted)", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={exec.healing !== false}
+                onChange={e => setExec("healing", e.target.checked)}
+                style={{ marginTop: 3, flex: "0 0 auto" }}
+              />
+              <span>
+                <span style={{ display: "block", fontSize: 13, fontWeight: 600 }}>Repair broken steps automatically</span>
+                <span style={{ display: "block", fontSize: 11.5, color: "var(--text-secondary)", marginTop: 4, lineHeight: 1.55 }}>
+                  When a site changes its layout and a step stops matching, the platform proposes a new
+                  selector, checks it against the page, and carries on. On by default.
+                </span>
+                <span style={{ display: "block", fontSize: 11, color: "var(--text-secondary)", marginTop: 5, fontStyle: "italic" }}>
+                  Turn off for a deterministic run: it will fail instead of quietly rewriting a step.
+                  Worth doing when the data feeds something downstream, where a silent change is worse
+                  than a visible gap.
+                </span>
+              </span>
+            </label>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+              <span style={{ fontSize: 12, width: 170 }}>Appear as</span>
+              <select
+                value={exec.deviceProfile || "auto"}
+                onChange={e => setExec("deviceProfile", e.target.value)}
+                style={{ ...numStyle, width: 190 }}
+              >
+                <option value="auto">A different machine each run</option>
+                <option value="win-nvidia">Windows · NVIDIA</option>
+                <option value="win-intel">Windows · Intel</option>
+                <option value="win-amd">Windows · AMD</option>
+                <option value="mac-m2">Mac · Apple silicon</option>
+              </select>
+            </label>
+            <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: "6px 0 0", lineHeight: 1.55 }}>
+              Rotating is usually better — thousands of scheduled runs sharing one identical fingerprint is
+              itself a signal. Pin one when a site ties your session to a single device.
+            </p>
           </div>
 
           <div style={{
@@ -215,8 +291,6 @@ export default function PerformanceSettings({ open, onClose, value, onChange }) 
           <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
             <button className="modal-btn primary" onClick={onClose}>Done</button>
           </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

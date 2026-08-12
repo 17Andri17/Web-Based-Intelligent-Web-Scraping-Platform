@@ -83,7 +83,7 @@
   font-family: inherit;
   white-space: normal;
 }
-.hi-error { color: #f85149; }
+.hi-error { color: var(--accent-danger); }
 
 .hi-line {
   display: flex;
@@ -93,11 +93,11 @@
 }
 .hi-line:hover { background: color-mix(in srgb, var(--accent-primary) 10%, transparent); }
 .hi-line.hi-active { background: color-mix(in srgb, var(--accent-primary) 22%, transparent); }
-.hi-line.hi-match { outline: 1px solid color-mix(in srgb, #d29922 70%, transparent); }
+.hi-line.hi-match { outline: 1px solid color-mix(in srgb, var(--accent-warning) 70%, transparent); }
 
 .hi-text-line, .hi-comment-line { cursor: default; color: var(--text-secondary); }
 .hi-text-line:hover, .hi-comment-line:hover { background: none; }
-.hi-comment-line { color: #6e7681; font-style: italic; }
+.hi-comment-line { color: var(--text-muted); font-style: italic; }
 
 .hi-toggle {
   flex-shrink: 0;
@@ -118,9 +118,9 @@
 .hi-toggle.hi-collapsed { transform: rotate(-90deg); }
 .hi-toggle-spacer { flex-shrink: 0; width: 18px; display: inline-block; }
 
-.hi-tag-name { color: #7ee787; }
-.hi-attr-name { color: #d2a8ff; }
-.hi-attr-value { color: #a5d6ff; }
+.hi-tag-name { color: var(--syntax-tag); }
+.hi-attr-name { color: var(--syntax-attr); }
+.hi-attr-value { color: var(--syntax-value); }
 .hi-tag { color: var(--text-secondary); }
 .hi-collapsed-close { color: var(--text-muted); }
 
@@ -146,7 +146,7 @@
 .hi-copy-menu-title {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 11px;
-  color: #7ee787;
+  color: var(--syntax-tag);
   padding: 5px 9px 4px;
   border-bottom: 1px solid var(--border-muted);
   margin-bottom: 3px;

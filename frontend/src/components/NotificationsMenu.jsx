@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { notificationsApi } from "../api/client";
 import "../styles/NotificationsMenu.css";
+import { useConfirm } from "./ConfirmDialog";
+import Modal from "./Modal";
 
 /* =====================================================================
    NotificationsMenu — "e-mail me when…".
@@ -17,6 +19,7 @@ import "../styles/NotificationsMenu.css";
    ===================================================================== */
 
 export default function NotificationsMenu({ open, onClose, showToast }) {
+  const confirm = useConfirm();
   const [available, setAvailable] = useState(true);
   const [loading, setLoading]     = useState(false);
   const [busy, setBusy]           = useState(false);
@@ -78,7 +81,11 @@ export default function NotificationsMenu({ open, onClose, showToast }) {
   };
 
   const turnOff = async () => {
-    if (!confirm("Stop sending e-mail alerts to this address?")) return;
+    if (!(await confirm({
+      title: "Turn off e-mail alerts?",
+      message: "You’ll stop being told when a scraper fails or a watched page changes.",
+      confirmLabel: "Turn off alerts",
+    }))) return;
     setBusy(true); setErr(null);
     try {
       await notificationsApi.remove();
@@ -91,8 +98,6 @@ export default function NotificationsMenu({ open, onClose, showToast }) {
     }
   };
 
-  if (!open) return null;
-
   const dirty = !saved
     || saved.email !== email.trim()
     || saved.onFailure !== onFailure
@@ -100,18 +105,8 @@ export default function NotificationsMenu({ open, onClose, showToast }) {
     || saved.isActive !== isActive;
 
   return (
-    <div className="wf-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="wf-modal nm-modal">
-        <div className="wf-header">
-          <h2>E-mail alerts</h2>
-          <button className="wf-close" onClick={onClose} aria-label="Close">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
-
-        <div className="wf-body">
+    <Modal open={open} onClose={onClose} title="E-mail alerts" modalClassName="nm-modal">
+      <>
           {loading ? (
             <div className="wf-empty">Loading…</div>
           ) : !available ? (
@@ -197,8 +192,7 @@ export default function NotificationsMenu({ open, onClose, showToast }) {
               </div>
             </>
           )}
-        </div>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }

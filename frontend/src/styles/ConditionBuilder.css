@@ -23,7 +23,7 @@
   padding: 10px;
   border: 1px solid var(--border-soft, #2a2a2a);
   border-radius: 8px;
-  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+  background: var(--surface-2, var(--bg-hover));
 }
 
 .cb-row {
@@ -37,7 +37,7 @@
   padding: 7px 9px;
   font-size: 13px;
   color: var(--text-primary, #e6e6e6);
-  background: var(--surface-1, #1a1a1a);
+  background: var(--surface-1, var(--bg-code));
   border: 1px solid var(--border-soft, #333);
   border-radius: 6px;
   min-width: 0;
@@ -84,9 +84,9 @@
   background: transparent;
   border-color: var(--border-soft, #333);
 }
-.cb-cancel:hover { background: rgba(255, 255, 255, 0.04); }
+.cb-cancel:hover { background: var(--bg-hover); }
 .cb-apply {
-  color: #fff;
+  color: var(--text-on-accent);
   background: var(--accent, #4f9cf9);
 }
 .cb-apply:hover { filter: brightness(1.08); }

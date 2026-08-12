@@ -5,6 +5,8 @@ import RunsHistory from "../runs/RunsHistory";
 import DatasetPanel from "../components/DatasetPanel";
 import MonitorEditor from "../components/MonitorEditor";
 import SheetDeliveryEditor from "../components/SheetDeliveryEditor";
+import { useConfirm } from "../components/ConfirmDialog";
+import useDialog from "../components/useDialog";
 
 /**
  * Modal for saving the current workflow and opening / deleting saved ones.
@@ -25,6 +27,9 @@ export default function WorkflowsMenu({
   currentWorkflowId, currentName,
   onLoaded, onSaved, showToast,
 }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
+  const confirm = useConfirm();
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -128,7 +133,12 @@ export default function WorkflowsMenu({
   };
 
   const handleDelete = async (id, deletedName) => {
-    if (!confirm(`Delete workflow "${deletedName}"? This cannot be undone.`)) return;
+    if (!(await confirm({
+      title: `Delete "${deletedName}"?`,
+      message: "Its run history and collected data go with it.",
+      detail: "This cannot be undone.",
+      confirmLabel: "Delete workflow", danger: true,
+    }))) return;
     setBusy(true);
     setError(null);
     try {
@@ -190,8 +200,8 @@ export default function WorkflowsMenu({
   const canSave = currentSteps && currentSteps.length > 0;
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal wf-modal-lg" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal wf-modal-lg" {...dialogProps}>
         <div className="wf-header">
           <div className="wf-header-titles">
             <h2>Workflows</h2>

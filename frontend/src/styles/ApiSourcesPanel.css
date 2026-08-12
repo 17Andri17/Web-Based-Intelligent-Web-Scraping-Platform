@@ -6,7 +6,7 @@
 .as-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.55);
+  background: var(--bg-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -24,7 +24,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  box-shadow: 0 20px 60px var(--shadow-color);
 }
 
 /* Header */
@@ -145,12 +145,12 @@
 .as-verif {
   font-size: 11px; font-weight: 600; border-radius: 20px; padding: 2px 9px; border: 1px solid transparent;
 }
-.as-verif--open    { color: #3fb950; background: rgba(63,185,80,0.14);  border-color: rgba(63,185,80,0.35); }
-.as-verif--session { color: #2dd4bf; background: rgba(45,212,191,0.14); border-color: rgba(45,212,191,0.35); }
-.as-verif--blocked { color: #d29922; background: rgba(210,153,34,0.14); border-color: rgba(210,153,34,0.3); }
+.as-verif--open    { color: var(--accent-success); background: rgba(63,185,80,0.14);  border-color: rgba(63,185,80,0.35); }
+.as-verif--session { color: var(--accent-teal); background: rgba(45,212,191,0.14); border-color: rgba(45,212,191,0.35); }
+.as-verif--blocked { color: var(--accent-warning); background: rgba(210,153,34,0.14); border-color: rgba(210,153,34,0.3); }
 .as-verif--unknown { color: var(--text-muted); background: var(--bg-elevated); }
 .as-match {
-  font-size: 11px; font-weight: 600; color: #3fb950;
+  font-size: 11px; font-weight: 600; color: var(--accent-success);
   background: rgba(63,185,80,0.1); border-radius: 20px; padding: 2px 9px;
 }
 .as-occ { font-size: 11px; color: var(--text-muted); background: var(--bg-elevated); border-radius: 20px; padding: 2px 9px; }
@@ -196,7 +196,7 @@
 .as-ai-btn {
   align-self: flex-start;
   background: rgba(163,113,247,0.1); border: 1px solid rgba(163,113,247,0.3);
-  color: #a371f7; border-radius: 6px; font-size: 12px; font-weight: 600;
+  color: var(--accent-purple); border-radius: 6px; font-size: 12px; font-weight: 600;
   padding: 4px 11px; cursor: pointer; transition: background 130ms;
 }
 .as-ai-btn:hover:not(:disabled) { background: rgba(163,113,247,0.18); }
@@ -210,12 +210,12 @@
 .as-use-btn {
   display: inline-flex; align-items: center; gap: 5px;
   background: var(--card-color); border: 1px solid var(--card-color);
-  color: #0d1117; font-weight: 700; font-size: 12.5px;
+  color: var(--bg-primary); font-weight: 700; font-size: 12.5px;
   border-radius: 7px; padding: 6px 13px; cursor: pointer;
   transition: filter 130ms, opacity 130ms;
 }
 .as-use-btn:hover:not(:disabled) { filter: brightness(1.1); }
-.as-use-btn--done { background: transparent; color: #3fb950; border-color: rgba(63,185,80,0.4); }
+.as-use-btn--done { background: transparent; color: var(--accent-success); border-color: rgba(63,185,80,0.4); }
 .as-use-btn:disabled { cursor: default; }
 
 .as-expand {
@@ -252,7 +252,7 @@
   padding: 2px 9px; cursor: pointer; transition: background 130ms, color 130ms;
 }
 .as-copy-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
-.as-copy-btn--done { color: #3fb950; border-color: rgba(63,185,80,0.4); }
+.as-copy-btn--done { color: var(--accent-success); border-color: rgba(63,185,80,0.4); }
 
 /* Footer */
 .as-footer {
@@ -263,3 +263,18 @@
   flex-shrink: 0;
 }
 .as-footer svg { flex-shrink: 0; margin-top: 1px; opacity: 0.7; }
+
+/* API-discovery nudge — reuses the cookie/CAPTCHA prompt chrome (same place,
+   same weight) but in the accent colour: this is an offer, not a problem. */
+.api-nudge-prompt {
+  border-color: color-mix(in srgb, var(--accent-primary) 40%, transparent);
+  background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-secondary));
+}
+.api-nudge-prompt code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--accent-primary);
+  font-size: 11px;
+  word-break: break-all;
+}

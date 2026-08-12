@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { workflowsApi } from "../api/client";
 import "../styles/TemplateGallery.css";
+import useDialog from "./useDialog";
 
 /* =====================================================================
    TemplateGallery — ready-made starting points.
@@ -22,6 +23,8 @@ import "../styles/TemplateGallery.css";
    ===================================================================== */
 
 export default function TemplateGallery({ open, onClose, onUsed, showToast }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading]     = useState(false);
   const [err, setErr]             = useState(null);
@@ -65,8 +68,8 @@ export default function TemplateGallery({ open, onClose, onUsed, showToast }) {
   if (!open) return null;
 
   return (
-    <div className="wf-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="wf-modal tg-modal">
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal tg-modal" {...dialogProps}>
         <div className="wf-header">
           <h2>Start from a template</h2>
           <button className="wf-close" onClick={onClose} aria-label="Close">

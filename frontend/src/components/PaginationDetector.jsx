@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createControl } from "../workflow/stepFactory";
 import { CONTROL_TYPES } from "../workflow/controlDefinitions";
+import useDialog from "./useDialog";
 
 // ─── Type metadata ────────────────────────────────────────────────────────────
 
@@ -8,7 +9,7 @@ const TYPE_INFO = {
   next_button: {
     icon: "→",
     label: "Next Button",
-    color: "#58a6ff",
+    color: "var(--accent-primary)",
     bg: "rgba(88,166,255,0.1)",
     border: "rgba(88,166,255,0.25)",
     description: "Collects data page by page, clicking Next until no more pages exist.",
@@ -17,7 +18,7 @@ const TYPE_INFO = {
   page_numbers: {
     icon: "#",
     label: "Page Numbers",
-    color: "#a371f7",
+    color: "var(--accent-purple)",
     bg: "rgba(163,113,247,0.1)",
     border: "rgba(163,113,247,0.25)",
     description: "Navigates through numbered pages by clicking the Next link in pagination.",
@@ -26,7 +27,7 @@ const TYPE_INFO = {
   load_more: {
     icon: "+",
     label: "Load More Button",
-    color: "#3fb950",
+    color: "var(--accent-success)",
     bg: "rgba(63,185,80,0.1)",
     border: "rgba(63,185,80,0.25)",
     description: "Clicks 'Load More' repeatedly, collecting all newly revealed items on the same page.",
@@ -35,7 +36,7 @@ const TYPE_INFO = {
   infinite_scroll: {
     icon: "↕",
     label: "Infinite Scroll",
-    color: "#d29922",
+    color: "var(--accent-warning)",
     bg: "rgba(210,153,34,0.1)",
     border: "rgba(210,153,34,0.25)",
     description: "Scrolls to the bottom repeatedly, collecting content as it loads.",
@@ -44,7 +45,7 @@ const TYPE_INFO = {
   url_param: {
     icon: "🔗",
     label: "URL Pages (navigate)",
-    color: "#2dd4bf",
+    color: "var(--accent-teal)",
     bg: "rgba(45,212,191,0.1)",
     border: "rgba(45,212,191,0.28)",
     description: "Each page is its own URL (…?page=2, /page/2). Navigates page-by-page — the most reliable strategy — for a set number of pages.",
@@ -219,9 +220,9 @@ function SuggestionCard({ suggestion, onAdd, baseUrlRaw }) {
 function ManualCard({ type, onSelect, isWaiting, onAdd }) {
   const isButton = type === 'button';
   const info = isButton
-    ? { icon: "👆", label: "Pick a Pagination Button", color: "#58a6ff",
+    ? { icon: "👆", label: "Pick a Pagination Button", color: "var(--accent-primary)",
         desc: "Click any button or link that loads the next page or more items." }
-    : { icon: "↕",  label: "Use Infinite Scroll",      color: "#d29922",
+    : { icon: "↕",  label: "Use Infinite Scroll",      color: "var(--accent-warning)",
         desc: "Generates a scroll loop — no element selection needed." };
 
   if (!isButton && onAdd) {
@@ -262,11 +263,15 @@ function ManualCard({ type, onSelect, isWaiting, onAdd }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function PaginationDetector({ isDetecting, suggestions, error, manualWaiting, onDetect, onClose, onAdd, onManualButton, onManualInfinite, baseUrlRaw }) {
-  if (!isDetecting && suggestions === null) return null;
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  // No `open` prop — mounted conditionally, so it derives its own state.
+  const showing = isDetecting || suggestions !== null;
+  const { overlayProps, dialogProps } = useDialog({ open: showing, onClose });
+  if (!showing) return null;
 
   return (
-    <div className="pd-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="pd-panel">
+    <div className="pd-overlay" {...overlayProps}>
+      <div className="pd-panel" {...dialogProps}>
         {/* Header */}
         <div className="pd-header">
           <div className="pd-header-left">

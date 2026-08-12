@@ -40,7 +40,7 @@
 }
 .sidebar-tab-btn:hover { color: var(--text-secondary); }
 .sidebar-tab-btn.active { color: var(--text-primary); font-weight: 600; }
-.sidebar-tab-btn.active::after { background: var(--accent-primary); }
+.sidebar-tab-btn.active::after { background: var(--accent-primary-fill); }
 .sidebar-tab-btn svg { flex-shrink: 0; }
 
 /* When the sidebar gets narrow, drop the tab captions — icons carry it */
@@ -232,7 +232,7 @@
 }
 /* Highlighted when inside active ForEach loop */
 .cws-indent-bar--active {
-  background: var(--accent-primary);
+  background: var(--accent-primary-fill);
   opacity: 0.7;
 }
 
@@ -418,7 +418,7 @@
 }
 .cws-insert-zone:hover .cws-insert-line-inner,
 .cws-insert-zone--active .cws-insert-line-inner {
-  background: var(--accent-primary);
+  background: var(--accent-primary-fill);
   height: 2px;
 }
 .cws-insert-zone--active {
@@ -427,7 +427,7 @@
 .cws-insert-dot {
   width: 6px; height: 6px;
   border-radius: 50%;
-  background: var(--accent-primary);
+  background: var(--accent-primary-fill);
   flex-shrink: 0;
   margin-left: 6px;
   animation: cwsPulse 1.5s ease-in-out infinite;
@@ -448,7 +448,7 @@
   content: '';
   flex: 0 0 14px;
   height: 1px;
-  background: var(--accent-primary);
+  background: var(--accent-primary-fill);
   opacity: 0.4;
 }
 

@@ -1,0 +1,34 @@
+/* Confirmation dialog — deliberately narrow. A confirmation is one question;
+   anything wide invites reading it as a form. */
+
+.cfm-modal { max-width: 440px; }
+
+.cfm-message {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.cfm-detail {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.cfm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+/* The destructive confirm reads as destructive. The native dialog could never
+   say which button was the dangerous one. */
+.wf-save-btn.cfm-danger {
+  background: var(--accent-danger-fill);
+  border-color: transparent;
+  color: var(--text-on-accent);
+}
+.wf-save-btn.cfm-danger:hover { filter: brightness(1.08); }

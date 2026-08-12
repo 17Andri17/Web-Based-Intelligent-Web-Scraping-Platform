@@ -47,7 +47,7 @@ function strategyLabel(strategy) {
 
 const CATEGORIES = [
   {
-    id: "interaction", label: "Interaction", color: "#3fb950",
+    id: "interaction", label: "Interaction", color: "var(--accent-success)",
     actions: [
       { type: "CLICK_ELEMENT",    needsEl: true,  quickAdd: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [] }) },
@@ -62,7 +62,7 @@ const CATEGORIES = [
     ],
   },
   {
-    id: "extraction", label: "Extraction", color: "#58a6ff",
+    id: "extraction", label: "Extraction", color: "var(--accent-primary)",
     actions: [
       { type: "EXTRACT_TEXT",      needsEl: true, quickAdd: true,
         smartDefault: (el) => ({ selector: el.selector, selectorType: el.selectorType || "css", fallbackSelectors: el.fallbackSelectors || [], multiple: false }) },
@@ -90,14 +90,14 @@ const CATEGORIES = [
     ],
   },
   {
-    id: "navigation", label: "Navigation", color: "#d29922",
+    id: "navigation", label: "Navigation", color: "var(--accent-warning)",
     actions: [
       { type: "NAVIGATE",          needsEl: false, smartDefault: () => ({ url: "" }) },
       { type: "GO_BACK",           needsEl: false, smartDefault: () => ({}), quickAdd: true },
     ],
   },
   {
-    id: "flow", label: "Flow", color: "#a371f7",
+    id: "flow", label: "Flow", color: "var(--accent-purple)",
     actions: [
       { type: "WAIT",              needsEl: false, smartDefault: () => ({ duration: 1000 }), quickAdd: true },
       { type: "BREAK_LOOP",        needsEl: false, smartDefault: () => ({}), quickAdd: true },
@@ -1165,7 +1165,7 @@ function ActionConfigurator({ actionMeta, element, accentColor, onAdd }) {
         </div>
       )}
 
-      <button data-tour="add-step" className="ei-add-btn" style={{ background: added ? "#3fb950" : accentColor }} onClick={handleAdd}>
+      <button data-tour="add-step" className="ei-add-btn" style={{ background: added ? "var(--accent-success)" : accentColor }} onClick={handleAdd}>
         {added ? <><CheckIcon /> Added!</> : <><PlusIcon /> Add to workflow</>}
       </button>
     </div>

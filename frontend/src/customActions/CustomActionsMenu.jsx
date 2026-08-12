@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { customActionsApi } from "../api/client";
+import { useConfirm } from "../components/ConfirmDialog";
+import useDialog from "../components/useDialog";
 
 const INPUT_TYPES = [
   { value: "string",   label: "Text" },
@@ -37,6 +39,9 @@ function emptyDraft() {
 }
 
 export default function CustomActionsMenu({ open, onClose, showToast, onChanged }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
+  const confirm = useConfirm();
   const [list,    setList]    = useState([]);
   const [editing, setEditing] = useState(null); // { id?, name, description, inputs, outputs, code }
   const [loading, setLoading] = useState(false);
@@ -84,7 +89,11 @@ export default function CustomActionsMenu({ open, onClose, showToast, onChanged 
   };
 
   const remove = async (id, name) => {
-    if (!confirm(`Delete custom action "${name}"? Workflows that use it will fail at execution.`)) return;
+    if (!(await confirm({
+      title: `Delete "${name}"?`,
+      message: "Any workflow still using this action will fail when it runs.",
+      confirmLabel: "Delete action", danger: true,
+    }))) return;
     setBusy(true);
     setError(null);
     try {
@@ -98,8 +107,8 @@ export default function CustomActionsMenu({ open, onClose, showToast, onChanged 
   };
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal ca-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal ca-modal" {...dialogProps}>
         <div className="wf-header">
           <h2>{editing ? (editing.id ? "Edit custom action" : "New custom action") : "Custom actions"}</h2>
           <button className="wf-close" onClick={onClose} aria-label="Close">
@@ -236,18 +245,22 @@ function ActionEditor({ draft, setDraft, onSave, onCancel, busy }) {
 function SchemaListEditor({ items, onChange, allowType }) {
   const [name, setName] = useState("");
   const [type, setType] = useState("string");
+  // Field-level validation belongs next to the field, not in an OS dialog the
+  // user has to dismiss before they can even see what they typed.
+  const [error, setError] = useState(null);
 
   const add = () => {
     const n = name.trim();
     if (!n) return;
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(n)) {
-      alert("Name must be a valid JS identifier (letters, digits, underscores; can't start with a digit).");
+      setError("Use letters, digits and underscores only, starting with a letter or underscore.");
       return;
     }
     if (items.some(i => i.name === n)) {
-      alert(`Duplicate name: ${n}`);
+      setError(`"${n}" is already in the list.`);
       return;
     }
+    setError(null);
     onChange([...items, allowType ? { name: n, type } : { name: n }]);
     setName("");
   };
@@ -273,7 +286,9 @@ function SchemaListEditor({ items, onChange, allowType }) {
         <input
           type="text"
           value={name}
-          onChange={e => setName(e.target.value)}
+          aria-invalid={!!error}
+          aria-describedby={error ? "ca-schema-err" : undefined}
+          onChange={e => { setName(e.target.value); if (error) setError(null); }}
           onKeyDown={e => e.key === "Enter" && add()}
           placeholder="new_name"
         />
@@ -284,6 +299,7 @@ function SchemaListEditor({ items, onChange, allowType }) {
         )}
         <button onClick={add} className="wf-save-btn" style={{ padding: "0 12px" }}>+</button>
       </div>
+      {error && <div className="ca-schema-error" id="ca-schema-err" role="alert">{error}</div>}
     </div>
   );
 }

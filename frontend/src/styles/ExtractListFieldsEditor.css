@@ -58,7 +58,7 @@
 .elfe-ai-badge {
   align-self: center;
   background: linear-gradient(135deg, var(--accent-primary), var(--accent-purple));
-  color: #fff;
+  color: var(--text-on-accent);
   border-radius: 4px;
   font-size: 9px;
   font-weight: 800;
@@ -336,7 +336,7 @@
 .elfe-btn--primary {
   background: linear-gradient(135deg, var(--accent-primary), var(--accent-purple));
   border: 1px solid transparent;
-  color: #fff;
+  color: var(--text-on-accent);
   font-weight: 600;
 }
 .elfe-btn--primary:hover:not(:disabled) {
@@ -387,7 +387,7 @@
 }
 .elfe-pick-banner svg { flex-shrink: 0; opacity: 0.75; }
 .elfe-pick-banner-text { min-width: 0; }   /* keep the sentence one flowing block */
-.elfe-pick-banner strong { color: color-mix(in srgb, var(--accent-primary) 75%, #fff); }
+.elfe-pick-banner strong { color: color-mix(in srgb, var(--accent-primary) 75%, var(--text-primary)); }
 
 /* ── Pending-pick card ────────────────────────────────────────────────── */
 .elfe-pick-pending {
@@ -413,7 +413,7 @@
   flex-shrink: 0;
   font-size: 11px;
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  color: #7ee787;
+  color: var(--syntax-tag);
 }
 .elfe-pick-sel {
   font-size: 11.5px;

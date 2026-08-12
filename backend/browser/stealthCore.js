@@ -962,8 +962,16 @@ function workerConstructorPatchFn(overrideSource, toStringSpoofEnabled) {
 // and returns both the launch args (a real array, spliced into
 // puppeteer.launch({ args: ... })) and the source text defining
 // applyStealthToPage(page).
-function buildCodegenStealthHelper() {
-    const profile = pickRandomProfile();
+function buildCodegenStealthHelper(profileId) {
+    // A workflow can pin its fingerprint (meta.execution.deviceProfile) so
+    // repeated runs look like the same machine — useful when a site ties a
+    // session to one device. 'auto' (and anything unrecognised) keeps the
+    // per-run rotation, which is the better default: identical fingerprints
+    // across thousands of scheduled runs are themselves a signal.
+    const pinned = profileId && profileId !== 'auto'
+        ? DEVICE_PROFILES.find(p => p.id === profileId)
+        : null;
+    const profile = pinned || pickRandomProfile();
     const overrideScript = getNavigatorOverrideScript(profile);
     const uaMetadata = getUserAgentMetadata(profile);
 

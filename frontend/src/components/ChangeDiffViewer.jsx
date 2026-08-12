@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { workflowsApi } from "../api/client";
 import "../styles/ChangeDiffViewer.css";
+import useDialog from "./useDialog";
 
 /* =====================================================================
    ChangeDiffViewer
@@ -33,6 +34,8 @@ const BUCKETS = [
 export default function ChangeDiffViewer({
   open, onClose, workflowId, workflowName, initialRunId, showToast,
 }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState(null);
   const [data, setData]       = useState(null);
@@ -104,8 +107,8 @@ export default function ChangeDiffViewer({
   };
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal wf-modal-xl diff-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal wf-modal-xl diff-modal" {...dialogProps}>
         <div className="wf-header">
           <div className="wf-header-titles">
             <h2>Changes</h2>

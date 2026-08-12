@@ -69,6 +69,8 @@ export const workflowsApi = {
   // One row per workflow for the global "Data" screen: how much has each
   // scraper actually collected, and over how many runs.
   dataSummary: () => api.get("/api/workflows/dataset/summary").then(r => r.data),
+  // Self-healing history: how often this scraper repaired itself, and where.
+  healing: (id, days = 90) => api.get(`/api/workflows/${id}/healing`, { params: { days } }).then(r => r.data),
   // Cross-run dataset: rows accumulated across a workflow's runs.
   // params: { output?, key?, limit?, offset? } (key = "__row__" for whole-row dedupe)
   dataset: (id, params = {}) => api.get(`/api/workflows/${id}/dataset`, { params }).then(r => r.data),

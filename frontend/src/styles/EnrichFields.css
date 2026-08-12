@@ -1,7 +1,7 @@
 /* ── Enrich-flow field renderers ───────────────────────────────────────────
    Styling for the point-and-click "list → details" builder: the source-table
    and column dropdowns, their inline hints, and the live plain-English
-   summary. Teal accent (#2dd4bf) matches the enrich / For-Each-Row colour. */
+   summary. Teal accent (var(--accent-teal)) matches the enrich / For-Each-Row colour. */
 
 .enrich-select {
   display: flex;
@@ -42,8 +42,8 @@
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-primary);
-  background: color-mix(in srgb, #2dd4bf 9%, transparent);
-  border: 1px solid color-mix(in srgb, #2dd4bf 34%, transparent);
+  background: color-mix(in srgb, var(--accent-teal) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-teal) 34%, transparent);
   border-left-width: 3px;
   border-radius: var(--radius-sm, 6px);
   padding: 10px 12px;
@@ -63,8 +63,8 @@
 /* Neutral, muted variant shown before a source list is chosen. */
 .enrich-summary--empty {
   color: var(--text-muted);
-  background: var(--bg-tertiary, rgba(255, 255, 255, 0.03));
-  border-color: var(--border-default, rgba(255, 255, 255, 0.1));
+  background: var(--bg-tertiary, var(--bg-hover));
+  border-color: var(--border-default, var(--bg-active));
   border-left-width: 1px;
 }
 .enrich-summary--empty strong { color: var(--text-secondary); }
@@ -97,7 +97,7 @@
 .subflow-input-name {
   font-family: 'SF Mono', Menlo, monospace;
   font-size: 12px;
-  color: #a371f7;
+  color: var(--accent-purple);
   font-weight: 600;
 }
 .subflow-input-type {

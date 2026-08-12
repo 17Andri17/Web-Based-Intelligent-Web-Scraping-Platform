@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { workflowsApi } from "../api/client";
 import { parseBulkRows } from "../utils/bulkInputs";
 import "../styles/MonitorEditor.css";
+import useDialog from "./useDialog";
 
 /* =====================================================================
    RunInputsDialog
@@ -23,6 +24,8 @@ import "../styles/MonitorEditor.css";
    ===================================================================== */
 
 export default function RunInputsDialog({ open, onClose, workflowId, workflowName, variables = [], showToast, onQueued }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
   const [mode, setMode]   = useState("single"); // 'single' | 'bulk'
   const [single, setSingle] = useState({});     // varName -> value
   const [text, setText]   = useState("");
@@ -80,8 +83,8 @@ export default function RunInputsDialog({ open, onClose, workflowId, workflowNam
   const noVars = variables.length === 0;
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal mon-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal mon-modal" {...dialogProps}>
         <div className="wf-header">
           <h2>Run "{workflowName}"</h2>
           <button className="wf-close" onClick={onClose} aria-label="Close">
@@ -182,7 +185,7 @@ export default function RunInputsDialog({ open, onClose, workflowId, workflowNam
 
 function tabStyle(active) {
   return {
-    background: active ? "var(--accent-primary, #4f9cf9)" : "transparent",
-    color: active ? "#fff" : "var(--text-secondary)",
+    background: active ? "var(--accent-primary, var(--accent-primary))" : "transparent",
+    color: active ? "var(--text-on-accent)" : "var(--text-secondary)",
   };
 }

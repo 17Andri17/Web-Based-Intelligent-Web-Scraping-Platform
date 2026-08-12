@@ -17,6 +17,7 @@ import "../styles/WorkflowVariables.css";
 import "../styles/VariablePicker.css";
 import "../styles/ConditionBuilder.css";
 import "../styles/EnrichFields.css";
+import useDialog from "./useDialog";
 
 // Context shared across all step components (avoids prop drilling).
 // Defined in ./workflowPanelContext so helper components can consume it
@@ -1002,7 +1003,7 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, drag
     ? (PAGINATION_STRATEGY_LABEL[step.meta?.strategy] || 'Pagination loop')
     : `${def.label}${step.label ? ` — ${step.label}` : ''}`;
   const headerIcon  = isLegacyPagination ? '↻' : def.icon;
-  const headerColor = isLegacyPagination ? '#58a6ff' : def.color;
+  const headerColor = isLegacyPagination ? 'var(--accent-primary)' : def.color;
   const headerBg    = isLegacyPagination ? 'rgba(88,166,255,0.08)' : def.bgColor;
   const paginationSubtitle = isNativePagination
     ? paginationConfigSummary(step)
@@ -1186,6 +1187,8 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, drag
 
 /* ── Step Picker Modal ── */
 function StepPicker({ onSelect, onClose, customActions = [] }) {
+  // Mounted only while open, so the dialog behaviour is always on.
+  const { overlayProps, dialogProps } = useDialog({ open: true, onClose });
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("all");
   const q = search.toLowerCase();
@@ -1224,8 +1227,8 @@ function StepPicker({ onSelect, onClose, customActions = [] }) {
   );
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content picker-modal" onClick={e => e.stopPropagation()}>
+    <div className="modal-overlay" {...overlayProps}>
+      <div className="modal-content picker-modal" {...dialogProps}>
         <div className="modal-header">
           <h3>Add Step</h3>
           <button className="modal-close-btn" onClick={onClose}>
@@ -1332,6 +1335,7 @@ function SingleValueCleanSection({ transforms, sample, onChange }) {
 }
 
 function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
+  const { overlayProps, dialogProps } = useDialog({ open: true, onClose });
   const isCtrl = isControlStep(step);
   const isCustom = !isCtrl && step.type === "CUSTOM_ACTION";
   const customDef = isCustom ? customActions.find(a => a.id === step.params?.actionId) : null;
@@ -1365,8 +1369,8 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
   if (!def) {
     // Custom action was deleted — let the user remove the orphan step.
     return (
-      <div className="modal-overlay" onClick={onClose}>
-        <div className="modal-content editor-modal" onClick={e => e.stopPropagation()}>
+      <div className="modal-overlay" {...overlayProps}>
+        <div className="modal-content editor-modal" {...dialogProps}>
           <div className="modal-header"><h3>Custom action unavailable</h3>
             <button className="modal-close-btn" onClick={onClose}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1400,8 +1404,8 @@ function StepEditorModal({ step, onClose, onSave, customActions = [] }) {
   const getValue = (k) => isCustom ? local.params?.inputs?.[k] : local.params?.[k];
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content editor-modal" onClick={e => e.stopPropagation()}>
+    <div className="modal-overlay" {...overlayProps}>
+      <div className="modal-content editor-modal" {...dialogProps}>
         <div className="modal-header">
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             {isCtrl && <span className="control-type-badge" style={{ "--ctrl-color": def.color, fontSize: 16 }}>{def.icon}</span>}

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { apiKeysApi, API_BASE } from "../api/client";
 import "../styles/ApiKeysMenu.css";
+import { useConfirm } from "../components/ConfirmDialog";
+import useDialog from "../components/useDialog";
 
 /*
   API keys panel — dashboard management of public-API (/v1) credentials.
@@ -13,6 +15,9 @@ import "../styles/ApiKeysMenu.css";
 */
 
 export default function ApiKeysMenu({ open, onClose, showToast }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
+  const confirm = useConfirm();
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -57,7 +62,12 @@ export default function ApiKeysMenu({ open, onClose, showToast }) {
   };
 
   const revoke = async (k) => {
-    if (!confirm(`Revoke "${k.name}" (${k.prefix}…)? Programs using this key will get 401s immediately. This cannot be undone.`)) return;
+    if (!(await confirm({
+      title: `Revoke "${k.name}"?`,
+      message: `Key ${k.prefix}… stops working immediately — anything using it starts getting 401s.`,
+      detail: "This cannot be undone.",
+      confirmLabel: "Revoke key", danger: true,
+    }))) return;
     setBusy(true);
     setError(null);
     try {
@@ -82,8 +92,8 @@ export default function ApiKeysMenu({ open, onClose, showToast }) {
   };
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal ca-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal ca-modal" {...dialogProps}>
         <div className="wf-header">
           <h2>API keys</h2>
           <button className="wf-close" onClick={onClose} aria-label="Close">

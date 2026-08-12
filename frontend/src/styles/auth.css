@@ -83,8 +83,8 @@
 }
 
 .auth-submit {
-    background: var(--accent-primary);
-    color: #fff;
+    background: var(--accent-primary-fill);
+    color: var(--text-on-accent);
     border: none;
     padding: 11px;
     font-size: 14px;
@@ -137,8 +137,8 @@
     width: 22px;
     height: 22px;
     border-radius: 50%;
-    background: var(--accent-primary);
-    color: #fff;
+    background: var(--accent-primary-fill);
+    color: var(--text-on-accent);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -174,6 +174,64 @@
 .user-popover .item:hover { background: var(--bg-tertiary); }
 .user-popover .item.danger { color: var(--accent-danger); }
 
+.user-popover-sep {
+    height: 1px;
+    margin: 6px 4px;
+    background: var(--border-muted);
+}
+
+/* Group heading in the user menu — marks which entries belong to the open
+   scraper rather than to the account. */
+.user-popover-label {
+    padding: 2px 10px 5px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+/* Appearance: a three-way segmented control rather than a dark-mode switch,
+   because "follow my device" is a real third answer and a two-state toggle
+   can't express it. */
+.theme-picker { padding: 4px 6px 8px; }
+
+.theme-picker-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.theme-picker-options {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 3px;
+    padding: 3px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+}
+
+.theme-opt {
+    padding: 5px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+.theme-opt:hover { color: var(--text-primary); }
+.theme-opt.active {
+    color: var(--text-on-accent);
+    background: var(--accent-primary-fill);
+}
+
 /* ==================== MENU MODALS (shared chrome) ====================
    Every menu opened from the header — Workflows, Custom actions, Proxies,
    API keys, Webhooks, and the per-workflow editors — is built from these
@@ -188,7 +246,7 @@
 .wf-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(1, 4, 9, 0.66);
+    background: var(--bg-scrim);
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
     z-index: 100;
@@ -369,8 +427,8 @@
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .wf-save-btn {
-    background: var(--accent-primary);
-    color: #fff;
+    background: var(--accent-primary-fill);
+    color: var(--text-on-accent);
     border: none;
     padding: 8px 16px;
     font-size: 13px;
@@ -707,8 +765,8 @@
     padding: 10px 12px;
     border-radius: var(--radius-md);
     border: 1px solid var(--border-default);
-    background: #0d1117;
-    color: #c9d1d9;
+    background: var(--bg-primary);
+    color: var(--text-primary);
     font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', Consolas, monospace;
     font-size: 12.5px;
     line-height: 1.55;
@@ -817,8 +875,8 @@
 }
 
 .modal-btn.primary {
-    background: var(--accent-primary);
-    color: #fff;
+    background: var(--accent-primary-fill);
+    color: var(--text-on-accent);
     border-color: transparent;
 }
 
@@ -834,4 +892,54 @@
     justify-content: center;
     color: var(--text-secondary);
     background: var(--bg-primary);
+}
+
+/* Inline validation under a schema field — replaces a native alert(), which
+   blocked the page and hid the value being corrected. */
+.ca-schema-error {
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--accent-danger);
+}
+.ca-schema-add input[aria-invalid="true"] {
+    border-color: var(--accent-danger);
+}
+
+/* Modal footer slot on the shared chrome (Modal's `footer` prop). */
+.wf-footer {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-default);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-shrink: 0;
+    background: var(--bg-secondary);
+}
+
+/* ── Dialogs on a phone ───────────────────────────────────────────────────
+   24px of overlay padding on a 375px screen is 13% of the width, and an 86vh
+   cap leaves a dialog floating in the middle with its content scrolling in a
+   letterbox. Near-full-bleed reads better and gives the content the room. */
+@media (max-width: 640px) {
+    .wf-overlay {
+        padding: 10px;
+        align-items: flex-end;          /* sheet-like: content near the thumb */
+    }
+
+    .wf-modal,
+    .wf-modal-lg,
+    .wf-modal-xl {
+        max-width: 100%;
+        max-height: 92vh;
+    }
+
+    .wf-header { padding: 12px 14px; }
+    .wf-body   { padding: 14px; }
+    .wf-footer { padding: 10px 14px; }
+
+    /* Row actions in the workflows list stop being a single wide strip. */
+    .wf-item { flex-direction: column; align-items: stretch; gap: 10px; }
+    .wf-item .actions { flex-wrap: wrap; }
 }

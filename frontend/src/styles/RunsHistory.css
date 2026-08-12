@@ -1,0 +1,37 @@
+/* Run history — a two-pane browser on a desktop, one column on a phone.
+
+   The split used to be an inline `gridTemplateColumns: "300px 1fr"`, which no
+   media query could reach: on a 375px screen the run list took 300 of those
+   pixels and the detail pane got the rest. Checking last night's run is
+   exactly a phone task, so the layout has to give. */
+
+.rh-split {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 12px;
+  height: 70vh;
+}
+
+.rh-runs {
+  overflow-y: auto;
+  border-right: 1px solid var(--border-muted);
+  padding-right: 8px;
+}
+
+@media (max-width: 760px) {
+  .rh-split {
+    grid-template-columns: 1fr;
+    /* Two stacked scroll areas in a fixed 70vh box gives each about a third of
+       a phone screen. Let the dialog body scroll as one instead. */
+    height: auto;
+    max-height: none;
+  }
+  .rh-runs {
+    border-right: none;
+    border-bottom: 1px solid var(--border-muted);
+    padding-right: 0;
+    padding-bottom: 10px;
+    /* Enough to see a few runs without pushing the detail off-screen. */
+    max-height: 38vh;
+  }
+}

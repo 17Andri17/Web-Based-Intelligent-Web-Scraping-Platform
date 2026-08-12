@@ -21,7 +21,7 @@
   border-radius: 8px;
   font-weight: 600;
   cursor: pointer;
-  color: #fff;
+  color: var(--text-on-accent);
   background: var(--accent-primary, #4f9cf9);
   border: 1px solid var(--accent-primary, #4f9cf9);
 }
@@ -68,7 +68,7 @@
   margin-bottom: 4px;
   border-radius: 6px;
   cursor: pointer;
-  background: var(--surface-2, rgba(255,255,255,0.03));
+  background: var(--surface-2, var(--bg-hover));
   border: 1px solid var(--border-soft, #2a2a2a);
 }
 .sd-suggestion:hover { border-color: var(--accent-primary, #4f9cf9); }
@@ -86,7 +86,7 @@
 }
 .sd-sample-tag { color: var(--accent-success, #3fb950); white-space: nowrap; }
 .sd-sample-hidden {
-  font-size: 10px; color: #d29922; border: 1px solid #d2992255;
+  font-size: 10px; color: var(--accent-warning); border: 1px solid color-mix(in srgb, var(--accent-warning) 33%, transparent);
   border-radius: 6px; padding: 0 5px; white-space: nowrap;
 }
 .sd-sample-text { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

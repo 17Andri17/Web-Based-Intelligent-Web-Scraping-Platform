@@ -263,6 +263,43 @@ router.get('/dataset/summary', async (req, res) => {
   });
 });
 
+/* Self-healing history — how often this scraper repaired itself, and where.
+
+   The data has been in `run_repairs` since self-healing shipped; this is the
+   first way out of the database for it. Worth surfacing because it is the
+   platform's most persuasive claim and it has been completely invisible: a
+   scraper that quietly fixed itself four times looks identical to one that
+   never broke. */
+router.get('/:id/healing', async (req, res) => {
+  const wf = await workflows.getForUser(req.params.id, req.user.id);
+  if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+  const sinceDays = Math.max(1, Math.min(parseInt(req.query.days, 10) || 90, 365));
+  const out = await runStore.healingHistoryForWorkflow(req.params.id, req.user.id, { sinceDays });
+
+  // Step ids mean nothing to a reader; resolve them to the labels shown in the
+  // editor so the rollup names the step the user recognises.
+  const labels = {};
+  try {
+    const walk = (arr) => {
+      for (const s of arr || []) {
+        if (!s || typeof s !== 'object') continue;
+        if (s.id) labels[s.id] = s.label || s.type;
+        for (const k of ['body', 'then', 'else', 'try', 'catch']) {
+          if (Array.isArray(s[k])) walk(s[k]);
+        }
+      }
+    };
+    walk(JSON.parse(wf.steps_json));
+  } catch (_) { /* a step tree we can't parse just means unlabelled ids */ }
+
+  res.json({
+    ...out,
+    bySteps: out.bySteps.map(s => ({ ...s, label: labels[s.stepId] || s.stepType || 'A step' })),
+    repairs: out.repairs.map(r => ({ ...r, label: labels[r.step_id] || r.step_type || 'A step' })),
+  });
+});
+
 router.get('/:id/dataset', async (req, res) => {
   const r = await loadDataset(req.params.id, req.user.id, req.query);
   if (r.error) return res.status(r.status).json({ error: r.error });

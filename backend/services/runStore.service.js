@@ -324,6 +324,64 @@ async function listRepairsForRun(runId) {
   `, [runId]);
 }
 
+/* Self-healing history for one workflow.
+
+   Everything needed for this has been recorded in `run_repairs` since the
+   feature shipped — it just had no way out of the database. That's a shame,
+   because "this scraper fixed itself 4 times and you didn't have to do
+   anything" is the single most persuasive thing the platform does, and it has
+   been invisible.
+
+   Returns the per-step tallies plus the recent individual repairs, scoped to
+   the owner (via the runs join) so one user can't read another's history. */
+async function healingHistoryForWorkflow(workflowId, userId, { limit = 40, sinceDays = 90 } = {}) {
+  const rows = await db.all(`
+    SELECT r.id, r.run_id, r.step_id, r.step_type, r.error_message, r.explanation,
+           r.confidence, r.applied, r.verified, r.auto_adopted, r.repair_kind,
+           r.created_at, runs.status AS run_status, runs.started_at AS run_started_at
+    FROM run_repairs r
+    JOIN runs ON runs.id = r.run_id
+    WHERE r.workflow_id = ? AND runs.user_id = ?
+    ORDER BY r.id DESC
+    LIMIT ?
+  `, [workflowId, userId, Math.max(1, Math.min(limit, 200))]);
+
+  const cutoff = Date.now() - sinceDays * 24 * 60 * 60 * 1000;
+  const recent = rows.filter(r => {
+    const t = Date.parse(String(r.created_at || '').replace(' ', 'T') + 'Z');
+    return Number.isNaN(t) ? true : t >= cutoff;
+  });
+
+  // Per-step rollup: which parts of this scraper are actually fragile.
+  const byStep = new Map();
+  for (const r of recent) {
+    const key = r.step_id;
+    if (!byStep.has(key)) {
+      byStep.set(key, {
+        stepId: r.step_id, stepType: r.step_type,
+        total: 0, verified: 0, autoAdopted: 0, lastAt: r.created_at,
+      });
+    }
+    const e = byStep.get(key);
+    e.total += 1;
+    if (r.verified) e.verified += 1;
+    if (r.auto_adopted) e.autoAdopted += 1;
+    if (String(r.created_at) > String(e.lastAt)) e.lastAt = r.created_at;
+  }
+
+  return {
+    totals: {
+      repairs: recent.length,
+      verified: recent.filter(r => r.verified).length,
+      autoAdopted: recent.filter(r => r.auto_adopted).length,
+      runsAffected: new Set(recent.map(r => r.run_id)).size,
+      sinceDays,
+    },
+    bySteps: [...byStep.values()].sort((a, b) => b.total - a.total),
+    repairs: recent,
+  };
+}
+
 /* ── "has usable data" status predicate ───────────────────────────────────
    A 'partial' run (killed / crashed / timed out) DID capture rows — it just
    never finished. That data is genuinely useful for history and comparison,
@@ -797,7 +855,7 @@ module.exports = {
   // logs
   appendLog, getLogs, flushLogs,
   // repairs
-  recordRepair, markRepairVerified, markAutoAdopted, listRepairsForRun,
+  recordRepair, markRepairVerified, markAutoAdopted, listRepairsForRun, healingHistoryForWorkflow,
   // self-healing helpers
   recentSuccessfulResults, updateWorkflowSteps,
   // cross-run dataset view

@@ -9,10 +9,10 @@ const CWSCtx = createContext(null);
 // ─── Step metadata ───────────────────────────────────────────────────────────
 
 const CAT_COLORS = {
-  Navigation:   { bg:"#1d3a5f", text:"#58a6ff" },
-  Interaction:  { bg:"#1d3a2e", text:"#3fb950" },
-  Extraction:   { bg:"#2a1f4e", text:"#a371f7" },
-  Flow:         { bg:"#3d2a1a", text:"#d29922" },
+  Navigation:   { bg:"color-mix(in srgb, var(--accent-primary) 22%, var(--bg-secondary))", text:"var(--accent-primary)" },
+  Interaction:  { bg:"color-mix(in srgb, var(--accent-success) 22%, var(--bg-secondary))", text:"var(--accent-success)" },
+  Extraction:   { bg:"color-mix(in srgb, var(--accent-purple) 22%, var(--bg-secondary))",  text:"var(--accent-purple)" },
+  Flow:         { bg:"color-mix(in srgb, var(--accent-warning) 22%, var(--bg-secondary))", text:"var(--accent-warning)" },
 };
 
 const TYPE_META = {

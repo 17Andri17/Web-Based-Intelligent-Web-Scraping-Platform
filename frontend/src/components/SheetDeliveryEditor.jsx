@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { workflowsApi } from "../api/client";
 import "../styles/MonitorEditor.css";
+import { useConfirm } from "./ConfirmDialog";
+import useDialog from "./useDialog";
 
 /* =====================================================================
    SheetDeliveryEditor
@@ -20,6 +22,9 @@ import "../styles/MonitorEditor.css";
    ===================================================================== */
 
 export default function SheetDeliveryEditor({ open, onClose, workflowId, workflowName, showToast }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
+  const confirm = useConfirm();
   const [loading, setLoading] = useState(false);
   const [busy, setBusy]       = useState(false);
   const [error, setError]     = useState(null);
@@ -84,7 +89,12 @@ export default function SheetDeliveryEditor({ open, onClose, workflowId, workflo
   };
 
   const remove = async () => {
-    if (!confirm(`Stop sending "${workflowName}" results to Google Sheets?`)) return;
+    if (!(await confirm({
+      title: "Stop sending to Google Sheets?",
+      message: `"${workflowName}" will keep running; its results just won’t be appended to the sheet any more.`,
+      detail: "Rows already in the sheet stay there.",
+      confirmLabel: "Stop sending",
+    }))) return;
     setBusy(true); setError(null);
     try {
       await workflowsApi.removeSheet(workflowId);
@@ -99,8 +109,8 @@ export default function SheetDeliveryEditor({ open, onClose, workflowId, workflo
   };
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal mon-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal mon-modal" {...dialogProps}>
         <div className="wf-header">
           <div className="wf-header-titles"><h2>Google Sheets</h2><span className="wf-header-sub">{workflowName}</span></div>
           <button className="wf-close" onClick={onClose} aria-label="Close">

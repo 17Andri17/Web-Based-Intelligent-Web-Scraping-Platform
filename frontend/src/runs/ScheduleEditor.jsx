@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { schedulesApi } from "../api/client";
+import { useConfirm } from "../components/ConfirmDialog";
+import useDialog from "../components/useDialog";
 
 /* =====================================================================
    ScheduleEditor
@@ -29,6 +31,9 @@ const PRESETS = [
 ];
 
 export default function ScheduleEditor({ open, onClose, workflowId, workflowName, showToast }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
+  const confirm = useConfirm();
   const [schedule, setSchedule] = useState(null);
   const [loading, setLoading]   = useState(false);
   const [busy, setBusy]         = useState(false);
@@ -136,7 +141,11 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
 
   const remove = async () => {
     if (!schedule) return;
-    if (!confirm(`Remove the schedule for "${workflowName}"?`)) return;
+    if (!(await confirm({
+      title: "Remove the schedule?",
+      message: `"${workflowName}" will stop running on its own. You can still run it by hand.`,
+      confirmLabel: "Remove schedule",
+    }))) return;
     setBusy(true);
     setError(null);
     try {
@@ -152,9 +161,9 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
   };
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
+    <div className="wf-overlay" {...overlayProps}>
       <div className="wf-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
-        <div className="wf-header">
+        <div className="wf-header" {...dialogProps}>
           <div className="wf-header-titles"><h2>Schedule</h2><span className="wf-header-sub">{workflowName}</span></div>
           <button className="wf-close" onClick={onClose} aria-label="Close">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -227,8 +236,8 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
                     type="button"
                     className="wf-save-btn"
                     style={{
-                      background: (!customMode && minutes === p.minutes) ? "var(--accent-primary, #4f9cf9)" : undefined,
-                      color:      (!customMode && minutes === p.minutes) ? "#fff" : undefined,
+                      background: (!customMode && minutes === p.minutes) ? "var(--accent-primary, var(--accent-primary))" : undefined,
+                      color:      (!customMode && minutes === p.minutes) ? "var(--text-on-accent)" : undefined,
                     }}
                     onClick={() => { setMinutes(p.minutes); setCustomMode(false); }}
                     disabled={!enabled || busy}
@@ -270,8 +279,8 @@ export default function ScheduleEditor({ open, onClose, workflowId, workflowName
                       className="wf-save-btn"
                       style={{
                         padding: "5px 10px", minWidth: 46,
-                        background: on ? "var(--accent-primary, #4f9cf9)" : "transparent",
-                        color: on ? "#fff" : "var(--text-secondary)",
+                        background: on ? "var(--accent-primary, var(--accent-primary))" : "transparent",
+                        color: on ? "var(--text-on-accent)" : "var(--text-secondary)",
                       }}
                       onClick={() => setWeekdays(w => on ? w.filter(x => x !== d) : [...w, d].sort((a, b) => a - b))}
                       disabled={!enabled || busy}

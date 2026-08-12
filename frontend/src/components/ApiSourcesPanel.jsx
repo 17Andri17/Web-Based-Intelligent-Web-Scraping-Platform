@@ -1,13 +1,14 @@
 import { useState } from "react";
+import useDialog from "./useDialog";
 
 // ─── Auth-tier + verification metadata ─────────────────────────────────────────
 
 const AUTH_INFO = {
-  open:    { label: "Open — no auth",     color: "#3fb950", bg: "rgba(63,185,80,0.12)",  border: "rgba(63,185,80,0.3)" },
-  session: { label: "Session cookies",    color: "#58a6ff", bg: "rgba(88,166,255,0.12)", border: "rgba(88,166,255,0.3)" },
-  bearer:  { label: "Token / API key",    color: "#d29922", bg: "rgba(210,153,34,0.12)", border: "rgba(210,153,34,0.3)" },
-  signed:  { label: "Signed (HMAC)",      color: "#f85149", bg: "rgba(248,81,73,0.12)",  border: "rgba(248,81,73,0.3)" },
-  unknown: { label: "Unknown auth",       color: "#8b949e", bg: "rgba(139,148,158,0.12)",border: "rgba(139,148,158,0.3)" },
+  open:    { label: "Open — no auth",     color: "var(--accent-success)", bg: "rgba(63,185,80,0.12)",  border: "rgba(63,185,80,0.3)" },
+  session: { label: "Session cookies",    color: "var(--accent-primary)", bg: "rgba(88,166,255,0.12)", border: "rgba(88,166,255,0.3)" },
+  bearer:  { label: "Token / API key",    color: "var(--accent-warning)", bg: "rgba(210,153,34,0.12)", border: "rgba(210,153,34,0.3)" },
+  signed:  { label: "Signed (HMAC)",      color: "var(--accent-danger)", bg: "rgba(248,81,73,0.12)",  border: "rgba(248,81,73,0.3)" },
+  unknown: { label: "Unknown auth",       color: "var(--text-secondary)", bg: "rgba(139,148,158,0.12)",border: "rgba(139,148,158,0.3)" },
 };
 
 // Maps the backend verification object → a badge. `null` means not run.
@@ -165,11 +166,17 @@ function SourceCard({ source, onUse, aiAvailable, onEnrich }) {
 // ─── Main panel ─────────────────────────────────────────────────────────────────
 
 export default function ApiSourcesPanel({ isAnalyzing, sources, error, capturedCount, consideredCount, aiAvailable, onAnalyze, onClose, onUse, onEnrich }) {
-  if (!isAnalyzing && sources === null) return null;
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  // This panel has no `open` prop — it is mounted conditionally and decides
+  // for itself. (`open` alone would silently resolve to window.open, which is
+  // truthy, so the hook would think it was showing even while rendering null.)
+  const showing = isAnalyzing || sources !== null;
+  const { overlayProps, dialogProps } = useDialog({ open: showing, onClose });
+  if (!showing) return null;
 
   return (
-    <div className="as-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="as-panel">
+    <div className="as-overlay" {...overlayProps}>
+      <div className="as-panel" {...dialogProps}>
         <div className="as-header">
           <div className="as-header-left">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

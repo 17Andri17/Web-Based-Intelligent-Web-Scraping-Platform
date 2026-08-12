@@ -1,19 +1,81 @@
+/* ==================== DESIGN TOKENS ====================
+   Dark is the default and every token below is its dark value. The light
+   theme is the same token names re-pointed further down — no component
+   stylesheet should ever need to know which theme is active.
+
+   The accent ramp is GitHub Primer's, which the original dark palette was
+   already derived from (#0d1117 / #161b22 / #58a6ff), so the light theme
+   uses Primer's light counterparts rather than a guess. That matters for
+   more than taste: #58a6ff on white is roughly 2.4:1 and fails WCAG AA, so
+   the accents genuinely need different values per theme, not just the
+   surfaces.
+
+   Rule of thumb when adding CSS: reach for a token. A bare hex is a bug in
+   one theme or the other. */
 :root {
+    color-scheme: dark;
+
+    /* Surfaces */
     --bg-primary: #0d1117;
     --bg-secondary: #161b22;
     --bg-tertiary: #21262d;
     --bg-elevated: #30363d;
+    --bg-input: #21262d;
+    /* Hover wash over a surface. Was a literal rgba(255,255,255,0.06) in a
+       dozen places, which is invisible on a light background. */
+    --bg-hover: rgba(255, 255, 255, 0.06);
+    --bg-active: rgba(255, 255, 255, 0.10);
+    /* Backdrop behind modals. */
+    --bg-scrim: rgba(0, 0, 0, 0.6);
+    /* Tint for one-off box-shadows that set their own geometry. */
+    --shadow-color: rgba(0, 0, 0, 0.5);
+    --bg-code: #1a1a1a;
+
+    /* Text */
     --text-primary: #f0f6fc;
     --text-secondary: #8b949e;
-    --text-muted: #6e7681;
+    --text-muted: #7d8590;      /* AA on --bg-primary (5.07:1) */
+    /* Text sitting on a filled accent — white in both themes, because every
+       accent is dark enough to carry it. */
+    --text-on-accent: #ffffff;
+
+    /* Accents */
     --accent-primary: #58a6ff;
     --accent-success: #3fb950;
     --accent-warning: #d29922;
     --accent-danger: #f85149;
     --accent-purple: #a371f7;
     --accent-orange: #f78166;
+    --accent-teal: #2dd4bf;
+
+    /* Filled-button backgrounds. Distinct from the accents above because the
+       dark accents are BRIGHT (they have to be, to read as text on a near-black
+       page) and white button labels on them fail badly — white on #58a6ff is
+       2.5:1. So fills get a deeper shade while --accent-* stays the text/border
+       colour. In the light theme the accents are already deep enough and the
+       two are the same value. */
+    --accent-primary-fill: #1f6feb;
+    --accent-success-fill: #238636;
+    --accent-danger-fill: #da3633;
+    --accent-warning-fill: #9e6a03;
+    --accent-purple-fill: #8957e5;
+
+    /* Deep tinted panels (callouts, banners) — a wash of the accent over the
+       page background, so they have to flip with the theme. */
+    --tint-info-bg: #04101f;
+    --tint-warn-bg: #1a1205;
+    --tint-danger-bg: #7d2620;
+    --tint-purple-bg: #3b2a6e;
+
+    /* HTML source tree highlighting */
+    --syntax-tag: #7ee787;
+    --syntax-attr: #d2a8ff;
+    --syntax-value: #a5d6ff;
+
+    /* Borders */
     --border-default: #30363d;
     --border-muted: #21262d;
+
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
@@ -22,6 +84,196 @@
     --radius-lg: 12px;
     --transition-fast: 150ms ease;
     --transition-normal: 200ms ease;
+}
+
+/* ── Light theme ──────────────────────────────────────────────────────────
+   Dark is this app's default — it is what the product is designed in and
+   what most people building scrapers at a screen all day prefer — so a bare
+   :root is DARK and nothing about the OS changes that on its own.
+
+   Light is opt-in, two ways:
+
+     1. data-theme="system" — the user explicitly asked to follow their
+        device, so the media query below decides.
+     2. data-theme="light"  — an explicit choice, which always wins.
+
+   Both point at the same palette; theme.test.mjs fails the build if the two
+   blocks ever drift apart. */
+@media (prefers-color-scheme: light) {
+    :root[data-theme="system"] {
+        color-scheme: light;
+
+        /* A tinted canvas with WHITE panels on top, rather than a white page with
+           grey panels. It's the inversion that gives a light UI depth: cards,
+           modals and the sidebar lift off the background instead of being cut out
+           of it, so the same elevation story the dark theme tells (darker page,
+           lighter surfaces) still reads. Slate-tinted rather than neutral grey —
+           pure #fff / #eee is what makes a light theme feel like an unstyled
+           document. */
+        --bg-primary: #eef1f7;      /* canvas */
+        --bg-secondary: #ffffff;    /* cards, panels, modals — they lift */
+        --bg-tertiary: #e3e8f0;     /* wells: inputs, chips, table stripes */
+        --bg-elevated: #ffffff;
+        --bg-input: #ffffff;
+        --bg-hover: rgba(15, 23, 42, 0.05);
+        --bg-active: rgba(15, 23, 42, 0.09);
+        --bg-scrim: rgba(15, 23, 42, 0.50);
+        --shadow-color: rgba(15, 23, 42, 0.14);
+        --bg-code: #eef1f7;
+
+        --text-primary: #0f172a;
+        --text-secondary: #475569;
+        --text-muted: #5b6878;      /* AA on every light surface */
+        --text-on-accent: #ffffff;
+
+        --accent-primary: #1d4ed8;
+        --accent-success: #15803d;
+        --accent-warning: #a16207;
+        --accent-danger: #be123c;
+        --accent-purple: #7c3aed;
+        --accent-orange: #c2410c;
+        --accent-teal: #0f766e;
+
+        /* The light accents are already deep enough to carry white text, so fill
+           and accent are the same value here. */
+        --accent-primary-fill: #1d4ed8;
+        --accent-success-fill: #15803d;
+        --accent-danger-fill: #be123c;
+        --accent-warning-fill: #a16207;
+        --accent-purple-fill: #7c3aed;
+
+        /* Saturated enough to read as a deliberate callout on the tinted canvas —
+           a 4%-alpha wash disappears against #eef1f7. */
+        --tint-info-bg: #dbeafe;
+        --tint-warn-bg: #fef3c7;
+        --tint-danger-bg: #ffe4e6;
+        --tint-purple-bg: #ede9fe;
+
+        --syntax-tag: #15803d;
+        --syntax-attr: #7c3aed;
+        --syntax-value: #1d4ed8;
+
+        --border-default: #c7d0de;
+        --border-muted: #dfe5ee;
+
+        /* Blue-tinted rather than neutral black, so shadows sit in the same colour
+           family as the canvas instead of looking like dirt. */
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+        --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.10);
+        --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.16);
+    }
+}
+
+:root[data-theme="light"] {
+    color-scheme: light;
+
+    /* A tinted canvas with WHITE panels on top, rather than a white page with
+       grey panels. It's the inversion that gives a light UI depth: cards,
+       modals and the sidebar lift off the background instead of being cut out
+       of it, so the same elevation story the dark theme tells (darker page,
+       lighter surfaces) still reads. Slate-tinted rather than neutral grey —
+       pure #fff / #eee is what makes a light theme feel like an unstyled
+       document. */
+    --bg-primary: #eef1f7;      /* canvas */
+    --bg-secondary: #ffffff;    /* cards, panels, modals — they lift */
+    --bg-tertiary: #e3e8f0;     /* wells: inputs, chips, table stripes */
+    --bg-elevated: #ffffff;
+    --bg-input: #ffffff;
+    --bg-hover: rgba(15, 23, 42, 0.05);
+    --bg-active: rgba(15, 23, 42, 0.09);
+    --bg-scrim: rgba(15, 23, 42, 0.50);
+    --shadow-color: rgba(15, 23, 42, 0.14);
+    --bg-code: #eef1f7;
+
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #5b6878;      /* AA on every light surface */
+    --text-on-accent: #ffffff;
+
+    --accent-primary: #1d4ed8;
+    --accent-success: #15803d;
+    --accent-warning: #a16207;
+    --accent-danger: #be123c;
+    --accent-purple: #7c3aed;
+    --accent-orange: #c2410c;
+    --accent-teal: #0f766e;
+
+    /* The light accents are already deep enough to carry white text, so fill
+       and accent are the same value here. */
+    --accent-primary-fill: #1d4ed8;
+    --accent-success-fill: #15803d;
+    --accent-danger-fill: #be123c;
+    --accent-warning-fill: #a16207;
+    --accent-purple-fill: #7c3aed;
+
+    /* Saturated enough to read as a deliberate callout on the tinted canvas —
+       a 4%-alpha wash disappears against #eef1f7. */
+    --tint-info-bg: #dbeafe;
+    --tint-warn-bg: #fef3c7;
+    --tint-danger-bg: #ffe4e6;
+    --tint-purple-bg: #ede9fe;
+
+    --syntax-tag: #15803d;
+    --syntax-attr: #7c3aed;
+    --syntax-value: #1d4ed8;
+
+    --border-default: #c7d0de;
+    --border-muted: #dfe5ee;
+
+    /* Blue-tinted rather than neutral black, so shadows sit in the same colour
+       family as the canvas instead of looking like dirt. */
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+    --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.10);
+    --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.16);
+}
+
+/* An explicit dark choice, and the "system" default when the OS is dark. */
+:root[data-theme="dark"] { color-scheme: dark; }
+
+/* ── Theme switching ──────────────────────────────────────────────────────
+   Suppress every transition for the instant the theme flips.
+
+   Plenty of elements transition border-color/background on hover or focus.
+   Without this, changing theme animates all of them at once — hundreds of
+   elements easing between two palettes, which reads as the app lagging rather
+   than as a setting taking effect. The switch should be instant; only
+   interactions should animate.
+
+   theme.js adds the attribute, forces a reflow so the new values are applied
+   while transitions are still off, and removes it on the next frame. */
+:root[data-theme-switching] *,
+:root[data-theme-switching] *::before,
+:root[data-theme-switching] *::after {
+    transition: none !important;
+    animation-duration: 0s !important;
+}
+
+/* ── Legacy token aliases ─────────────────────────────────────────────────
+   Several stylesheets reach for names that were never defined anywhere
+   (`var(--surface-2, rgba(255,255,255,0.03))` and friends), so they have
+   always silently resolved to their hard-coded fallback. That worked while
+   there was only one theme; under two it would pin those surfaces to dark
+   values forever.
+
+   Defining the aliases here makes the var() resolve instead of falling
+   through, so every one of them becomes theme-aware without having to touch
+   the call sites. Component-scoped properties set from JSX (--mc, --card-*,
+   --ctrl-*, --accent, --tile-color) are deliberately NOT listed: those carry
+   a per-step colour and a local declaration rightly wins over :root. */
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark"] {
+    --bg: var(--bg-primary);
+    --bg-panel: var(--bg-secondary);
+    --bg-elev: var(--bg-elevated);
+    --bg-soft: var(--bg-hover);
+    --surface-1: var(--bg-hover);
+    --surface-2: var(--bg-tertiary);
+    --border: var(--border-default);
+    --border-soft: var(--border-muted);
+    --accent-soft: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+
+    --text-on-success: var(--text-on-accent);
 }
 
 
@@ -134,12 +386,12 @@ body {
 }
 
 .status-dot.connected {
-    background: var(--accent-success);
+    background: var(--accent-success-fill);
     box-shadow: 0 0 8px var(--accent-success);
 }
 
 .status-dot.disconnected {
-    background: var(--accent-danger);
+    background: var(--accent-danger-fill);
 }
 
 .header-btn {
@@ -150,7 +402,7 @@ body {
     font-size: 13px;
     font-weight: 500;
     color: var(--text-primary);
-    background: var(--accent-success);
+    background: var(--accent-success-fill);
     border: none;
     border-radius: var(--radius-md);
     cursor: pointer;
@@ -304,7 +556,7 @@ body {
     padding: 0 5px;
     font-size: 10px;
     font-weight: 700;
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
     color: var(--bg-primary);
     border-radius: 9px;
 }
@@ -374,15 +626,15 @@ body {
 
 .mode-btn.active {
     color: var(--text-primary);
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
 }
 
 .mode-btn.active:first-child {
-    background: var(--accent-success);
+    background: var(--accent-success-fill);
 }
 
 .mode-btn.active:last-child {
-    background: var(--accent-warning);
+    background: var(--accent-warning-fill);
 }
 
 .url-input-wrapper {
@@ -471,7 +723,7 @@ body {
     justify-content: center;
     width: 32px;
     height: 32px;
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
     border: none;
     border-radius: var(--radius-sm);
     cursor: pointer;
@@ -508,7 +760,7 @@ body {
     width: 100%;
     height: 100%;
     display: block;
-    background: #1a1a2e;
+    background: var(--tint-purple-bg);
     object-fit: fill;
 }
 
@@ -523,7 +775,7 @@ body {
     font-size: 12px;
     font-weight: 500;
     color: var(--text-primary);
-    background: rgba(0, 0, 0, 0.75);
+    background: var(--bg-scrim);
     backdrop-filter: blur(8px);
     border-radius: var(--radius-md);
     border: 1px solid var(--border-default);
@@ -619,8 +871,8 @@ body {
     padding: 6px 14px;
     font-size: 12px;
     font-weight: 600;
-    color: #0d1117;
-    background: var(--accent-success);
+    color: var(--bg-primary);
+    background: var(--accent-success-fill);
     border: none;
     border-radius: var(--radius-sm);
     cursor: pointer;
@@ -709,7 +961,7 @@ body {
     font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
     font-size: 11.5px;
     color: var(--text-primary);
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--bg-hover);
     padding: 1px 4px;
     border-radius: 3px;
 }
@@ -822,7 +1074,7 @@ body {
     align-items: center;
     gap: 10px;
     padding: 12px 24px;
-    background: var(--accent-success);
+    background: var(--accent-success-fill);
     color: var(--bg-primary);
     font-weight: 600;
     font-size: 13px;
@@ -866,7 +1118,7 @@ body {
     content: '';
     width: 2px;
     height: 100%;
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
     opacity: 0.45;
 }
 
@@ -1143,7 +1395,7 @@ body {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--bg-scrim);
     backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
@@ -1384,7 +1636,7 @@ body {
 }
 
 .modal-btn.primary {
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
     color: var(--bg-primary);
 }
 
@@ -1503,7 +1755,7 @@ body {
     transition: background 130ms;
 }
 .sidebar-resize-handle:hover::after {
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
 }
 
 
@@ -1925,7 +2177,7 @@ body {
     background: var(--bg-secondary);
     border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 8px 32px var(--shadow-color), 0 2px 8px var(--shadow-color);
     min-width: 240px;
     max-width: 320px;
     max-height: 280px;
@@ -2131,7 +2383,7 @@ body {
 
 .ei-multi-notice svg {
     flex-shrink: 0;
-    color: #58a6ff;
+    color: var(--accent-primary);
     opacity: 0.8;
 }
 
@@ -2297,7 +2549,7 @@ body {
     background: linear-gradient(135deg, rgba(79, 156, 249, 0.18), rgba(126, 92, 255, 0.18));
     border: 1px solid rgba(126, 92, 255, 0.4);
     border-radius: 6px;
-    color: #c5b8ff;
+    color: var(--accent-purple);
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
@@ -2342,15 +2594,15 @@ body {
 .ei-extract-list-cancel:hover:not(:disabled) { color: var(--text-primary, #e6e6e6); }
 .ei-extract-list-ai-error {
     font-size: 11px;
-    color: #e6776a;
+    color: var(--accent-danger);
     background: rgba(230, 119, 106, 0.08);
-    border-left: 3px solid #e6776a;
+    border-left: 3px solid var(--accent-danger);
     padding: 6px 8px;
     border-radius: 4px;
 }
 .ei-extract-list-ai-busy {
     font-size: 11px;
-    color: #4f9cf9;
+    color: var(--accent-primary);
     font-style: italic;
 }
 .ei-extract-list-ai-hint {
@@ -2485,7 +2737,7 @@ body {
     background: var(--bg-elevated);
     border-color: var(--border-default);
     transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 2px 8px var(--shadow-color);
 }
 
 .ei-action-card.selected {
@@ -2542,8 +2794,8 @@ body {
 }
 
 .ei-quick-add:hover {
-    background: var(--accent-success);
-    color: #fff;
+    background: var(--accent-success-fill);
+    color: var(--text-on-accent);
     border-color: var(--accent-success);
 }
 
@@ -2869,7 +3121,7 @@ body {
     padding: 9px 14px;
     font-size: 13px;
     font-weight: 600;
-    color: #fff;
+    color: var(--text-on-accent);
     border: none;
     border-radius: var(--radius-md);
     cursor: pointer;
@@ -2924,12 +3176,12 @@ body {
 
 .sel-chip-type.css {
     background: rgba(63, 185, 80, 0.18);
-    color: #3fb950;
+    color: var(--accent-success);
 }
 
 .sel-chip-type.xpath {
     background: rgba(210, 153, 34, 0.18);
-    color: #d29922;
+    color: var(--accent-warning);
 }
 
 .sel-chip-value {
@@ -3284,12 +3536,12 @@ body {
 .pagination-advanced-toggle:hover {
     color: var(--text-secondary, #aaa);
     border-color: var(--border, #3a3a3a);
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--bg-hover);
 }
 
 .control-block--pagination .control-type-badge {
     background: rgba(88, 166, 255, 0.18);
-    color: #58a6ff;
+    color: var(--accent-primary);
     font-size: 15px;
 }
 
@@ -3517,7 +3769,7 @@ body {
 
 .header-btn.run-btn {
     background: var(--accent-success, #3fb950);
-    color: #000;
+    color: var(--text-on-success);
     border: none;
     gap: 6px;
     font-weight: 700;
@@ -3606,7 +3858,7 @@ body {
     border-radius: var(--radius-md);
     font-size: 13px;
     font-weight: 500;
-    color: #fff;
+    color: var(--text-on-accent);
     box-shadow: var(--shadow-lg);
     z-index: 9999;
     animation: toastIn 220ms ease, toastOut 300ms ease 2100ms forwards;
@@ -3615,18 +3867,18 @@ body {
 }
 
 .app-toast--success {
-    background: #216e39;
-    border: 1px solid #2ea043;
+    background: var(--accent-success-fill);
+    border: 1px solid var(--accent-success);
 }
 
 .app-toast--loop {
-    background: #3b2a6e;
-    border: 1px solid #6e40c9;
+    background: var(--tint-purple-bg);
+    border: 1px solid var(--accent-purple);
 }
 
 .app-toast--error {
-    background: #7d2620;
-    border: 1px solid #da3633;
+    background: var(--tint-danger-bg);
+    border: 1px solid var(--accent-danger);
 }
 
 @keyframes toastIn {
@@ -3808,11 +4060,11 @@ body {
     flex: 1;
     height: 4px;
     border-radius: 2px;
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--bg-active);
 }
 
 .ei-tier-progress-seg.filled {
-    background: var(--accent-success);
+    background: var(--accent-success-fill);
 }
 
 .ei-tier-progress-current {
@@ -3919,7 +4171,7 @@ body {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
     box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.22);
     animation: ei-manual-pulse 1.4s ease-in-out infinite;
     flex-shrink: 0;
@@ -3939,10 +4191,10 @@ body {
 .ei-manual-add-done {
     margin-left: auto;
     padding: 3px 12px;
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
     border: none;
     border-radius: 6px;
-    color: #04101f;
+    color: var(--tint-info-bg);
     font-size: 11.5px;
     font-weight: 600;
     cursor: pointer;
@@ -4084,10 +4336,10 @@ body {
 .ei-seladjust-apply {
     margin-left: auto;
     padding: 5px 12px;
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
     border: none;
     border-radius: 6px;
-    color: #04101f;
+    color: var(--tint-info-bg);
     font-size: 11.5px;
     font-weight: 600;
     cursor: pointer;
@@ -4227,7 +4479,7 @@ body {
 
 /* ── DragOverlay ghost card ───────────────────────────────── */
 .drag-ghost {
-  box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+  box-shadow: 0 12px 40px var(--shadow-color);
   transform: rotate(1.5deg) scale(1.02);
 }
 
@@ -4330,7 +4582,7 @@ body {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--accent-primary);
+    background: var(--accent-primary-fill);
     flex-shrink: 0;
     animation: run-resume-pulse 1.6s ease-in-out infinite;
 }

@@ -1,5 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { runsApi, workflowsApi } from "../api/client";
+import { useConfirm } from "../components/ConfirmDialog";
+import useDialog from "../components/useDialog";
+import "../styles/RunsHistory.css";
+import HealingHistory from "../components/HealingHistory";
 
 /* =====================================================================
    RunsHistory
@@ -16,6 +20,9 @@ import { runsApi, workflowsApi } from "../api/client";
    ===================================================================== */
 
 export default function RunsHistory({ open, onClose, workflowId, workflowName, showToast, onAppliedPatch }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
+  const confirm = useConfirm();
   const [runs,    setRuns]    = useState([]);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
@@ -99,7 +106,12 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
 
   const adoptPatch = async () => {
     if (!detail) return;
-    if (!confirm("Replace your saved workflow's steps with the AI-repaired version? You can roll back from any run in this history.")) return;
+    if (!(await confirm({
+      title: "Adopt the repaired version?",
+      message: "Your saved workflow's steps are replaced with the ones the automatic repair verified.",
+      detail: "You can roll back to any run's version from this history.",
+      confirmLabel: "Adopt the fix",
+    }))) return;
     try {
       const wf = await runsApi.applyPatch(detail.id);
       const full = await workflowsApi.get(wf.id);
@@ -112,7 +124,12 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
 
   const restoreVersion = async () => {
     if (!detail) return;
-    if (!confirm("Roll the workflow back to the exact version this run executed? Your current steps will be replaced (you can restore another run's version later).")) return;
+    if (!(await confirm({
+      title: "Roll back to this version?",
+      message: "The workflow returns to the exact steps this run executed. Your current steps are replaced.",
+      detail: "You can restore another run's version later.",
+      confirmLabel: "Roll back", danger: true,
+    }))) return;
     try {
       const wf = await runsApi.restore(detail.id);
       const full = await workflowsApi.get(wf.id);
@@ -137,8 +154,8 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
   };
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal wf-modal-xl" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal wf-modal-xl" {...dialogProps}>
         <div className="wf-header">
           <div className="wf-header-titles"><h2>Run history</h2><span className="wf-header-sub">{workflowName}</span></div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -153,9 +170,13 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
           </div>
         </div>
 
-        <div className="wf-body" style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 12, height: "70vh" }}>
+        <div className="wf-body">
+        {/* Answers the same question the user opened this dialog to ask,
+            so it sits above the run list rather than behind another click. */}
+        <HealingHistory workflowId={workflowId} />
+        <div className="rh-split">
           {/* ── runs list ────────────────────────────────────────────── */}
-          <div style={{ overflowY: "auto", borderRight: "1px solid var(--border-soft, #2a2a2a)", paddingRight: 8 }}>
+          <div className="rh-runs">
             {error && <div className="wf-error">{error}</div>}
             {!loading && runs.length === 0 && (
               <div className="wf-empty">No runs yet. Hit ▶ to execute the workflow.</div>
@@ -168,7 +189,7 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
                 style={{
                   display: "block", width: "100%", textAlign: "left", marginBottom: 6,
                   background: selectedId === r.id ? "var(--accent-soft, #1a2a4a)" : undefined,
-                  border: "1px solid " + (selectedId === r.id ? "var(--accent-primary, #4f9cf9)" : "var(--border-soft, #2a2a2a)"),
+                  border: "1px solid " + (selectedId === r.id ? "var(--accent-primary)" : "var(--border-soft, #2a2a2a)"),
                   borderRadius: 6, padding: "8px 10px", cursor: "pointer",
                 }}
               >
@@ -182,7 +203,7 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
                 <div style={{ fontSize: 12, marginTop: 4 }}>{formatDate(r.startedAt)}</div>
                 <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>
                   {formatDuration(r.durationMs)}
-                  {r.errorCategory && <> · <span style={{ color: "#e89a4f" }}>{r.errorCategory}</span></>}
+                  {r.errorCategory && <> · <span style={{ color: "var(--accent-orange)" }}>{r.errorCategory}</span></>}
                   {r.retryCount > 0 && <> · {r.retryCount} retr{r.retryCount === 1 ? "y" : "ies"}</>}
                 </div>
                 <ChangeBadge summary={r.changeSummary} />
@@ -221,6 +242,7 @@ export default function RunsHistory({ open, onClose, workflowId, workflowName, s
             )}
           </div>
         </div>
+        </div>
       </div>
     </div>
   );
@@ -237,17 +259,17 @@ function ChangeBadge({ summary }) {
   if (summary.baseline) {
     return (
       <div style={{ marginTop: 4 }}>
-        <span style={{ ...chip, color: "#8b949e", border: "1px solid #8b949e44" }}>baseline · {c.after ?? 0} rows</span>
+        <span style={{ ...chip, color: "var(--text-secondary)", border: "1px solid var(--text-secondary)44" }}>baseline · {c.after ?? 0} rows</span>
       </div>
     );
   }
   const any = (c.added || 0) + (c.changed || 0) + (c.removed || 0) > 0;
   return (
     <div style={{ marginTop: 4, display: "flex", gap: 5, flexWrap: "wrap" }}>
-      {c.added   > 0 && <span style={{ ...chip, color: "#3fb950", border: "1px solid #3fb95055", background: "#3fb9501a" }}>+{c.added} new</span>}
-      {c.changed > 0 && <span style={{ ...chip, color: "#d29922", border: "1px solid #d2992255", background: "#d299221a" }}>~{c.changed} changed</span>}
-      {c.removed > 0 && <span style={{ ...chip, color: "#f85149", border: "1px solid #f8514955", background: "#f851491a" }}>−{c.removed} removed</span>}
-      {!any && <span style={{ ...chip, color: "#8b949e", border: "1px solid #8b949e44" }}>no change</span>}
+      {c.added   > 0 && <span style={{ ...chip, color: "var(--accent-success)", border: "1px solid var(--accent-success)55", background: "var(--accent-success)1a" }}>+{c.added} new</span>}
+      {c.changed > 0 && <span style={{ ...chip, color: "var(--accent-warning)", border: "1px solid var(--accent-warning)55", background: "var(--accent-warning)1a" }}>~{c.changed} changed</span>}
+      {c.removed > 0 && <span style={{ ...chip, color: "var(--accent-danger)", border: "1px solid var(--accent-danger)55", background: "var(--accent-danger)1a" }}>−{c.removed} removed</span>}
+      {!any && <span style={{ ...chip, color: "var(--text-secondary)", border: "1px solid var(--text-secondary)44" }}>no change</span>}
     </div>
   );
 }
@@ -260,8 +282,8 @@ function DetailTab({ name, tab, setTab, disabled, children }) {
       disabled={disabled}
       onClick={() => setTab(name)}
       style={{
-        background: "transparent", color: active ? "var(--accent-primary, #4f9cf9)" : "var(--text-secondary)",
-        border: "none", borderBottom: "2px solid " + (active ? "var(--accent-primary, #4f9cf9)" : "transparent"),
+        background: "transparent", color: active ? "var(--accent-primary)" : "var(--text-secondary)",
+        border: "none", borderBottom: "2px solid " + (active ? "var(--accent-primary)" : "transparent"),
         padding: "6px 10px", cursor: disabled ? "not-allowed" : "pointer", fontSize: 13, opacity: disabled ? 0.4 : 1,
       }}
     >
@@ -350,7 +372,7 @@ function Summary({ detail, onDownloadJson, onDownloadCsv, onDownloadCsvZip, onDo
           <button className="wf-save-btn"
                   disabled={resuming}
                   onClick={async () => { setResuming(true); try { await onResume(detail.id); } finally { setResuming(false); } }}
-                  style={{ background: "var(--accent-primary, #4f9cf9)", color: "#fff" }}
+                  style={{ background: "var(--accent-primary)", color: "var(--text-on-accent)" }}
                   title={`Continue this run — the ${resumeState.items} item(s) it already captured will be skipped`}>
             {resuming ? "Resuming…" : `▶ Resume (skip ${resumeState.items.toLocaleString()} done)`}
           </button>
@@ -358,7 +380,7 @@ function Summary({ detail, onDownloadJson, onDownloadCsv, onDownloadCsvZip, onDo
         {detail.hasResults && (
           <>
             <button className="wf-save-btn" onClick={onDownloadXlsx}
-                    style={{ background: "var(--accent-success, #3fb950)", color: "#fff" }}>Download Excel (.xlsx)</button>
+                    style={{ background: "var(--accent-success)", color: "var(--text-on-accent)" }}>Download Excel (.xlsx)</button>
             <button className="wf-ghost-btn" onClick={onDownloadCsvZip}
                     title="One properly-formed CSV per table, zipped — the right choice when a run captures more than one table">
               CSV per table (.zip)
@@ -373,7 +395,7 @@ function Summary({ detail, onDownloadJson, onDownloadCsv, onDownloadCsvZip, onDo
         {detail.hasPatchedSteps && (
           <button className="wf-save-btn"
                   onClick={onAdopt}
-                  style={{ background: "var(--accent-primary, #4f9cf9)", color: "#fff" }}>
+                  style={{ background: "var(--accent-primary)", color: "var(--text-on-accent)" }}>
             Adopt AI-repaired workflow
           </button>
         )}
@@ -418,7 +440,7 @@ function RepairsView({ repairs }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {repairs.map(r => (
         <div key={r.id} style={{
-          border: "1px solid " + (r.verified ? "#3ea66f" : r.applied ? "#e89a4f" : "#a44"),
+          border: "1px solid " + (r.verified ? "var(--accent-success)" : r.applied ? "var(--accent-orange)" : "var(--accent-danger)"),
           borderRadius: 6, padding: 10, fontSize: 12,
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, gap: 8 }}>
@@ -428,14 +450,14 @@ function RepairsView({ repairs }) {
             </strong>
             <span style={{
               fontSize: 11,
-              color: r.verified ? "#3ea66f" : r.applied ? "#e89a4f" : "#a44",
+              color: r.verified ? "var(--accent-success)" : r.applied ? "var(--accent-orange)" : "var(--accent-danger)",
               textAlign: "right",
             }}>
               {r.llmError ? `LLM error: ${r.llmError}` :
                r.repairKind === "manual" ? "manual action needed" :
                r.verified ? "verified" : r.applied ? "applied (not yet verified)" : "rejected"}
               {r.confidence ? ` · ${r.confidence}` : ""}
-              {r.autoAdopted && <span style={{ color: "#3ea66f" }}> · auto-adopted</span>}
+              {r.autoAdopted && <span style={{ color: "var(--accent-success)" }}> · auto-adopted</span>}
             </span>
           </div>
           {r.errorMessage && (
@@ -471,14 +493,14 @@ function RepairsView({ repairs }) {
 }
 
 const REPAIR_KIND_LABELS = {
-  selector:      { label: "selector fix",  color: "#4f9cf9" },
-  "field-drop":  { label: "field dropped", color: "#e89a4f" },
-  "remove-step": { label: "step removed",  color: "#e89a4f" },
-  manual:        { label: "needs you",     color: "#e0556a" },
+  selector:      { label: "selector fix",  color: "var(--accent-primary)" },
+  "field-drop":  { label: "field dropped", color: "var(--accent-orange)" },
+  "remove-step": { label: "step removed",  color: "var(--accent-orange)" },
+  manual:        { label: "needs you",     color: "var(--accent-danger)" },
 };
 
 function RepairKindChip({ kind }) {
-  const k = REPAIR_KIND_LABELS[kind] || { label: kind, color: "#888" };
+  const k = REPAIR_KIND_LABELS[kind] || { label: kind, color: "var(--text-muted)" };
   return (
     <span style={{
       fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em",
@@ -514,7 +536,7 @@ function Stat({ label, value }) {
 }
 
 function Note({ label, tone, children }) {
-  const color = tone === "ok" ? "#3ea66f" : tone === "warn" ? "#e89a4f" : tone === "err" ? "#e6776a" : "var(--text-secondary)";
+  const color = tone === "ok" ? "var(--accent-success)" : tone === "warn" ? "var(--accent-orange)" : tone === "err" ? "var(--accent-danger)" : "var(--text-secondary)";
   return (
     <div style={{ borderLeft: `3px solid ${color}`, paddingLeft: 10, fontSize: 13 }}>
       <div style={{ fontSize: 10, textTransform: "uppercase", color, letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
@@ -525,15 +547,15 @@ function Note({ label, tone, children }) {
 
 function StatusBadge({ status }) {
   const map = {
-    running:      { label: "running",      color: "#4f9cf9" },
-    success:      { label: "success",      color: "#3ea66f" },
-    error:        { label: "error",        color: "#e6776a" },
-    needs_review: { label: "needs review", color: "#e89a4f" },
-    cancelled:    { label: "cancelled",    color: "#888"    },
+    running:      { label: "running",      color: "var(--accent-primary)" },
+    success:      { label: "success",      color: "var(--accent-success)" },
+    error:        { label: "error",        color: "var(--accent-danger)" },
+    needs_review: { label: "needs review", color: "var(--accent-orange)" },
+    cancelled:    { label: "cancelled",    color: "var(--text-muted)"    },
     // Stopped early but kept what it captured — the results ARE viewable.
-    partial:      { label: "partial",      color: "#e89a4f" },
+    partial:      { label: "partial",      color: "var(--accent-orange)" },
   };
-  const m = map[status] || { label: status, color: "#888" };
+  const m = map[status] || { label: status, color: "var(--text-muted)" };
   return (
     <span style={{
       display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 10,

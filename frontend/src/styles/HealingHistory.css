@@ -1,0 +1,118 @@
+/* Self-healing history. Reads as reassurance, so it uses the success colour
+   rather than the warning one — repairs that worked are good news, not a
+   problem list. */
+
+.hh {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-success) 35%, transparent);
+  background: color-mix(in srgb, var(--accent-success) 9%, var(--bg-secondary));
+  border-radius: var(--radius-md);
+}
+
+/* The "nothing broke" and loading states are one quiet line — they shouldn't
+   look like a panel with no content in it. */
+.hh-quiet {
+  border-color: var(--border-muted);
+  background: none;
+  padding: 8px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-width: 0 0 1px;
+  border-radius: 0;
+}
+.hh-error { color: var(--accent-danger); }
+
+.hh-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.hh-icon { font-size: 18px; line-height: 1.2; flex-shrink: 0; }
+
+.hh-headline { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.hh-headline strong { font-size: 13px; font-weight: 650; color: var(--text-primary); }
+.hh-sub { font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+
+.hh-toggle {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.hh-toggle:hover { text-decoration: underline; }
+
+.hh-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 14px 0 7px;
+}
+
+.hh-step {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-top: 1px solid var(--border-muted);
+  font-size: 12.5px;
+}
+.hh-step-name {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hh-step-count { color: var(--text-secondary); white-space: nowrap; flex-shrink: 0; }
+.hh-ok { color: var(--accent-success); }
+
+.hh-hint {
+  margin: 9px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.hh-item {
+  display: flex;
+  gap: 9px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-muted);
+}
+
+.hh-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+.hh-dot.ok   { background: var(--accent-success); }
+.hh-dot.warn { background: var(--accent-warning); }
+.hh-dot.err  { background: var(--text-muted); }
+
+.hh-item-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.hh-item-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.hh-item-when { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+.hh-item-why  { font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+.hh-item-tags { font-size: 11px; color: var(--text-muted); }
+
+@media (max-width: 640px) {
+  .hh-head { flex-wrap: wrap; }
+  .hh-toggle { width: 100%; text-align: left; }
+}

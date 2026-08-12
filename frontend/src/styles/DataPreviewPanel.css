@@ -95,7 +95,7 @@
   gap: 6px;
   padding: 5px 9px;
   font-size: 11.5px;
-  color: #d29922;
+  color: var(--accent-warning);
   background: rgba(210, 153, 34, 0.08);
   border: 1px solid rgba(210, 153, 34, 0.26);
   border-radius: 7px;
@@ -382,7 +382,7 @@
 .dp-clean-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--bg-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -396,7 +396,7 @@
   background: var(--bg-panel, #161616);
   border: 1px solid var(--border, #2a2a2a);
   border-radius: 10px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 18px 60px var(--shadow-color);
   overflow: hidden;
 }
 .dp-clean-head {
@@ -410,7 +410,7 @@
 }
 .dp-clean-head code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #58a6ff;
+  color: var(--accent-primary);
 }
 .dp-clean-close {
   border: none;

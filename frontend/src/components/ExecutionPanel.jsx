@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { resultsToCsv } from "../utils/resultsExport";
 import { runsApi } from "../api/client";
+import useDialog from "./useDialog";
 
 /* =====================================================================
    ExecutionPanel
@@ -20,6 +21,11 @@ export default function ExecutionPanel({
   rowsCaptured = 0, stepTimes = {}, workers = {}, lanes = {}, laneTotals = {},
   stalled = false,
 }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  // closeOnBackdrop stays off: this panel shows a run in flight and had no
+  // backdrop dismissal before — losing sight of a running job because a
+  // click landed outside would be a regression, not a fix.
+  const { overlayProps, dialogProps } = useDialog({ open: isOpen, onClose, closeOnBackdrop: false });
   const [activeTab,    setActiveTab]    = useState('flow');
   const [selectedKey,  setSelectedKey]  = useState(null);
   const [exportFormat, setExportFormat] = useState('json');
@@ -86,8 +92,8 @@ export default function ExecutionPanel({
   const hasResults  = resultKeys.length > 0;
 
   return (
-    <div className="ep-overlay">
-      <div className="ep-panel">
+    <div className="ep-overlay" {...overlayProps}>
+      <div className="ep-panel" {...dialogProps}>
         {/* ── Header ──────────────────────────────────────────────────── */}
         <div className="ep-header">
           <div className="ep-header-left">

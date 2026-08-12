@@ -42,7 +42,7 @@
   height: 38px;
   flex-shrink: 0;
   border-radius: 9px;
-  color: #fff;
+  color: var(--text-on-accent);
   background: linear-gradient(135deg, var(--accent-primary), var(--accent-purple, #a371f7));
 }
 .dash-resume-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
@@ -127,7 +127,7 @@
   transition: filter 120ms, background 120ms, border-color 120ms;
 }
 .dash-cta.primary {
-  color: #fff;
+  color: var(--text-on-accent);
   background: var(--accent-primary, #58a6ff);
 }
 .dash-cta.primary:hover { filter: brightness(1.08); }
@@ -191,7 +191,7 @@
   gap: 8px;
   font-size: 13px;
   font-weight: 650;
-  color: #d29922;
+  color: var(--accent-warning);
   margin-bottom: 10px;
 }
 .dash-attention-list { display: flex; flex-direction: column; gap: 6px; }
@@ -212,7 +212,7 @@
 .dash-attention-item:hover { border-color: rgba(210,153,34,0.5); }
 .dash-attention-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dash-attention-msg  { font-size: 12px; color: var(--text-secondary, #8b949e); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dash-attention-open { font-size: 12px; color: #d29922; font-weight: 600; white-space: nowrap; }
+.dash-attention-open { font-size: 12px; color: var(--accent-warning); font-weight: 600; white-space: nowrap; }
 
 /* Section head */
 .dash-section-head {
@@ -291,11 +291,11 @@
   flex-shrink: 0;
 }
 .dash-status-dot { width: 7px; height: 7px; border-radius: 50%; }
-.dash-status--ok    { background: rgba(63,185,80,0.14);  color: #3fb950; }
-.dash-status--warn  { background: rgba(210,153,34,0.14); color: #d29922; }
-.dash-status--err   { background: rgba(248,81,73,0.14);  color: #f85149; }
-.dash-status--run   { background: rgba(79,156,249,0.14); color: #4f9cf9; }
-.dash-status--muted { background: var(--bg-tertiary,#21262d); color: #8b949e; }
+.dash-status--ok    { background: rgba(63,185,80,0.14);  color: var(--accent-success); }
+.dash-status--warn  { background: rgba(210,153,34,0.14); color: var(--accent-warning); }
+.dash-status--err   { background: rgba(248,81,73,0.14);  color: var(--accent-danger); }
+.dash-status--run   { background: rgba(79,156,249,0.14); color: var(--accent-primary); }
+.dash-status--muted { background: var(--bg-tertiary,#21262d); color: var(--text-secondary); }
 
 .dash-card-meta {
   font-size: 12px;
@@ -334,7 +334,7 @@
 .dash-card-btn--primary {
   background: var(--accent-primary, #58a6ff);
   border-color: var(--accent-primary, #58a6ff);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 .dash-card-btn--primary:hover { filter: brightness(1.08); }
 
@@ -353,7 +353,7 @@
   color: var(--text-secondary, #8b949e);
   font-size: 14px;
 }
-.dash-error { color: #f85149; }
+.dash-error { color: var(--accent-danger); }
 .dash-empty-state {
   text-align: center;
   padding: 56px 20px;
@@ -370,4 +370,43 @@
   gap: 10px;
   justify-content: center;
   flex-wrap: wrap;
+}
+
+/* ── Narrow screens ───────────────────────────────────────────────────────
+   The dashboard is the one screen worth using on a phone: "did last night's
+   run work?" is a doorstep question, not a desk one. The editor deliberately
+   is NOT chased — a pixel-streamed browser on a 375px screen is a bad
+   product, and pretending otherwise would just be a worse desktop app. */
+@media (max-width: 720px) {
+  .dash-inner { padding: 20px 14px 44px; }
+
+  .dash-title { font-size: 21px; }
+  .dash-subtitle { font-size: 13px; }
+
+  /* Stacked and full-width: thumb targets, not a row of small buttons. */
+  .dash-hero { gap: 16px; margin-bottom: 22px; }
+  .dash-hero-actions { width: 100%; flex-direction: column; }
+  .dash-hero-actions .dash-cta { width: 100%; justify-content: center; }
+
+  /* Name / message / chevron in one row needs ~500px to read; stack it. */
+  .dash-attention-item {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .dash-attention-name,
+  .dash-attention-msg { white-space: normal; }
+  .dash-attention-open { justify-self: start; }
+
+  .dash-grid { grid-template-columns: 1fr; gap: 10px; }
+
+  .dash-resume { flex-wrap: wrap; }
+  .dash-resume-cta { width: 100%; justify-content: flex-end; }
+
+  .dash-tour-prompt { flex-direction: column; align-items: flex-start; }
+  .dash-tour-prompt-actions { width: 100%; }
+  .dash-tour-prompt-actions .dash-cta { flex: 1; justify-content: center; }
+
+  .dash-section-head { flex-wrap: wrap; gap: 8px; }
+  .dash-empty-actions { flex-direction: column; }
+  .dash-empty-actions .dash-cta { width: 100%; justify-content: center; }
 }

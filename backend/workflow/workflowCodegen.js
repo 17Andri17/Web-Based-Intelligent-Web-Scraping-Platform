@@ -612,7 +612,7 @@ function genAction(step, ctx) {
       // Smart wait: only when the workflow opted in, the step hasn't pinned its
       // own waitUntil, and we could actually identify what the next extraction
       // reads. Any of those missing ⇒ unchanged waitUntil:'load' behaviour.
-      const navTimeout = num(advanced.timeout, 30000);
+      const navTimeout = num(advanced.timeout, execOf(ctx).navTimeoutMs);
       const smartSels = (ctx.perf && ctx.perf.smartWait && !advanced.waitUntil)
         ? (ctx.__lookaheadSelectors || null)
         : null;
@@ -788,11 +788,11 @@ await solveCaptcha(page, { onUnsolved: ${JSON.stringify(onUnsolved)}, maxWaitMs:
     case 'WAIT': return `await new Promise(r => setTimeout(r, ${num(params.duration, 1000)}));\n`;
 
     case 'WAIT_FOR_SELECTOR': return `
-await waitForAny(page, ${selList(params)}, ${num(advanced.timeout, 30000)}, { reveal: false });
+await waitForAny(page, ${selList(params)}, ${num(advanced.timeout, execOf(ctx).navTimeoutMs)}, { reveal: false });
 `.trim() + '\n';
 
     case 'WAIT_FOR_NAVIGATION': return `
-await page.waitForNavigation({ waitUntil: ${q(advanced.waitUntil || 'load')}, timeout: ${num(advanced.timeout, 30000)} });
+await page.waitForNavigation({ waitUntil: ${q(advanced.waitUntil || 'load')}, timeout: ${num(advanced.timeout, execOf(ctx).navTimeoutMs)} });
 `.trim() + '\n';
 
     case 'BREAK_LOOP': return `break;\n`;
@@ -1195,7 +1195,8 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
         subflows: ctx.subflows,
         visitedSubflows: new Set(ctx.visitedSubflows || []),
         capturedAliases: new Set(),   // subflow gets its own alias scope
-        perf: ctx.perf,               // navigation strategy is workflow-wide
+        perf: ctx.perf,
+        exec: ctx.exec,               // navigation strategy is workflow-wide
       };
       subCtx.visitedSubflows.add(String(subflowId));
 
@@ -1284,7 +1285,7 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
       const subDecls = [subAliasDecls, subVarSeeds].filter(Boolean).join('\n');
 
       const safeSubName = (sub.name || 'unnamed').replace(/\*\//g, '*\\/');
-      const timeoutMs   = num(advanced.timeout, 30000);
+      const timeoutMs   = num(advanced.timeout, execOf(ctx).navTimeoutMs);
       const concurrencyExpr = concurrencyFor(step, ctx);
 
       /* ── HTTP-first candidate ──────────────────────────────────────────
@@ -1307,6 +1308,7 @@ await fetch(${q(params.destination)}, { method: 'POST', headers: { 'Content-Type
           visitedSubflows: new Set(subCtx.visitedSubflows),
           capturedAliases: new Set(),
           perf: ctx.perf,
+        exec: ctx.exec,
           httpMode: true,
         };
         httpBody = genStepList(subSteps, httpCtx, subNested ? 5 : 4);
@@ -1734,6 +1736,7 @@ function genControl(step, ctx, depth) {
         visitedSubflows: new Set(ctx.visitedSubflows || []),
         capturedAliases: new Set(),
         perf: ctx.perf,
+        exec: ctx.exec,
       };
       const bodyCode = genStepList(step.body || [], subCtx, depth + 1);
       const bodyAliasDecls = subCtx.capturedAliases.size === 0 ? '' :
@@ -3149,6 +3152,60 @@ function envNum(name) {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+/* =========================================================================
+   EXECUTION SETTINGS  (workflow.meta.execution)
+   -------------------------------------------------------------------------
+   Reliability knobs, as opposed to the speed switches above. These exist for
+   the case the platform's defaults are wrong for one particular site:
+
+     navTimeoutMs     — how long a page load may take before the step fails.
+                        Used only where a step has no timeout of its own, so
+                        an individually-tuned step still wins.
+     connectionRetries— how many times a network-level failure is retried
+                        before the run gives up (read by executionPipeline).
+     healing          — self-healing on/off. Off makes a run DETERMINISTIC:
+                        it will fail rather than quietly rewrite a selector,
+                        which is what you want when the output feeds something
+                        downstream and a silent change is worse than a gap.
+     deviceProfile    — pin the browser fingerprint instead of picking one at
+                        random per run. 'auto' (default) rotates.
+
+   Deliberately NOT a free-text user-agent field: each profile is a
+   *consistent* set (UA + platform + GPU + client hints + navigator
+   overrides). Overriding the UA string alone leaves the rest disagreeing
+   with it, which is a stronger bot signal than the default — so the control
+   is which profile, not which string.
+   ========================================================================= */
+const EXECUTION_DEFAULTS = {
+  navTimeoutMs: 30000,
+  connectionRetries: 2,
+  healing: true,
+  deviceProfile: 'auto',
+};
+
+// Defensive read: a context built before `exec` existed (or a caller that
+// hand-rolls one) falls back to the defaults rather than throwing.
+function execOf(ctx) {
+  return (ctx && ctx.exec) || EXECUTION_DEFAULTS;
+}
+
+function resolveExecution(meta) {
+  const e = (meta && typeof meta.execution === 'object' && meta.execution) || {};
+  const int = (key, dflt, min, max) => {
+    const n = Math.floor(Number(e[key]));
+    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : dflt;
+  };
+  return {
+    navTimeoutMs:      int('navTimeoutMs', EXECUTION_DEFAULTS.navTimeoutMs, 1000, 600000),
+    connectionRetries: int('connectionRetries', EXECUTION_DEFAULTS.connectionRetries, 0, 10),
+    // Only an explicit `false` disables it — an older workflow with no
+    // execution block keeps healing, which is the historical behaviour.
+    healing:           e.healing !== false,
+    deviceProfile:     typeof e.deviceProfile === 'string' && e.deviceProfile
+                         ? e.deviceProfile : EXECUTION_DEFAULTS.deviceProfile,
+  };
+}
+
 function resolvePerf(meta) {
   const p = (meta && typeof meta.performance === 'object' && meta.performance) || {};
   const pick = (key, envName) => (p[key] === undefined ? envFlag(envName) : !!p[key]);
@@ -3191,12 +3248,13 @@ function generateCode(workflow, options = {}) {
   const proxy = workflow.proxy || null;
   // Performance switches for this workflow (all default off — see resolvePerf).
   const perf = resolvePerf(workflow.meta);
+  const exec = resolveExecution(workflow.meta);
 
   // Picked fresh on every call — generateCode() runs once per execution
   // (see runner.service.js), so scheduled/repeated runs of the same
   // workflow each get their own device profile instead of all presenting
   // an identical fingerprint. See backend/browser/stealthCore.js.
-  const stealth = buildCodegenStealthHelper();
+  const stealth = buildCodegenStealthHelper(exec.deviceProfile);
   // Real credentials are only safe to embed for a platform-run script — it's
   // written to a temp file and deleted immediately after the run (see
   // runner.service.js). A downloaded (`clean`) script can end up anywhere,
@@ -3240,6 +3298,9 @@ function generateCode(workflow, options = {}) {
     // to decide its wait strategy; passed down to subflow/loop contexts so a
     // nested navigation makes the same choice as a top-level one.
     perf,
+    // Per-workflow reliability settings (see resolveExecution): navigation
+    // timeout, connection retries, self-healing on/off, pinned fingerprint.
+    exec,
     // Download mode — suppresses platform-only scaffolding that a line-level
     // filter can't remove (the multi-line resume guard).
     clean,
@@ -3650,7 +3711,7 @@ ${rootResultsDecl}${currentStepDecl}${variablesCode}${capturedAliasesCode}
     // Honour CHROME_PATH when set (Linux servers / CI / containers); fall back
     // to the local Chrome install used during development.
     executablePath: process.env.CHROME_PATH || 'C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe',
-    headless: false,
+    headless: 'new',
     defaultViewport: null,
     args: ${launchArgsCode},
     ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
@@ -3961,6 +4022,9 @@ function generateReadme(workflow) {
 
 module.exports = {
   generateCode, generateReadme,
+  // Shared with executionPipeline so the run and the generated script
+  // agree on one interpretation of meta.execution.
+  resolveExecution, EXECUTION_DEFAULTS,
   // Exported so test/scroll-harvest.test.js can eval the runtime and drive it
   // against real fixture pages — the engine is where the accuracy lives.
   HARVEST_RUNTIME_SRC,

@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import TransformPipelineEditor from "./TransformPipelineEditor";
 import { fieldColumnDescriptors, hasPipeline } from "../workflow/fieldTransforms";
 import { PAGINATION_CONTROL_TYPES } from "../workflow/controlDefinitions";
+import useDialog from "./useDialog";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -505,8 +506,8 @@ function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdatePa
       </div>
 
       {cleanField && cleanSpec && (
-        <div className="dp-clean-overlay" onClick={e => { if (e.target === e.currentTarget) setCleanField(null); }}>
-          <div className="dp-clean-modal">
+        <div className="dp-clean-overlay" {...cleanDialog.overlayProps}>
+          <div className="dp-clean-modal" {...cleanDialog.dialogProps}>
             <div className="dp-clean-head">
               <span>Clean / split <code>{cleanField}</code></span>
               <button type="button" className="dp-clean-close" onClick={() => setCleanField(null)} title="Close">✕</button>
@@ -718,7 +719,7 @@ function SubflowSection({ step, execResults, onUpdateLabel }) {
     <div className="dp-section dp-section--subflow">
       <div className="dp-section-header">
         <div className="dp-section-header-left">
-          <span className="dp-loop-badge" style={{ background: "rgba(126, 92, 255, 0.12)", color: "#a371f7" }}>
+          <span className="dp-loop-badge" style={{ background: "rgba(126, 92, 255, 0.12)", color: "var(--accent-purple)" }}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <polyline points="9,18 15,12 9,6"/>
             </svg>
@@ -730,7 +731,7 @@ function SubflowSection({ step, execResults, onUpdateLabel }) {
             className="dp-loop-label"
             onCommit={v => onUpdateLabel(step.id, v)}
           />
-          <span className="dp-src-pill dp-src--preview" style={{ background: "rgba(126, 92, 255, 0.08)", color: "#a371f7" }}>
+          <span className="dp-src-pill dp-src--preview" style={{ background: "rgba(126, 92, 255, 0.08)", color: "var(--accent-purple)" }}>
             {realData != null ? "live results" : "filled at run-time"}
           </span>
         </div>
@@ -833,6 +834,9 @@ function FieldSection({ step, execResults, previewData, onUpdateLabel }) {
 // ─── Root ────────────────────────────────────────────────────────────────────
 
 export default function DataPreviewPanel({ steps, execResults, previewData = {}, onUpdateLabel, onUpdateParams }) {
+  // The clean/split popover is a dialog too — same trap, Escape and
+  // focus restore as every other one.
+  const cleanDialog = useDialog({ open: !!cleanField, onClose: () => setCleanField(null) });
   const sections = useMemo(() => buildSections(steps), [steps]);
   const total    = useMemo(() => countAll(steps), [steps]);
   const named    = useMemo(() => countNamed(steps), [steps]);

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { workflowsApi } from "../api/client";
 import "../styles/DatasetPanel.css";
+import useDialog from "./useDialog";
 
 /* =====================================================================
    DatasetPanel
@@ -23,6 +24,8 @@ const PAGE_SIZE = 100;
 const WHOLE_ROW = "__row__";
 
 export default function DatasetPanel({ open, onClose, workflowId, workflowName, showToast }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
   const [data, setData]       = useState(null);   // full API payload for current view
   const [outputs, setOutputs] = useState([]);
   const [output, setOutput]   = useState(null);   // selected output key
@@ -96,8 +99,8 @@ export default function DatasetPanel({ open, onClose, workflowId, workflowName, 
   const selectedKeyValue = keyField === null ? WHOLE_ROW : (keyField ?? data?.keyField ?? WHOLE_ROW);
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal ds-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal ds-modal" {...dialogProps}>
         <div className="wf-header">
           <div className="wf-header-titles"><h2>Data</h2><span className="wf-header-sub">{workflowName}</span></div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

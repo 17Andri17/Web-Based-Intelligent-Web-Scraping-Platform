@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { webhooksApi } from "../api/client";
 import "../styles/ApiKeysMenu.css";
+import { useConfirm } from "../components/ConfirmDialog";
+import useDialog from "../components/useDialog";
 
 /*
   Webhooks panel — dashboard management of push endpoints.
@@ -13,6 +15,9 @@ import "../styles/ApiKeysMenu.css";
 */
 
 export default function WebhooksMenu({ open, onClose, showToast }) {
+  // Focus trap, Escape, focus restore, scroll lock, backdrop semantics.
+  const { overlayProps, dialogProps } = useDialog({ open, onClose });
+  const confirm = useConfirm();
   const [hooks, setHooks]     = useState([]);
   const [events, setEvents]   = useState([]);   // [{ event, label }]
   const [loading, setLoading] = useState(false);
@@ -62,7 +67,12 @@ export default function WebhooksMenu({ open, onClose, showToast }) {
   };
 
   const remove = async (h) => {
-    if (!confirm(`Delete this webhook?\n${h.url}\nEvents will stop being delivered to it.`)) return;
+    if (!(await confirm({
+      title: "Delete this webhook?",
+      message: h.url,
+      detail: "Events stop being delivered to it immediately.",
+      confirmLabel: "Delete webhook", danger: true,
+    }))) return;
     setBusy(true); setError(null);
     try {
       await webhooksApi.remove(h.id);
@@ -84,8 +94,8 @@ export default function WebhooksMenu({ open, onClose, showToast }) {
   };
 
   return (
-    <div className="wf-overlay" onClick={onClose}>
-      <div className="wf-modal ca-modal" onClick={e => e.stopPropagation()}>
+    <div className="wf-overlay" {...overlayProps}>
+      <div className="wf-modal ca-modal" {...dialogProps}>
         <div className="wf-header">
           <h2>Webhooks</h2>
           <button className="wf-close" onClick={onClose} aria-label="Close">
