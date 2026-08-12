@@ -336,6 +336,10 @@ function ListSection({ step, execResults, previewData, onUpdateLabel, onUpdatePa
   // Which field's clean/split editor is open in the modal.
   const [cleanField, setCleanField] = useState(null);
 
+  // The clean/split popover is a dialog too — same trap, Escape and
+  // focus restore as every other one.
+  const cleanDialog = useDialog({ open: !!cleanField, onClose: () => setCleanField(null) });
+
   // Rename a field/column straight from the table header. Preserves column
   // order and refuses to overwrite an existing field. Rows keyed by the old
   // name go blank until the next preview/run regenerates them — expected.
@@ -834,9 +838,6 @@ function FieldSection({ step, execResults, previewData, onUpdateLabel }) {
 // ─── Root ────────────────────────────────────────────────────────────────────
 
 export default function DataPreviewPanel({ steps, execResults, previewData = {}, onUpdateLabel, onUpdateParams }) {
-  // The clean/split popover is a dialog too — same trap, Escape and
-  // focus restore as every other one.
-  const cleanDialog = useDialog({ open: !!cleanField, onClose: () => setCleanField(null) });
   const sections = useMemo(() => buildSections(steps), [steps]);
   const total    = useMemo(() => countAll(steps), [steps]);
   const named    = useMemo(() => countNamed(steps), [steps]);

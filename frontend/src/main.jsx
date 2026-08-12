@@ -733,7 +733,16 @@ function AppShell({ user, token, onLogout }) {
     socket.on("connect",    () => { setStatus("Connected"); setIsConnected(true); });
     socket.on("disconnect", () => { setStatus("Disconnected"); setIsConnected(false); isStreamingRef.current = false; });
     socket.on("message",    msg  => setStatus(typeof msg === "string" ? msg : (msg.msg || "")));
-    socket.on("frame",      data => { latestFrameRef.current = data; });
+    // The server paces the stream against this ack (see
+    // backend/browser/screencastPacer.js): it holds a bounded number of frames
+    // on the wire and won't send the next until we confirm this one. So ack on
+    // RECEIPT, before decoding or drawing — anything done first would be
+    // measured as network latency and charged against the frame rate. The rAF
+    // loop below renders whatever the newest frame is by then.
+    socket.on("frame", (data, ack) => {
+      latestFrameRef.current = data;
+      if (typeof ack === "function") ack();
+    });
     socket.on("cursorType", data => setCursorType(data.cursor));
     // Page navigated inside puppeteer (link click, redirect, history nav)
     socket.on("pageUrlChanged", ({ url }) => {
@@ -2723,7 +2732,7 @@ function AppShell({ user, token, onLogout }) {
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
             </svg>
-            <span>WebScraper</span>
+            <span>Scrapient</span>
           </div>
         </div>
         <div className="header-center">

@@ -1,0 +1,40 @@
+# Cloudflare Tunnel — named-tunnel config for a public instance.
+#
+# Copy to  %USERPROFILE%\.cloudflared\config.yml  (Windows)
+#      or  ~/.cloudflared/config.yml              (Linux/macOS)
+# and replace the three ALL-CAPS placeholders. See docs/DEPLOYMENT.md § 4B.
+#
+# Validate before starting:   cloudflared tunnel ingress validate
+# Test a URL against a rule:  cloudflared tunnel ingress rule https://scraper.example.xyz
+
+# The tunnel's name (or its UUID) as created by `cloudflared tunnel create`.
+tunnel: TUNNEL-NAME
+
+# Written by `cloudflared tunnel create` — the tunnel's private key. Treat it
+# like a password: anyone holding it can serve traffic on your hostname.
+# The filename is the tunnel's UUID, not its name.
+credentials-file: C:\Users\YOUR-USER\.cloudflared\TUNNEL-UUID.json
+
+# Ingress rules are evaluated top-down; the first hostname match wins, and the
+# list MUST end with a catch-all. Everything here points at the single backend
+# process, which serves both the REST API and the built React UI on one origin
+# (see backend/app.js) — so one rule covers the whole platform.
+ingress:
+  - hostname: scraper.example.xyz
+    service: http://localhost:3001
+    originRequest:
+      # The live-preview screencast is a long-lived Socket.IO WebSocket
+      # carrying continuous JPEG frames. cloudflared proxies WebSockets
+      # automatically — no flag needed — but keepalives must outlive an idle
+      # editor tab, or the stream drops and the UI silently stops updating.
+      connectTimeout: 30s
+      tcpKeepAlive: 30s
+      keepAliveTimeout: 90s
+      # Socket.IO is configured websocket-only (backend/server.js), with no
+      # HTTP long-polling fallback. If WebSockets ever fail to negotiate, the
+      # live browser goes dead rather than degrading — see the troubleshooting
+      # table in docs/DEPLOYMENT.md.
+
+  # Required catch-all: anything not matched above is refused rather than
+  # forwarded. Without this line cloudflared will not start.
+  - service: http_status:404

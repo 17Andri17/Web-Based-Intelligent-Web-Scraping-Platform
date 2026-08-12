@@ -28,6 +28,7 @@ const { cssRelaxations, buildDiagnosis } = require('./services/selectorDebug');
 // DOM. See browser/networkCapture.js + services/apiDiscovery.service.js and
 // docs/API_DISCOVERY.md.
 const networkCapture     = require('./browser/networkCapture');
+const { createScreencastPacer } = require('./browser/screencastPacer');
 const apiDiscovery       = require('./services/apiDiscovery.service');
 const apiReplay          = require('./services/apiReplay.service');
 const apiDiscoveryAI     = require('./services/apiDiscoveryAI.service');
@@ -47,6 +48,20 @@ const PORT = process.env.PORT || 3001;
 // q80 is visually lossless while keeping frames light enough to stay smooth.
 const EDITOR_DEVICE_SCALE       = Number(process.env.EDITOR_DEVICE_SCALE) || 2;
 const SCREENCAST_JPEG_QUALITY   = Number(process.env.SCREENCAST_JPEG_QUALITY) || 80;
+
+// Stream pacing (see browser/screencastPacer.js). Frames are delivered against
+// client acks rather than fire-and-forget, so latency stays bounded when the
+// link is narrower than the stream — over a tunnel or any remote connection it
+// is the difference between a lower frame rate and lag that grows without end.
+// SCREENCAST_JPEG_QUALITY above is the ceiling; quality is lowered toward
+// SCREENCAST_MIN_QUALITY only while the connection can't keep up, and restored
+// automatically. Set SCREENCAST_MAX_IN_FLIGHT=1 for the lowest possible latency
+// at a lower frame rate.
+const SCREENCAST_MAX_IN_FLIGHT  = Number(process.env.SCREENCAST_MAX_IN_FLIGHT) || 2;
+const SCREENCAST_MIN_QUALITY    = Number(process.env.SCREENCAST_MIN_QUALITY) || 30;
+// Set false to pin quality at SCREENCAST_JPEG_QUALITY. Pacing still applies, so
+// latency stays bounded either way — this only stops the quality from moving.
+const SCREENCAST_ADAPTIVE = String(process.env.SCREENCAST_ADAPTIVE || 'true').toLowerCase() !== 'false';
 
 const server     = http.createServer(app);
 const io         = new Server(server, { cors: { origin: '*' }, transports: ['websocket'] });
@@ -775,13 +790,19 @@ io.on('connection', async (socket) => {
       // gets full-resolution frames and a 1x client gets them downsampled from
       // the 2x render. JPEG (not PNG) keeps the 2x frames light enough to stay
       // smooth — at 2x resolution the compression is visually lossless.
-      await client.send('Page.startScreencast', {
+      //
+      // Built in one place because the adaptive-quality restart below and
+      // resizeViewport both have to reproduce these parameters exactly.
+      const screencastParams = (quality, width, height, dpr) => ({
         format: 'jpeg',
-        quality: SCREENCAST_JPEG_QUALITY,
-        maxWidth: Math.round(viewportWidth * clientDpr),
-        maxHeight: Math.round(viewportHeight * clientDpr),
+        quality,
+        maxWidth: Math.round(width * dpr),
+        maxHeight: Math.round(height * dpr),
         everyNthFrame: 1,
       });
+
+      await client.send('Page.startScreencast',
+        screencastParams(SCREENCAST_JPEG_QUALITY, viewportWidth, viewportHeight, clientDpr));
 
       socket.emit('viewportUpdated', {
         width: viewportWidth,
@@ -789,18 +810,46 @@ io.on('connection', async (socket) => {
         dpr: clientDpr,
       });
 
-      const onFrame = async (frame) => {
+      /* Pace the stream against the connection instead of firing frames at it.
+         See browser/screencastPacer.js — in short: never more than N frames on
+         the wire, a frame waiting behind them is replaced rather than queued,
+         and Chrome is throttled to our drain rate. A slow link costs frame
+         rate; it no longer accumulates delay. */
+      const pacer = createScreencastPacer({
+        baseQuality: SCREENCAST_JPEG_QUALITY,
+        options: {
+          maxInFlight: SCREENCAST_MAX_IN_FLIGHT,
+          minQuality:  SCREENCAST_MIN_QUALITY,
+          adaptive:    SCREENCAST_ADAPTIVE,
+        },
+        emitFrame: (buf, onDelivered) => { socket.emit('frame', buf, onDelivered); },
+        ackChrome: (sessionId) => {
+          client.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+        },
+        // Quality is a screencast start parameter, so changing it means
+        // restarting the capture. Uses the session's CURRENT geometry, which
+        // resizeViewport may have changed since this stream began.
+        onQualityChange: async (quality) => {
+          const s = userSessions.get(userId);
+          if (!s?.streaming) return;
+          try {
+            await client.send('Page.stopScreencast');
+            await client.send('Page.startScreencast',
+              screencastParams(quality, s.currentWidth, s.currentHeight, s.currentDpr));
+          } catch (_) {}
+        },
+      });
+
+      const session = userSessions.get(userId);
+      if (session) {
+        session.pacer = pacer;
+        session.screencastParams = screencastParams;
+      }
+
+      const onFrame = (frame) => {
         const s = userSessions.get(userId);
-
         if (!s?.streaming) return;
-
-        try {
-          socket.emit('frame', Buffer.from(frame.data, 'base64'));
-
-          await client.send('Page.screencastFrameAck', {
-            sessionId: frame.sessionId,
-          });
-        } catch (_) {}
+        pacer.handleFrame(frame);
       };
 
       client.on('Page.screencastFrame', onFrame);
@@ -818,6 +867,10 @@ io.on('connection', async (socket) => {
         if (!s?.streaming) return;
 
         s.streaming = false;
+
+        // Drop any queued frame and stop the ack timers before the transport
+        // goes away, so a pending delivery can't resurrect the pump.
+        try { pacer.stop(); } catch (_) {}
 
         try {
           await client.send('Page.stopScreencast');
@@ -856,8 +909,10 @@ io.on('connection', async (socket) => {
       s.currentDpr    = clientDpr;
       const meta = userSessionMeta.get(userId);
       if (meta) { meta.viewportWidth = width; meta.viewportHeight = height; }
+      // Keep whatever quality the pacer has settled on — restarting at the
+      // configured ceiling would undo its adaptation on every panel resize.
       await s.session.send('Page.startScreencast', {
-        format: 'jpeg', quality: SCREENCAST_JPEG_QUALITY,
+        format: 'jpeg', quality: s.pacer ? s.pacer.quality : SCREENCAST_JPEG_QUALITY,
         maxWidth: Math.round(width * clientDpr), maxHeight: Math.round(height * clientDpr),
         everyNthFrame: 1,
       });

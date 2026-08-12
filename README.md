@@ -128,6 +128,8 @@ production build.
 
 ## Documentation
 
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — putting the platform on the public
+  internet (Cloudflare Tunnel today, VPS later).
 - [docs/PLATFORM_ANALYSIS.md](docs/PLATFORM_ANALYSIS.md) — architecture review,
   bug/UX analysis, and the competitive roadmap this project is executing.
 - [docs/API_ARCHITECTURE.md](docs/API_ARCHITECTURE.md) /
