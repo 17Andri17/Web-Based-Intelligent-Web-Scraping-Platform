@@ -1,0 +1,432 @@
+/* ==================== MARKETING (landing / pricing) ====================
+   Its own token set, deliberately. The app is a dense dark tool; the public
+   pages are a document people read once, and inheriting the editor's chrome
+   colours makes them feel like a settings screen. These tokens are scoped to
+   .mk so nothing here can leak into the application shell.
+
+   The palette is the mark's: deep teal-black ground, a teal-green primary,
+   and warm amber reserved for the one thing that matters — the verified
+   repair in the hero log. Amber appears nowhere else, so it reads as signal
+   rather than decoration.
+   ===================================================================== */
+
+.mk {
+    --mk-bg: #0c1413;
+    --mk-bg-alt: #111c1a;
+    --mk-surface: #16211f;
+    --mk-line: #22322f;
+    --mk-line-soft: #1b2a27;
+
+    --mk-text: #e8efec;
+    --mk-text-soft: #b3c2bd;
+    --mk-dim: #7d908a;
+
+    --mk-accent: #45b39b;
+    --mk-accent-deep: #1f7a68;
+    --mk-signal: #e0a445;
+    --mk-danger: #e2705f;
+
+    --mk-max: 1120px;
+
+    background: var(--mk-bg);
+    color: var(--mk-text);
+    min-height: 100vh;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+
+.mk *, .mk *::before, .mk *::after { box-sizing: border-box; }
+
+.mk h1, .mk h2, .mk h3 {
+    /* Georgia is the one characterful face available without a webfont, and
+       the CSP blocks font CDNs — so the display voice is a real serif rather
+       than a silent fallback to the body sans. */
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    font-weight: 400;
+    letter-spacing: -0.018em;
+    text-wrap: balance;
+    margin: 0;
+}
+
+.mk p { margin: 0; }
+
+.mk-eyebrow {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--mk-accent);
+    margin-bottom: 14px !important;
+}
+
+.mk-lede { color: var(--mk-text-soft); font-size: 17px; max-width: 60ch; }
+.mk-dim  { color: var(--mk-dim); font-size: 13.5px; }
+
+/* ── Nav ──────────────────────────────────────────────────────────────── */
+.mk-nav {
+    max-width: var(--mk-max);
+    margin: 0 auto;
+    padding: 22px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.mk-brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--mk-text);
+    text-decoration: none;
+    font-weight: 650;
+    font-size: 17px;
+    letter-spacing: -0.01em;
+}
+.mk-brand svg { color: var(--mk-accent); }
+
+.mk-nav-links { display: flex; align-items: center; gap: 8px; }
+.mk-nav-links a {
+    color: var(--mk-text-soft);
+    text-decoration: none;
+    font-size: 14px;
+    padding: 8px 12px;
+    border-radius: 6px;
+}
+.mk-nav-links a:hover { color: var(--mk-text); }
+
+/* ── Buttons ──────────────────────────────────────────────────────────── */
+.mk-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    padding: 9px 16px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    text-decoration: none;
+    transition: filter 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.mk-btn.lg { font-size: 15px; padding: 13px 22px; }
+.mk-btn.block { width: 100%; }
+
+.mk-btn.primary { background: var(--mk-accent-deep); color: #f2fbf8; }
+.mk-btn.primary:hover { filter: brightness(1.18); }
+
+.mk-btn.ghost {
+    background: transparent;
+    color: var(--mk-text);
+    border-color: var(--mk-line);
+}
+.mk-btn.ghost:hover { border-color: var(--mk-accent); }
+
+.mk-btn:focus-visible { outline: 2px solid var(--mk-accent); outline-offset: 2px; }
+
+/* ── Hero ─────────────────────────────────────────────────────────────── */
+.mk-hero {
+    max-width: var(--mk-max);
+    margin: 0 auto;
+    padding: 56px 24px 80px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 56px;
+    align-items: center;
+}
+
+/* Grid items default to min-width:auto, which refuses to shrink below their
+   content. The repair log's lines are `white-space: nowrap`, so without this
+   the track is forced to the widest log line and the whole PAGE scrolls
+   sideways on a phone — instead of the log scrolling inside its own box,
+   which is what .mk-log-body's overflow-x is there to do. */
+.mk-hero > * { min-width: 0; }
+
+.mk-hero h1 {
+    font-size: clamp(2.2rem, 4.6vw, 3.4rem);
+    line-height: 1.08;
+    margin-bottom: 20px;
+}
+
+.mk-hero-cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+
+.mk-hero-note {
+    margin-top: 16px !important;
+    font-size: 13px;
+    color: var(--mk-dim);
+}
+
+.mk-lede em { color: var(--mk-text); font-style: normal; font-weight: 600; }
+
+/* ── The repair log ───────────────────────────────────────────────────── */
+.mk-log {
+    background: #08100f;
+    border: 1px solid var(--mk-line);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.9);
+}
+
+.mk-log-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 11px 14px;
+    background: var(--mk-bg-alt);
+    border-bottom: 1px solid var(--mk-line);
+}
+
+.mk-log-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--mk-line);
+}
+
+.mk-log-title {
+    margin-left: 8px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    color: var(--mk-dim);
+}
+
+.mk-log-body {
+    list-style: none;
+    margin: 0;
+    padding: 14px 0;
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    /* Long lines scroll inside the log rather than widening the page. */
+    overflow-x: auto;
+}
+
+.mk-log-line {
+    display: flex;
+    gap: 12px;
+    padding: 4px 16px;
+    white-space: nowrap;
+    border-left: 2px solid transparent;
+}
+
+.mk-log-time { color: #3f524e; flex: none; }
+.mk-log-text { color: var(--mk-text-soft); }
+
+.mk-log-line.is-err  { border-left-color: var(--mk-danger); }
+.mk-log-line.is-err  .mk-log-text { color: var(--mk-danger); }
+.mk-log-line.is-warn { border-left-color: var(--mk-signal); }
+.mk-log-line.is-warn .mk-log-text { color: var(--mk-signal); }
+.mk-log-line.is-ok   { border-left-color: var(--mk-accent); }
+.mk-log-line.is-ok   .mk-log-text { color: var(--mk-accent); }
+.mk-log-line.is-dim  .mk-log-text { color: var(--mk-dim); }
+
+/* ── Sections ─────────────────────────────────────────────────────────── */
+.mk-section {
+    max-width: var(--mk-max);
+    margin: 0 auto;
+    padding: 76px 24px;
+}
+
+.mk-alt {
+    max-width: none;
+    background: var(--mk-bg-alt);
+    border-top: 1px solid var(--mk-line);
+    border-bottom: 1px solid var(--mk-line);
+}
+.mk-alt > * { max-width: var(--mk-max); margin-inline: auto; }
+
+.mk-section-head { margin-bottom: 44px; }
+.mk-section-head h2 {
+    font-size: clamp(1.65rem, 3.2vw, 2.3rem);
+    line-height: 1.15;
+    margin-bottom: 16px;
+}
+
+/* ── Steps ────────────────────────────────────────────────────────────── */
+.mk-steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+    gap: 28px;
+}
+
+.mk-step-num {
+    display: block;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--mk-accent);
+    letter-spacing: 0.1em;
+    margin-bottom: 10px;
+}
+
+.mk-step h3 { font-size: 1.12rem; margin-bottom: 8px; line-height: 1.3; }
+.mk-step p  { color: var(--mk-text-soft); font-size: 14.5px; }
+
+/* ── Feature cards ────────────────────────────────────────────────────── */
+.mk-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+}
+
+.mk-card {
+    background: var(--mk-surface);
+    border: 1px solid var(--mk-line);
+    border-radius: 10px;
+    padding: 22px;
+}
+.mk-card h3 { font-size: 1.05rem; margin-bottom: 8px; }
+.mk-card p  { color: var(--mk-text-soft); font-size: 14px; }
+
+/* ── Plans ────────────────────────────────────────────────────────────── */
+.mk-plans {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(258px, 1fr));
+    gap: 18px;
+    align-items: start;
+}
+
+.mk-plan {
+    position: relative;
+    background: var(--mk-surface);
+    border: 1px solid var(--mk-line);
+    border-radius: 12px;
+    padding: 26px 24px;
+    display: flex;
+    flex-direction: column;
+}
+
+.mk-plan.is-featured {
+    border-color: var(--mk-accent-deep);
+    box-shadow: 0 0 0 1px var(--mk-accent-deep);
+}
+
+.mk-plan-flag {
+    position: absolute;
+    top: -10px; left: 24px;
+    background: var(--mk-accent-deep);
+    color: #f2fbf8;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 999px;
+}
+
+.mk-plan h3 { font-size: 1.15rem; margin-bottom: 4px; }
+
+.mk-plan-price {
+    font-family: Georgia, "Iowan Old Style", serif;
+    font-size: 2.5rem;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    margin: 4px 0 2px;
+}
+.mk-plan-price small {
+    font-family: inherit;
+    font-size: 0.95rem;
+    color: var(--mk-dim);
+    letter-spacing: 0;
+    margin-left: 3px;
+}
+
+.mk-plan-role {
+    color: var(--mk-text-soft);
+    font-size: 13.5px;
+    margin: 8px 0 18px !important;
+    min-height: 2.8em;
+}
+
+.mk-plan ul {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 22px;
+    font-size: 14px;
+    color: var(--mk-text-soft);
+    flex: 1;
+}
+
+.mk-plan li {
+    position: relative;
+    padding-left: 22px;
+    margin-bottom: 8px;
+}
+
+/* A tick for included, a dash for not — so the difference survives being
+   printed, and doesn't rely on colour alone. */
+.mk-plan li::before {
+    content: "";
+    position: absolute;
+    left: 2px; top: 0.52em;
+    width: 9px; height: 5px;
+    border-left: 2px solid var(--mk-accent);
+    border-bottom: 2px solid var(--mk-accent);
+    transform: rotate(-45deg);
+}
+
+.mk-plan li.off { color: var(--mk-dim); }
+.mk-plan li.off::before {
+    width: 9px; height: 0;
+    border-left: none;
+    border-bottom: 2px solid #33443f;
+    transform: none;
+    top: 0.72em;
+}
+
+.mk-plan strong { color: var(--mk-text); font-variant-numeric: tabular-nums; }
+
+.mk-fineprint {
+    margin-top: 26px !important;
+    font-size: 12.5px;
+    color: var(--mk-dim);
+    text-align: center;
+}
+
+/* ── Closing CTA ──────────────────────────────────────────────────────── */
+.mk-cta {
+    text-align: center;
+    padding: 84px 24px;
+    background: var(--mk-bg-alt);
+    border-top: 1px solid var(--mk-line);
+}
+.mk-cta h2 { font-size: clamp(1.6rem, 3.4vw, 2.3rem); margin-bottom: 12px; }
+.mk-cta p  { color: var(--mk-text-soft); margin-bottom: 26px !important; }
+
+/* ── Footer ───────────────────────────────────────────────────────────── */
+.mk-foot {
+    max-width: var(--mk-max);
+    margin: 0 auto;
+    padding: 40px 24px 60px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-top: 1px solid var(--mk-line);
+}
+
+.mk-foot-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 650;
+    color: var(--mk-text);
+}
+.mk-foot-brand svg { color: var(--mk-accent); }
+
+/* ── Responsive ───────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+    .mk-hero { grid-template-columns: 1fr; gap: 40px; padding-top: 32px; padding-bottom: 56px; }
+}
+
+@media (max-width: 620px) {
+    .mk-nav { flex-wrap: wrap; gap: 12px; }
+    .mk-nav-links a[href^="#"] { display: none; }
+    .mk-section { padding: 56px 20px; }
+    .mk-hero-cta .mk-btn { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mk * { transition: none !important; animation: none !important; }
+}

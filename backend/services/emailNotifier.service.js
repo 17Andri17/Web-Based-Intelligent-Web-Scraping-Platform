@@ -3,6 +3,7 @@
 const mailer = require('./mailer.service');
 const notificationsRepo = require('../db/repositories/notifications.repo');
 const workflowsRepo = require('../db/repositories/workflows.repo');
+const { parseUtc } = require('../utils/time');
 
 /* ===========================================================================
    emailNotifier
@@ -41,6 +42,23 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
+/* How long to stay quiet after mailing about a workflow that failed.
+
+   A broken scraper on a 5-minute schedule fails 288 times a day, and every one
+   of those produces the same e-mail. The second through two-hundred-and-
+   eighty-eighth carry no information the first didn't — they just teach the
+   reader to filter the sender, which costs them the next alert that DOES
+   matter. So: mail the first failure, then keep a tally and report it when the
+   window reopens.
+
+   Read per call rather than at module load, so a changed env is picked up
+   without a restart — the same lazy treatment mailer.service gives its own
+   config. */
+function cooldownMs() {
+  const h = Number(process.env.EMAIL_FAILURE_COOLDOWN_HOURS);
+  return (Number.isFinite(h) && h >= 0 ? h : 24) * 3600000;
+}
+
 function appUrl() {
   // Best-effort deep link. Without a public URL configured we simply omit the
   // link rather than printing a localhost address into someone's inbox.
@@ -55,7 +73,7 @@ function layout(title, bodyHtml) {
   <div style="max-width:560px;margin:0 auto;background:#fff;border:1px solid #d0d7de;border-radius:12px;padding:24px">
     <h1 style="margin:0 0 14px;font-size:18px;font-weight:650">${esc(title)}</h1>
     ${bodyHtml}
-    ${url ? `<p style="margin:22px 0 0"><a href="${esc(url)}" style="display:inline-block;padding:9px 16px;background:#0969da;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600">Open WebScraper</a></p>` : ''}
+    ${url ? `<p style="margin:22px 0 0"><a href="${esc(url)}" style="display:inline-block;padding:9px 16px;background:#0969da;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600">Open Scrapient</a></p>` : ''}
     <p style="margin:22px 0 0;font-size:12px;color:#656d76">
       You're getting this because e-mail alerts are switched on for your account.
       Turn them off under your name → Notifications.
@@ -74,6 +92,18 @@ async function notifyRunFailed(runRow) {
   const settings = await safe(() => notificationsRepo.activeForEvent(runRow.user_id, 'run.failed'));
   if (!settings) return;
 
+  // Per workflow, not per user: one flapping scraper must not mute the alerts
+  // for every other scraper this person owns.
+  const workflowId = runRow.workflow_id || 0;
+  const throttle = await safe(() => notificationsRepo.getThrottle(runRow.user_id, workflowId));
+  const lastSent = throttle ? parseUtc(throttle.last_sent_at) : NaN;
+  if (Number.isFinite(lastSent) && Date.now() - lastSent < cooldownMs()) {
+    // Swallowed, but counted — the next mail that goes out says how many.
+    await safe(() => notificationsRepo.countSuppressed(runRow.user_id, workflowId));
+    return;
+  }
+  const suppressed = Number(throttle && throttle.suppressed_count) || 0;
+
   const name = await workflowNameFor(runRow);
   const needsReview = runRow.status === 'needs_review';
   const subject = needsReview
@@ -91,15 +121,23 @@ async function notifyRunFailed(runRow) {
     '',
     summary,
     rows > 0 ? `\n${rows.toLocaleString()} row(s) captured before it stopped were saved.` : '',
-    appUrl() ? `\nOpen WebScraper: ${appUrl()}` : '',
+    suppressed > 0
+      ? `\nIt also failed ${suppressed.toLocaleString()} more time${suppressed === 1 ? '' : 's'} since the last e-mail about it.`
+      : '',
+    appUrl() ? `\nOpen Scrapient: ${appUrl()}` : '',
   ].filter(Boolean).join('\n');
 
   const html = layout(subject, `
     <p style="margin:0 0 12px;font-size:14px;line-height:1.55">${esc(summary)}</p>
     ${rows > 0 ? `<p style="margin:0;font-size:14px;line-height:1.55"><strong>${rows.toLocaleString()}</strong> row(s) captured before it stopped were saved.</p>` : ''}
+    ${suppressed > 0 ? `<p style="margin:12px 0 0;font-size:14px;line-height:1.55;color:#656d76">It also failed <strong>${suppressed.toLocaleString()}</strong> more time${suppressed === 1 ? '' : 's'} since the last e-mail about it.</p>` : ''}
   `);
 
-  await deliver(runRow.user_id, settings, { subject, text, html });
+  const ok = await deliver(runRow.user_id, settings, { subject, text, html });
+  // Only a mail that actually went out opens a quiet period. Stamping on a
+  // failed send would suppress a day of alerts because the mail server had a
+  // bad minute.
+  if (ok) await safe(() => notificationsRepo.markAlertSent(runRow.user_id, workflowId));
 }
 
 /* ── run.changed ────────────────────────────────────────────────────────── */
@@ -129,7 +167,7 @@ async function notifyRunChanged(runRow, changeSummary) {
     subject,
     '',
     `Since the previous run: ${parts.join(', ')}.`,
-    appUrl() ? `\nOpen WebScraper: ${appUrl()}` : '',
+    appUrl() ? `\nOpen Scrapient: ${appUrl()}` : '',
   ].filter(Boolean).join('\n');
 
   const html = layout(subject, `
@@ -180,6 +218,7 @@ async function deliver(userId, settings, message) {
   // reason nothing is arriving, instead of failing invisibly.
   await safe(() => notificationsRepo.markSent(userId, out.ok ? 'ok' : `error: ${out.error}`));
   if (!out.ok) console.warn('[email] notification not sent:', out.error);
+  return out.ok;
 }
 
 async function safe(fn) {

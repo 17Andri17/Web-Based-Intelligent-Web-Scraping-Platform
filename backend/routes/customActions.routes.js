@@ -2,6 +2,7 @@
 
 const express = require('express');
 const customActions = require('../db/repositories/customActions.repo');
+const entitlements = require('../services/entitlements.service');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -79,6 +80,7 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   const v = validate(req.body);
   if (typeof v === 'string') return res.status(400).json({ error: v });
+  await entitlements.assertFeature(req.user.id, 'customActions', 'Custom actions');
   const row = await customActions.create({
     userId: req.user.id,
     name: v.name, description: v.description,

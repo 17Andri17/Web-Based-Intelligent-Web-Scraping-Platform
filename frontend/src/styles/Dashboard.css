@@ -6,10 +6,55 @@
   background: var(--bg-primary, #0d1117);
 }
 
+/* Top bar. The dashboard is painted over the app header, so this is the only
+   place on the home screen that account actions — including signing out —
+   can live. Sticky rather than scrolling away with the content: "where do I
+   sign out" should not depend on how far down the workflow list you are. */
+.dash-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 56px;
+  padding: 0 28px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-default);
+}
+.dash-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text-primary);
+}
+.dash-brand svg { color: var(--accent-primary); }
+
+/* Anchor for the popover. In its editor home it is pinned to fixed offsets
+   that assume the app header (top: 52px; right: 16px), so here it has to be
+   re-anchored under the chip. Deliberately two classes deep: that beats
+   `.user-popover` on specificity, so this holds whichever stylesheet the
+   bundler happens to emit last. */
+.dash-account { position: relative; }
+.dash-account .dash-menu { position: absolute; top: calc(100% + 6px); right: 0; }
+.dash-menu-scrim { position: fixed; inset: 0; z-index: 40; }
+
 .dash-inner {
   max-width: 1080px;
   margin: 0 auto;
   padding: 40px 28px 60px;
+}
+/* The bar already provides the breathing room the page's own top padding was
+   there to create. */
+.dash-topbar + .dash-inner { padding-top: 28px; }
+
+@media (max-width: 560px) {
+  .dash-topbar { padding: 0 16px; }
+  .dash-inner  { padding-left: 16px; padding-right: 16px; }
 }
 
 /* Currently-open scraper — resume banner */
@@ -171,6 +216,61 @@
   color: var(--text-secondary, #8b949e);
 }
 .dash-tour-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+/* An unfinished tour. Sits where a "currently editing" banner would, because
+   that is what it is — except the thing being resumed is progress through the
+   walkthrough, not a scraper the user owns. The progress bar is the whole
+   point: it says "you are most of the way there", which is what gets someone
+   to finish. */
+.dash-tour-resume {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 30px;
+  padding: 15px 18px;
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  background: rgba(88, 166, 255, 0.07);
+  border-radius: var(--radius-lg, 12px);
+}
+.dash-tour-resume-icon { font-size: 24px; line-height: 1; flex-shrink: 0; }
+.dash-tour-resume-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 240px;
+  flex: 1;
+}
+.dash-tour-resume-body strong {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary, #f0f6fc);
+}
+.dash-tour-resume-body > span {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary, #8b949e);
+}
+.dash-tour-bar {
+  height: 4px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: var(--bg-tertiary, #21262d);
+  overflow: hidden;
+}
+.dash-tour-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent-primary, #58a6ff);
+  transition: width var(--transition-normal, 200ms ease);
+}
+.dash-tour-resume-actions {
   display: flex;
   align-items: center;
   gap: 12px;

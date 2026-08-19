@@ -206,10 +206,11 @@ function SuggestionCard({ suggestion, onAdd, baseUrlRaw }) {
           <polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
         </svg>
         {suggestion.type === "url_param"
-          ? <>Adds a <strong>URL Pages</strong> block that navigates page-by-page and stops automatically when a page has no items — just drop your extraction steps <strong>inside</strong> it.</>
+          ? <>Adds a <strong>URL Pages</strong> block that navigates page-by-page and stops automatically when a page has no items.</>
           : suggestion.type === "infinite_scroll"
-          ? <>Adds an <strong>Infinite Scroll</strong> block that loads everything, then runs your extraction steps <strong>inside</strong> it once.</>
-          : <>Adds a <strong>Click Button</strong> block that paginates until the button is gone — drop your extraction steps <strong>inside</strong> it to run on every page.</>}
+          ? <>Adds an <strong>Infinite Scroll</strong> block that loads everything, then runs your extraction steps once.</>
+          : <>Adds a <strong>Click Button</strong> block that paginates until the button is gone.</>}
+        {" "}It'll ask which of your existing steps should run on every page.
       </div>
     </div>
   );
@@ -334,7 +335,7 @@ export default function PaginationDetector({ isDetecting, suggestions, error, ma
                 <circle cx="12" cy="12" r="10"/>
                 <line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
               </svg>
-              After adding, drop your data-extraction steps <strong>inside</strong> the pagination block so they run on every page. The loop stops on its own when there are no more pages.
+              Whatever sits <strong>inside</strong> the pagination block runs on every page — you'll be asked which of your existing steps to move in. The loop stops on its own when there are no more pages.
             </div>
           </>
         )}

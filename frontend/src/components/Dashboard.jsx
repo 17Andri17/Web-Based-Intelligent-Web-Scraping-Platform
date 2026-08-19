@@ -1,6 +1,10 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { workflowsApi, runsApi, schedulesApi } from "../api/client";
 import "../styles/Dashboard.css";
+// The top bar reuses the app's user chip + popover, which live here. Imported
+// explicitly rather than relying on main.jsx having already pulled it in — a
+// component that renders `.user-chip` should carry its own styling.
+import "../styles/auth.css";
 
 /* =====================================================================
    Dashboard — the landing screen after login.
@@ -11,9 +15,16 @@ import "../styles/Dashboard.css";
    needs review, so problems are visible without opening each workflow's
    history.
 
+   The dashboard covers the whole window, header included — so everything
+   the app chrome offers has to be reachable from here too, or it isn't
+   reachable at all without first opening a scraper. Hence the top bar: the
+   same account menu as the editor, minus the per-scraper entries, which
+   would be offering settings for a scraper that isn't open.
+
    Props:
      open
-     userName
+     user                     { username, plan, isAdmin } — drives the greeting
+                              and the account menu
      onNewScrape()            start a new scraper in the editor
      onOpenWorkflow(id)       load a workflow into the editor
      onManageWorkflows()      open the full Workflows menu (rename/delete/…)
@@ -26,6 +37,16 @@ import "../styles/Dashboard.css";
      tourCompleted            the user has finished the tour before
      tourPromptDismissed      the user waved away the first-run prompt
      onDismissTourPrompt()    remember that dismissal
+
+     onOpenBilling(), onOpenSettings(), onOpenAdmin(), onLogout()
+                              account-level destinations for the top-bar menu
+
+   The tour deliberately has NO workflow card and no "currently editing"
+   banner here. What it builds is a practice scraper on a bundled shop, kept
+   as tour PROGRESS rather than as one of the user's scrapers, and deleted
+   outright when the walkthrough ends. So an unfinished tour appears as its
+   own resume card, and a finished one leaves nothing but the offer to
+   replay it.
    ===================================================================== */
 
 const STATUS_META = {
@@ -42,11 +63,14 @@ const STATUS_META = {
 };
 
 export default function Dashboard({
-  open, userName, onNewScrape, onOpenWorkflow, onManageWorkflows, showToast, reloadKey,
+  open, user, onNewScrape, onOpenWorkflow, onManageWorkflows, showToast, reloadKey,
   openWorkflow = null, onResumeEditing, onWatchRun, onBrowseTemplates, onOpenData,
-  onStartTour, onResumeTour, tourProgress = null, tourCompleted = false,
+  onStartTour, onResumeTour, onRestartTour, tourProgress = null, tourCompleted = false,
   tourPromptDismissed = false, onDismissTourPrompt,
+  onOpenBilling, onOpenSettings, onOpenAdmin, onLogout,
 }) {
+  const userName = user?.username || "";
+  const [menuOpen, setMenuOpen] = useState(false);
   const [workflows, setWorkflows] = useState([]);
   const [runs, setRuns]           = useState([]);
   const [schedules, setSchedules] = useState([]);
@@ -116,20 +140,72 @@ export default function Dashboard({
   // A tour left part-way through can be picked up where it stopped. Step 0
   // isn't "in progress" — that's just an unstarted tour.
   const canResumeTour = !!(onResumeTour && tourProgress && tourProgress.idx > 0);
-  const tourStepLabel = canResumeTour && tourProgress.total
-    ? `step ${Math.min(tourProgress.idx + 1, tourProgress.total)} of ${tourProgress.total}`
-    : null;
+  const tourStep  = canResumeTour ? Math.min(tourProgress.idx + 1, tourProgress.total || 1) : 0;
+  const tourTotal = canResumeTour ? (tourProgress.total || 0) : 0;
+  const tourStepLabel = canResumeTour && tourTotal ? `step ${tourStep} of ${tourTotal}` : null;
+  const tourPct = tourTotal ? Math.round(((tourStep - 1) / tourTotal) * 100) : 0;
   // The first-run nudge: only for someone with nothing built who hasn't
   // already done the tour or waved the prompt away. Waits for the workflow
   // list to actually load, so it can't flash before the data arrives.
   const showTourPrompt =
     !!onStartTour && !loading && !err && workflows.length === 0 &&
-    !tourCompleted && !tourPromptDismissed;
+    !tourCompleted && !tourPromptDismissed && !canResumeTour;
 
   if (!open) return null;
 
   return (
     <div className="dash">
+      {/* Top bar. The dashboard sits over the app header, so without this the
+          only way to reach your account — or to sign out — is to open a
+          scraper first, which is a strange thing to have to do on the way
+          out. Sticky, so it stays put down a long list of workflows. */}
+      <div className="dash-topbar">
+        <span className="dash-brand">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+          </svg>
+          Scrapient
+        </span>
+        <div className="dash-account">
+          <button className="user-chip" onClick={() => setMenuOpen(v => !v)} title={userName}>
+            <span className="avatar">{(userName || "?").slice(0, 1).toUpperCase()}</span>
+            <span>{userName}</span>
+          </button>
+          {menuOpen && (
+            <>
+              <div className="dash-menu-scrim" onClick={() => setMenuOpen(false)} />
+              {/* Account-level only. "Run settings" and "Proxy" belong to a
+                  scraper, and none is open here — offering them would be
+                  offering to configure nothing. */}
+              <div className="user-popover dash-menu">
+                {onOpenData && (
+                  <button className="item" onClick={() => { setMenuOpen(false); onOpenData(); }}>Your data…</button>
+                )}
+                <button className="item" onClick={() => { setMenuOpen(false); onManageWorkflows(); }}>Workflows…</button>
+                <div className="user-popover-sep" />
+                {onOpenBilling && (
+                  <button className="item" onClick={() => { setMenuOpen(false); onOpenBilling(); }}>
+                    Plan &amp; usage
+                    {user?.plan?.name && <span className="user-popover-badge">{user.plan.name}</span>}
+                  </button>
+                )}
+                {onOpenSettings && (
+                  <button className="item" onClick={() => { setMenuOpen(false); onOpenSettings(); }}>Settings…</button>
+                )}
+                {/* Admins only. The server re-reads is_admin on every
+                    /api/admin route regardless of what the UI renders. */}
+                {user?.isAdmin && onOpenAdmin && (
+                  <button className="item" onClick={() => { setMenuOpen(false); onOpenAdmin(); }}>Admin…</button>
+                )}
+                {onLogout && (
+                  <button className="item danger" onClick={() => { setMenuOpen(false); onLogout(); }}>Sign out</button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
       <div className="dash-inner">
         {/* Currently-open scraper — quick way back into the editor */}
         {openWorkflow && onResumeEditing && (
@@ -146,7 +222,6 @@ export default function Dashboard({
               <span className="dash-resume-name">
                 {openWorkflow.name}
                 {!openWorkflow.saved && <span className="dash-resume-tag">unsaved</span>}
-                {openWorkflow.isTour && <span className="dash-resume-tag">practice</span>}
               </span>
               <span className="dash-resume-meta">
                 {openWorkflow.stepCount} step{openWorkflow.stepCount === 1 ? "" : "s"}
@@ -185,13 +260,10 @@ export default function Dashboard({
               </button>
             )}
             {/* The tour stays reachable forever, not just on an empty
-                account — people come back for it long after their first day. */}
-            {canResumeTour ? (
-              <button className="dash-cta ghost" onClick={onResumeTour}
-                title={`Pick the walkthrough back up at ${tourStepLabel || "where you left it"}`}>
-                🧭 Resume the tour{tourStepLabel ? ` · ${tourStepLabel}` : ""}
-              </button>
-            ) : onStartTour && (
+                account — people come back for it long after their first day.
+                While one is unfinished the card below carries the offer, so
+                this slot doesn't say the same thing twice. */}
+            {!canResumeTour && onStartTour && (
               <button className="dash-cta ghost" onClick={onStartTour}
                 title="A short guided walkthrough on a practice shop">
                 🧭 {tourCompleted ? "Replay the tour" : "Take the tour"}
@@ -199,6 +271,24 @@ export default function Dashboard({
             )}
           </div>
         </div>
+
+        {/* An unfinished tour, kept as progress rather than as a scraper. */}
+        {canResumeTour && (
+          <div className="dash-tour-resume">
+            <span className="dash-tour-resume-icon" aria-hidden="true">🧭</span>
+            <div className="dash-tour-resume-body">
+              <strong>Your guided tour is waiting{tourStepLabel ? ` at ${tourStepLabel}` : ""}</strong>
+              <span>Everything you did is still there. Nothing has been saved to your account.</span>
+              <span className="dash-tour-bar"><span style={{ width: `${tourPct}%` }} /></span>
+            </div>
+            <div className="dash-tour-resume-actions">
+              <button className="dash-cta primary" onClick={onResumeTour}>Continue</button>
+              {onRestartTour && (
+                <button className="dash-link" onClick={onRestartTour}>Start over</button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* First-run: ask outright, rather than hoping the ghost button in
             the hero gets noticed by someone who has never seen the app. */}
@@ -271,11 +361,12 @@ export default function Dashboard({
                 <button className="dash-cta ghost" onClick={onBrowseTemplates}>Start from a template</button>
               )}
             </div>
-            {/* Only when the prompt above isn't already asking — otherwise
-                the same offer would appear twice on one screen. */}
-            {!showTourPrompt && onStartTour && (
-              <button className="dash-link" onClick={canResumeTour ? onResumeTour : onStartTour}>
-                {canResumeTour ? "…or pick the tour back up" : "…or walk through it with a guided tour"}
+            {/* Only when nothing above is already asking — the first-run
+                prompt and the resume card both carry this offer, and three
+                invitations to the same tour on one screen is nagging. */}
+            {!showTourPrompt && !canResumeTour && onStartTour && (
+              <button className="dash-link" onClick={onStartTour}>
+                …or walk through it with a guided tour
               </button>
             )}
           </div>

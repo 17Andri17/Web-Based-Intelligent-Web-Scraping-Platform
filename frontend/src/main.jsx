@@ -4,7 +4,10 @@ import io from "socket.io-client";
 import { useWorkflow, findStepLocation, getContainer } from "./workflow/useWorkflow";
 import { createAction, createControl } from "./workflow/stepFactory";
 import { ACTION_TYPES } from "./actions/actionTypes";
-import { CONTROL_TYPES } from "./workflow/controlDefinitions";
+import { CONTROL_TYPES, controlDefinitions } from "./workflow/controlDefinitions";
+import {
+  stepsForCurrentPage, paginationChoices, stepsForChoice, wrapStepsInPagination,
+} from "./workflow/paginationWrap";
 import WorkflowPanel from "./components/WorkflowPanel";
 import ElementInspector, { ForEachContextBanner } from "./components/ElementInspector";
 import ExecutionPanel from "./components/ExecutionPanel";
@@ -22,6 +25,9 @@ import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { ConfirmProvider, useConfirm } from "./components/ConfirmDialog";
 import useDialog from "./components/useDialog";
 import AuthScreen from "./auth/AuthScreen";
+import {
+  ForgotPasswordScreen, ResetPasswordScreen, VerifyEmailScreen, VerifyEmailBanner,
+} from "./auth/AuthFlows";
 import WorkflowsMenu from "./workflows/WorkflowsMenu";
 import CustomActionsMenu from "./customActions/CustomActionsMenu";
 import ProxiesMenu from "./proxies/ProxiesMenu";
@@ -29,10 +35,20 @@ import ApiKeysMenu from "./apiKeys/ApiKeysMenu";
 import WebhooksMenu from "./webhooks/WebhooksMenu";
 import NotificationsMenu from "./components/NotificationsMenu";
 import SettingsMenu from "./components/SettingsMenu";
+import BillingMenu from "./billing/BillingMenu";
+import AdminPanel from "./admin/AdminPanel";
+import AccountMenu from "./auth/AccountMenu";
+import LandingPage from "./marketing/LandingPage";
+import { RouterProvider, useRouter } from "./router";
+import DebugWindow from "./debug/DebugWindow";
 import RunInputsDialog from "./components/RunInputsDialog";
 import PerformanceSettings from "./components/PerformanceSettings";
 import SelectorDebugger from "./components/SelectorDebugger";
-import { API_BASE, customActionsApi, workflowsApi, aiApi, runsApi } from "./api/client";
+// `tourApi` from the client is the SERVER-side housekeeping for the tour
+// (delete the practice workflow). Aliased so it can't be confused with the
+// in-component `tourApi` object, which is what the tour's steps drive the UI
+// with — two very different things that would otherwise share a name.
+import { API_BASE, customActionsApi, workflowsApi, aiApi, runsApi, tourApi as tourApiClient } from "./api/client";
 import { useMediaQuery, HEADER_COMPACT_QUERY } from "./utils/useMediaQuery";
 import { getThemePreference, applyTheme, onSystemThemeChange } from "./utils/theme";
 import { unresolveVars, rawUrlForCurrentPage } from "./utils/urlVars";
@@ -183,6 +199,23 @@ function treeHasStepType(arr, type) {
   return false;
 }
 
+// First step anywhere in the tree matching `pred`, or null. Steps nest inside
+// control blocks (a pagination loop's body, an If's branches), so anything
+// asking "does this workflow contain X" has to look past the top level.
+function findStepInTree(arr, pred) {
+  for (const s of arr || []) {
+    if (!s || typeof s !== "object") continue;
+    if (pred(s)) return s;
+    for (const key of ["body", "then", "else", "try", "catch"]) {
+      if (Array.isArray(s[key])) {
+        const hit = findStepInTree(s[key], pred);
+        if (hit) return hit;
+      }
+    }
+  }
+  return null;
+}
+
 // Every NAVIGATE url anywhere in the workflow tree (the pinned start step plus
 // any recorded mid-flow navigations), templates included. Interpolated urls
 // like `{{url}}/reviews` are kept here and resolved against the variables'
@@ -211,6 +244,17 @@ function collectNavigateUrls(steps) {
 // should land: right after the start NAVIGATE, behind any setup steps already
 // attached there — so they stack in arrival order and stay glued to the
 // navigation they belong to.
+// How a step should be named back to the user in prose. Its own label if it
+// has one, otherwise the type in plain words — so a dialog can say
+// «Move "Extract list" inside» rather than «Move EXTRACT_LIST inside».
+function stepLabel(step) {
+  if (!step) return "that step";
+  const raw = (step.label || "").trim();
+  if (raw) return raw;
+  const words = String(step.type || "step").replace(/_/g, " ").toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function stickyInsertIndex(root) {
   if (!root?.length || root[0]?.type !== "NAVIGATE") return 0;
   let i = 1;
@@ -253,15 +297,75 @@ async function writeClipboard(text) {
   }
 }
 
+/* Routing table.
+
+   Five paths: / and /pricing are public, /login is the auth screen, /app is
+   the product, and /auth/callback is where the OAuth flow returns.
+
+   The marketing page stays at / for signed-in visitors too — it is the page
+   people share, and redirecting an account holder away from it makes the
+   same link behave differently depending on who opens it. The nav adapts
+   instead (see LandingPage's Nav).
+
+   /auth/callback is transient: AuthContext has already consumed the token
+   from the URL fragment by the time this renders, so the only job left is to
+   get out of the way. */
 function App() {
   const { user, token, loading: authLoading, logout } = useAuth();
+  const { path, navigate } = useRouter();
 
-  if (authLoading) {
-    return <div className="auth-loading">Connecting…</div>;
-  }
-  if (!user || !token) {
-    return <AuthScreen />;
-  }
+  const isPublic = path === "/" || path === "/pricing";
+  const wantsApp = path.startsWith("/app");
+  /* The debug window, opened by the Run menu into a window of its own. It is
+     addressed by run id rather than by workflow: what it watches is one
+     execution, which may well outlive the tab that started it. */
+  const debugRunId = path.startsWith("/debug/") ? Number(path.slice("/debug/".length)) : null;
+  /* Reached by clicking a link in an e-mail, so they must render whether or
+     not this browser holds a session — the mail client is often not the
+     browser that's signed in. The token in the URL is the proof, not a
+     cookie. */
+  const TOKEN_SCREENS = {
+    "/forgot": ForgotPasswordScreen,
+    "/reset-password": ResetPasswordScreen,
+    "/verify-email": VerifyEmailScreen,
+  };
+  const TokenScreen = TOKEN_SCREENS[path];
+
+  useEffect(() => {
+    if (authLoading) return;
+    const signedIn = !!(user && token);
+
+    // The OAuth landing is transient in both directions: with a token we go
+    // to the app, without one back to sign-in with whatever error came back.
+    if (path === "/auth/callback") {
+      navigate(signedIn ? "/app" : "/login", { replace: true });
+      return;
+    }
+    // A signed-in user has no reason to see the sign-in screen.
+    if (signedIn && path === "/login") { navigate("/app", { replace: true }); return; }
+    // …and a signed-out one cannot see the app.
+    if (!signedIn && wantsApp) { navigate("/login", { replace: true }); return; }
+  }, [authLoading, user, token, path, wantsApp, navigate]);
+
+  /* Before the auth-loading gate: the debug window renders its own connecting
+     and signed-out states, and sending it to /login would replace the window
+     the user just opened rather than opening a page they can act on. */
+  if (debugRunId !== null) return <DebugWindow runId={debugRunId} />;
+
+  // Marketing pages render for everyone, immediately — they must not wait on
+  // a session check, because most visitors don't have one and a spinner on
+  // the landing page is a bounced visitor.
+  if (isPublic) return <LandingPage signedIn={!!(user && token)} />;
+
+  // Same reasoning: someone clicking a reset link has, by definition, lost
+  // their way in — gating the screen on a session check they can't satisfy
+  // would be a dead end.
+  if (TokenScreen) return <TokenScreen />;
+
+  if (authLoading) return <div className="auth-loading">Connecting…</div>;
+
+  if (!user || !token) return <AuthScreen />;
+
   return <AppShell user={user} token={token} onLogout={logout} />;
 }
 
@@ -334,6 +438,9 @@ function AppShell({ user, token, onLogout }) {
   const [manualSelResult, setManualSelResult] = useState(null);
   const [toast,           setToast]           = useState(null);   // { msg, type }
   const toastTimerRef = useRef(null);
+  // The debug window between being opened (during the click, so the pop-up
+  // blocker allows it) and being pointed at the run it is going to watch.
+  const debugWindowRef = useRef(null);
   // Click-to-teach cookie-banner prompt (see browser/consent.js): when the
   // user manually dismisses a banner the auto-detection missed — in ANY
   // mode, including plain navigation — the page reports the clicked control
@@ -697,6 +804,9 @@ function AppShell({ user, token, onLogout }) {
   // ── API keys (public /v1 API credentials) ────────────────────────────────
   const [apiKeysOpen, setApiKeysOpen] = useState(false);
   const [webhooksOpen, setWebhooksOpen] = useState(false);
+  const [billingOpen, setBillingOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   // Run-with-inputs / bulk runs (background, via the API worker queue).
   const [runMenuOpen, setRunMenuOpen] = useState(false);
   const [runInputsOpen, setRunInputsOpen] = useState(false);
@@ -1137,6 +1247,28 @@ function AppShell({ user, token, onLogout }) {
     // Server auto-creates a workflow row when none was passed; learn its id
     // so subsequent runs / history / schedule actions know which workflow
     // this draft belongs to.
+    /* ── Debug Mode ───────────────────────────────────────────────────────
+       The window itself was opened during the click that started the run (see
+       handleRun) — a window.open() from inside a socket handler is not a user
+       gesture and pop-up blockers stop it. It has been sitting on a waiting
+       screen since; this is the run id it was waiting for.
+
+       Sent as a real navigation rather than postMessage so the window ends up
+       at /debug/<id>: it can then be refreshed, bookmarked and reopened, which
+       a window that only ever knew its run id in memory could not. */
+    socket.on("debugStarted", ({ runId }) => {
+      const win = debugWindowRef.current;
+      debugWindowRef.current = null;
+      if (win && !win.closed) { try { win.location.replace(`/debug/${runId}`); } catch (_) {} }
+    });
+    socket.on("debugRefused", ({ reason }) => {
+      const win = debugWindowRef.current;
+      debugWindowRef.current = null;
+      // Don't leave a window waiting for a run that is never going to start.
+      if (win && !win.closed) { try { win.close(); } catch (_) {} }
+      showToast(reason || "Debug run refused", "error");
+    });
+
     socket.on("workflowAutoCreated", ({ id, name }) => {
       setCurrentWorkflowId(id);
       // Use the functional setter so we don't capture a stale value from
@@ -2206,9 +2338,66 @@ function AppShell({ user, token, onLogout }) {
     if (listPickStepId && !findStepLocation(steps, listPickStepId)) handleStopListPick();
   }, [steps, listPickStepId, handleStopListPick]);
 
+  /* ── Adding a pagination loop ────────────────────────────────────────────
+     A pagination container runs whatever is INSIDE it once per page, so an
+     empty one turns pages and collects nothing. That used to be the default:
+     the block was appended AFTER the extraction steps it was meant to wrap,
+     and the user had to notice and drag them in. People who didn't notice got
+     a scraper that quietly returned page one — the worst kind of failure,
+     because it looks like it worked.
+
+     So we ask once, at the only moment the answer is obvious. Which steps are
+     on offer, and when the question is worth asking at all, is decided in
+     workflow/paginationWrap.js. */
+  const addPaginationStep = useCallback(async (step) => {
+    const candidates = stepsForCurrentPage(stepsRef.current || []);
+    const choices = paginationChoices(candidates, stepLabel);
+
+    // Dismissing (Escape, backdrop) is not a third answer — it means "just
+    // add it", which is exactly what this did before it asked anything.
+    const pick = choices
+      ? await confirm({
+          title: "What should run on each page?",
+          message: "This block turns the pages. The steps inside it are the ones that repeat — an empty loop collects nothing.",
+          choices,
+        })
+      : "none";
+    const move = stepsForChoice(pick, candidates);
+
+    const { steps: nextSteps, bodyLength } = wrapStepsInPagination(
+      stepsRef.current || [], step, move);
+    setSteps(nextSteps);
+
+    // Point new steps at the END of the loop body, after whatever was just
+    // moved in — inserting ahead of the extraction step would be backwards.
+    setInsertTarget({ type: "inside", stepId: step.id, index: bodyLength });
+    setPaginationOpen(false);
+    if (move.length) {
+      showToast(`✓ Pagination added — ${move.length} step${move.length === 1 ? "" : "s"} now run on every page`, "success");
+    }
+  }, [confirm, setSteps, showToast]);
+
   // ── Run / Download / Cancel ───────────────────────────────────────────────
-  const handleRun = () => {
+  const handleRun = (opts = {}) => {
     if (!socketRef.current || steps.length === 0) return;
+    const debug = !!opts.debug;
+
+    /* Open the debug window HERE, inside the click. It has to be a user
+       gesture or the pop-up blocker stops it, and the run id it needs doesn't
+       exist yet — so it opens on a waiting screen and is pointed at the run a
+       moment later, when `debugStarted` arrives.
+
+       If it was blocked, don't start the run at all: a debug run parks on its
+       first step and only a window can release it, so one without a window is
+       a browser held open until the abandonment sweep reclaims it. */
+    if (debug) {
+      const win = window.open("/debug/starting", "scrapient-debug", "width=1400,height=900");
+      if (!win) {
+        showToast("Allow pop-ups for this site to use debug mode", "error");
+        return;
+      }
+      debugWindowRef.current = win;
+    }
     setExecPanelOpen(true);
     setExecStatus("idle");
     setExecLogs([]);
@@ -2217,11 +2406,24 @@ function AppShell({ user, token, onLogout }) {
     // Pass workflowId when the user has a saved workflow loaded so the run
     // is recorded against it. If the workflow hasn't been saved yet, the
     // backend will auto-create a draft and emit `workflowAutoCreated`.
+    //
+    // `demo` marks the guided tour's practice run. The backend then hangs it
+    // off a hidden workflow instead of saving the user a draft, doesn't count
+    // it against their plan's run allowance, and doesn't let it fire their
+    // webhooks or e-mails. Teaching someone the product should not cost them
+    // a run, and should not leave a scraper on their home screen.
+    //
+    // `debug` steps through the run in a window of its own, with a live view
+    // of the browser doing the work. The window is opened from the
+    // `debugStarted` event rather than here, because it is addressed by run id
+    // and that id doesn't exist until the backend has created the row.
     socketRef.current.emit("executeWorkflow", {
       steps,
       meta: { ...sessionMetaRef.current, variables: workflowVariables, performance: perfSettings, execution: execSettings },
-      workflowId: currentWorkflowId || null,
+      workflowId: isTourWorkflow ? null : (currentWorkflowId || null),
       workflowName: currentWorkflowName || null,
+      demo: isTourWorkflow,
+      debug,
     });
   };
 
@@ -2483,31 +2685,69 @@ function AppShell({ user, token, onLogout }) {
   // backend origin (which serves /demo); same-origin in production.
   const demoUrl = `${API_BASE || window.location.origin}/demo/shop.html`;
   const basicsSteps = useMemo(() => makeBasicsTour({ demoUrl }), [demoUrl]);
-  // Live state the tour's step gates read.
+  /* Live state the tour's step gates and on-track hints read. Every field is
+     derived from the editor's real state — the tour has no private channel
+     telling it what the user did, so a step can only complete when the thing
+     it asked for has actually happened. */
   const _selText = `${selectedElement?.selector || ""} ${selectedElement?.commonSelector || ""}`;
+  const _selCrumbs = (selectedElement?.breadcrumb || []).map(b => b?.label || "").join(" ");
   const _selIsCard = /product-card/.test(_selText) || selectedElement?.tag === "article";
-  const _selIsHeading = /heading|(^|[^-])\bh1\b/.test(_selText) || selectedElement?.tag === "h1";
+  // Selected something INSIDE a product (its name, its price) rather than the
+  // product itself. This is the one wrong turn the walkthrough genuinely
+  // expects, and why the "select the whole product" hint exists.
+  const _selInsideCard = !!selectedElement && !_selIsCard && /product-card/.test(_selCrumbs);
+  // Searched through the whole tree, not just the top level: adding pagination
+  // offers to move the extraction step INSIDE the loop, and a tour step must
+  // not decide the user has undone their work just because it moved a level
+  // down — which is precisely what the tour told them to do.
+  const _listStep = findStepInTree(steps, s => s.type === "EXTRACT_LIST" || s.type === "COLLECT_LIST");
+  const _listFields = _listStep?.params?.fields || {};
   const tourState = {
     mode,
     pageUrl: currentPageUrl || "",
+    onDemoSite:  /\/demo\/shop\.html/.test(currentPageUrl || ""),
     onDemoBase:  /\/demo\/shop\.html/.test(currentPageUrl || "") && !/[?&]category=/.test(currentPageUrl || ""),
     onDemoAudio: /[?&]category=audio/.test(currentPageUrl || ""),
     onDifferentPage,                       // the orange "back to start" button is showing
     selection: selectedElement,
     selHasSingle: !!(selectedElement && !selectedElement.isMultiSelection),
     selIsCard: _selIsCard,
-    selIsHeading: _selIsHeading,
+    selInsideCard: _selInsideCard,
     selMultiCards: !!(selectedElement && selectedElement.isMultiSelection) && (selectedElement.matchCount || 0) > 1,
     stepTypes: steps.map(s => s.type),
-    hasExtractText: steps.some(s => s.type === "EXTRACT_TEXT"),
-    hasExtractList: steps.some(s => s.type === "EXTRACT_LIST" || s.type === "COLLECT_LIST"),
-    hasPaginate: steps.some(s => /^PAGINATE_/.test(s.type)),
+    hasExtractList: !!_listStep,
+    hasPaginate: !!findStepInTree(steps, s => /^PAGINATE_/.test(s.type || "")),
+    /* The stock column the stubbed demo AI result deliberately leaves out, so
+       the tour can have the user add one by hand and see that they are not at
+       the model's mercy. Matched on the field's NAME or its SELECTOR, because
+       picking it off the page names it from the markup. */
+    hasStockField: Object.entries(_listFields).some(([name, spec]) => {
+      const sel = typeof spec === "string" ? spec : (spec?.selector || "");
+      return /stock/i.test(name) || /stock/i.test(sel);
+    }),
+    listFieldPickActive: !!listPickStepId,
+    /* The rating arrives as "★ 3.0 out of 5" — a number wearing decoration.
+       Any clean-up step on it counts, not specifically the substring the tour
+       suggests: someone who reaches for "Extract number" instead has learned
+       the lesson better, and being told they did it wrong would be absurd. */
+    ratingCleaned: (() => {
+      const spec = _listFields.rating;
+      const ops = spec && typeof spec === "object" ? spec.transforms : null;
+      return Array.isArray(ops) && ops.length > 0;
+    })(),
     paginationSuggested: Array.isArray(paginationSuggestions) && paginationSuggestions.length > 0,
+    paginationDetecting,
     activeTab, sidebarTab, paginationOpen,
     execDone: !!execRunId || execStatus === "done",
   };
   // Map a demo element's page rect (CSS px) to on-screen coords over the canvas
   // — inverse of scaled(). Lets the tour spotlight elements on the pixel stream.
+  /* Clipped to the canvas, and null once nothing of it is left. The page is a
+     video feed inside a box: an element scrolled out of view still reports a
+     position, and that position lands wherever the arithmetic puts it —
+     including on top of the toolbar above the canvas. Anything positioned
+     from this must be told "not visible" rather than handed coordinates for
+     something the user cannot see. */
   const mapPageRectToScreen = (pr) => {
     const c = canvasRef.current;
     if (!c || !pr) return null;
@@ -2515,14 +2755,70 @@ function AppShell({ user, token, onLogout }) {
     const vw = pr.vw || viewportCssRef.current?.width || c.width || 1;
     const vh = pr.vh || viewportCssRef.current?.height || c.height || 1;
     const sx = r.width / vw, sy = r.height / vh;
-    return { left: r.left + pr.x * sx, top: r.top + pr.y * sy, width: pr.width * sx, height: pr.height * sy };
+    const left = r.left + pr.x * sx, top = r.top + pr.y * sy;
+    const l = Math.max(left, r.left), t = Math.max(top, r.top);
+    const rt = Math.min(left + pr.width * sx, r.right);
+    const b  = Math.min(top + pr.height * sy, r.bottom);
+    if (rt - l < 4 || b - t < 4) return null;   // scrolled out of the feed
+    return { left: l, top: t, width: rt - l, height: b - t };
   };
+  /* What the tour is allowed to do to the app. Two kinds of thing live here:
+     staging (put the user in front of the control the next step talks about)
+     and REPAIR — the one-click fixes behind a step's hint, and the undo that
+     makes Back a real rollback rather than a rewound counter. */
   const tourApi = {
     prefillUrl: (u) => setUrlInput(u),
     goStream: () => setActiveTab("stream"),
     showWorkflow: () => setActiveTab("workflow"),
+    showData: () => setActiveTab("data"),
     closePagination: () => setPaginationOpen(false),
     openInspector: () => { setShowSidebar(true); setSidebarTab("inspector"); },
+    setMode: (m) => changeMode(m),
+    // Reopen the practice shop's front page — the way out of "I clicked a
+    // link and now I'm somewhere the next step doesn't expect".
+    goDemoStart: () => { setUrlInput(demoUrl); performNavigate(demoUrl); },
+    // Step out of the thing the user clicked into the element that contains
+    // it. On this page that turns "I selected the product's name" into "I
+    // selected the product", which is the correction the tour offers most.
+    selectParent: () => handleSelectAncestor(1),
+    // Reopen the fields editor of the list step the tour built. Searched
+    // through the tree, since adding pagination may have nested it.
+    openListEditor: () => {
+      const list = findStepInTree(stepsRef.current || [],
+        s => s.type === "EXTRACT_LIST" || s.type === "COLLECT_LIST");
+      if (list) openListStepEditor(list.id);
+    },
+    // Undo for the clean-up step: strip a field's transform pipeline back off.
+    clearFieldTransforms: (fieldName) => {
+      const list = findStepInTree(stepsRef.current || [],
+        s => s.type === "EXTRACT_LIST" || s.type === "COLLECT_LIST");
+      const spec = list?.params?.fields?.[fieldName];
+      if (!spec || typeof spec !== "object") return;
+      const { transforms, split, ...rest } = spec;
+      void transforms; void split;
+      updateParamsByIdRef.current?.(list.id, {
+        fields: { ...list.params.fields, [fieldName]: rest },
+      });
+    },
+    /* Undo support: drop every top-level step matching these types (strings
+       or regexes). The tour's workflow is flat and built entirely by the
+       tour, so removing by type is unambiguous — there is nothing of the
+       user's in here to catch by accident.
+
+       Anything the removed step CONTAINED is lifted back out rather than
+       deleted with it. Undoing "add pagination" has to give back the loop's
+       body, because that body is the extraction step from two steps earlier —
+       taking that away too would punish the user for pressing Back. */
+    removeStepsOfType: (types) => {
+      const list = Array.isArray(types) ? types : [types];
+      const matches = (t) => list.some(m => (m instanceof RegExp ? m.test(t) : m === t));
+      setSteps(prev => prev.flatMap(s => {
+        if (!matches(s.type)) return [s];
+        const def = controlDefinitions[s.type];
+        return (def?.branches || []).flatMap(b => s[b.key] || []);
+      }));
+      setSidebarExpandStepId(null);
+    },
     // Ensure a pinned NAVIGATE step at `url` is step[0], so the workflow has a
     // start URL and the orange "back to start" button appears once the user
     // browses away. Idempotent.
@@ -2678,6 +2974,10 @@ function AppShell({ user, token, onLogout }) {
     }))) return;
     const resuming = !!opts.resume;
     const saved = resuming ? loadTourProgress(draftScope) : null;
+    // Starting over means starting over: throw away the hidden workflow the
+    // last attempt ran against, so a restarted tour can't inherit an old
+    // run's results. A resumed tour keeps it — that's the point of resuming.
+    if (!resuming) tourApiClient.clearDemo();
     // resetWorkflow clears the draft and the tour flag; re-set the flag after
     // it so the session is marked tour-derived from here on.
     resetWorkflow();
@@ -2705,17 +3005,31 @@ function AppShell({ user, token, onLogout }) {
     setTourOpen(true);
   }, [confirm, hasUnsavedWork, draftScope, resetWorkflow, setSteps, demoUrl, performNavigate]);
 
-  // Finished the last step — the walkthrough is done, so drop the saved
-  // position and stop offering it.
+  /* Finished the last step. Everything the walkthrough made now goes: the
+     saved position, the practice scraper in the editor, and the hidden
+     workflow (with its run, logs and results) on the server. What is left
+     behind is one fact — this user has done the tour — which is all the home
+     screen needs in order to offer a replay instead of a first-run nudge.
+
+     Clearing the editor is deliberate rather than tidy-minded: the practice
+     scraper points at a shop that does not exist, so leaving it loaded would
+     put a scraper nobody can use in the "currently editing" slot, and invite
+     someone to save it. The last step of the tour says this will happen. */
   const finishTour = useCallback(() => {
     setTourOpen(false);
     clearTourProgress(draftScope);
     setTourProgress(null);
     saveTourPrefs(draftScope, { completed: true });
     setTourPrefs(loadTourPrefs(draftScope));
-  }, [draftScope]);
+    tourApiClient.clearDemo();
+    resetWorkflow();
+    setIsTourWorkflow(false);
+    setDashboardOpen(true);
+    showToast("✓ Tour complete — the practice scraper has been cleared. Build a real one whenever you're ready.", "success");
+  }, [draftScope, resetWorkflow, showToast]);
 
-  // Exited early — keep the position so the dashboard can offer "Resume".
+  // Exited early — keep the position AND the hidden workflow, so "Resume"
+  // picks up exactly where they stopped rather than restarting the run.
   const exitTour = useCallback(() => setTourOpen(false), []);
 
   const dismissTourPrompt = useCallback(() => {
@@ -2897,6 +3211,13 @@ function AppShell({ user, token, onLogout }) {
                     if (!currentWorkflowId) { showToast("Save this workflow first to run it in bulk", "error"); setWorkflowsOpen(true); return; }
                     setRunInputsOpen(true);
                   }}>Bulk run from a list…</button>
+                  {/* Step through the run in its own window, watching the
+                      browser as it works — for the pages where "it captured
+                      nothing" isn't enough to go on. */}
+                  <button className="item" disabled={isRunDisabled} onClick={() => {
+                    setRunMenuOpen(false);
+                    handleRun({ debug: true });
+                  }}>Debug run…</button>
                 </div>
               </>
             )}
@@ -2937,7 +3258,19 @@ function AppShell({ user, token, onLogout }) {
                   <button className="item" onClick={() => { setUserMenuOpen(false); setProxiesOpen(true); }}>Proxy…</button>
 
                   <div className="user-popover-sep" />
+                  <button className="item" onClick={() => { setUserMenuOpen(false); setBillingOpen(true); }}>
+                    Plan &amp; usage
+                    {/* The plan is worth showing at rest, not just inside the
+                        dialog — it's the fastest way to answer "why can't I
+                        schedule this?" without opening anything. */}
+                    {user?.plan?.name && <span className="user-popover-badge">{user.plan.name}</span>}
+                  </button>
                   <button className="item" onClick={() => { setUserMenuOpen(false); setSettingsOpen(true); }}>Settings…</button>
+                  {/* Rendered only for admins. The server enforces regardless —
+                      every /api/admin route re-reads is_admin from the DB. */}
+                  {user?.isAdmin && (
+                    <button className="item" onClick={() => { setUserMenuOpen(false); setAdminOpen(true); }}>Admin…</button>
+                  )}
                   <button className="item danger" onClick={() => { setUserMenuOpen(false); onLogout(); }}>Sign out</button>
                 </div>
               </>
@@ -2947,6 +3280,11 @@ function AppShell({ user, token, onLogout }) {
       </header>
 
       {/* ── Tabs ──────────────────────────────────────────────────────────── */}
+      {/* Directly under the header, above the tabs: high enough to be seen,
+          not so high it displaces the product. Renders nothing at all once the
+          address is confirmed, or if the account has no address yet. */}
+      <VerifyEmailBanner onOpenAccount={() => setAccountOpen(true)} />
+
       <div className="tab-bar">
         <button className={`tab-btn ${activeTab === "stream" ? "active" : ""}`} onClick={() => setActiveTab("stream")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -3511,14 +3849,12 @@ function AppShell({ user, token, onLogout }) {
           }}
           onClose={() => { setPaginationOpen(false); setPaginationManualWaiting(false); socketRef.current?.emit("resetSelection"); }}
           onAdd={(step, pagType) => {
-            addStep(step);
             // Native pagination containers run their body once per page (or,
             // for infinite scroll, once the page is fully loaded). Either way
-            // the user's extraction steps belong INSIDE the container, so we
-            // point the insert target there regardless of the detected type.
+            // the user's extraction steps belong INSIDE the container — which
+            // is what addPaginationStep offers to do for them.
             void pagType;
-            setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
-            setPaginationOpen(false);
+            addPaginationStep(step);
           }}
           onManualButton={() => {
             setPaginationOpen(false);        // hide modal so browser is clickable
@@ -3527,12 +3863,9 @@ function AppShell({ user, token, onLogout }) {
           }}
           onManualInfinite={() => {
             // Drop in a native Infinite Scroll container — the scroll/stop
-            // logic lives in codegen, so the user just adds their extraction
-            // steps inside it.
-            const step = createControl(CONTROL_TYPES.PAGINATE_SCROLL);
-            addStep(step);
-            setInsertTarget({ type: 'inside', stepId: step.id, index: 0 });
-            setPaginationOpen(false);
+            // logic lives in codegen, so all that's left is deciding which
+            // steps run once the page has finished loading.
+            addPaginationStep(createControl(CONTROL_TYPES.PAGINATE_SCROLL));
           }}
         />
       )}
@@ -3715,6 +4048,27 @@ function AppShell({ user, token, onLogout }) {
         showToast={showToast}
       />
 
+      {/* ── Account (e-mail, password, connected sign-in methods) ─────────── */}
+      <AccountMenu
+        open={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        showToast={showToast}
+      />
+
+      {/* ── Plan & usage (what you're on, what you've used, upgrade) ─────── */}
+      <BillingMenu
+        open={billingOpen}
+        onClose={() => setBillingOpen(false)}
+        showToast={showToast}
+      />
+
+      {/* ── Admin (operator tools; the router itself requires admin) ──────── */}
+      <AdminPanel
+        open={adminOpen}
+        onClose={() => setAdminOpen(false)}
+        showToast={showToast}
+      />
+
       {/* ── Settings (account-level hub) ─────────────────────────────────── */}
       <SettingsMenu
         open={settingsOpen}
@@ -3726,6 +4080,8 @@ function AppShell({ user, token, onLogout }) {
         onOpenApiKeys={() => setApiKeysOpen(true)}
         onOpenWebhooks={() => setWebhooksOpen(true)}
         onOpenNotifications={() => setNotificationsOpen(true)}
+        onOpenAccount={() => setAccountOpen(true)}
+        accountNeedsAttention={!user?.email || !user?.emailVerified}
       />
 
       {/* ── E-mail alerts (failures + change monitoring, without a webhook) ── */}
@@ -3786,7 +4142,7 @@ function AppShell({ user, token, onLogout }) {
       {/* ── Dashboard (landing screen) ──────────────────────────────────────── */}
       <Dashboard
         open={dashboardOpen}
-        userName={user.username}
+        user={user}
         onNewScrape={async () => {
           if (hasUnsavedWork && !(await confirm({
             title: "Start a new scraper?",
@@ -3808,6 +4164,7 @@ function AppShell({ user, token, onLogout }) {
         }}
         onStartTour={() => { startTour(); }}
         onResumeTour={tourProgress ? () => { startTour({ resume: true }); } : null}
+        onRestartTour={tourProgress ? () => { startTour(); } : null}
         tourProgress={tourProgress}
         tourCompleted={tourPrefs.completed}
         tourPromptDismissed={tourPrefs.promptDismissed}
@@ -3815,9 +4172,19 @@ function AppShell({ user, token, onLogout }) {
         onOpenWorkflow={openWorkflowById}
         onWatchRun={watchRun}
         onManageWorkflows={() => setWorkflowsOpen(true)}
+        /* The dashboard is drawn over the header, so its own top bar is the
+           only route to any of these from the home screen. */
+        onOpenBilling={() => setBillingOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenAdmin={user?.isAdmin ? () => setAdminOpen(true) : null}
+        onLogout={onLogout}
         showToast={showToast}
         reloadKey={dashboardOpen ? currentWorkflowId : null}
-        openWorkflow={steps.length > 0 ? {
+        /* The "currently editing" banner is for the user's OWN work. A tour in
+           progress is offered by the tour card instead, so the practice
+           scraper never shows up on the home screen as something they made —
+           and never as something they might be tempted to save. */
+        openWorkflow={steps.length > 0 && !isTourWorkflow ? {
           name: currentWorkflowName || "Untitled draft",
           stepCount: totalCount,
           saved: !!currentWorkflowId && !hasUnsavedWork,
@@ -3825,7 +4192,6 @@ function AppShell({ user, token, onLogout }) {
           // A draft recovered from local storage — worth saying so, since the
           // user didn't put it there in this session.
           restored: !!restoredDraftAt,
-          isTour: isTourWorkflow,
         } : null}
         onResumeEditing={resumeEditing}
       />
@@ -3951,12 +4317,16 @@ function SpinnerIcon() {
 // every load. Re-applying the stored value is a no-op when it's "system".
 applyTheme(getThemePreference(), { persist: false });
 
+// Router outermost: AuthProvider consumes the OAuth token from the URL on
+// mount, and App needs the current path to decide what to render.
 createRoot(document.getElementById("root")).render(
-  <AuthProvider>
-    {/* Above App so every screen — including the auth screen — can ask for a
-        confirmation without reaching for window.confirm. */}
-    <ConfirmProvider>
-      <App />
-    </ConfirmProvider>
-  </AuthProvider>
+  <RouterProvider>
+    <AuthProvider>
+      {/* Above App so every screen — including the auth screen — can ask for a
+          confirmation without reaching for window.confirm. */}
+      <ConfirmProvider>
+        <App />
+      </ConfirmProvider>
+    </AuthProvider>
+  </RouterProvider>
 );

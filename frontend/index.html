@@ -3,7 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Intelligent Web Scraping Platform</title>
+
+    <title>Scrapient — web scrapers that fix themselves</title>
+    <meta name="description" content="Build a web scraper by clicking on a live browser. When the site changes, Scrapient finds the break, verifies a fix against the page, and re-runs to prove the data came back. Free for one scraper." />
+
+    <!-- The mark as a data URI: the CSP on the hosted app blocks external
+         requests, and an inline favicon also avoids a round-trip on first
+         paint. Matches src/brand/ScrapientMark.jsx — update both together. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2.6' y='2.6' width='26.8' height='26.8' rx='5.5' fill='none' stroke='%2345b39b' stroke-width='2.2'/%3E%3Cpath d='M8.4 11.2h15.2M8.4 16h9.6M8.4 20.8h6' stroke='%2345b39b' stroke-width='2.2' stroke-linecap='round'/%3E%3Ccircle cx='23' cy='21.4' r='6.2' fill='%230c1413'/%3E%3Ccircle cx='23' cy='21.4' r='4.6' fill='none' stroke='%2345b39b' stroke-width='2.2'/%3E%3Cpath d='M20.9 21.4l1.5 1.5 2.8-2.9' fill='none' stroke='%2345b39b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+
+    <meta name="theme-color" content="#0c1413" />
+
+    <!-- Link previews. og:image is intentionally absent rather than pointing
+         at a file that doesn't exist yet — a broken image in a shared link is
+         worse than none. Add /og.png (1200x630) and its tag before launch. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Scrapient" />
+    <meta property="og:title" content="Scrapient — web scrapers that fix themselves" />
+    <meta property="og:description" content="Point and click on a live browser to build a scraper. When the site changes, it repairs itself — and shows you exactly what it changed and why." />
+    <meta property="og:url" content="https://www.scrapient.app/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Scrapient — web scrapers that fix themselves" />
+    <meta name="twitter:description" content="Point and click on a live browser to build a scraper. When the site changes, it repairs itself — and shows you exactly what it changed and why." />
+
+    <link rel="canonical" href="https://www.scrapient.app/" />
+
     <style>
       body {
         margin: 0;

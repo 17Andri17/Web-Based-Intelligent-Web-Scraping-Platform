@@ -91,6 +91,19 @@ async function startQueuedRun(runId, versionId = null) {
   `, [versionId, runId]);
 }
 
+/* Runs of the guided tour's practice workflow are not the user's run history —
+   the tour builds and runs a throwaway scraper on the bundled demo shop, and
+   the whole row is deleted when the walkthrough ends. Excluded from every
+   "show me my runs" listing so a tour in progress can't put a phantom card,
+   a phantom "run in progress" banner, or a phantom history entry in front of
+   the user. Listings that name a workflow id explicitly are exempt: the
+   caller already knows exactly which workflow it asked about.
+
+   Kept as a subquery rather than a JOIN so the SELECT column lists (which the
+   API serialisers depend on) stay exactly as they were. */
+const NOT_DEMO_RUN =
+  'workflow_id NOT IN (SELECT id FROM workflows WHERE is_demo = 1)';
+
 // Cursor-paginated run listing for the public API. Ordered by id DESC;
 // `beforeId` returns the page strictly older than that id (ids only ever
 // grow, so pages never shift under the caller the way offsets do).
@@ -98,6 +111,7 @@ async function listRunsForUserPage(userId, { limit = 20, workflowId = null, stat
   const where = ['user_id = ?'];
   const params = [userId];
   if (workflowId != null) { where.push('workflow_id = ?'); params.push(workflowId); }
+  else                    { where.push(NOT_DEMO_RUN); }
   if (status)             { where.push('status = ?');      params.push(status); }
   if (beforeId != null)   { where.push('id < ?');          params.push(beforeId); }
   params.push(limit);
@@ -199,7 +213,7 @@ async function finishRun(runId, patch) {
     'error_message', 'error_category', 'failed_step_id', 'failed_step_type',
     'failed_step_label', 'ai_summary', 'retry_count',
     'patched_steps_json', 'partial_results_json', 'rows_captured', 'progress_json',
-    'cancel_requested',
+    'cancel_requested', 'pages_fetched',
   ];
   const fields = Object.keys(patch).filter(k => allowed.includes(k));
   if (fields.length === 0) return;
@@ -230,7 +244,7 @@ async function listRunsForUser(userId, { limit = 50, workflowId = null } = {}) {
   }
   return db.all(`
     SELECT ${cols} FROM runs
-    WHERE user_id = ?
+    WHERE user_id = ? AND ${NOT_DEMO_RUN}
     ORDER BY started_at DESC
     LIMIT ?
   `, [userId, limit]);

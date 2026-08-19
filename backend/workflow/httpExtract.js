@@ -97,7 +97,16 @@ function httpEligibleSteps(steps) {
  * element yields null rather than an error". If the two ever diverged, the
  * verification step would be comparing two different definitions of correct.
  */
-function buildCodegenHttpExtractHelper({ timeoutMs = 30000, userAgent = null } = {}) {
+function buildCodegenHttpExtractHelper({ timeoutMs = 30000, userAgent = null, instrument = false } = {}) {
+  // Metering for the no-browser path. `__hxMeter` is declared here rather than
+  // reusing the pool helper's `__pagesFetched` directly because this helper is
+  // inlined BEFORE the pool helper in the generated script, and a `let` from a
+  // later block is in its temporal dead zone until then — `typeof` on it would
+  // throw rather than return 'undefined'. Assigning through a function called
+  // only at run time sidesteps the ordering entirely.
+  const meter = instrument
+    ? `    try { __pagesFetched++; console.log('PAGES_FETCHED:' + JSON.stringify({ pages: __pagesFetched })); } catch (_) {}\n`
+    : '';
   return `
 // ─── HTTP-first extraction (see backend/workflow/httpExtract.js) ───────────
 const __cheerio = require('cheerio');
@@ -118,7 +127,10 @@ async function __hxFetch(url, cookieHeader) {
     if (!res.ok) return null;
     const ct = String(res.headers.get('content-type') || '');
     if (ct && !/html|xml|text\\/plain/i.test(ct)) return null;
-    return await res.text();
+    // Counted only on success. A failed fetch returns null and the caller
+    // retries the item in the browser, where __meterPage counts the
+    // navigation — metering both would bill the same page twice.
+${meter}    return await res.text();
   } catch (_) {
     return null;
   } finally { clearTimeout(timer); }

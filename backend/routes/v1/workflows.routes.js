@@ -3,6 +3,7 @@
 const express = require('express');
 const workflowsRepo = require('../../db/repositories/workflows.repo');
 const usageRepo = require('../../db/repositories/usage.repo');
+const entitlements = require('../../services/entitlements.service');
 const runStore = require('../../services/runStore.service');
 const { sendApiError } = require('../../middleware/apiKeyAuth');
 const { serializeRun, serializeWorkflow, serializeWorkflowSummary } = require('../../utils/apiSerialize');
@@ -61,14 +62,29 @@ router.post('/:id/runs', async (req, res) => {
     if (err) return sendApiError(res, 400, 'invalid_inputs', err);
   }
 
-  // ── quota (monthly runs) ────────────────────────────────────────────────
-  const quota = Number(process.env.API_MONTHLY_RUN_QUOTA || 0);
-  if (quota > 0) {
-    const usage = await usageRepo.getForPeriod(req.user.id);
-    if (usage.runs_used >= quota) {
-      return sendApiError(res, 402, 'over_quota',
-        `Monthly run quota reached (${usage.runs_used}/${quota} for ${usage.period}). Quota resets next calendar month.`);
+  // ── plan + quota ────────────────────────────────────────────────────────
+  // The public API is itself a paid feature, so this checks two things: that
+  // the caller's plan includes API access at all, and that they're within
+  // their monthly run/page quota. Both come from their actual plan now, not
+  // the instance-wide API_MONTHLY_RUN_QUOTA env var.
+  //
+  // Checked HERE rather than relying on the pipeline's gate because this
+  // endpoint returns 202 and hands off to a background worker — by the time
+  // the pipeline runs there is no request left to answer with a 402.
+  try {
+    await entitlements.assertFeature(req.user.id, 'publicApi', 'The REST API');
+    await entitlements.assertCanRun(req.user.id);
+  } catch (err) {
+    if (err instanceof entitlements.EntitlementError) {
+      // 'over_quota' is the code third-party clients already handle
+      // (docs/API_REFERENCE.md); keep it for quota and use a distinct code
+      // for "your plan doesn't include this" so they can be told apart.
+      const code = err.code === 'quota_exceeded' ? 'over_quota'
+        : err.code === 'account_suspended' ? 'account_suspended'
+        : 'plan_required';
+      return sendApiError(res, err.status, code, err.message);
     }
+    throw err;
   }
 
   // ── idempotency ─────────────────────────────────────────────────────────

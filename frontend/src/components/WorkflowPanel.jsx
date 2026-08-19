@@ -1116,8 +1116,17 @@ function ControlBlock({ step, index, containerPath, depth, dragHandleProps, drag
                 )}
                 <div className="branch-body">
                   {userSteps.length === 0 ? (
-                    <div className="branch-empty">
-                      <span>{isLegacyPagination ? 'Drop your extraction steps here — they run once per page' : branch.emptyLabel}</span>
+                    /* An empty pagination loop is not an empty branch like any
+                       other — it is a scraper that turns every page and
+                       collects nothing, and it looks completely healthy while
+                       doing it. That deserves a warning, not the same muted
+                       italic hint an empty If branch gets. */
+                    <div className={`branch-empty ${isPagination ? "branch-empty--warn" : ""}`}>
+                      <span>
+                        {isPagination
+                          ? "⚠ Nothing runs on each page yet — this loop will turn the pages and collect nothing. Drag your extraction steps in here, or add them below."
+                          : branch.emptyLabel}
+                      </span>
                       <InsertRow containerPath={branchPath} index={0} onPickerOpen={onPickerOpen} isEnd />
                     </div>
                   ) : (

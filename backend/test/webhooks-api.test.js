@@ -39,8 +39,8 @@ async function req(method, pathname, { token, body } = {}) {
 async function main() {
   await db.init();
   await require('../db/migrate').run(db);
-  const user  = await db.get(`INSERT INTO users (username, password_hash) VALUES ('wh', 'x') RETURNING id`);
-  const other = await db.get(`INSERT INTO users (username, password_hash) VALUES ('whother', 'x') RETURNING id`);
+  const user  = await db.get(`INSERT INTO users (username, password_hash, plan) VALUES ('wh', 'x', 'business') RETURNING id`);
+  const other = await db.get(`INSERT INTO users (username, password_hash, plan) VALUES ('whother', 'x', 'business') RETURNING id`);
   const token = signToken({ sub: user.id, username: 'wh' });
   const otherToken = signToken({ sub: other.id, username: 'whother' });
 

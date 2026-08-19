@@ -35,6 +35,8 @@ const apiKeysRepo = require('../db/repositories/apiKeys.repo');
 const workflowsRepo = require('../db/repositories/workflows.repo');
 const { generateKey } = require('../services/apiKeys.service');
 const { signToken } = require('../middleware/auth');
+const entitlements = require('../services/entitlements.service');
+const { getPlan } = require('../config/plans');
 
 let BASE; // http://127.0.0.1:<port>
 let passed = 0;
@@ -68,8 +70,12 @@ async function main() {
   await db.init();
 
   // ── fixtures: user, API key, workflow with a declared variable ──────────
+  // On the 'pro' plan because the public API is a paid feature (config/plans.js).
+  // A free-plan user gets 402 plan_required on every trigger, which is correct
+  // behaviour but not what these tests are exercising — the free-plan refusal
+  // has its own case in the quota section below.
   const user = await db.get(
-    `INSERT INTO users (username, password_hash) VALUES ('apitester', 'x') RETURNING id`);
+    `INSERT INTO users (username, password_hash, plan) VALUES ('apitester', 'x', 'pro') RETURNING id`);
   const { key, keyHash, prefix } = generateKey();
   await apiKeysRepo.create({ userId: user.id, name: 'test key', keyHash, prefix });
 
@@ -186,13 +192,53 @@ async function main() {
     // 3 enqueued runs so far — the idempotent replay deliberately does NOT
     // increment usage (the caller retried, we didn't run anything twice).
     let r = await api('GET', '/v1/usage', { key });
-    ok('usage counts triggered runs', r.status === 200 && r.json.runs_used === 3 && r.json.plan === 'free');
-    ok('unlimited quota → null', r.json.runs_quota === null);
+    ok('usage counts triggered runs', r.status === 200 && r.json.runs_used === 3);
+    // Quota now comes from the caller's plan (config/plans.js) rather than the
+    // instance-wide API_MONTHLY_RUN_QUOTA env var, which reported the same
+    // number to every user regardless of what they paid.
+    ok('quota reflects the plan', r.json.plan === 'pro'
+      && r.json.runs_quota === getPlan('pro').limits.monthlyRuns);
 
-    process.env.API_MONTHLY_RUN_QUOTA = '3';
+    // Drive the account over quota via a per-user override rather than by
+    // enqueuing 3,000 runs. This exercises plan_overrides_json — the mechanism
+    // the admin panel uses to comp or cap an individual account.
+    await db.run(
+      `UPDATE users SET plan_overrides_json = ? WHERE id = ?`,
+      [JSON.stringify({ limits: { monthlyRuns: 3 } }), user.id]);
+    entitlements.invalidate(user.id);
+
     r = await api('POST', `/v1/workflows/${wf.id}/runs`, { key });
     ok('over quota → 402 over_quota', r.status === 402 && r.json.error.code === 'over_quota');
-    process.env.API_MONTHLY_RUN_QUOTA = '0';
+
+    await db.run(`UPDATE users SET plan_overrides_json = NULL WHERE id = ?`, [user.id]);
+    entitlements.invalidate(user.id);
+  }
+
+  // ── the API itself is a paid feature ────────────────────────────────────
+  console.log('plan gating');
+  {
+    // A free-plan account holding a valid API key must still be refused: the
+    // key authenticates, the plan is what authorises. This is the hole that
+    // previously let any account use the API for free.
+    const freeUser = await db.get(
+      `INSERT INTO users (username, password_hash) VALUES ('freeloader', 'x') RETURNING id`);
+    const freeKey = generateKey();
+    await apiKeysRepo.create({
+      userId: freeUser.id, name: 'free key',
+      keyHash: freeKey.keyHash, prefix: freeKey.prefix,
+    });
+    const freeWf = await workflowsRepo.create({
+      userId: freeUser.id, name: 'free wf', stepsJson: '[]', metaJson: null,
+    });
+
+    let r = await api('POST', `/v1/workflows/${freeWf.id}/runs`, { key: freeKey.key });
+    ok('free plan → 402 plan_required', r.status === 402 && r.json.error.code === 'plan_required');
+
+    // …but reading usage still works, so the account can see why it was
+    // refused and what it would need to upgrade to.
+    r = await api('GET', '/v1/usage', { key: freeKey.key });
+    ok('free plan can still read usage', r.status === 200 && r.json.plan === 'free');
+    ok('free quota is the free plan\'s', r.json.runs_quota === getPlan('free').limits.monthlyRuns);
   }
 
   // ── runs: list / get / logs / data / cancel ─────────────────────────────

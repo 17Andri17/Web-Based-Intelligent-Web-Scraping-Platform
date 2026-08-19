@@ -38,9 +38,62 @@ api.interceptors.response.use(
 );
 
 export const authApi = {
-  register: (username, password) => api.post("/api/auth/register", { username, password }).then(r => r.data),
-  login:    (username, password) => api.post("/api/auth/login",    { username, password }).then(r => r.data),
+  // Identity is the e-mail. `login` still accepts a bare username so the
+  // accounts that predate the email column can sign in — the server infers
+  // which was supplied from the '@'.
+  register: (email, password) => api.post("/api/auth/register", { email, password }).then(r => r.data),
+  login:    (email, password) => api.post("/api/auth/login",    { email, password }).then(r => r.data),
   me:       () => api.get("/api/auth/me").then(r => r.data),
+  setEmail: (email) => api.put("/api/auth/email", { email }).then(r => r.data),
+  setPassword: (currentPassword, newPassword) =>
+    api.put("/api/auth/password", { currentPassword, newPassword }).then(r => r.data),
+
+  // Password reset. `forgot` always resolves 200 with the same body whether
+  // or not the address exists — the UI must not try to infer anything from it.
+  forgot: (email) => api.post("/api/auth/forgot", { email }).then(r => r.data),
+  reset:  (token, newPassword) => api.post("/api/auth/reset", { token, newPassword }).then(r => r.data),
+
+  // E-mail verification. `verifyEmail` is unauthenticated — the link is
+  // clicked from a mail client that may not hold the session.
+  verifyEmail: (token) => api.post("/api/auth/verify-email", { token }).then(r => r.data),
+  resendVerification: () => api.post("/api/auth/verify-email/resend").then(r => r.data),
+  // Which sign-in providers this deployment has credentials for. The buttons
+  // are rendered from this rather than hard-coded, so a deploy without GitHub
+  // credentials doesn't show a button that dead-ends on the provider.
+  providers: () => api.get("/api/auth/oauth/providers").then(r => r.data.providers),
+  linked:   () => api.get("/api/auth/oauth/linked/list").then(r => r.data.linked),
+  unlink:   (provider) => api.delete(`/api/auth/oauth/linked/${provider}`).then(r => r.data),
+  // A full page navigation, not an XHR: the whole point is to hand the
+  // browser to the provider and be redirected back.
+  // `params` is only used by the dev provider, which takes the identity to
+  // sign in as; real providers ignore anything passed here.
+  startOAuth: (provider, params) => {
+    const qs = params ? `?${new URLSearchParams(params).toString()}` : "";
+    window.location.href = `${API_BASE}/api/auth/oauth/${provider}${qs}`;
+  },
+};
+
+// Plans, entitlements and (stubbed) checkout.
+export const billingApi = {
+  plans:    () => api.get("/api/billing/plans").then(r => r.data),
+  usage:    () => api.get("/api/billing/usage").then(r => r.data),
+  checkout: (plan) => api.post("/api/billing/checkout", { plan }).then(r => r.data),
+  cancel:   () => api.post("/api/billing/cancel").then(r => r.data),
+  resume:   () => api.post("/api/billing/resume").then(r => r.data),
+};
+
+// Admin-only. Every one of these 403s for a non-admin; the UI hides them, the
+// server is what actually enforces.
+export const adminApi = {
+  stats:  () => api.get("/api/admin/stats").then(r => r.data),
+  users:  (params) => api.get("/api/admin/users", { params }).then(r => r.data),
+  user:   (id) => api.get(`/api/admin/users/${id}`).then(r => r.data),
+  setPlan:      (id, body) => api.put(`/api/admin/users/${id}/plan`, body).then(r => r.data),
+  setStatus:    (id, body) => api.put(`/api/admin/users/${id}/status`, body).then(r => r.data),
+  setOverrides: (id, body) => api.put(`/api/admin/users/${id}/overrides`, body).then(r => r.data),
+  setAdmin:     (id, body) => api.put(`/api/admin/users/${id}/admin`, body).then(r => r.data),
+  remove:       (id) => api.delete(`/api/admin/users/${id}`).then(r => r.data),
+  audit:  (params) => api.get("/api/admin/audit", { params }).then(r => r.data),
 };
 
 // Account-level e-mail alerts. `available` reflects whether this instance has
@@ -165,6 +218,16 @@ export const apiKeysApi = {
   // after this call it can never be retrieved again, only revoked.
   create: (name) => api.post("/api/api-keys", { name }).then(r => r.data),
   revoke: (id) => api.delete(`/api/api-keys/${id}`).then(r => r.data),
+};
+
+/* The guided tour's practice scraper lives in a hidden workflow row so it can
+   actually run (logs, results, the Data tab — all of it needs a run to hang
+   off). It is never the user's work, so the walkthrough deletes it on the way
+   out and the account is left exactly as it was. Best-effort by design: the
+   row is invisible either way, so a failed cleanup is not worth an error in
+   the user's face — the next tour reuses the same row. */
+export const tourApi = {
+  clearDemo: () => api.delete("/api/tour/demo-workflow").then(r => r.data).catch(() => null),
 };
 
 export const runsApi = {

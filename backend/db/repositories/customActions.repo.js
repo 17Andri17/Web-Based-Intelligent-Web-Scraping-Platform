@@ -62,4 +62,10 @@ async function remove(id, userId) {
   return info.changes;
 }
 
-module.exports = { listForUser, getForUser, getManyByIds, existsForUser, create, update, remove };
+// Plan enforcement — see services/entitlements.service.js.
+async function countForUser(userId) {
+  const row = await db.get('SELECT COUNT(*) AS n FROM custom_actions WHERE user_id = ?', [userId]);
+  return row ? Number(row.n) : 0;
+}
+
+module.exports = { listForUser, getForUser, getManyByIds, existsForUser, create, update, remove, countForUser };

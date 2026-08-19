@@ -35,9 +35,20 @@ export default function SettingsMenu({
   open, onClose,
   themePref, onChooseTheme,
   onOpenCustomActions, customActionCount = 0,
-  onOpenApiKeys, onOpenWebhooks, onOpenNotifications,
+  onOpenApiKeys, onOpenWebhooks, onOpenNotifications, onOpenAccount,
+  accountNeedsAttention = false,
 }) {
   const rows = [
+    {
+      key: "account",
+      icon: "👤",
+      title: "Account",
+      detail: "How you sign in: your e-mail, your password, and any connected accounts.",
+      // Surfaces the one state worth chasing — an address that's missing or
+      // unconfirmed means no alerts and no way to recover a lost password.
+      badge: accountNeedsAttention ? "!" : null,
+      onOpen: onOpenAccount,
+    },
     {
       key: "actions",
       icon: "⚡",

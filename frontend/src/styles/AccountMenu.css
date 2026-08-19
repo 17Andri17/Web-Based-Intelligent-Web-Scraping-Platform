@@ -1,0 +1,183 @@
+/* ==================== ACCOUNT ==================== */
+
+.acct-modal {
+    max-width: 520px;
+    width: 100%;
+}
+
+/* ── Who you are ──────────────────────────────────────────────────────── */
+.acct-identity {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 16px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--border-default);
+}
+
+.acct-avatar {
+    width: 40px;
+    height: 40px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--accent-primary-fill, var(--accent-primary));
+    color: var(--text-on-accent, #fff);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 17px;
+}
+
+.acct-username {
+    font-size: 15px;
+    font-weight: 650;
+    color: var(--text-primary);
+}
+
+.acct-sub {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+    margin-top: 1px;
+}
+
+.acct-tag {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--tint-info-bg, rgba(88, 166, 255, 0.15));
+    color: var(--accent-primary);
+}
+
+/* ── Sections ─────────────────────────────────────────────────────────── */
+.acct-section {
+    padding: 18px 0;
+    border-bottom: 1px solid var(--border-default);
+}
+.acct-section:last-child { border-bottom: none; padding-bottom: 4px; }
+
+.acct-section h3 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--text-primary);
+}
+
+.acct-hint {
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    margin: 0 0 12px;
+}
+.acct-hint strong { color: var(--text-primary); }
+
+/* ── Forms ────────────────────────────────────────────────────────────── */
+.acct-form {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+}
+
+.acct-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.acct-form input {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 11px;
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+}
+.acct-form input:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+}
+
+.acct-btn {
+    flex: none;
+    padding: 9px 15px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    white-space: nowrap;
+    border-radius: var(--radius-md);
+    border: 1px solid transparent;
+    background: var(--accent-primary-fill, var(--accent-primary));
+    color: var(--text-on-accent, #fff);
+    cursor: pointer;
+    transition: filter 0.15s ease;
+}
+.acct-btn:hover:not(:disabled) { filter: brightness(1.12); }
+.acct-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.acct-btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+
+.acct-btn.ghost {
+    background: transparent;
+    color: var(--text-primary);
+    border-color: var(--border-default);
+}
+.acct-btn.ghost:hover:not(:disabled) { border-color: var(--accent-primary); }
+
+.acct-btn.small { padding: 5px 10px; font-size: 12px; }
+
+/* ── Verification state ───────────────────────────────────────────────── */
+.acct-chip {
+    align-self: flex-start;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+}
+.acct-chip.is-ok   { background: rgba(63, 185, 80, 0.15); color: var(--accent-success); }
+.acct-chip.is-warn { background: var(--tint-warn-bg, rgba(210, 153, 34, 0.15)); color: var(--accent-warning); }
+
+.acct-resend {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+
+.acct-note { font-size: 12px; }
+.acct-note.is-ok  { color: var(--accent-success); }
+.acct-note.is-err { color: var(--accent-danger); }
+
+/* ── Linked providers ─────────────────────────────────────────────────── */
+.acct-providers {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.acct-providers li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border-default);
+    font-size: 13px;
+    color: var(--text-primary);
+}
+.acct-providers li:last-child { border-bottom: none; }
+
+@media (max-width: 520px) {
+    .acct-row { flex-direction: column; }
+    .acct-btn { width: 100%; }
+}

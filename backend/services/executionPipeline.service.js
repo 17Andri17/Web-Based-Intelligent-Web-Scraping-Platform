@@ -9,11 +9,14 @@ const healing           = require('./healing.service');
 const healingStats      = require('./healingStats');
 const { checkCompiles } = require('./codeCheck');
 const llm               = require('./llm.service');
-const { generateCode, resolveExecution } = require('../workflow/workflowCodegen');
+const { generateCode, resolveExecution, resolvePerf } = require('../workflow/workflowCodegen');
 const webhookDispatcher = require('./webhookDispatcher.service');
 const emailNotifier     = require('./emailNotifier.service');
 const changeMonitor     = require('./changeMonitor.service');
 const runEvents         = require('./runEvents.service');
+const debugSessions     = require('./debugSession.service');
+const entitlements      = require('./entitlements.service');
+const usageRepo         = require('../db/repositories/usage.repo');
 const { buildFlowTree } = require('../workflow/workflowUtils');
 const sheetsDelivery    = require('./sheetsDelivery.service');
 const {
@@ -97,13 +100,76 @@ async function executeAndPersist(arg) {
   // Per-workflow reliability settings. Same resolver the code generator
   // uses, so the run and the script it runs can't disagree about them.
   const execCfg = resolveExecution(meta);
-  const maxConnectionRetries = execCfg.connectionRetries;
+
+  /* A debug run is a real run — metered, persisted, in the history like any
+     other — that a human is standing over, stepping through and watching a
+     live picture of (services/debugSession.service.js). Two things it must NOT
+     do, both for the same reason: anything that silently starts the workflow
+     over would strand the person watching.
+
+       • a retry respawns a FRESH child, and with it a fresh browser. The page
+         the user was looking at, their breakpoints' context, the pause they
+         were parked at — all gone, replaced by a run that is already several
+         steps ahead. Failing visibly is the whole point here.
+       • self-healing rewrites the very selector the user is trying to
+         understand, so the run they end up watching is no longer the one they
+         asked about.
+
+     Outbound side effects are suppressed further down for a third reason:
+     a half-stepped run is not a result anyone subscribed to. */
+  const isDebugRun = !!arg.debug;
+  const maxConnectionRetries = isDebugRun ? 0 : execCfg.connectionRetries;
   // Healing off = a DETERMINISTIC run: it fails rather than quietly
   // rewriting a selector. Wanted when the output feeds something
   // downstream, where a silent change is worse than a visible gap.
-  const healingEnabled = execCfg.healing;
+  const healingEnabled = execCfg.healing && !isDebugRun;
 
   const t0 = nowMs();
+  // Billable pages loaded by every attempt of this run. Tallied here rather
+  // than per-attempt because healing re-runs are part of the same run.
+  let pagesFetched = 0;
+
+  /* ── Quota gate ──────────────────────────────────────────────────────────
+     Every way to execute a workflow — the dashboard, the scheduler, a resume,
+     a shard, the public API — funnels through executeAndPersist, so this is
+     the one place a run can be refused. Previously quota lived only in
+     routes/v1/workflows.routes.js, which meant the entire dashboard ran
+     unmetered: a free account could run any workflow, any number of times,
+     simply by not using the API.
+
+     Deliberately BEFORE createRun: a refused run must not leave a runs row,
+     or the history fills with rows that never executed.
+
+     The API path is exempt here because it already checked and metered at
+     enqueue time (it has to — it returns 202 before this code runs, and a
+     202 followed by a silent quota failure is worse than a synchronous 402).
+     Counting again here would bill an API run twice.
+
+     The GUIDED TOUR is exempt too, and for a different reason: its run is a
+     demonstration on our own practice shop, not work the user asked for.
+     Charging a plan's monthly run allowance to teach someone the product —
+     and doing it before they have built anything of their own — would be
+     indefensible, and a free account whose allowance was already spent could
+     not take the tour at all. Demo runs are therefore neither gated nor
+     metered here or in the page counter below.
+     -------------------------------------------------------------------- */
+  const isAdoptedApiRun = !!arg.runId;
+  const isDemoRun = !!arg.demo;
+  if (!isAdoptedApiRun && !isDemoRun) {
+    try {
+      await entitlements.assertCanRun(userId);
+    } catch (err) {
+      if (err instanceof entitlements.EntitlementError) {
+        emit(callbacks, 'onQuotaExceeded', { code: err.code, message: err.message, ...err.meta });
+      }
+      throw err;
+    }
+    // Metered on admission, not on success. A run that starts and fails still
+    // consumed a browser and a slot; not counting it would let a free account
+    // burn unlimited infrastructure on workflows that happen to error.
+    await safeCall(() => usageRepo.incrementRuns(userId), null);
+  }
+
   // Record the workflow version this run executes (deduped by content) so run
   // history doubles as a restorable version timeline.
   const executedVersionId = await safeCall(
@@ -139,6 +205,30 @@ async function executeAndPersist(arg) {
   }
   runEvents.registerCanceller(runId, () => cancelController.abort());
 
+  /* The debug session opens BEFORE onStart, for the same reason onStart comes
+     before begin(): onStart is where the launching tab is handed the run id,
+     and the debug window it opens with that id starts connecting immediately.
+     The child does not exist yet — its control channel is attached a moment
+     later — but the session must, or a fast window is told there is no debug
+     run to watch. Nothing can have reached a gate in the meantime. */
+  if (isDebugRun) {
+    const configured = resolvePerf(meta);
+    safeCall(() => debugSessions.open(runId, {
+      userId,
+      // What this run is deliberately NOT doing, so the window can show it
+      // instead of leaving the user to infer it from a log line they scrolled
+      // past. `concurrency` is the one that matters: a workflow tuned to 8
+      // workers behaves differently at 1, and a clean debug session must not
+      // be read as proof that the parallel run is fine.
+      forced: {
+        concurrency: configured.concurrency,
+        blockResources: configured.blockResources,
+        httpFirst: configured.httpFirst,
+        healing: execCfg.healing,
+      },
+    }), null);
+  }
+
   // onStart FIRST: it is how the launching socket joins this run's room, and
   // it has to be in the room before begin() publishes anything or that tab
   // misses the opening events of its own run.
@@ -153,7 +243,7 @@ async function executeAndPersist(arg) {
     workflowId,
     workflowName: arg.workflowName || null,
     trigger,
-    flowTree: buildFlowTree(currentSteps, subflows, rootWorkflowId),
+    flowTree: buildFlowTree(currentSteps, subflows, rootWorkflowId, { withSelectors: isDebugRun }),
   }), null);
 
   const log = (line, level = 'info') => {
@@ -188,6 +278,13 @@ async function executeAndPersist(arg) {
   beat();
 
   log(`▶ Run #${runId} started (trigger: ${trigger})`);
+  if (isDebugRun) {
+    // Say plainly what is different about this run. A debug session that
+    // behaves unlike a normal one without saying so would teach the user the
+    // wrong thing about their own workflow — which is the one failure mode a
+    // debugger cannot afford.
+    log('🐞 Debug mode: images and stylesheets are loaded, steps run one at a time, the HTTP fast path is off, and nothing is retried or self-healed. Notifications, webhooks and Sheets delivery are skipped.');
+  }
 
   // Prior successful results — baselines + "what a field used to contain".
   const priorResults = await safeCall(() => runStore.recentSuccessfulResults(workflowId, 5), []);
@@ -239,6 +336,12 @@ async function executeAndPersist(arg) {
       flushPartial();
       emit(callbacks, 'onPartial', { rows: p.rows, times: p.times });
       runEvents.partial(runId, { rows: p.rows, times: p.times });
+      /* The rows themselves go to the debug session, not through runEvents:
+         every watcher of every run receives what runEvents publishes, and a
+         result set can be megabytes. The debug window is one viewer that
+         explicitly wants them, and it pulls the rows rather than being pushed
+         them — see debugSession.noteResults. */
+      if (isDebugRun) debugSessions.noteResults(runId, p.results);
     });
   };
 
@@ -276,9 +379,26 @@ async function executeAndPersist(arg) {
     latestPartial = null;
 
     const workflowForRun = { id: rootWorkflowId, steps: currentSteps, meta, customActions, subflows, proxy };
-    const { events, promise } = runner.runChild(workflowForRun, { signal: cancelSignal, resume });
+    const { events, promise, control } = runner.runChild(workflowForRun, {
+      signal: cancelSignal, resume, debug: isDebugRun,
+    });
     onRunnerEvents(events);
-    const result = await promise;
+    if (isDebugRun) {
+      // The session already exists (opened with the run id, above); this is
+      // the child arriving to fill in its control channel.
+      debugSessions.attachControl(runId, control);
+      events.on('debug', (msg) => debugSessions.handleChildMessage(runId, msg));
+      events.on('stepResult', (stat) => debugSessions.noteStepResult(runId, stat));
+    }
+    // Released on the child's exit however it exits — including a rejection,
+    // which would otherwise skip every line below and strand the session (and
+    // with it the user's ability to start another debug run).
+    const result = await promise.finally(() => { if (isDebugRun) debugSessions.close(runId); });
+    // Pages ACCUMULATE across attempts rather than being replaced. Unlike
+    // results — where each attempt starts from zero and only the last one
+    // counts — a healing re-run genuinely loads the pages again, and the
+    // infrastructure cost of attempt 2 is just as real as attempt 1's.
+    pagesFetched += Number(result.pagesFetched) || 0;
     // The child's own ledger is authoritative at exit (it includes anything
     // emitted after the last debounced checkpoint). On a resumed run, fold in
     // what the ORIGINAL run had already done — those items weren't re-scraped
@@ -614,11 +734,33 @@ async function executeAndPersist(arg) {
 
   stopHeartbeat();
   await stopCheckpointing();
+  // Belt-and-braces: the loop closes the session as soon as the child exits,
+  // but every path out of a run must release it — a session that outlives its
+  // child would block the user from starting another debug run.
+  if (isDebugRun) debugSessions.close(runId);
+
+  /* Page metering, on EVERY exit path — success, failure, and cancellation
+     alike. A run cancelled after loading 900 pages consumed 900 pages, and
+     billing only successful runs would make "cancel just before the end" a
+     free-scraping strategy.
+
+     Best-effort: a metering failure must not turn a finished run into a
+     failed one. runs.pages_fetched (written in the finishRun patch below) is
+     the durable record, so a lost increment stays reconcilable from it.
+
+     Note this runs for the API path too. That path skipped the run increment
+     because it was metered at enqueue, but its pages can only be known now
+     that it has actually run. The guided tour's demo run is the one exception
+     — see the quota gate above. */
+  if (pagesFetched > 0 && !isDemoRun) {
+    await safeCall(() => usageRepo.incrementPages(userId, pagesFetched), null);
+  }
 
   await runStore.finishRun(runId, {
     status,
     finished_at: new Date().toISOString(),
     duration_ms: duration,
+    pages_fetched: pagesFetched,
     results_json: resultsToStore ? JSON.stringify(resultsToStore) : null,
     // The in-flight checkpoint has served its purpose — it is either promoted
     // into results_json above or superseded by the complete set. Clearing it
@@ -651,21 +793,32 @@ async function executeAndPersist(arg) {
   safeCall(() => runEvents.end(runId, {
     status, run: serializeRunForWatchers(finalRow), results: resultsToStore,
   }), null);
-  // Push notification to any registered webhook endpoints (run.completed /
-  // run.failed). Fire-and-forget: delivery problems must never fail a run.
-  safeCall(() => webhookDispatcher.dispatchRunEvent(finalRow), null);
-  // The same event by e-mail, for people who don't have a webhook URL to give.
-  // No-op unless the instance has SMTP configured and the owner opted in.
-  safeCall(() => emailNotifier.notifyRunFailed(finalRow), null);
-  // Change monitoring: diff a successful run against the previous one, store
-  // the summary, and push run.changed. Also fire-and-forget — a monitoring
-  // problem must never surface to the run. No-op unless the workflow has an
-  // active monitor.
-  safeCall(() => changeMonitor.evaluateRun(finalRow, finalResults), null);
-  // Google Sheets delivery: append a successful run's rows to the configured
-  // sheet. Also fire-and-forget — a delivery problem must never surface to the
-  // run. No-op unless the workflow has active sheet delivery.
-  safeCall(() => sheetsDelivery.deliverRun(finalRow, finalResults), null);
+  /* Outbound side effects. All skipped for a guided-tour run: none of these
+     could have been configured on a workflow the user has never seen, and a
+     practice run must not be able to e-mail them, hit their webhooks or write
+     to their spreadsheet.
+
+     Skipped for a debug run too, for the opposite reason — the workflow's
+     deliveries ARE configured, and a run someone stepped through by hand,
+     possibly stopping it half way, is not the result their webhook subscribers
+     and spreadsheets are waiting on. */
+  if (!isDemoRun && !isDebugRun) {
+    // Push notification to any registered webhook endpoints (run.completed /
+    // run.failed). Fire-and-forget: delivery problems must never fail a run.
+    safeCall(() => webhookDispatcher.dispatchRunEvent(finalRow), null);
+    // The same event by e-mail, for people who don't have a webhook URL to give.
+    // No-op unless the instance has SMTP configured and the owner opted in.
+    safeCall(() => emailNotifier.notifyRunFailed(finalRow), null);
+    // Change monitoring: diff a successful run against the previous one, store
+    // the summary, and push run.changed. Also fire-and-forget — a monitoring
+    // problem must never surface to the run. No-op unless the workflow has an
+    // active monitor.
+    safeCall(() => changeMonitor.evaluateRun(finalRow, finalResults), null);
+    // Google Sheets delivery: append a successful run's rows to the configured
+    // sheet. Also fire-and-forget — a delivery problem must never surface to the
+    // run. No-op unless the workflow has active sheet delivery.
+    safeCall(() => sheetsDelivery.deliverRun(finalRow, finalResults), null);
+  }
   return finalRow;
 }
 

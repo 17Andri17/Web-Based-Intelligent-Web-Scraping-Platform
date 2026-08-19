@@ -3,43 +3,137 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DemoMart — Guided Tour Shop</title>
+  <title>Northline Supply — practice shop</title>
+  <!--
+    ===========================================================================
+    Northline Supply — the practice shop the guided tour builds a scraper on.
+    ---------------------------------------------------------------------------
+    Two things this page has to get right, both learned the hard way:
+
+    1. DETERMINISM. Every product, price, rating and page is derived from the
+       ?page / ?category query string alone — no randomness, no clock, no
+       network. The tour's steps assert on what is here, so this page has to
+       look identical on every run, for every user, forever.
+
+    2. A WHOLE PRODUCT MUST BE EASY TO POINT AT. In the selector tool you
+       select whatever your cursor is over, so a card whose every pixel is
+       covered by a child element can only ever be selected one detail at a
+       time — which is exactly the wrong lesson, since the whole card is the
+       row you want to collect. So the card's photo is drawn with ::before
+       (a pseudo-element, NOT a DOM node), and the card carries real padding
+       and gaps. The result: the big image area, the border ring and the gaps
+       between lines all belong to <article class="product-card"> itself, so
+       pointing at a product selects the product.
+
+    Class names are load-bearing. The tour's stubbed AI response
+    (server.js → aiExtractListFields) returns .title / .price / .rating /
+    a.detail, and the tour then has the user add .stock by hand — so those
+    five names must not change without changing that stub too.
+    ===========================================================================
+  -->
   <style>
-    :root { --ink:#1f2937; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --bg:#f7f8fa; }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:var(--ink); background:var(--bg); }
-    header { background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:2; }
-    .bar { max-width:1040px; margin:0 auto; padding:14px 20px; display:flex; align-items:center; gap:20px; }
-    .logo { font-weight:800; font-size:20px; color:var(--accent); letter-spacing:-0.5px; }
-    nav.categories { display:flex; gap:16px; }
-    nav.categories a { color:var(--muted); text-decoration:none; font-size:14px; padding:4px 2px; border-bottom:2px solid transparent; }
-    nav.categories a:hover, nav.categories a.active { color:var(--ink); border-bottom-color:var(--accent); }
-    main { max-width:1040px; margin:0 auto; padding:22px 20px 40px; }
-    h1 { font-size:22px; margin:6px 0 2px; }
-    .sub { color:var(--muted); font-size:14px; margin-bottom:18px; }
-    .grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:16px; }
-    @media (max-width: 860px){ .grid { grid-template-columns:repeat(2,1fr); } }
-    .product-card { background:#fff; border:1px solid var(--line); border-radius:12px; overflow:hidden; display:flex; flex-direction:column; }
-    .product-card .thumb { height:120px; background:linear-gradient(135deg,#eef2ff,#e0e7ff); display:flex; align-items:center; justify-content:center; font-size:40px; }
-    .product-card .body { padding:12px 14px 14px; display:flex; flex-direction:column; gap:6px; }
-    .product-card .title { font-weight:650; font-size:15px; line-height:1.3; }
-    .product-card .price { font-weight:800; color:var(--accent); font-size:16px; }
-    .product-card .rating { color:#d97706; font-size:13px; }
-    .product-card .stock { font-size:12px; color:var(--muted); }
-    .product-card a.detail { margin-top:4px; font-size:13px; color:var(--accent); text-decoration:none; }
-    .pager { display:flex; align-items:center; justify-content:center; gap:12px; margin-top:26px; }
-    .pager a, .pager span { font-size:14px; padding:8px 14px; border:1px solid var(--line); border-radius:8px; background:#fff; text-decoration:none; color:var(--ink); }
-    .pager a.pagination-next { border-color:var(--accent); color:var(--accent); font-weight:650; }
-    .pager .disabled { opacity:.4; }
-    .pageinfo { color:var(--muted); font-size:13px; }
+    :root {
+      --ink:#111827; --muted:#6b7280; --line:#e6e8ec; --soft:#f3f4f6;
+      --accent:#1d4ed8; --accent-soft:#eff4ff; --gold:#b45309; --bg:#fafbfc;
+    }
+    * { box-sizing:border-box; }
+    html { -webkit-text-size-adjust:100%; }
+    body {
+      margin:0; background:var(--bg); color:var(--ink);
+      font-family:"Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+      font-size:15px; line-height:1.5;
+    }
+    .wrap { max-width:1160px; margin:0 auto; padding:0 24px; }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header { background:#fff; border-bottom:1px solid var(--line); }
+    .topbar {
+      display:flex; align-items:center; gap:24px;
+      padding:16px 0 14px;
+    }
+    .logo { display:flex; align-items:center; gap:9px; font-weight:800; font-size:19px; letter-spacing:-0.4px; }
+    .logo-mark {
+      width:28px; height:28px; border-radius:8px; background:var(--accent); color:#fff;
+      display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:800;
+    }
+    .search {
+      flex:1; max-width:380px; padding:9px 14px; border:1px solid var(--line);
+      border-radius:999px; background:var(--soft); color:var(--muted); font-size:13.5px;
+    }
+    .topbar-spacer { flex:1; }
+    .topbar-links { display:flex; gap:18px; color:var(--muted); font-size:13.5px; }
+
+    nav.categories { display:flex; gap:6px; padding-bottom:2px; }
+    nav.categories a {
+      color:var(--muted); text-decoration:none; font-size:14px; font-weight:600;
+      padding:9px 14px; border-radius:8px 8px 0 0; border-bottom:2px solid transparent;
+    }
+    nav.categories a:hover { color:var(--ink); background:var(--soft); }
+    nav.categories a.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+    /* ── Page head ──────────────────────────────────────────────────────── */
+    main { padding:28px 0 48px; }
+    h1 { font-size:26px; letter-spacing:-0.5px; margin:0 0 4px; }
+    .sub { color:var(--muted); font-size:14px; margin:0 0 22px; }
+
+    /* ── Product grid ───────────────────────────────────────────────────── */
+    .grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:20px; }
+    @media (max-width:1000px) { .grid { grid-template-columns:repeat(3, 1fr); } }
+    @media (max-width:760px)  { .grid { grid-template-columns:repeat(2, 1fr); } }
+
+    /* The card owns its padding, its gaps and — via ::before — its photo.
+       That is what makes "click the product" select the product. */
+    .product-card {
+      background:#fff; border:1px solid var(--line); border-radius:14px;
+      padding:14px; display:flex; flex-direction:column; gap:9px;
+      box-shadow:0 1px 2px rgba(17,24,39,0.04);
+    }
+    .product-card::before {
+      content:attr(data-emoji);
+      display:flex; align-items:center; justify-content:center;
+      height:132px; margin-bottom:3px; font-size:46px;
+      border-radius:10px; background:linear-gradient(140deg,#eef2ff 0%,#e0e7ff 55%,#f5f3ff 100%);
+    }
+    .product-card .title { font-weight:650; font-size:15px; line-height:1.35; margin:0; }
+    .product-card .price { font-weight:800; font-size:18px; letter-spacing:-0.3px; }
+    .product-card .rating { color:var(--gold); font-size:13.5px; font-weight:600; }
+    .product-card .stock { color:var(--muted); font-size:13px; }
+    .product-card .detail {
+      align-self:flex-start; color:var(--accent); text-decoration:none;
+      font-size:13.5px; font-weight:650;
+    }
+    .product-card .detail:hover { text-decoration:underline; }
+
+    /* ── Pager ──────────────────────────────────────────────────────────── */
+    .pager { display:flex; align-items:center; justify-content:center; gap:10px; margin-top:32px; }
+    .pager a, .pager span {
+      font-size:14px; font-weight:600; padding:9px 16px; border:1px solid var(--line);
+      border-radius:9px; background:#fff; text-decoration:none; color:var(--ink);
+    }
+    .pager a:hover { border-color:var(--accent); color:var(--accent); }
+    .pager a.pagination-next { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+    .pager .disabled { opacity:.38; }
+    .pager .pageinfo { border:none; background:none; color:var(--muted); font-weight:500; }
+
+    /* ── Footer ─────────────────────────────────────────────────────────── */
+    footer {
+      border-top:1px solid var(--line); background:#fff; color:var(--muted);
+      font-size:13px; padding:18px 0; text-align:center;
+    }
+    footer b { color:var(--ink); font-weight:650; }
   </style>
 </head>
 <body>
   <header>
-    <div class="bar">
-      <span class="logo">DemoMart</span>
+    <div class="wrap">
+      <div class="topbar">
+        <span class="logo"><span class="logo-mark">N</span>Northline Supply</span>
+        <div class="search">Search 24 products…</div>
+        <div class="topbar-spacer"></div>
+        <div class="topbar-links"><span>Deliveries</span><span>Account</span><span>Basket (0)</span></div>
+      </div>
       <nav class="categories">
-        <a href="?category=all" class="cat active" data-cat="all">All</a>
+        <a href="?category=all" class="cat active" data-cat="all">All products</a>
         <a href="?category=audio" class="cat" data-cat="audio">Audio</a>
         <a href="?category=home" class="cat" data-cat="home">Home</a>
         <a href="?category=outdoor" class="cat" data-cat="outdoor">Outdoor</a>
@@ -47,80 +141,91 @@
     </div>
   </header>
 
-  <main>
-    <h1 id="heading">Featured products</h1>
-    <div class="sub" id="subheading">A deterministic demo catalog for the guided tour.</div>
+  <main class="wrap">
+    <h1 id="heading">All products</h1>
+    <p class="sub" id="subheading">24 items across 3 pages — prices updated daily.</p>
     <div class="grid" id="grid"></div>
-
     <div class="pager" id="pager"></div>
   </main>
 
+  <footer class="wrap">
+    A practice shop for the <b>Scrapient</b> guided tour. Nothing here is for sale.
+  </footer>
+
   <script>
-    /* Deterministic catalog: 3 pages of 8 items. Content depends only on the
-       ?page / ?category params, so the guided tour behaves identically every
-       time. */
+    /* Deterministic catalog: 3 pages of 8 items. Everything below is a pure
+       function of ?page / ?category, so the tour behaves identically on every
+       run — and so the numbers the user sees in their captured data are the
+       numbers they saw on the page. */
     var EMOJI = ['🎧','🔊','🕯️','🛋️','⛺','🥾','🎒','☕','🪴','🧦','🔦','📻'];
     var NAMES = ['Wave', 'Nimbus', 'Pebble', 'Cedar', 'Summit', 'Trail', 'Harbor', 'Ember', 'Fern', 'Cove', 'Ridge', 'Loft'];
     var CATS  = ['audio','audio','home','home','outdoor','outdoor','audio','home','home','outdoor','outdoor','audio'];
+    var LABEL = { all:'All products', audio:'Audio', home:'Home', outdoor:'Outdoor' };
+    var TOTAL_PAGES = 3;
 
     function params() {
       var p = new URLSearchParams(location.search);
-      return { page: Math.max(1, parseInt(p.get('page') || '1', 10) || 1), category: p.get('category') || 'all' };
+      return {
+        page: Math.min(TOTAL_PAGES, Math.max(1, parseInt(p.get('page') || '1', 10) || 1)),
+        category: LABEL[p.get('category')] ? p.get('category') : 'all'
+      };
     }
 
     function productsFor(page) {
-      // 8 items per page, deterministic by index.
+      // 8 items per page, derived from the absolute item index.
       var out = [];
       var start = (page - 1) * 8;
       for (var i = 0; i < 8; i++) {
-        var n = start + i;                 // absolute item index
-        var e = EMOJI[n % EMOJI.length];
-        var nm = NAMES[n % NAMES.length] + ' ' + (100 + n);
-        var price = (19 + ((n * 7) % 80)) + '.99';
-        var rating = (3 + ((n * 3) % 20) / 10).toFixed(1);
-        var stock = ((n * 13) % 40) + 1;
-        out.push({ id: n + 1, emoji: e, title: nm, price: price, rating: rating, stock: stock, cat: CATS[n % CATS.length] });
+        var n = start + i;
+        out.push({
+          id: n + 1,
+          emoji: EMOJI[n % EMOJI.length],
+          title: NAMES[n % NAMES.length] + ' ' + (100 + n),
+          price: (19 + ((n * 7) % 80)) + '.99',
+          rating: (3 + ((n * 3) % 20) / 10).toFixed(1),
+          stock: ((n * 13) % 40) + 1,
+          cat: CATS[n % CATS.length]
+        });
       }
       return out;
     }
 
     function render() {
       var q = params();
-      var TOTAL_PAGES = 3;
       var items = productsFor(q.page);
       if (q.category !== 'all') items = items.filter(function (it) { return it.cat === q.category; });
 
-      // category active state
       document.querySelectorAll('nav.categories a.cat').forEach(function (a) {
         a.classList.toggle('active', a.getAttribute('data-cat') === q.category);
       });
-      document.getElementById('heading').textContent =
-        q.category === 'all' ? 'Featured products' : (q.category.charAt(0).toUpperCase() + q.category.slice(1) + ' products');
+      document.getElementById('heading').textContent = LABEL[q.category];
+      document.getElementById('subheading').textContent = q.category === 'all'
+        ? '24 items across ' + TOTAL_PAGES + ' pages — prices updated daily.'
+        : items.length + ' ' + LABEL[q.category].toLowerCase() + ' items on this page.';
 
-      var grid = document.getElementById('grid');
-      grid.innerHTML = items.map(function (it) {
-        return '<article class="product-card" data-id="' + it.id + '">'
-          + '<div class="thumb">' + it.emoji + '</div>'
-          + '<div class="body">'
-          + '<div class="title">' + it.title + '</div>'
+      // Note the flat card: five children and a ::before photo, so the card
+      // itself is what the cursor lands on for most of its area.
+      document.getElementById('grid').innerHTML = items.map(function (it) {
+        return '<article class="product-card" data-id="' + it.id + '" data-emoji="' + it.emoji + '">'
+          + '<h3 class="title">' + it.title + '</h3>'
           + '<div class="price">$' + it.price + '</div>'
-          + '<div class="rating">★ ' + it.rating + '</div>'
+          + '<div class="rating">★ ' + it.rating + ' out of 5</div>'
           + '<div class="stock">' + it.stock + ' in stock</div>'
           + '<a class="detail" href="?product=' + it.id + '">View details</a>'
-          + '</div></article>';
+          + '</article>';
       }).join('');
 
-      // pager: keep category, change page. A real "Next" link so the
-      // pagination detector finds it.
-      var pager = document.getElementById('pager');
+      // A real <a rel="next"> so the pagination detector has something honest
+      // to find; the category is carried across so paging doesn't reset it.
       var base = '?category=' + encodeURIComponent(q.category) + '&page=';
       var prev = q.page > 1
-        ? '<a class="pagination-prev" href="' + base + (q.page - 1) + '">← Prev</a>'
-        : '<span class="disabled">← Prev</span>';
+        ? '<a class="pagination-prev" href="' + base + (q.page - 1) + '">← Previous</a>'
+        : '<span class="disabled">← Previous</span>';
       var next = q.page < TOTAL_PAGES
-        ? '<a class="pagination-next" rel="next" href="' + base + (q.page + 1) + '">Next →</a>'
-        : '<span class="disabled">Next →</span>';
-      pager.innerHTML = prev + '<span class="pageinfo">Page ' + q.page + ' of ' + TOTAL_PAGES + '</span>' + next;
+        ? '<a class="pagination-next" rel="next" href="' + base + (q.page + 1) + '">Next page →</a>'
+        : '<span class="disabled">Next page →</span>';
+      document.getElementById('pager').innerHTML =
+        prev + '<span class="pageinfo">Page ' + q.page + ' of ' + TOTAL_PAGES + '</span>' + next;
     }
 
     render();

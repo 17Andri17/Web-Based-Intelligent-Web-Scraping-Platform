@@ -42,8 +42,8 @@ async function main() {
   await db.init();
   await require('../db/migrate').run(db);
 
-  const alice = await db.get(`INSERT INTO users (username, password_hash) VALUES ('alice', 'x') RETURNING id`);
-  const bob   = await db.get(`INSERT INTO users (username, password_hash) VALUES ('bob', 'x') RETURNING id`);
+  const alice = await db.get(`INSERT INTO users (username, password_hash, plan) VALUES ('alice', 'x', 'business') RETURNING id`);
+  const bob   = await db.get(`INSERT INTO users (username, password_hash, plan) VALUES ('bob', 'x', 'business') RETURNING id`);
   const aliceTok = signToken({ sub: alice.id, username: 'alice' });
   const bobTok   = signToken({ sub: bob.id, username: 'bob' });
 

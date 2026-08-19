@@ -40,6 +40,14 @@ async function listForUser(userId) {
   return rows.map(stripSecret);
 }
 
+// Plan enforcement: a user's OWN proxies only. Shared/platform proxies have
+// user_id NULL and are granted by the sharedProxyPool feature flag, so they
+// must not count against a personal maxProxies limit.
+async function countForUser(userId) {
+  const row = await db.get('SELECT COUNT(*) AS n FROM proxies WHERE user_id = ?', [userId]);
+  return row ? Number(row.n) : 0;
+}
+
 async function listShared() {
   const rows = await db.all(
     'SELECT * FROM proxies WHERE is_shared = 1 ORDER BY updated_at DESC',
@@ -154,7 +162,7 @@ async function removeShared(id) {
 }
 
 module.exports = {
-  listAvailableForUser, listForUser, listShared,
+  listAvailableForUser, listForUser, listShared, countForUser,
   getForUser, getSharedById, existsForUser, resolveForUse,
   create, update, updateShared, remove, removeShared,
 };

@@ -208,7 +208,14 @@ function HtmlNode({ node, depth, collapsed, onToggle, onSelect, onHover, onUnhov
   );
 }
 
-export default function HtmlInspectorPanel({ socket, active, refreshKey, selectedPath, onBeforeSelect, maximized, onToggleMaximize }) {
+/* `html` turns the panel into a pure renderer of markup somebody else fetched.
+   The builder passes no `html` and the panel asks the live preview for the page
+   it is showing; the debug window passes the HTML of the page its run is parked
+   on, which arrives over a different channel entirely. Everything below —
+   the tree, the search, the copy-as-selector actions — is the same either way,
+   which is the reason to share the component rather than clone it. */
+export default function HtmlInspectorPanel({ socket, active, refreshKey, selectedPath, onBeforeSelect, maximized, onToggleMaximize, html: htmlProp }) {
+  const controlled = htmlProp !== undefined;
   const [html, setHtml] = useState("");
   const [tree, setTree] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -221,14 +228,14 @@ export default function HtmlInspectorPanel({ socket, active, refreshKey, selecte
   const lastFetchedKeyRef = useRef(null);
 
   const fetchHtml = useCallback(() => {
-    if (!socket) return;
+    if (!socket || controlled) return;
     setLoading(true);
     setError("");
     socket.emit("getPageHtml");
-  }, [socket]);
+  }, [socket, controlled]);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!socket || controlled) return;
     const onHtml = ({ html: h, error: err }) => {
       setLoading(false);
       if (err) { setError(err); return; }
@@ -236,17 +243,20 @@ export default function HtmlInspectorPanel({ socket, active, refreshKey, selecte
     };
     socket.on("pageHtml", onHtml);
     return () => socket.off("pageHtml", onHtml);
-  }, [socket]);
+  }, [socket, controlled]);
+
+  // Supplied markup: adopt it as it changes, and never ask for any.
+  useEffect(() => { if (controlled) setHtml(htmlProp || ""); }, [controlled, htmlProp]);
 
   // Fetch once when the tab becomes active, and again whenever the page
   // navigates/reloads (refreshKey bump) while the tab is open.
   useEffect(() => {
-    if (!active) return;
+    if (!active || controlled) return;
     const key = refreshKey;
     if (lastFetchedKeyRef.current === key) return;
     lastFetchedKeyRef.current = key;
     fetchHtml();
-  }, [active, refreshKey, fetchHtml]);
+  }, [active, controlled, refreshKey, fetchHtml]);
 
   useEffect(() => {
     if (!html) { setTree(null); return; }

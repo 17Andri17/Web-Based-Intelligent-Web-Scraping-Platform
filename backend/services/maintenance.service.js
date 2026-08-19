@@ -39,6 +39,19 @@ function resultsRetentionCount() {
 let timer = null;
 
 async function sweep() {
+  // Spent auth tokens (password reset, e-mail verification). They stop being
+  // usable the moment they expire, so this is housekeeping rather than a
+  // security control — but an unbounded table of dead credentials is still
+  // worth not accumulating. The grace period keeps recently-expired rows so
+  // "this link has expired" stays distinguishable from "no such link".
+  try {
+    const authTokens = require('../db/repositories/authTokens.repo');
+    const removed = await authTokens.pruneExpired(7);
+    if (removed) console.log(`[maintenance] pruned ${removed} expired auth token(s)`);
+  } catch (err) {
+    console.error('[maintenance] auth token prune failed:', err.message);
+  }
+
   const days = logRetentionDays();
   if (days > 0) {
     try {

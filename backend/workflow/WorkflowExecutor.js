@@ -31,6 +31,14 @@ async function executeWorkflow(workflow, socket, opts = {}) {
   // the two things that are per-caller rather than per-run: joining the room
   // as soon as the run id exists, and cancellation.
   const onRunId = typeof opts.onRunId === 'function' ? opts.onRunId : null;
+  // The guided tour's practice run. Still a real execution against a real
+  // workflow row — it just isn't the user's work, so it is neither charged to
+  // their plan nor allowed to trigger their webhooks / e-mails / sheets.
+  const demo = !!opts.demo;
+  // Debug Mode: the same run, stepped through by hand with a live picture of
+  // the browser (see services/debugSession.service.js). Real in every way that
+  // is recorded — it just isn't allowed to deliver, and doesn't retry.
+  const debug = !!opts.debug;
 
   if (!userId || !workflowId) {
     // Without persistence context we can still run, but we'd lose the
@@ -55,6 +63,8 @@ async function executeWorkflow(workflow, socket, opts = {}) {
       trigger: 'manual',
       signal: controller.signal,
       workflowName: opts.workflowName || null,
+      demo,
+      debug,
       callbacks: {
         // Join the room BEFORE any progress is published, so the launching tab
         // misses nothing between the run row being created and its first log.

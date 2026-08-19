@@ -61,6 +61,7 @@ const COLLECT_SUMMARY = 'COLLECT_SUMMARY:'; // Collect-List completeness (human 
 const CAPTCHA_MARKER = 'CAPTCHA_DETECTED:'; // a captcha was seen but not solved (auto-handle continued)
 const ITER_WORKERS   = 'ITER_WORKERS:';  // which item each parallel worker is on
 const RESULT_CHUNK   = 'RESULT_CHUNK:';   // incremental results delta (durable partial results)
+const PAGES_FETCHED  = 'PAGES_FETCHED:';  // running count of billable page loads (see browser/pagePool.js)
 
 // How long the child gets to flush its tail after SIGTERM before we SIGKILL it.
 // Its SIGTERM handler emits one final RESULT_CHUNK and exits, so this only has
@@ -160,17 +161,22 @@ function countResultRows(results) {
      events.on('stepError', ({ step, message, stack, url, html }))
      events.on('results',   (resultObject))
 
-   `runChild(workflow)` returns { events, promise }. The promise resolves
+   A debug run adds one more event and one way back in:
+
+     events.on('debug',      (msg))     — frames, pauses, probe/HTML replies
+     control(msg)                       — resume / step / breakpoints / probe
+
+   `runChild(workflow)` returns { events, promise, control }. The promise resolves
    with { success, exitCode, results, errorInfo }, where errorInfo is
    populated whenever a STEP_ERROR line was emitted (whether the process
    then exited cleanly or not — the codegen always sets exitCode = 1 after
    STEP_ERROR, so success === false in that case).
    ========================================================================= */
 
-function runChild(workflow, { signal, resume = null } = {}) {
+function runChild(workflow, { signal, resume = null, debug = false } = {}) {
   const events = new EventEmitter();
 
-  const code    = generateCode(workflow);
+  const code    = generateCode(workflow, { debug });
   const tmpDir  = os.tmpdir();
   const stamp   = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
   const tmpFile = path.join(tmpDir, `ws_workflow_${stamp}.js`);
@@ -203,6 +209,22 @@ function runChild(workflow, { signal, resume = null } = {}) {
     if (resumeFile) { try { fs.unlinkSync(resumeFile); } catch (_) {} }
   };
 
+  /* Debug Mode's way back INTO the run.
+
+     stdout is a one-way, line-oriented stream — fine for reporting, useless
+     for asking a run to stop, and worse than useless for frames (a 40 KB JPEG
+     per line would starve the marker parser). A debug child therefore gets an
+     IPC channel: structured messages both ways, on its own pipe, with
+     `serialization: 'advanced'` so screencast frames travel as real Buffers
+     instead of being base64'd through JSON.
+
+     Nothing changes for a normal run — no channel is opened at all. */
+  let childRef = null;
+  const control = (msg) => {
+    if (!debug || !childRef || !childRef.connected) return false;
+    try { childRef.send(msg); return true; } catch (_) { return false; }
+  };
+
   const promise = (async () => {
     // Wait for a global run slot before launching Chrome, so concurrent
     // scheduled/API runs can't exceed MAX_CONCURRENT_RUNS. Released on child
@@ -223,7 +245,14 @@ function runChild(workflow, { signal, resume = null } = {}) {
           ...(resumeFile ? { WS_RESUME_FILE: resumeFile } : {}),
         },
         cwd: path.dirname(tmpFile),
+        ...(debug ? { stdio: ['pipe', 'pipe', 'pipe', 'ipc'], serialization: 'advanced' } : {}),
       });
+      childRef = child;
+      if (debug) {
+        // Frames, pause notifications, probe and HTML replies. The parent
+        // never interprets these — services/debugSession.service.js owns them.
+        child.on('message', (msg) => { if (msg && typeof msg === 'object') events.emit('debug', msg); });
+      }
     } catch (err) {
       cleanupTempFiles();
       releaseOnce();
@@ -240,6 +269,9 @@ function runChild(workflow, { signal, resume = null } = {}) {
     const partialResults = {};
     let partialRows = 0;
     let sawAnyChunk = false;
+    // Billable pages this run loaded, tracked in the PARENT for the same
+    // reason partial results are: it must survive the child dying.
+    let pagesFetched = 0;
     // Resume ledger: stepId → Set of item URLs this run actually finished.
     // Kept as Sets while running (membership is the only query) and converted
     // to arrays when handed on.
@@ -301,6 +333,18 @@ function runChild(workflow, { signal, resume = null } = {}) {
         try { events.emit('iteration', { kind: 'end', ...JSON.parse(line.slice(ITER_END.length)) }); } catch (_) {}
         return;
       }
+      // Billable page count. The child emits a running total on every
+      // navigation rather than a final tally, so a run that is killed, times
+      // out, or crashes still reports the pages it actually consumed. Keep
+      // the highest value seen: the counter only ever climbs, and taking the
+      // max means an out-of-order or truncated final line can't under-bill.
+      if (line.startsWith(PAGES_FETCHED)) {
+        try {
+          const n = JSON.parse(line.slice(PAGES_FETCHED.length)).pages;
+          if (Number.isFinite(n) && n > pagesFetched) pagesFetched = n;
+        } catch (_) {}
+        return;
+      }
       if (line.startsWith(RESULTS_MARKER)) {
         try {
           resultsObj = JSON.parse(line.slice(RESULTS_MARKER.length));
@@ -335,7 +379,14 @@ function runChild(workflow, { signal, resume = null } = {}) {
       // Extraction stats / snapshots — structured, never logged. These power
       // empty-result detection + self-healing in the execution pipeline.
       if (line.startsWith(STEP_RESULT)) {
-        try { stepResults.push(JSON.parse(line.slice(STEP_RESULT.length))); } catch (_) {}
+        try {
+          const st = JSON.parse(line.slice(STEP_RESULT.length));
+          stepResults.push(st);
+          // Also surfaced live, so a debug pause can show what the step it
+          // just ran actually captured ("24 rows, price 24/24, sku 0/24")
+          // rather than making the user wait for the run to end to find out.
+          events.emit('stepResult', st);
+        } catch (_) {}
         return;
       }
       if (line.startsWith(STEP_SNAPSHOT)) {
@@ -403,7 +454,7 @@ function runChild(workflow, { signal, resume = null } = {}) {
       resolve({ success: false, exitCode: -1, results: null,
                 errorInfo: errorInfo || { message: err.message, step: null },
                 stepResults, stepSnapshots, captchaEvents,
-                partialResults, partialRows, sawAnyChunk,
+                partialResults, partialRows, sawAnyChunk, pagesFetched,
                 progress: serialiseProgress(progressByStep, outKeyByStep, doneStepIds), stepTimes });
     });
 
@@ -433,13 +484,13 @@ function runChild(workflow, { signal, resume = null } = {}) {
         };
       }
       resolve({ success, exitCode, results: resultsObj, errorInfo, stepResults, stepSnapshots, captchaEvents,
-                partialResults, partialRows, sawAnyChunk,
+                partialResults, partialRows, sawAnyChunk, pagesFetched,
                 progress: serialiseProgress(progressByStep, outKeyByStep, doneStepIds), stepTimes });
     });
     });
   })();
 
-  return { events, promise };
+  return { events, promise, control };
 }
 
 module.exports = {

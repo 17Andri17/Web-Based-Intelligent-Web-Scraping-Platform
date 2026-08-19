@@ -3,6 +3,7 @@
 const express = require('express');
 const notificationsRepo = require('../db/repositories/notifications.repo');
 const mailer = require('../services/mailer.service');
+const entitlements = require('../services/entitlements.service');
 const { requireAuth } = require('../middleware/auth');
 
 /* ===========================================================================
@@ -47,6 +48,7 @@ router.put('/', async (req, res) => {
   if (!mailer.isConfigured()) {
     return res.status(400).json({ error: 'E-mail is not set up on this server. Ask whoever runs it to configure SMTP_HOST.' });
   }
+  await entitlements.assertFeature(req.user.id, 'emailAlerts', 'E-mail alerts');
   const email = String(req.body?.email || '').trim();
   if (!EMAIL_RX.test(email)) {
     return res.status(400).json({ error: 'That doesn\'t look like an e-mail address.' });
@@ -79,9 +81,11 @@ router.post('/test', async (req, res) => {
 
   const out = await mailer.send({
     to,
-    subject: 'WebScraper test message',
-    text: 'This is a test from WebScraper. If you got this, your alerts will arrive.',
-    html: '<p style="font-family:sans-serif">This is a test from WebScraper. If you got this, your alerts will arrive.</p>',
+    // Left on the default 'alerts' stream on purpose: this button answers
+    // "will my alerts arrive?", so it must go out as the address they will.
+    subject: 'Scrapient test message',
+    text: 'This is a test from Scrapient. If you got this, your alerts will arrive.',
+    html: '<p style="font-family:sans-serif">This is a test from Scrapient. If you got this, your alerts will arrive.</p>',
   });
   if (!out.ok) return res.status(502).json({ error: out.error });
   res.json({ ok: true, sentTo: to });

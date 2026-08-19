@@ -389,6 +389,19 @@
 .elfe-pick-banner-text { min-width: 0; }   /* keep the sentence one flowing block */
 .elfe-pick-banner strong { color: color-mix(in srgb, var(--accent-primary) 75%, var(--text-primary)); }
 
+/* After a field has landed the banner reports a success rather than an
+   instruction, so it turns green and grows the button that switches picking
+   back off — the state you are in should always show you the way out of it. */
+.elfe-pick-banner--done {
+  background: color-mix(in srgb, var(--accent-success) 8%, transparent);
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent-success) 40%, transparent);
+  color: var(--accent-success);
+}
+.elfe-pick-banner--done svg { opacity: 1; }
+.elfe-pick-banner--done strong { color: color-mix(in srgb, var(--accent-success) 70%, var(--text-primary)); }
+.elfe-pick-done-btn { flex-shrink: 0; margin-left: auto; }
+
 /* ── Pending-pick card ────────────────────────────────────────────────── */
 .elfe-pick-pending {
   background: color-mix(in srgb, var(--accent-primary) 6%, var(--bg-primary));

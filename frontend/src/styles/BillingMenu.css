@@ -1,0 +1,267 @@
+/* ==================== PLAN & USAGE ==================== */
+
+.bill-modal {
+    max-width: 860px;
+    width: 100%;
+}
+
+.bill-muted { color: var(--text-secondary); font-size: 13px; }
+
+.bill-eyebrow {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+}
+
+/* ── Current plan + usage ─────────────────────────────────────────────── */
+.bill-current {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 16px 18px;
+    margin-bottom: 18px;
+}
+
+.bill-current-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.bill-current-head h3 {
+    margin: 0;
+    font-size: 19px;
+    font-weight: 650;
+    color: var(--text-primary);
+}
+
+.bill-period {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 2px 0 16px;
+}
+
+.bill-lapsed {
+    background: var(--tint-warn-bg, rgba(210, 153, 34, 0.12));
+    border-left: 3px solid var(--accent-warning);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 10px 12px;
+    margin: 12px 0 0;
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.5;
+}
+
+.bill-chip {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.bill-chip.is-warn {
+    background: var(--tint-warn-bg, rgba(210, 153, 34, 0.15));
+    color: var(--accent-warning);
+}
+
+/* ── Usage bars ───────────────────────────────────────────────────────── */
+.bill-usage + .bill-usage { margin-top: 14px; }
+
+.bill-usage-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.bill-usage-nums {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.bill-usage-track {
+    height: 8px;
+    background: var(--bg-primary);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.bill-usage-fill {
+    height: 100%;
+    border-radius: 999px;
+    transition: width 0.3s ease;
+}
+
+/* State is carried by colour AND by the note below the bar, so the warning
+   doesn't depend on colour vision alone. */
+.bill-usage-fill.is-ok    { background: var(--accent-success-fill, var(--accent-success)); }
+.bill-usage-fill.is-warn  { background: var(--accent-warning-fill, var(--accent-warning)); }
+.bill-usage-fill.is-over  { background: var(--accent-danger-fill, var(--accent-danger)); }
+
+.bill-usage-note {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 6px 0 0;
+}
+.bill-usage-note.is-over { color: var(--accent-danger); }
+
+/* ── Dev banner ───────────────────────────────────────────────────────── */
+.bill-stub-banner {
+    background: var(--tint-info-bg, rgba(88, 166, 255, 0.10));
+    border: 1px dashed var(--accent-primary);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    margin-bottom: 18px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+.bill-stub-banner strong { color: var(--accent-primary); }
+
+/* ── Plan cards ───────────────────────────────────────────────────────── */
+.bill-plans {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+}
+
+.bill-plan {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 16px;
+}
+
+.bill-plan.is-featured { border-color: var(--accent-primary); }
+.bill-plan.is-current  { background: var(--bg-tertiary); }
+
+.bill-plan header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.bill-plan-name {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.bill-plan-price {
+    font-size: 27px;
+    font-weight: 680;
+    color: var(--text-primary);
+    line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+}
+.bill-plan-price small {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-muted);
+    margin-left: 3px;
+}
+
+.bill-plan-role {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    margin: 6px 0 12px;
+    line-height: 1.45;
+    min-height: 2.7em;
+}
+
+.bill-plan-limits {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 14px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+    /* Pushes the button to the bottom so cards of differing height still
+       line their actions up. */
+    flex: 1;
+}
+
+.bill-plan-limits li {
+    padding-left: 17px;
+    position: relative;
+    margin-bottom: 5px;
+}
+
+.bill-plan-limits li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.5em;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-success);
+}
+
+.bill-plan-limits li.off { color: var(--text-muted); text-decoration: line-through; }
+.bill-plan-limits li.off::before { background: var(--bg-elevated); }
+
+.bill-plan-limits strong { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+
+/* ── Buttons ──────────────────────────────────────────────────────────── */
+.bill-btn {
+    width: 100%;
+    padding: 9px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: filter 0.15s ease, border-color 0.15s ease;
+}
+.bill-btn:hover:not(:disabled) { filter: brightness(1.15); }
+.bill-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.bill-btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+
+.bill-btn.primary {
+    background: var(--accent-primary-fill, var(--accent-primary));
+    border-color: transparent;
+    color: var(--text-on-accent, #fff);
+}
+
+.bill-btn.ghost { background: transparent; color: var(--text-secondary); }
+
+.bill-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent-primary);
+    cursor: pointer;
+    font-size: inherit;
+    text-decoration: underline;
+}
+
+.bill-foot {
+    font-size: 12.5px;
+    color: var(--text-muted);
+    margin: 16px 0 0;
+    text-align: center;
+}
+
+@media (max-width: 640px) {
+    .bill-plans { grid-template-columns: 1fr; }
+}

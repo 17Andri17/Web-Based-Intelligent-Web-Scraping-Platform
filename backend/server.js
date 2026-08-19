@@ -35,6 +35,7 @@ const apiDiscoveryAI     = require('./services/apiDiscoveryAI.service');
 const runEvents          = require('./services/runEvents.service');
 const runStoreSvc        = require('./services/runStore.service');
 const runReaper          = require('./services/runReaper.service');
+const debugSessions      = require('./services/debugSession.service');
 
 // Codegen-time dependency resolution (custom actions + subflows) lives in
 // workflow/dependencyResolver.js and is shared with the scheduler.
@@ -390,6 +391,112 @@ io.on('connection', async (socket) => {
     } catch (err) {
       socket.emit('elementRect', { ok: false, selector: sel, error: err.message });
     }
+  });
+
+  /* ── Guided tour: highlight an element ON THE PAGE ───────────────────────
+     The tour used to ring page elements with an overlay drawn in the app's
+     own coordinates, positioned from a rect polled a few times a second.
+     Two things were wrong with that, and both were obvious the moment anyone
+     scrolled: the ring trailed the content it was pointing at, and — since
+     it lived above the canvas rather than inside it — a target scrolled up
+     out of view took its ring across the app's toolbar.
+
+     Drawing it INSIDE the page fixes both by construction. The ring is
+     positioned in DOCUMENT coordinates, so scrolling moves it with the thing
+     it marks without anyone recomputing anything, the page's own viewport
+     clips it, and it arrives in the same video frame as the content instead
+     of a couple of polls later.
+
+     Kept deliberately inert: pointer-events:none so it can never eat a click
+     meant for the page, a fixed id so it is trivially identifiable, and no
+     effect on layout. Re-emitting the same selector is a no-op, so the
+     client can poll this to survive navigations without restarting the
+     animation. Passing a falsy selector removes it. */
+  socket.on('tourHighlight', async ({ selector, selectorType }) => {
+    const sel = String(selector || '').trim();
+    const type = selectorType === 'xpath' ? 'xpath' : 'css';
+    const page = await getActivePage();
+    if (!page) return;
+    try {
+      await page.evaluate((s, t) => {
+        const ID = '__scrapient_tour_ring__';
+        const existing = document.getElementById(ID);
+        if (!s) {
+          if (existing) existing.remove();
+          // Take the keyframes with it. The tour is a visitor here; when it
+          // leaves, page.content() should look exactly as it did before —
+          // that HTML is shown in the inspector and fed to the extractors.
+          const css = document.getElementById(ID + '_css');
+          if (css) css.remove();
+          if (window.__scrapientTourTimer) {
+            clearInterval(window.__scrapientTourTimer);
+            window.__scrapientTourTimer = null;
+          }
+          return;
+        }
+        // Same target, still mounted → leave it alone rather than restarting
+        // its pulse on every poll.
+        if (existing && existing.dataset.sel === s) return;
+        if (existing) existing.remove();
+
+        if (!document.getElementById(ID + '_css')) {
+          const style = document.createElement('style');
+          style.id = ID + '_css';
+          style.textContent =
+            '@keyframes __scrapientTourPulse{0%,100%{box-shadow:0 0 0 2px #2563eb,0 0 0 6px rgba(37,99,235,.32)}' +
+            '50%{box-shadow:0 0 0 2px #2563eb,0 0 0 12px rgba(37,99,235,0)}}';
+          document.documentElement.appendChild(style);
+        }
+
+        const ring = document.createElement('div');
+        ring.id = ID;
+        ring.dataset.sel = s;
+        ring.setAttribute('aria-hidden', 'true');
+        ring.style.cssText = [
+          'position:absolute', 'pointer-events:none', 'z-index:2147483646',
+          'border-radius:10px', 'box-sizing:border-box',
+          'animation:__scrapientTourPulse 1.9s ease-in-out infinite',
+        ].join(';');
+        document.body.appendChild(ring);
+
+        const find = () => {
+          try {
+            return t === 'xpath'
+              ? document.evaluate(s, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+              : document.querySelector(s);
+          } catch (_) { return null; }
+        };
+        // Only needed when the TARGET moves (layout, re-render) — scrolling
+        // is already handled by document-space positioning, which is the
+        // whole point. So this can be slow and cheap.
+        const place = () => {
+          const live = document.getElementById(ID);
+          if (!live) { clearInterval(window.__scrapientTourTimer); window.__scrapientTourTimer = null; return; }
+          const el = find();
+          if (!el || !el.getBoundingClientRect) { live.style.display = 'none'; return; }
+          const r = el.getBoundingClientRect();
+          if (!r.width && !r.height) { live.style.display = 'none'; return; }
+          const next = [
+            Math.round(r.left + window.scrollX - 5), Math.round(r.top + window.scrollY - 5),
+            Math.round(r.width + 10), Math.round(r.height + 10),
+          ].join(',');
+          // Write only on a real move. This page is being screencast, and
+          // restyling an element 4×/second would ask the compositor for a
+          // fresh frame 4×/second whether or not anything had changed.
+          if (live.dataset.box === next) return;
+          live.dataset.box = next;
+          const [x, y, w, h] = next.split(',');
+          live.style.display = '';
+          live.style.left   = x + 'px';
+          live.style.top    = y + 'px';
+          live.style.width  = w + 'px';
+          live.style.height = h + 'px';
+        };
+        place();
+        if (window.__scrapientTourTimer) clearInterval(window.__scrapientTourTimer);
+        window.__scrapientTourTimer = setInterval(place, 250);
+      }, sel, type);
+    } catch (_) { /* page navigated mid-call; the next poll re-applies it */ }
   });
 
   // ── Selector debugger ────────────────────────────────────────────────────
@@ -1006,11 +1113,28 @@ io.on('connection', async (socket) => {
                                    // we create an "Untitled" workflow to
                                    // give the run a home
         workflowName?: string      // used when auto-creating
+        demo?:    boolean          // the guided tour's practice run
+        debug?:   boolean          // step through it with a live browser view
       }
     */
     const meta = data.meta || userSessionMeta.get(userId) || {};
     const steps = data.steps || [];
     const customActions = await resolveCustomActions(steps, socket.user.id);
+    const demo = !!data.demo;
+    const debug = !!data.debug && !demo;
+
+    /* One debug session per user. A paused run holds an open Chrome and one of
+       the global run slots, so a second one is refused here rather than
+       quietly queueing behind the first — which from the outside looks like
+       the button doing nothing. */
+    if (debug) {
+      const gate = debugSessions.canStart(socket.user.id);
+      if (!gate.ok) {
+        socket.emit('executionLog', { line: `❌ ${gate.reason}`, level: 'error' });
+        socket.emit('debugRefused', { reason: gate.reason, runId: gate.runId });
+        return;
+      }
+    }
 
     // Resolve or create the persisted workflow this run belongs to. We
     // intentionally never run ephemerally — every execution gets a run row
@@ -1020,7 +1144,32 @@ io.on('connection', async (socket) => {
       const owned = await workflows.existsForUser(workflowId, socket.user.id);
       if (!owned) workflowId = null;
     }
-    if (!workflowId) {
+    /* The guided tour needs the same machinery — a run row to stream logs
+       into, results to show in the Data tab — without any of it becoming the
+       user's. It gets ONE hidden workflow, reused across restarts of the
+       walkthrough, excluded from every listing, and deleted the moment the
+       tour ends (routes/tour.routes.js). Notably there is no
+       `workflowAutoCreated` here: the tour must never tell someone it saved
+       them a draft it is about to throw away. */
+    if (demo) {
+      const existing = await workflows.findDemoForUser(socket.user.id);
+      if (existing) {
+        workflowId = existing.id;
+        await workflows.updateStepsAndMeta({
+          id: workflowId, userId: socket.user.id,
+          stepsJson: JSON.stringify(steps),
+          metaJson: meta ? JSON.stringify(meta) : null,
+        });
+      } else {
+        const created = await workflows.create({
+          userId: socket.user.id, name: 'Guided tour practice',
+          stepsJson: JSON.stringify(steps),
+          metaJson: meta ? JSON.stringify(meta) : null,
+          isDemo: true,
+        });
+        workflowId = created.id;
+      }
+    } else if (!workflowId) {
       const name = (data.workflowName && String(data.workflowName).trim()) || 'Untitled draft';
       const created = await workflows.create({
         userId: socket.user.id, name,
@@ -1052,10 +1201,18 @@ io.on('connection', async (socket) => {
         userId: socket.user.id,
         workflowId,
         workflowName: data.workflowName || null,
+        demo,
+        debug,
         // Put the launching tab in the run's room the moment the run row
         // exists, so it receives progress through the same path as any other
         // watcher — and keeps receiving it after a reload, by re-watching.
-        onRunId: (runId) => { try { socket.join(runRoom(runId)); } catch (_) {} },
+        onRunId: (runId) => {
+          try { socket.join(runRoom(runId)); } catch (_) {}
+          // The debug window is opened by run id, so the launching tab needs
+          // that id before the first gate is reached — otherwise the run parks
+          // on step 1 with nothing yet able to release it.
+          if (debug) { try { socket.emit('debugStarted', { runId }); } catch (_) {} }
+        },
       });
     } catch (err) {
       socket.emit('executionLog', { line: `❌ Executor error: ${err.message}`, level: 'error' });
@@ -1099,6 +1256,67 @@ io.on('connection', async (socket) => {
 
   socket.on('unwatchRun', ({ runId } = {}) => {
     if (Number.isFinite(Number(runId))) { try { socket.leave(runRoom(Number(runId))); } catch (_) {} }
+  });
+
+  /* ── Debug Mode ──────────────────────────────────────────────────────────
+     The debug window is a separate browser window on the same origin, so it
+     authenticates its own socket and attaches by run id — exactly like any
+     other watcher. What it gets on top of the run's event room is the frame
+     stream and the control channel into the running child process.
+
+     Ownership is checked once, here, and remembered on the socket: the
+     control channel evaluates selectors inside the run's browser, so every
+     later message is answered only for a connection that already proved it
+     owns this run. */
+  const debugAuthorised = new Set();
+
+  socket.on('watchDebug', async ({ runId } = {}, ack) => {
+    const reply = (v) => { if (typeof ack === 'function') { try { ack(v); } catch (_) {} } };
+    const id = Number(runId);
+    if (!Number.isFinite(id)) return reply({ ok: false, error: 'runId required' });
+    try {
+      const row = await runStoreSvc.getRunForUser(id, socket.user.id);
+      if (!row) return reply({ ok: false, error: 'Run not found' });
+      if (!debugSessions.attachViewer(id, socket)) {
+        // The run exists but isn't (or is no longer) a live debug session —
+        // it finished, or it was never started in debug mode.
+        return reply({ ok: false, error: 'No live debug session for this run', status: row.status });
+      }
+      debugAuthorised.add(id);
+      socket.join(runRoom(id));   // logs, step states and results, as usual
+      reply({ ok: true, debug: debugSessions.snapshot(id), run: runEvents.viewerSnapshot(id), status: row.status });
+    } catch (err) {
+      reply({ ok: false, error: err.message });
+    }
+  });
+
+  socket.on('unwatchDebug', ({ runId } = {}) => {
+    const id = Number(runId);
+    if (!Number.isFinite(id)) return;
+    debugSessions.detachViewer(id, socket);
+    debugAuthorised.delete(id);
+  });
+
+  // Resume / step / pause / breakpoints / mute / speed / probe / html.
+  // The service allowlists the message types; this only proves who is asking.
+  socket.on('debugControl', ({ runId, ...msg } = {}, ack) => {
+    const reply = (v) => { if (typeof ack === 'function') { try { ack(v); } catch (_) {} } };
+    const id = Number(runId);
+    if (!debugAuthorised.has(id)) return reply({ ok: false, error: 'Not watching this debug run' });
+    const ok = debugSessions.command(id, msg);
+    reply({ ok, error: ok ? undefined : 'Debug session is no longer live' });
+  });
+
+  /* The rows captured so far. Pulled rather than pushed: the running totals
+     ride along with the ordinary progress events, but the data itself is only
+     sent to a window that is actually displaying it — and capped, because a
+     preview table has no use for the forty-thousandth row. */
+  socket.on('debugData', ({ runId } = {}, ack) => {
+    const reply = (v) => { if (typeof ack === 'function') { try { ack(v); } catch (_) {} } };
+    const id = Number(runId);
+    if (!debugAuthorised.has(id)) return reply({ ok: false, error: 'Not watching this debug run' });
+    const data = debugSessions.readResults(id);
+    reply(data ? { ok: true, ...data } : { ok: true, results: null });
   });
 
   /* Stop a run by id — from any tab, and never a dead end.
@@ -1602,14 +1820,24 @@ io.on('connection', async (socket) => {
   });
 
   // ── Highlight elements for compact workflow hover ─────────────────────────
-  // Stash the element's existing inline outline / box-shadow (value AND
-  // priority — `!important` is lost otherwise) before overwriting, and
-  // restore them on clear. This is what keeps a hovered-and-selected
-  // element's selection border from vanishing when the hover ends.
+  // Delegate to the injected selector tool when it's there: it paints this
+  // ring through the same bookkeeping as every other highlight, so clearing
+  // it restores whatever the element ACTUALLY rests at right now. The old
+  // dataset-stashing path below stays as a fallback for pages where the tool
+  // never injected — but it can resurrect a stale selection, because the
+  // value it stashed is whatever was painted when the hover started.
   socket.on('highlightSelector', async ({ selector }) => {
     if (!selector) return;
     const page = await getActivePage();
     if (!page) return;
+    try {
+      const handled = await page.evaluate((sel) => {
+        if (typeof window.__setStepHoverHighlight__ !== 'function') return false;
+        window.__setStepHoverHighlight__(sel);
+        return true;
+      }, selector).catch(() => false);
+      if (handled) return;
+    } catch (_) {}
     try {
       await page.evaluate((sel) => {
         function restore(el) {
@@ -1660,6 +1888,12 @@ io.on('connection', async (socket) => {
     if (!page) return;
     try {
       await page.evaluate(() => {
+        // Tool-painted ring (normal case) — restores each element's resting
+        // decoration rather than a snapshot taken when the hover began.
+        if (typeof window.__clearStepHoverHighlight__ === 'function') {
+          window.__clearStepHoverHighlight__();
+          return;
+        }
         const props = ['outline', 'outline-offset', 'box-shadow'];
         document.querySelectorAll('[data-scraper-hl]').forEach(el => {
           for (const p of props) {
@@ -1706,18 +1940,38 @@ io.on('connection', async (socket) => {
     const page = await getActivePage();
     if (!page) return reply({ ok: false, error: 'No active page — navigate to a URL first.', code: 'NO_PAGE' });
 
-    // Guided-tour determinism: on the bundled DemoMart page, return a fixed,
-    // instant "AI" result so the tour's Extract-with-AI step always works and
-    // shows the same columns — no API key or live LLM needed.
+    /* ── Guided tour: a fixture, not a model call ─────────────────────────
+       On the bundled practice shop this answers from a fixed table instead
+       of asking an LLM. Three reasons, in order of importance:
+
+         1. The tour is a sequence, and every step after this one is built on
+            what this returns. A live model that renamed a column, merged two,
+            or was simply unreachable would break the walkthrough for someone
+            in their first five minutes with the product.
+         2. It works on an instance with no LLM_API_KEY configured, which
+            includes every fresh checkout.
+         3. It costs nothing and can't be turned into free inference by
+            pointing a workflow at our own demo page.
+
+       Note what is NOT in this list: the stock count. It is on the page, and
+       leaving it out is the setup for the tour's next step, where the user
+       adds that column by hand — the moment the product stops looking like
+       "whatever the AI decides" and starts looking like something they drive.
+       Keep these selectors in step with public/demo/shop.html.
+
+       The short pause is honest staging: the button says it is thinking, and
+       an answer that lands in zero milliseconds reads as a bug rather than a
+       result. It also gives the spinner time to be seen at all. */
     try {
       if (String(page.url() || '').includes('/demo/shop.html')) {
+        await new Promise(r => setTimeout(r, 900));
         return reply({
           ok: true, source: 'demo', name: 'Products',
           fields: [
-            { name: 'title',  selector: '.title',       kind: 'text' },
-            { name: 'price',  selector: '.price',       kind: 'text' },
-            { name: 'rating', selector: '.rating',      kind: 'text' },
-            { name: 'link',   selector: 'a.detail',     kind: 'attr', attribute: 'href' },
+            { name: 'title',  selector: '.title',   kind: 'text' },
+            { name: 'price',  selector: '.price',   kind: 'text' },
+            { name: 'rating', selector: '.rating',  kind: 'text' },
+            { name: 'link',   selector: 'a.detail', kind: 'attr', attribute: 'href' },
           ],
           rejected: [],
         });
@@ -2349,6 +2603,10 @@ io.on('connection', async (socket) => {
     // (SPA refresh), but the capture is cheap to re-attach on the next
     // navigate, and detaching here avoids leaking a CDP session per reconnect.
     networkCapture.detach(userId).catch(() => {});
+    // Stop pacing frames against a socket that is gone. A debug session whose
+    // last viewer disappears starts its abandonment clock here (the run is
+    // paused and nothing else can resume it) — see debugSession.service.js.
+    debugSessions.detachEverywhere(socket);
     // Note: we deliberately don't touch modeReapplyListeners here — the
     // puppeteer page can outlive the socket (SPA refresh) and the hook is
     // still useful on the next navigate. The listener gets replaced cleanly
@@ -2371,12 +2629,22 @@ const dbClient  = require('./db/client');
 // exist); on Postgres it creates the schema on first boot.
 dbClient.init()
   .then(async () => {
-    // ADMIN_USERNAMES (comma-separated) is the single source of truth for
-    // who can manage the shared/platform proxy pool — see
-    // db/repositories/users.repo.js and routes/proxies.routes.js.
-    if (process.env.ADMIN_USERNAMES) {
+    // ADMIN_USERNAMES (comma-separated) BOOTSTRAPS admin access so a fresh
+    // deploy has someone who can reach /admin at all. It is grant-only: the
+    // database is the source of truth for who is an admin, because the admin
+    // panel can promote and demote users and a declarative re-sync on every
+    // boot would silently undo that. See users.repo.grantAdminByUsernames.
+    {
       const users = require('./db/repositories/users.repo');
-      await users.syncAdminsFromUsernames(process.env.ADMIN_USERNAMES.split(','));
+      if (process.env.ADMIN_USERNAMES) {
+        await users.grantAdminByUsernames(process.env.ADMIN_USERNAMES.split(','));
+      }
+      // A deploy with no admin at all has no way to reach the admin panel and
+      // no way to grant itself access through the UI. Say so loudly at boot
+      // rather than leaving the owner to discover it via a 403.
+      if ((await users.countAdmins()) === 0) {
+        console.warn('[admin] No admin users exist. Set ADMIN_USERNAMES=<your-username> and restart to grant yourself access.');
+      }
     }
     // BEFORE the schedulers: recover runs left "running" by a process that is
     // gone, so a restart clears stuck runs immediately rather than leaving
@@ -2385,6 +2653,9 @@ dbClient.init()
     scheduler.start();
     apiWorker.start();
     maintenance.start();
+    // Reclaims debug sessions whose window went away mid-pause: the run holds
+    // a browser and a run slot, and nothing else will ever resume it.
+    debugSessions.start();
     // Bind to localhost by default so a fresh local install isn't reachable
     // from the LAN. Set HOST=0.0.0.0 to expose it deliberately.
     const HOST = process.env.HOST || '127.0.0.1';

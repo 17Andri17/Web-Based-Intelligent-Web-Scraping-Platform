@@ -4,6 +4,7 @@ const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const runStore = require('../services/runStore.service');
 const workflows = require('../db/repositories/workflows.repo');
+const entitlements = require('../services/entitlements.service');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -45,6 +46,12 @@ router.put('/workflow/:workflowId', async (req, res) => {
   const workflowId = Number(req.params.workflowId);
   const wf = await workflows.getForUser(workflowId, req.user.id);
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+
+  // Scheduling is the headline paid feature — unattended runs are the whole
+  // reason to pay for a scraper rather than click one yourself. Gated here on
+  // the write path only: GET stays open so an account that lapses can still
+  // see (and delete) schedules it can no longer run.
+  await entitlements.assertFeature(req.user.id, 'scheduling', 'Scheduling');
 
   const { intervalMinutes, isActive, startAtIso, weekdays, cronExpression } = req.body || {};
   const im = Number(intervalMinutes);

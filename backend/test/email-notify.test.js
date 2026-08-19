@@ -26,11 +26,19 @@ const t = (name, ok, detail) => {
 const sent = [];
 let settingsRow = null;
 let smtpConfigured = true;
+let sendOk = true;
+const throttles = new Map();
+const tkey = (userId, workflowId) => `${userId}:${Number(workflowId) || 0}`;
 
 const stubs = {
   './mailer.service': {
     isConfigured: () => smtpConfigured,
-    send: async (msg) => { sent.push(msg); return { ok: true }; },
+    // `sent` records ATTEMPTS, so a test can assert that a failed send is
+    // retried next time rather than suppressed by a cooldown it never earned.
+    send: async (msg) => {
+      sent.push(msg);
+      return sendOk ? { ok: true } : { ok: false, error: 'smtp down' };
+    },
     verify: async () => ({ ok: true }),
   },
   '../db/repositories/notifications.repo': {
@@ -45,6 +53,25 @@ const stubs = {
       return row;
     },
     async markSent() {},
+
+    // Backed by a real map keyed the way the table is, so the per-workflow
+    // isolation is genuinely exercised rather than assumed.
+    async getThrottle(userId, workflowId) {
+      return throttles.get(tkey(userId, workflowId)) || null;
+    },
+    async countSuppressed(userId, workflowId) {
+      const k = tkey(userId, workflowId);
+      const row = throttles.get(k) || { last_sent_at: null, suppressed_count: 0 };
+      row.suppressed_count += 1;
+      throttles.set(k, row);
+      return row.suppressed_count;
+    },
+    async markAlertSent(userId, workflowId) {
+      throttles.set(tkey(userId, workflowId), {
+        last_sent_at: new Date().toISOString(),
+        suppressed_count: 0,
+      });
+    },
   },
   '../db/repositories/workflows.repo': {
     async getForUser() { return { id: 7, name: 'Price watch' }; },
@@ -66,7 +93,9 @@ const reviewRun  = { ...failedRun, status: 'needs_review' };
 const successRun = { ...failedRun, status: 'success' };
 const optedIn    = { is_active: 1, email: 'a@b.test', on_failure: 1, on_change: 1 };
 
-const reset = () => { sent.length = 0; };
+// Each case starts from a clean cooldown state — otherwise the second failure
+// alert in this file would be suppressed by the first.
+const reset = () => { sent.length = 0; throttles.clear(); };
 const summary = (counts, extra = {}) => ({ counts, baseline: false, ...extra });
 
 async function main() {
@@ -120,6 +149,45 @@ async function main() {
   await notifier.notifyRunFailed({ ...failedRun, rows_captured: 42 });
   t('a partial run reports the rows it did keep',
     sent[0] && /42/.test(sent[0].text), sent[0] && sent[0].text);
+
+  /* ── failure cooldown ─────────────────────────────────────────────────────
+     A broken scraper on a schedule fails over and over with the same message.
+     Mailing each one is how a person learns to filter the sender. */
+  console.log('failure cooldown');
+
+  settingsRow = optedIn; reset();
+  await notifier.notifyRunFailed(failedRun);
+  await notifier.notifyRunFailed(failedRun);
+  await notifier.notifyRunFailed(failedRun);
+  t('a workflow failing repeatedly mails only once', sent.length === 1, `sent ${sent.length}`);
+
+  // …and the suppressed ones are reported, not silently dropped.
+  process.env.EMAIL_FAILURE_COOLDOWN_HOURS = '0';
+  await notifier.notifyRunFailed(failedRun);
+  delete process.env.EMAIL_FAILURE_COOLDOWN_HOURS;
+  t('the next mail says how many failures were swallowed',
+    sent.length === 2 && /2 more times/.test(sent[1].text), sent[1] && sent[1].text);
+
+  reset();
+  await notifier.notifyRunFailed(failedRun);
+  await notifier.notifyRunFailed({ ...failedRun, workflow_id: 9 });
+  t('a DIFFERENT workflow is not muted by the first one\'s cooldown',
+    sent.length === 2, `sent ${sent.length}`);
+
+  reset();
+  process.env.EMAIL_FAILURE_COOLDOWN_HOURS = '0';
+  await notifier.notifyRunFailed(failedRun);
+  await notifier.notifyRunFailed(failedRun);
+  delete process.env.EMAIL_FAILURE_COOLDOWN_HOURS;
+  t('once the window passes, failures mail again', sent.length === 2, `sent ${sent.length}`);
+
+  // A quiet period must be opened by a mail that actually arrived. Starting one
+  // on a failed send would swallow a day of alerts because SMTP blipped.
+  reset(); sendOk = false;
+  await notifier.notifyRunFailed(failedRun);
+  await notifier.notifyRunFailed(failedRun);
+  sendOk = true;
+  t('a send that FAILED does not start the cooldown', sent.length === 2, `attempts ${sent.length}`);
 
   /* ── run.changed ──────────────────────────────────────────────────────── */
   console.log('change alerts');

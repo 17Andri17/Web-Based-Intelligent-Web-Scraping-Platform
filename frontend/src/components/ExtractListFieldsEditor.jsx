@@ -66,6 +66,10 @@ export default function ExtractListFieldsEditor({
   // survives the Workflow → Live Browser tab switch). We only keep the
   // transient pending-pick + name here.
   const [pendingPick, setPendingPick] = useState(null); // field info from browser
+  // Names added during the CURRENT picking session, so the banner can confirm
+  // the pick landed and offer the way out. Reset whenever picking starts or
+  // stops — it describes this visit to the page, not the field list.
+  const [pickedThisSession, setPickedThisSession] = useState([]);
   const [pickName, setPickName]       = useState("");
   // Extractable choices for the pending pick (text / attributes / html) and
   // the one currently selected. Clicking a link doesn't always mean "give me
@@ -268,6 +272,7 @@ export default function ExtractListFieldsEditor({
   const startPicking = () => {
     if (!containerSelector) return;
     setPendingPick(null);
+    setPickedThisSession([]);
     onStartPick && onStartPick(serialiseMarkerFields(normalised));
   };
 
@@ -306,6 +311,7 @@ export default function ExtractListFieldsEditor({
 
   const stopPicking = () => {
     setPendingPick(null);
+    setPickedThisSession([]);
     onStopPick && onStopPick();
   };
 
@@ -343,7 +349,12 @@ export default function ExtractListFieldsEditor({
     setAiSamples(prev => ({ ...prev, [name]: opt.sample ?? pendingPick.sampleValue ?? null }));
     setPendingPick(null);
     setPickName("");
-    // Stay in pick mode so the user can keep picking more fields.
+    // Stay in pick mode so the user can keep picking more fields — but say so,
+    // and say how to stop. Picking is a mode, and a mode you entered on
+    // purpose still has to announce that it is still on: the banner below
+    // used to re-appear reading "click an element inside the containers",
+    // which is indistinguishable from "your click didn't register".
+    setPickedThisSession(prev => [...prev, name]);
   };
 
   // ── Render ────────────────────────────────────────────────────────────
@@ -422,6 +433,7 @@ export default function ExtractListFieldsEditor({
           <div className="elfe-fields-header-btns">
             <button
               type="button"
+              data-tour="pick-field"
               className={`elfe-btn ${pickActive ? "elfe-btn--pick-active" : "elfe-btn--pick"}`}
               onClick={pickActive ? stopPicking : startPicking}
               disabled={!containerSelector}
@@ -433,17 +445,48 @@ export default function ExtractListFieldsEditor({
           </div>
         </div>
 
-        {/* Pick-mode instruction banner */}
+        {/* Pick-mode instruction banner. Once a field has actually been added
+            it changes register completely: confirm what landed, and put the
+            way out in front of the user. Repeating the original instruction
+            after a successful pick reads as "that didn't work, try again",
+            and leaves picking switched on indefinitely. */}
         {pickActive && !pendingPick && (
-          <div className="elfe-pick-banner">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-              <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/>
-              <line x1="12" y1="3" x2="12" y2="1"/><line x1="12" y1="21" x2="12" y2="23"/>
-              <line x1="3" y1="12" x2="1" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
-            </svg>
-            <span className="elfe-pick-banner-text">
-              Click any element <strong>inside</strong> the highlighted containers on the page — it will be added as a field here.
-            </span>
+          <div className={`elfe-pick-banner ${pickedThisSession.length ? "elfe-pick-banner--done" : ""}`}>
+            {pickedThisSession.length === 0 ? (
+              <>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/>
+                  <line x1="12" y1="3" x2="12" y2="1"/><line x1="12" y1="21" x2="12" y2="23"/>
+                  <line x1="3" y1="12" x2="1" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+                </svg>
+                <span className="elfe-pick-banner-text">
+                  Click any element <strong>inside</strong> the highlighted containers on the page — it will be added as a field here.
+                </span>
+              </>
+            ) : (
+              <>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6">
+                  <polyline points="20,6 9,17 4,12"/>
+                </svg>
+                <span className="elfe-pick-banner-text">
+                  Added{" "}
+                  {pickedThisSession.map((n, i) => (
+                    <React.Fragment key={n}>
+                      {i > 0 && ", "}<strong>{n}</strong>
+                    </React.Fragment>
+                  ))}
+                  . Still picking — click another element to add one more, or finish when you're done.
+                </span>
+                <button
+                  type="button"
+                  data-tour="stop-picking"
+                  className="elfe-btn elfe-btn--primary elfe-pick-done-btn"
+                  onClick={stopPicking}
+                >
+                  Done picking
+                </button>
+              </>
+            )}
           </div>
         )}
 
@@ -552,6 +595,7 @@ export default function ExtractListFieldsEditor({
                     </select>
                     <button
                       type="button"
+                      data-tour={`clean-field-${name}`}
                       className={`elfe-clean-toggle ${hasPipeline(f) ? "is-active" : ""} ${openClean === name ? "is-open" : ""}`}
                       onClick={() => setOpenClean(openClean === name ? null : name)}
                       title="Clean / split this field"

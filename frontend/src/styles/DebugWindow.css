@@ -1,0 +1,450 @@
+/* ===========================================================================
+   Debug window (/debug/:runId)
+
+   Its own browser window, so it owns the whole viewport: a fixed toolbar, then
+   three columns that never scroll as a page — each scrolls on its own, because
+   the picture in the middle has to stay put while you read the panel beside it.
+   Colours are the app's tokens, so it follows the user's theme like everything
+   else.
+   ========================================================================= */
+
+.dbg-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+
+.dbg-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-default);
+  flex: 0 0 auto;
+}
+
+.dbg-title {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.dbg-controls { display: flex; gap: 6px; }
+
+.dbg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.dbg-btn:hover:not(:disabled) { background: var(--bg-elevated); }
+.dbg-btn:disabled { opacity: 0.45; cursor: default; }
+.dbg-btn.primary { background: var(--accent-primary-fill); border-color: transparent; color: var(--text-on-accent); }
+.dbg-btn.danger:hover:not(:disabled) { background: var(--accent-danger-fill); border-color: transparent; color: var(--text-on-accent); }
+.dbg-btn.tiny { padding: 2px 8px; font-size: 11px; }
+
+.dbg-speed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.dbg-speed select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.dbg-status {
+  margin-left: auto;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+.dbg-status.running { color: var(--accent-primary); }
+.dbg-status.success { color: var(--accent-success); }
+.dbg-status.error,
+.dbg-status.failed  { color: var(--accent-danger); }
+
+/* ── Banners ─────────────────────────────────────────────────────────────── */
+
+.dbg-banner {
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  background: var(--tint-info-bg);
+  border-bottom: 1px solid var(--border-muted);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.dbg-banner.error { background: var(--tint-danger-bg); color: var(--text-primary); }
+.dbg-banner.warn {
+  background: var(--tint-warn-bg);
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-warning);
+  display: flex; align-items: center; gap: 8px;
+}
+.dbg-banner.warn .dbg-link { margin-left: auto; color: var(--accent-warning); }
+.dbg-banner strong { color: var(--text-primary); }
+
+.dbg-link {
+  background: none; border: none; padding: 0;
+  color: var(--accent-primary); cursor: pointer; font: inherit; text-decoration: underline;
+}
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+
+.dbg-body {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 380px;
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .dbg-body { grid-template-columns: 200px minmax(0, 1fr) 300px; }
+}
+
+.dbg-steps,
+.dbg-inspect { min-height: 0; display: flex; flex-direction: column; background: var(--bg-secondary); }
+.dbg-steps   { border-right: 1px solid var(--border-default); }
+.dbg-inspect { border-left: 1px solid var(--border-default); }
+
+.dbg-steps-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-muted);
+  font-weight: 600; font-size: 12px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.dbg-hint { font-size: 10px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-muted); }
+.dbg-hint.block { display: block; margin: 0 0 8px; text-transform: none; }
+
+/* ── Stage (the picture) ─────────────────────────────────────────────────── */
+
+.dbg-stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg-primary); }
+
+.dbg-urlbar {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  margin: 8px 10px 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.dbg-canvas-wrap {
+  flex: 1 1 auto;
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  padding: 10px;
+  min-height: 0;
+}
+/* Scrolling the paused page happens over this surface, so the cursor has to
+   say the surface is live rather than a screenshot. */
+.dbg-canvas-wrap.paused { cursor: grab; }
+.dbg-canvas-wrap.dragging { cursor: grabbing; user-select: none; }
+.dbg-canvas-wrap.control { cursor: crosshair; }
+.dbg-canvas-wrap.control:focus-visible { outline: none; }
+.dbg-canvas-wrap.control .dbg-canvas { outline-color: var(--accent-purple); }
+/* A visible frame around a frozen picture: the difference between "stopped"
+   and "nothing is happening yet" is the single most important thing this
+   window has to communicate at a glance. */
+.dbg-canvas-wrap.paused .dbg-canvas { outline: 2px solid var(--accent-warning); outline-offset: 2px; }
+
+.dbg-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: #fff;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+
+.dbg-stage-badges {
+  position: absolute;
+  top: 18px; right: 18px;
+  display: flex; align-items: center; gap: 6px;
+  pointer-events: none;
+}
+
+.dbg-paused-pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--accent-warning);
+  color: #1a1205;
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+
+.dbg-scroll-pill {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Click & type: a switch, not a button, and visibly on when it is. */
+.dbg-control-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dbg-control-toggle:has(input:disabled) { opacity: 0.45; cursor: default; }
+.dbg-control-toggle.on {
+  border-color: var(--accent-purple);
+  color: var(--accent-purple);
+  background: var(--tint-purple-bg);
+}
+.dbg-control-toggle input { accent-color: var(--accent-purple); margin: 0; }
+
+/* ── Flow tree in the side column ────────────────────────────────────────
+   Borrows the Execution panel's tree wholesale (ep-flow-*); only the
+   breakpoint gutter and the paused row are ours. */
+.dbg-flow { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 0; }
+.dbg-flow .ep-flow-row { gap: 6px; }
+.dbg-flow .ep-flow-node--paused > .ep-flow-row {
+  background: var(--bg-active);
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+}
+
+/* ── Step tree ───────────────────────────────────────────────────────────── */
+
+.dbg-tree { list-style: none; margin: 0; padding: 4px 0; overflow-y: auto; }
+.dbg-tree.depth-0 { flex: 1 1 auto; }
+.dbg-tree:not(.depth-0) { padding: 0 0 0 14px; border-left: 1px solid var(--border-muted); margin-left: 14px; }
+
+.dbg-step {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+.dbg-step.running { color: var(--accent-primary); }
+.dbg-step.done    { color: var(--text-primary); }
+.dbg-step.error   { color: var(--accent-danger); }
+.dbg-step.current { background: var(--bg-active); color: var(--text-primary); font-weight: 600; }
+
+.dbg-step-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The breakpoint dot: hollow until set, like every debugger's gutter. */
+.dbg-bp {
+  flex: 0 0 auto;
+  width: 11px; height: 11px;
+  padding: 0;
+  border: 1.5px solid var(--border-default);
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.dbg-bp:hover { border-color: var(--accent-danger); }
+.dbg-bp.on { background: var(--accent-danger); border-color: var(--accent-danger); }
+
+.dbg-iter { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+.dbg-muted {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 1px 5px; border-radius: 999px;
+  background: var(--bg-elevated); color: var(--text-muted);
+  border: none; cursor: pointer;
+}
+.dbg-muted:hover { color: var(--text-primary); }
+
+/* ── Inspector ───────────────────────────────────────────────────────────── */
+
+.dbg-tabs { display: flex; border-bottom: 1px solid var(--border-muted); flex: 0 0 auto; }
+
+.dbg-tab {
+  flex: 1;
+  padding: 8px 6px;
+  background: none; border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 12px; font-weight: 500;
+  cursor: pointer;
+}
+.dbg-tab:hover { color: var(--text-primary); }
+.dbg-tab.active { color: var(--accent-primary); border-bottom-color: var(--accent-primary); }
+
+.dbg-tabbody { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+.dbg-inspector { padding: 12px; }
+
+.dbg-when { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.dbg-when-pill {
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  background: var(--bg-tertiary); color: var(--text-secondary);
+}
+.dbg-when-pill.before { background: var(--tint-info-bg);   color: var(--accent-primary); }
+.dbg-when-pill.after  { background: var(--bg-tertiary);    color: var(--accent-success); }
+.dbg-when-pill.error  { background: var(--tint-danger-bg); color: var(--text-primary); }
+.dbg-when-pill.running { background: var(--tint-info-bg); color: var(--accent-primary); }
+.dbg-lane { font-size: 11px; color: var(--text-muted); }
+
+.dbg-facts { display: grid; grid-template-columns: 68px 1fr; gap: 4px 10px; margin: 0 0 14px; font-size: 12px; }
+.dbg-facts dt { color: var(--text-muted); }
+.dbg-facts dd { margin: 0; color: var(--text-primary); }
+.dbg-facts .mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.break { overflow-wrap: anywhere; }
+.small { font-size: 11px; }
+
+.dbg-inspect h4 {
+  margin: 14px 0 6px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+
+.dbg-probe { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.dbg-probe li {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  border-left: 3px solid var(--border-default);
+}
+.dbg-probe li.hit  { border-left-color: var(--accent-success); }
+.dbg-probe li.miss { border-left-color: var(--accent-warning); }
+.dbg-probe li.err  { border-left-color: var(--accent-danger); }
+.dbg-probe code { font-size: 11px; color: var(--syntax-value); overflow-wrap: anywhere; }
+
+.dbg-count { display: block; margin-top: 3px; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.dbg-probe-hint { margin-top: 6px; font-size: 11px; color: var(--text-muted); line-height: 1.45; }
+.dbg-probe-err  { margin-top: 6px; font-size: 11px; color: var(--accent-danger); }
+.dbg-sample     { margin-top: 6px; font-size: 11px; color: var(--text-secondary); font-style: italic; }
+.dbg-sample-html {
+  margin: 6px 0 0;
+  padding: 6px;
+  max-height: 120px; overflow: auto;
+  background: var(--bg-code);
+  border-radius: var(--radius-sm);
+  font-size: 10px; color: var(--syntax-tag);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+/* Before the first navigation: the empty tab, said plainly. */
+.dbg-blank {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ── Data tab ────────────────────────────────────────────────────────────
+   Borrows the Execution panel's table/JSON renderer (ep-*) so captured rows
+   look the same wherever they are read. */
+.dbg-data { padding: 10px 12px; }
+.dbg-data-keys { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+
+.dbg-key {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.dbg-key:hover { color: var(--text-primary); }
+.dbg-key.active { border-color: var(--accent-primary); color: var(--accent-primary); background: var(--tint-info-bg); }
+.dbg-key-count { font-variant-numeric: tabular-nums; opacity: 0.75; }
+
+.dbg-tab-count {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.dbg-tab.active .dbg-tab-count { background: var(--accent-primary); color: var(--text-on-accent); }
+
+.dbg-captured { margin: 0; font-size: 12px; color: var(--text-primary); }
+.dbg-fields { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.dbg-fields span {
+  padding: 1px 7px; border-radius: 999px;
+  background: var(--bg-tertiary); color: var(--text-secondary);
+  font-size: 10px; font-variant-numeric: tabular-nums;
+}
+/* A field that came back empty in every record is the actionable one. */
+.dbg-fields span.empty { background: var(--tint-warn-bg); color: var(--accent-warning); }
+
+/* ── Page HTML ───────────────────────────────────────────────────────────── */
+
+.dbg-html { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.dbg-html-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-muted);
+  color: var(--text-muted);
+}
+.dbg-html-head .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbg-html .hi-panel { border: none; }
+
+/* ── Selector probe box ──────────────────────────────────────────────────── */
+
+.dbg-probebox { padding: 12px; }
+.dbg-probebox form { display: flex; gap: 6px; margin-bottom: 10px; }
+.dbg-probebox input {
+  flex: 1; min-width: 0;
+  padding: 5px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.dbg-probebox input:focus { outline: none; border-color: var(--accent-primary); }
+
+/* ── Log ─────────────────────────────────────────────────────────────────── */
+
+.dbg-log { padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.dbg-logline { padding: 1px 0; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.dbg-logline.err { color: var(--accent-danger); }
+
+/* ── Empty states ────────────────────────────────────────────────────────── */
+
+.dbg-empty { padding: 18px 14px; color: var(--text-muted); line-height: 1.5; }
+.dbg-empty.small { padding: 12px; font-size: 12px; }

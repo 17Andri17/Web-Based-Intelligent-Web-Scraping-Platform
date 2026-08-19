@@ -3,6 +3,7 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const apiKeysRepo = require('../db/repositories/apiKeys.repo');
+const entitlements = require('../services/entitlements.service');
 const { generateKey } = require('../services/apiKeys.service');
 
 /* ===========================================================================
@@ -43,7 +44,16 @@ router.post('/', async (req, res) => {
   if (!name) return res.status(400).json({ error: 'Name is required' });
   if (name.length > MAX_NAME_LEN) return res.status(400).json({ error: `Name too long (max ${MAX_NAME_LEN})` });
 
+  // An API key is only useful if the plan grants API access, so refuse to
+  // mint one that would 402 on first use — a key that cannot be used is a
+  // worse experience than a clear "upgrade to get API access" here.
+  await entitlements.assertFeature(req.user.id, 'publicApi', 'The REST API');
+
   const active = await apiKeysRepo.countActiveForUser(req.user.id);
+  // Two ceilings: the plan's, and MAX_ACTIVE_KEYS as an absolute backstop that
+  // applies even to unlimited plans (an account with 10,000 live keys is an
+  // incident, not a customer).
+  await entitlements.assertWithinLimit(req.user.id, 'maxApiKeys', active, 'API keys');
   if (active >= MAX_ACTIVE_KEYS) {
     return res.status(400).json({ error: `You already have ${active} active keys (max ${MAX_ACTIVE_KEYS}). Revoke one first.` });
   }

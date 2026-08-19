@@ -58,7 +58,7 @@ const STEPS = [
 (async () => {
   await migrate.run(db);
   const user = await db.get(
-    "INSERT INTO users (username, password_hash) VALUES ('watcher','x') RETURNING id", []);
+    "INSERT INTO users (username, password_hash, plan) VALUES ('watcher', 'x', 'business') RETURNING id", []);
   const wf = await db.get(
     "INSERT INTO workflows (user_id, name, steps_json) VALUES (?, 'Catalogue', ?) RETURNING id",
     [user.id, JSON.stringify(STEPS)]);

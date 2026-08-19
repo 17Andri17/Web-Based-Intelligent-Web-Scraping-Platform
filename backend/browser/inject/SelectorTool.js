@@ -107,6 +107,10 @@
   // Spotlight for the pick being configured in the editor right now.
   const FIELD_PENDING_OUTLINE = '3px solid #58a6ff';
   const FIELD_PENDING_SHADOW  = '0 0 0 4px rgba(88,166,255,0.35), inset 0 0 0 9999px rgba(88,166,255,0.14)';
+  // Workflow-sidebar step hover ("what does this step target?").
+  const STEP_HOVER_OUTLINE = '2px solid #4f9cf9';
+  const STEP_HOVER_OFFSET  = '1px';
+  const STEP_HOVER_SHADOW  = '0 0 0 4px rgba(79,156,249,0.18)';
 
   /* =========================================================================
      STYLE HELPERS
@@ -138,7 +142,7 @@
       MULTI_PICK_OUTLINE, MULTI_MATCH_OUTLINE,
       CONTAINER_PICK_OUTLINE, FIELD_PICK_HOVER_OUTLINE, FIELD_PICK_CONFIRM_OUTLINE,
       CONTAINER_PREVIEW_OUTLINE, FIELD_MARK_OUTLINE, FIELD_MARK_OUTLINE_MUTED,
-      FIELD_PENDING_OUTLINE,
+      FIELD_PENDING_OUTLINE, STEP_HOVER_OUTLINE,
       (typeof SCOPE_OUTLINE      !== 'undefined' ? SCOPE_OUTLINE      : null),
       (typeof HOVER_PICK_OUTLINE !== 'undefined' ? HOVER_PICK_OUTLINE : null),
     ];
@@ -163,6 +167,7 @@
     if (_hlShadowSet) return _hlShadowSet;
     _hlShadowSet = {};
     var list = [
+      STEP_HOVER_SHADOW,
       (typeof SCOPE_SHADOW         !== 'undefined' ? SCOPE_SHADOW         : null),
       (typeof FIELD_PENDING_SHADOW !== 'undefined' ? FIELD_PENDING_SHADOW : null),
     ];
@@ -236,25 +241,78 @@
     if (!Object.keys(s).length) originalStyles.delete(el);
   }
 
-  function clearArr(arr) {
-    arr.forEach(function(el) {
-      restoreStyle(el, 'outline');
-      restoreStyle(el, 'box-shadow');
-      // Re-apply scope elevation if this element is an iterator card
-      if (_allIteratorEls && _allIteratorEls.indexOf(el) !== -1) {
-        _reapplyScopeEl(el);
-      }
-    });
-    arr.length = 0;
+  /* ── Resting decoration — the ONE source of truth ────────────────────────
+     An element can belong to several subsystems at once (a confirmed green
+     pick that is also an EXTRACT_LIST container; an iterator card that also
+     carries a field marker). Four different transient highlights paint on
+     top of those — canvas hover, breadcrumb/HTML-tree hover, list-pick hover
+     and the sidebar step hover — and each one used to hand-roll its own
+     "put it back how it was" logic, each covering a DIFFERENT subset of the
+     subsystems. That's why highlights looked random: whichever decorations
+     the teardown path happened not to know about were simply lost, and the
+     hover paint it did know about was sometimes left behind instead.
+
+     `_restingDecoration` answers "what should this element look like when no
+     transient hover is on it?" in one place, ordered most-specific first, and
+     `_repaintResting` is the single teardown every hover path now calls. */
+  function _restingDecoration(el) {
+    if (!el) return null;
+    if (el === _listPickPendingEl) {
+      return { outline: FIELD_PENDING_OUTLINE, shadow: FIELD_PENDING_SHADOW };
+    }
+    if (_multiAddMode && _multiSamples.indexOf(el) !== -1) {
+      return { outline: MULTI_PICK_OUTLINE, shadow: MULTI_PICK_SHADOW };
+    }
+    if (hardEls.indexOf(el) !== -1) {
+      return _multiAddMode
+        ? { outline: MULTI_MATCH_OUTLINE, shadow: MULTI_MATCH_SHADOW }
+        : { outline: HARD_OUTLINE, shadow: 'inset 0 0 0 9999px rgba(63,185,80,0.06)' };
+    }
+    if (softEls.indexOf(el) !== -1) {
+      return { outline: SOFT_OUTLINE, shadow: 'inset 0 0 0 9999px rgba(210,153,34,0.07)' };
+    }
+    if (_listPickFieldEls.indexOf(el) !== -1) {
+      // Markers step back while a pick is being configured in the editor.
+      return {
+        outline: _listPickPendingEl ? FIELD_MARK_OUTLINE_MUTED : FIELD_MARK_OUTLINE,
+        offset:  '-1px',
+      };
+    }
+    if (_listPickContainers.indexOf(el) !== -1) {
+      if (_listPickMode)     return { outline: CONTAINER_PICK_OUTLINE, shadow: CONTAINER_PICK_SHADOW };
+      if (_listPreviewActive) return { outline: CONTAINER_PREVIEW_OUTLINE };
+    }
+    if (_allIteratorEls.indexOf(el) !== -1) {
+      return { outline: SCOPE_OUTLINE, shadow: SCOPE_SHADOW };
+    }
+    return null;
   }
 
-  function _reapplyScopeEl(el) {
+  // Strip whatever is on the element and put back its resting decoration (or
+  // the page's own style when it has none). Re-applied through setStyle so
+  // the restored decoration stays TRACKED — a raw setProperty here poisons
+  // the next storeOriginalStyle and leaks the outline permanently.
+  function _repaintResting(el) {
     if (!el) return;
-    _markStyled(el);
-    // Ring only — the ForEach dim is a hole-punch overlay now, so iterator
-    // cards need no z-index/position lift to stay bright (see _createDimOverlay).
-    el.style.setProperty('outline',    SCOPE_OUTLINE, 'important');
-    el.style.setProperty('box-shadow', SCOPE_SHADOW,  'important');
+    restoreStyle(el, 'outline');
+    restoreStyle(el, 'outline-offset');
+    restoreStyle(el, 'box-shadow');
+    const d = _restingDecoration(el);
+    if (!d) return;
+    if (d.outline) setStyle(el, 'outline',        d.outline, true);
+    if (d.offset)  setStyle(el, 'outline-offset', d.offset,  true);
+    if (d.shadow)  setStyle(el, 'box-shadow',     d.shadow,  true);
+  }
+
+  // True when the element already carries state paint a hover must not hide.
+  function _hasResting(el) { return !!_restingDecoration(el); }
+
+  // Empty the array BEFORE repainting: _restingDecoration reads these same
+  // arrays, so clearing after would just re-assert what we're removing.
+  function clearArr(arr) {
+    const els = arr.slice();
+    arr.length = 0;
+    els.forEach(_repaintResting);
   }
 
   function applySoft(els) {
@@ -278,15 +336,7 @@
   function fullReset() {
     clearArr(softEls);
     clearArr(hardEls);
-    if (hoverEl &&
-        softEls.indexOf(hoverEl) === -1 &&
-        hardEls.indexOf(hoverEl) === -1) {
-      if (_allIteratorEls && _allIteratorEls.indexOf(hoverEl) !== -1) {
-        _reapplyScopeEl(hoverEl);
-      } else {
-        restoreStyle(hoverEl, 'outline');
-      }
-    }
+    _repaintResting(hoverEl);
     hoverEl      = null;
     currentEl    = null;
     softSelector = null;
@@ -345,7 +395,7 @@
     });
     originalStyles.clear();
     _sweepStrayHighlights();
-    _clearStepHoverHighlight();   // belt-and-suspenders for the separate mechanism
+    try { window.__clearStepHoverHighlight__(); } catch (_) {}   // belt-and-suspenders for the sidebar ring
     if (tooltip) tooltip.style.display = 'none';
     if (previewSel && typeof window.__showListFieldMarkers__ === 'function') {
       try { window.__showListFieldMarkers__(previewSel, previewFields); } catch (_) {}
@@ -890,20 +940,7 @@
     if (!_listPickHoverEl) return;
     var el = _listPickHoverEl;
     _listPickHoverEl = null;
-    restoreStyle(el, 'outline');
-    restoreStyle(el, 'box-shadow');
-    // The restore reverted to the page's own styles — put back whatever
-    // pick-mode decoration the element carries. Use setStyle (not a raw
-    // setProperty) so the re-applied decoration stays TRACKED: a raw
-    // re-apply here left the style untracked, which poisoned the next
-    // storeOriginalStyle and leaked the outline permanently.
-    if (el === _listPickPendingEl) {
-      setStyle(el, 'outline',    FIELD_PENDING_OUTLINE, true);
-      setStyle(el, 'box-shadow', FIELD_PENDING_SHADOW,  true);
-    } else if (_listPickFieldEls.indexOf(el) !== -1) {
-      setStyle(el, 'outline', _listPickPendingEl ? FIELD_MARK_OUTLINE_MUTED : FIELD_MARK_OUTLINE, true);
-      setStyle(el, 'outline-offset', '-1px', true);
-    }
+    _repaintResting(el);
   }
 
   /* ── Pending-pick spotlight ──────────────────────────────────────────────
@@ -932,24 +969,11 @@
     }
     if (!_listPickPendingEl) return;
     var el = _listPickPendingEl;
-    restoreStyle(el, 'outline');
-    restoreStyle(el, 'box-shadow');
-    // Re-assert the resting decoration this element should still carry, TRACKED
-    // via setStyle (a raw re-apply left it untracked and leaked). A field
-    // element keeps its dashed marker; a container picked as a whole-item field
-    // (the '' selector / enclosing-link case) keeps its container outline
-    // instead of being left bare.
-    if (_listPickFieldEls.indexOf(el) !== -1) {
-      setStyle(el, 'outline', FIELD_MARK_OUTLINE, true);
-      setStyle(el, 'outline-offset', '-1px', true);
-    } else if (_listPickContainers.indexOf(el) !== -1) {
-      if (_listPickMode) {
-        setStyle(el, 'outline',    CONTAINER_PICK_OUTLINE, true);
-        setStyle(el, 'box-shadow', CONTAINER_PICK_SHADOW,  true);
-      } else if (_listPreviewActive) {
-        setStyle(el, 'outline', CONTAINER_PREVIEW_OUTLINE, true);
-      }
-    }
+    // Drop the pending flag FIRST so _restingDecoration doesn't just re-assert
+    // the spotlight we're removing, then fall back to whatever this element
+    // rests at (dashed field marker, container outline, or nothing).
+    _listPickPendingEl = null;
+    _repaintResting(el);
   }
 
   // Anchor the spotlight box on the pending element's page rect. Re-run on
@@ -1001,11 +1025,9 @@
      coordinates so they scroll with the content. */
 
   function _clearListFieldMarkers() {
-    _listPickFieldEls.forEach(function(el) {
-      restoreStyle(el, 'outline');
-      restoreStyle(el, 'outline-offset');
-    });
-    _listPickFieldEls = [];
+    var wasMarked = _listPickFieldEls;
+    _listPickFieldEls = [];          // empty first — _repaintResting reads it
+    wasMarked.forEach(_repaintResting);
     _listPickChips.forEach(function(c) { if (c.parentNode) c.parentNode.removeChild(c); });
     _listPickChips = [];
   }
@@ -1186,8 +1208,9 @@
     _stopListLayoutWatch();
     _clearListFieldMarkers();
     _listPickLastFields = null;
-    _listPickContainers.forEach(function(el) { restoreStyle(el, 'outline'); });
-    _listPickContainers = [];
+    var wasCont = _listPickContainers;
+    _listPickContainers = [];        // empty first — _repaintResting reads it
+    wasCont.forEach(_repaintResting);
   };
 
   // The editor's "Extract:" chooser targets a specific element (the clicked
@@ -1605,11 +1628,11 @@
       var mtgt = e.target;
       if (mtgt === tooltip) return;
       if (mtgt !== hoverEl) {
-        // Drop the previous plain hover ring, but never disturb a painted
-        // pick/match (those live in hardEls).
-        if (hoverEl && hardEls.indexOf(hoverEl) === -1) restoreStyle(hoverEl, 'outline');
+        // Drop the previous plain hover ring, restoring whatever decoration
+        // that element rests at (a pick/match ring, an iterator scope ring…).
+        _repaintResting(hoverEl);
         hoverEl = mtgt;
-        if (!isRoot(mtgt) && hardEls.indexOf(mtgt) === -1) setStyle(mtgt, 'outline', HOVER_OUTLINE, true);
+        if (!isRoot(mtgt) && !_hasResting(mtgt)) setStyle(mtgt, 'outline', HOVER_OUTLINE, true);
       }
       if (tooltip) {
         var already = _multiSamples.indexOf(mtgt) !== -1;
@@ -1631,20 +1654,15 @@
       return;
     }
 
-    if (hoverEl &&
-        hardEls.indexOf(hoverEl) === -1 &&
-        softEls.indexOf(hoverEl) === -1) {
-      restoreStyle(hoverEl, 'outline');
-    }
+    _repaintResting(hoverEl);
     hoverEl = target;
 
     const inScope = _forEachScopeSel === null ||
       _allIteratorEls.some(function(el) { return el === target || el.contains(target); });
 
-    if (inScope &&
-        hardEls.indexOf(hoverEl)         === -1 &&
-        softEls.indexOf(hoverEl)         === -1 &&
-        _allIteratorEls.indexOf(hoverEl) === -1) {
+    // Never hide state paint (green / amber / scope ring / list markers)
+    // behind the plain "you can click this" ring.
+    if (inScope && !_hasResting(hoverEl)) {
       setStyle(hoverEl, 'outline', HOVER_OUTLINE, true);
     }
 
@@ -1926,11 +1944,7 @@
     el.style.setProperty('box-shadow', SCOPE_SHADOW,  'important');
   }
 
-  function _unelevateEl(el) {
-    if (!el) return;
-    restoreStyle(el, 'outline');
-    restoreStyle(el, 'box-shadow');
-  }
+  function _unelevateEl(el) { _repaintResting(el); }
 
   window.__setForEachScope__ = function(iteratorSelector) {
     window.__clearForEachScope__();
@@ -1976,28 +1990,25 @@
     if (!_hoverHighlightEl) return;
     const el = _hoverHighlightEl;
     _hoverHighlightEl = null;
-    if (hardEls.indexOf(el) === -1 && softEls.indexOf(el) === -1) {
-      restoreStyle(el, 'outline');
-      restoreStyle(el, 'box-shadow');
-    }
+    // Unconditional repaint. The old guard skipped the restore for green /
+    // amber elements, which left the PURPLE preview outline sitting on them
+    // permanently — the selection paint was the thing that got lost.
+    _repaintResting(el);
   }
 
-  // Clear the canvas hover outline (blue, follows the cursor in selection
-  // mode) if it's on a non-selected element.
+  // Drop the canvas hover outline (blue, follows the cursor in selection
+  // mode) and put back whatever the element rests at.
   function _clearCanvasHover() {
-    if (hoverEl && hardEls.indexOf(hoverEl) === -1 && softEls.indexOf(hoverEl) === -1) {
-      if (_allIteratorEls && _allIteratorEls.indexOf(hoverEl) !== -1) _reapplyScopeEl(hoverEl);
-      else restoreStyle(hoverEl, 'outline');
-    }
+    _repaintResting(hoverEl);
     hoverEl = null;
   }
 
-  // Clear the workflow-sidebar step-hover highlight. That highlight is
-  // applied by server.js's highlightSelector via `data-scraper-hl` datasets
-  // — a mechanism completely separate from this script's originalStyles, so
-  // no injected teardown ever touched it and it could linger after mode
-  // changes / navigation / resets. Restoring it here folds it into every
-  // teardown path.
+  // Drain a step-hover ring painted the LEGACY way — by server.js writing
+  // inline styles directly and stashing the previous value in
+  // `data-scraper-hl` datasets. That path is now only reached on a page where
+  // this script never injected, but a ring can still be left over from before
+  // an injection (or from an older tab), and it is invisible to originalStyles
+  // — so every teardown drains it too.
   function _clearStepHoverHighlight() {
     try {
       var els = document.querySelectorAll('[data-scraper-hl]');
@@ -2021,6 +2032,46 @@
     } catch (_) {}
   }
 
+  /* ── Workflow-sidebar step hover ─────────────────────────────────────────
+     Hovering a step in the sidebar rings the elements it targets. This used
+     to be painted by server.js straight into inline styles, stashing the
+     PREVIOUS value in `data-scraper-hl` datasets and writing it back on
+     clear. That fights this script's bookkeeping: if the selection changed
+     while the hover was up (user clicks the page mid-hover), the stash still
+     held the OLD green/amber and clearing re-asserted it — leaving two
+     different element sets looking selected at once. Painting it here
+     instead makes it just another transient hover over `_repaintResting`,
+     so it can never resurrect a stale selection. */
+  let _stepHoverEls = [];
+
+  window.__setStepHoverHighlight__ = function(selector) {
+    window.__clearStepHoverHighlight__();
+    if (!selector) return;
+    var els = [];
+    try {
+      if (/^[\/(]/.test(selector)) {
+        var r = document.evaluate(selector, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        for (var i = 0; i < r.snapshotLength; i++) els.push(r.snapshotItem(i));
+      } else {
+        els = Array.prototype.slice.call(document.querySelectorAll(selector));
+      }
+    } catch (_) { return; }
+    els.forEach(function(el) {
+      if (!el || !el.style) return;
+      _stepHoverEls.push(el);
+      setStyle(el, 'outline',        STEP_HOVER_OUTLINE, true);
+      setStyle(el, 'outline-offset', STEP_HOVER_OFFSET,  true);
+      setStyle(el, 'box-shadow',     STEP_HOVER_SHADOW,  true);
+    });
+  };
+
+  window.__clearStepHoverHighlight__ = function() {
+    var els = _stepHoverEls;
+    _stepHoverEls = [];
+    els.forEach(_repaintResting);
+    _clearStepHoverHighlight();   // also drain any legacy dataset-painted ring
+  };
+
   // ── Unified transient-hover teardown ────────────────────────────────────
   // Every "hover preview" highlight — canvas hover, breadcrumb / HTML-tree
   // hover, and the sidebar step hover — is cleared together. Hover previews
@@ -2030,7 +2081,7 @@
   function _clearAllHovers() {
     try { clearHoverHighlight(); } catch (_) {}
     try { _clearCanvasHover(); }   catch (_) {}
-    try { _clearStepHoverHighlight(); } catch (_) {}
+    try { window.__clearStepHoverHighlight__(); } catch (_) {}
   }
   window.__clearHovers__ = _clearAllHovers;
 
@@ -2190,11 +2241,9 @@
     _clearListFieldMarkers();
     _listPickLastFields = null;
     _clearListPickHover();
-    _listPickContainers.forEach(function(el) {
-      restoreStyle(el, 'outline');
-      restoreStyle(el, 'box-shadow');
-    });
-    _listPickContainers = [];
+    var wasCont = _listPickContainers;
+    _listPickContainers = [];        // empty first — _repaintResting reads it
+    wasCont.forEach(_repaintResting);
     _removeListPickOverlay();
     if (tooltip) {
       tooltip.style.display = 'none';

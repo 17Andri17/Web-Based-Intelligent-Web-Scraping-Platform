@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const webhooksRepo = require('../db/repositories/webhooks.repo');
+const entitlements = require('../services/entitlements.service');
 const { serializeWebhook } = require('../utils/apiSerialize');
 const { WEBHOOK_EVENTS, WEBHOOK_EVENT_LABELS } = require('../services/webhookEvents');
 
@@ -40,6 +41,10 @@ router.post('/', async (req, res) => {
 
   const urlError = validateUrl(url);
   if (urlError) return res.status(400).json({ error: urlError });
+
+  await entitlements.assertFeature(req.user.id, 'webhooks', 'Webhooks');
+  await entitlements.assertWithinLimit(
+    req.user.id, 'maxWebhooks', await webhooksRepo.countForUser(req.user.id), 'webhooks');
 
   let subscribed = WEBHOOK_EVENTS;
   if (events !== undefined) {

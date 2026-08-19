@@ -266,7 +266,7 @@ export default function ExecutionPanel({
 /* =====================================================================
    DataPreview — renders arrays as tables, objects as JSON, scalars as text
    ===================================================================== */
-function DataPreview({ data }) {
+export function DataPreview({ data }) {
   const [viewMode, setViewMode] = useState('auto');
 
   const isArray  = Array.isArray(data);
@@ -545,8 +545,16 @@ function laneSummary(laneDetail, stepId) {
   return (running || done || error) ? { running, done, error } : null;
 }
 
-function FlowNode({ step, depth, stepStates, iterations, lastStepId, stepTimes = {}, workers = {},
-                    lanes = {}, laneTotals = {}, inParallel = false, parallelOwner = null }) {
+/* `debug` is supplied only by the debug window (debug/DebugWindow.jsx), which
+   renders this same tree with a breakpoint gutter down the left. Sharing the
+   component rather than cloning it is what keeps the two views honest about
+   each other: the debug window shows the step states, loop counters, timings
+   and branch/subflow nesting the Flow tab shows, because it IS the Flow tab.
+   Passed through unchanged to every recursive call so a breakpoint can be set
+   on a step nested inside a loop or an inlined subflow, which is exactly where
+   the interesting ones live. */
+export function FlowNode({ step, depth, stepStates, iterations, lastStepId, stepTimes = {}, workers = {},
+                    lanes = {}, laneTotals = {}, inParallel = false, parallelOwner = null, debug = null }) {
   if (!step || typeof step !== "object") return null;
   const timing = stepTimes[step.id];
   const workerItems = workers[step.id];
@@ -584,11 +592,23 @@ function FlowNode({ step, depth, stepStates, iterations, lastStepId, stepTimes =
   const label = step.label?.trim() || friendlyType(step.type) || "step";
 
   return (
-    <li className={"ep-flow-node ep-flow-state-" + state}>
+    <li className={"ep-flow-node ep-flow-state-" + state
+                   + (debug && debug.currentId === step.id ? " ep-flow-node--paused" : "")}>
       <div className="ep-flow-row" style={{ paddingLeft: 4 + depth * 14 }}>
+        {debug && (
+          <button
+            className={`dbg-bp ${debug.breakpoints.has(step.id) ? "on" : ""}`}
+            onClick={() => step.id && debug.onToggleBreakpoint(step.id)}
+            title={debug.breakpoints.has(step.id) ? "Remove breakpoint" : "Break before this step"}
+          />
+        )}
         <FlowStatusDot state={state} running={state === "running"} />
         <span className="ep-flow-type">{stepKindIcon(step)}</span>
         <span className="ep-flow-label">{label}</span>
+        {debug && debug.muted.has(step.id) && (
+          <button className="dbg-muted" onClick={() => debug.onUnmute(step.id)}
+                  title="Pausing here is off — click to turn it back on">muted</button>
+        )}
         <span className="ep-flow-typetag">{friendlyType(step.type)}</span>
         {(isLoop || isSubflowIter) && laneTotal != null && (
           <span
@@ -642,6 +662,7 @@ function FlowNode({ step, depth, stepStates, iterations, lastStepId, stepTimes =
               laneTotals={laneTotals}
               inParallel={inParallel || isParallelHere}
               parallelOwner={isParallelHere ? step.id : parallelOwner}
+              debug={debug}
             />
           ))}
         </ul>
@@ -665,6 +686,7 @@ function FlowNode({ step, depth, stepStates, iterations, lastStepId, stepTimes =
               laneTotals={laneTotals}
               inParallel={inParallel || isParallelHere}
               parallelOwner={isParallelHere ? step.id : parallelOwner}
+              debug={debug}
             />
           ))}
         </ul>

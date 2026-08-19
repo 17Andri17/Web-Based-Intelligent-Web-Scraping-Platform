@@ -1,99 +1,194 @@
+/* =====================================================================
+   GuidedTour — a docked guide panel and a single highlight ring.
+
+   Deliberately absent: any full-screen scrim, any click-guard, any second
+   highlight. The guide sits beside the product and never takes it over —
+   see the note at the top of components/GuidedTour.jsx.
+   ===================================================================== */
+
 .gt-root {
   position: fixed;
   inset: 0;
-  z-index: 9000;   /* above app chrome, below nothing else */
-  pointer-events: none; /* children opt back in */
+  z-index: 9000;
+  pointer-events: none;   /* the panel opts itself back in */
 }
 
-/* Light click-guard panels around the spotlight hole. Deliberately faint — the
-   platform must stay visible so the user can follow along; the bright ring, not
-   darkness, is what draws the eye. These still swallow clicks outside the hole. */
-.gt-mask {
-  position: fixed;
-  background: rgba(10, 12, 18, 0.22);
-  pointer-events: auto;
-}
-
-/* The highlight ring around the hole (visual only; does not block clicks). */
+/* ── The one highlight ───────────────────────────────────────────────── */
 .gt-ring {
   position: fixed;
   pointer-events: none;
-  border-radius: 8px;
-  box-shadow: 0 0 0 2px var(--accent-primary, #4f9cf9), 0 0 0 6px rgba(79,156,249,0.35);
-  animation: gtPulse 1.6s ease-in-out infinite;
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 2px var(--accent-primary),
+    0 0 0 6px color-mix(in srgb, var(--accent-primary) 30%, transparent);
+  animation: gtPulse 1.9s ease-in-out infinite;
 }
 @keyframes gtPulse {
-  0%,100% { box-shadow: 0 0 0 2px var(--accent-primary,#4f9cf9), 0 0 0 6px rgba(79,156,249,0.30); }
-  50%     { box-shadow: 0 0 0 2px var(--accent-primary,#4f9cf9), 0 0 0 11px rgba(79,156,249,0); }
+  0%, 100% { box-shadow: 0 0 0 2px var(--accent-primary), 0 0 0 6px  color-mix(in srgb, var(--accent-primary) 30%, transparent); }
+  50%      { box-shadow: 0 0 0 2px var(--accent-primary), 0 0 0 12px color-mix(in srgb, var(--accent-primary)  0%, transparent); }
 }
-@media (prefers-reduced-motion: reduce) { .gt-ring { animation: none; } }
-
-/* Soft (showcase) highlight — a gentler amber ring, no dark mask, clicks pass
-   through everywhere so the user can explore. */
+/* "Look at this" steps get a calmer amber ring — nothing is being asked. */
 .gt-ring--soft {
-  box-shadow: 0 0 0 2px var(--accent-warning), 0 0 0 6px rgba(224,168,58,0.30);
-  animation: gtPulseSoft 1.8s ease-in-out infinite;
+  box-shadow:
+    0 0 0 2px var(--accent-warning),
+    0 0 0 6px color-mix(in srgb, var(--accent-warning) 28%, transparent);
+  animation-name: gtPulseSoft;
 }
 @keyframes gtPulseSoft {
-  0%,100% { box-shadow: 0 0 0 2px var(--accent-warning), 0 0 0 6px rgba(224,168,58,0.28); }
-  50%     { box-shadow: 0 0 0 2px var(--accent-warning), 0 0 0 10px rgba(224,168,58,0); }
+  0%, 100% { box-shadow: 0 0 0 2px var(--accent-warning), 0 0 0 6px  color-mix(in srgb, var(--accent-warning) 28%, transparent); }
+  50%      { box-shadow: 0 0 0 2px var(--accent-warning), 0 0 0 11px color-mix(in srgb, var(--accent-warning)  0%, transparent); }
 }
-.gt-callout--soft { border-color: color-mix(in srgb, var(--accent-warning) 45%, var(--border-default, #30363d)); }
-.gt-callout--soft .gt-step-count::before { content: "TIP · "; color: var(--accent-warning); font-weight: 700; }
-
-/* Small floating label attached to a labeled highlight. */
-.gt-hl-label {
-  position: fixed;
-  pointer-events: none;
-  max-width: 200px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  font-size: 11.5px;
-  font-weight: 600;
-  line-height: 1.3;
-  color: var(--tint-warn-bg);
-  background: var(--accent-warning-fill);
-  box-shadow: 0 3px 10px var(--shadow-color);
-  z-index: 1;
+@media (prefers-reduced-motion: reduce) {
+  .gt-ring { animation: none; }
 }
 
-/* Callout bubble. */
-.gt-callout {
+/* ── The panel ───────────────────────────────────────────────────────── */
+.gt-panel {
   position: fixed;
   pointer-events: auto;
-  background: var(--bg-secondary, #161b22);
-  color: var(--text-primary, #e6e6e6);
-  border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, var(--border-default, #30363d));
-  border-radius: 12px;
-  box-shadow: 0 12px 40px var(--shadow-color);
-  padding: 14px 16px;
-  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 44px var(--shadow-color);
+  overflow: hidden;
+  /* Deliberately NOT animated on left/top. A guide panel dodging out from
+     over the thing it points at has to be where the code says it is, at every
+     instant — and a position transition makes that true only once the
+     animation finishes. Any moment the browser isn't advancing animations (a
+     backgrounded or occluded tab, a frame the compositor drops) leaves it
+     parked at the START of the move, i.e. still covering the target. It also
+     costs a layout pass per frame, which is a lot to pay for a slide. */
+  animation: gtIn 180ms ease;
+}
+@keyframes gtIn { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .gt-panel { animation: none; }
+}
+
+.gt-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px 9px 13px;
+  border-bottom: 1px solid var(--border-muted);
+  background: color-mix(in srgb, var(--accent-primary) 7%, var(--bg-secondary));
+}
+.gt-brand {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.3px;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+/* A small nod to the product mark in the header, not a second logo. */
+.gt-brand-mark {
+  width: 15px; height: 15px; border-radius: 4px; flex: none;
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-purple));
+}
+.gt-head-actions { display: inline-flex; align-items: center; gap: 3px; }
+.gt-count {
+  font-size: 11.5px; font-weight: 700; color: var(--text-secondary);
+  font-variant-numeric: tabular-nums; margin-right: 4px;
+}
+.gt-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0;
+  border: none; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-secondary); cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.gt-icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.gt-progress { height: 3px; background: var(--bg-tertiary); }
+.gt-progress > span {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, var(--accent-primary), var(--accent-purple));
+  transition: width var(--transition-normal);
+}
+
+.gt-body { padding: 14px 15px 4px; }
+.gt-tag {
+  display: inline-block; margin-bottom: 7px;
+  padding: 2px 7px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+  color: var(--accent-warning);
+  background: color-mix(in srgb, var(--accent-warning) 15%, transparent);
+}
+.gt-title { margin: 0 0 6px; font-size: 15.5px; font-weight: 700; line-height: 1.3; }
+.gt-text { margin: 0 0 8px; font-size: 13px; line-height: 1.58; color: var(--text-secondary); }
+.gt-text strong { color: var(--text-primary); font-weight: 650; }
+
+/* ── On-track check ──────────────────────────────────────────────────── */
+.gt-hint {
+  display: flex; gap: 9px; align-items: flex-start;
+  margin: 4px 15px 0; padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent-warning) 40%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--tint-warn-bg);
+  font-size: 12.5px; line-height: 1.5;
+}
+.gt-hint-icon {
+  flex: none; width: 17px; height: 17px; margin-top: 1px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-size: 11px; font-weight: 800;
+  background: var(--accent-warning-fill); color: #fff;
+}
+.gt-hint-body { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; color: var(--text-primary); }
+.gt-hint-fix {
+  padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 12px; font-weight: 650;
+  border: 1px solid var(--accent-warning);
+  background: transparent; color: var(--accent-warning);
+}
+.gt-hint-fix:hover { background: color-mix(in srgb, var(--accent-warning) 16%, transparent); }
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+.gt-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 15px 13px;
+}
+.gt-foot-left, .gt-foot-right { display: inline-flex; align-items: center; gap: 8px; }
+.gt-foot-right { margin-left: auto; }
+.gt-waiting {
+  font-size: 12px; font-style: italic; line-height: 1.4;
+  color: var(--accent-primary); text-align: right;
+}
+.gt-btn {
+  padding: 6px 14px; border-radius: var(--radius-md); cursor: pointer;
+  font-size: 12.5px; font-weight: 650; white-space: nowrap;
+  border: 1px solid transparent;
+  transition: background var(--transition-fast), filter var(--transition-fast);
+}
+.gt-btn--ghost {
+  background: transparent; color: var(--text-secondary);
+  border-color: var(--border-default);
+}
+.gt-btn--ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+.gt-btn--primary { background: var(--accent-primary-fill); color: var(--text-on-accent); }
+.gt-btn--primary:hover { filter: brightness(1.08); }
+
+/* ── Collapsed ───────────────────────────────────────────────────────── */
+.gt-pill {
+  position: fixed;
+  right: 18px; bottom: 18px;
+  z-index: 9000;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  box-shadow: 0 10px 28px var(--shadow-color);
+  font-size: 12.5px; font-weight: 650;
+  cursor: pointer;
   animation: gtIn 160ms ease;
 }
-@keyframes gtIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-
-.gt-callout-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.gt-step-count { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary, #8b949e); }
-.gt-exit { background: none; border: none; color: var(--text-secondary, #8b949e); cursor: pointer; font-size: 12px; padding: 2px 4px; }
-.gt-exit:hover { color: var(--text-primary, #e6e6e6); text-decoration: underline; }
-
-.gt-title { font-size: 15px; font-weight: 700; margin-bottom: 5px; }
-.gt-body { line-height: 1.55; color: var(--text-secondary, #c9d1d9); }
-.gt-body strong { color: var(--text-primary, #e6e6e6); }
-
-.gt-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 12px; }
-.gt-waiting { font-size: 12px; color: var(--accent-primary, #4f9cf9); font-style: italic; margin-right: auto; }
-.gt-btn { padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid transparent; }
-.gt-btn.ghost { background: transparent; color: var(--text-secondary, #8b949e); border-color: var(--border-default, #30363d); }
-.gt-btn.primary { background: var(--accent-primary, #4f9cf9); color: var(--text-on-accent); }
-.gt-btn.primary:hover { filter: brightness(1.06); }
-
-/* A little directional nub. */
-.gt-callout--below::before,
-.gt-callout--above::before {
-  content: ""; position: absolute; left: 22px; width: 12px; height: 12px;
-  background: var(--bg-secondary, #161b22); transform: rotate(45deg);
-  border: 1px solid color-mix(in srgb, var(--accent-primary) 30%, var(--border-default, #30363d));
+.gt-pill:hover { border-color: var(--accent-primary); }
+.gt-pill-mark {
+  width: 14px; height: 14px; border-radius: 4px; flex: none;
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-purple));
 }
-.gt-callout--below::before { top: -7px; border-right: none; border-bottom: none; }
-.gt-callout--above::before { bottom: -7px; border-left: none; border-top: none; }
+.gt-pill-count {
+  padding: 1px 7px; border-radius: 999px;
+  background: var(--bg-tertiary); color: var(--text-secondary);
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
+}

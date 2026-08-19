@@ -69,4 +69,70 @@ async function markSent(userId, status) {
   `, [String(status).slice(0, 200), userId]);
 }
 
-module.exports = { getForUser, save, remove, activeForEvent, markSent };
+/* ── Failure-alert cooldown (migration 0014) ────────────────────────────────
+   A workflow that is broken stays broken, and every failure produces the same
+   e-mail. These three calls let the notifier mail the first one, stay quiet
+   for a cooldown, and then report how many it swallowed — see
+   services/emailNotifier.service.js.
+
+   Keyed per (user, workflow): one flapping workflow must not mute the rest.
+   ------------------------------------------------------------------------ */
+
+function wfKey(workflowId) {
+  // 0 is the bucket for runs with no workflow — see the migration for why this
+  // is a sentinel rather than NULL.
+  return Number(workflowId) || 0;
+}
+
+async function getThrottle(userId, workflowId) {
+  return db.get(
+    'SELECT * FROM notification_throttle WHERE user_id = ? AND workflow_id = ?',
+    [userId, wfKey(workflowId)]
+  );
+}
+
+/* Record one failure that was NOT mailed. Returns the running tally so the
+   caller can log it; the row is created on first suppression. */
+async function countSuppressed(userId, workflowId) {
+  const wf = wfKey(workflowId);
+  const existing = await getThrottle(userId, wf);
+  if (existing) {
+    await db.run(`
+      UPDATE notification_throttle
+         SET suppressed_count = suppressed_count + 1
+       WHERE user_id = ? AND workflow_id = ?
+    `, [userId, wf]);
+    return Number(existing.suppressed_count || 0) + 1;
+  }
+  await db.run(`
+    INSERT INTO notification_throttle (user_id, workflow_id, last_sent_at, suppressed_count)
+    VALUES (?, ?, NULL, 1)
+  `, [userId, wf]);
+  return 1;
+}
+
+/* Open a fresh quiet period: stamp now and clear the tally. Written as an ISO
+   string with a 'Z' rather than CURRENT_TIMESTAMP — that distinction is
+   load-bearing here, see the migration and utils/time.js. */
+async function markAlertSent(userId, workflowId) {
+  const wf = wfKey(workflowId);
+  const now = new Date().toISOString();
+  const existing = await getThrottle(userId, wf);
+  if (existing) {
+    await db.run(`
+      UPDATE notification_throttle
+         SET last_sent_at = ?, suppressed_count = 0
+       WHERE user_id = ? AND workflow_id = ?
+    `, [now, userId, wf]);
+    return;
+  }
+  await db.run(`
+    INSERT INTO notification_throttle (user_id, workflow_id, last_sent_at, suppressed_count)
+    VALUES (?, ?, ?, 0)
+  `, [userId, wf, now]);
+}
+
+module.exports = {
+  getForUser, save, remove, activeForEvent, markSent,
+  getThrottle, countSuppressed, markAlertSent,
+};

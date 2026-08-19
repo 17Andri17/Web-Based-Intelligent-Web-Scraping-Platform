@@ -3494,6 +3494,21 @@ body {
     font-style: italic;
 }
 
+/* A pagination loop with nothing inside it produces a scraper that runs
+   clean, reports success, and returns nothing — so this one state is called
+   out rather than described in passing. Not styled as an error: it is a
+   half-finished workflow, not a broken one. */
+.branch-empty--warn {
+    border-style: solid;
+    border-color: color-mix(in srgb, var(--accent-warning) 45%, transparent);
+    background: color-mix(in srgb, var(--accent-warning) 8%, transparent);
+}
+.branch-empty--warn span {
+    color: var(--accent-warning);
+    font-style: normal;
+    font-weight: 550;
+}
+
 .branch-add-btn {
     padding: 5px 12px;
     font-size: 12px;

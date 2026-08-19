@@ -185,7 +185,11 @@ function createScreencastPacer({ baseQuality, emitFrame, ackChrome, onQualityCha
     /** Feed a CDP `Page.screencastFrame` payload. */
     handleFrame(frame) {
       if (stopped) return;
-      const buf = Buffer.from(frame.data, 'base64');
+      // Debug Mode's frames arrive from the run's child process over IPC,
+      // already decoded (see services/debugSession.service.js) — re-encoding
+      // them to base64 just to decode again here would be pure waste. The
+      // live-preview path still hands us CDP's base64 string.
+      const buf = Buffer.isBuffer(frame.data) ? frame.data : Buffer.from(frame.data, 'base64');
 
       if (inFlight < cfg.maxInFlight) {
         send(buf);

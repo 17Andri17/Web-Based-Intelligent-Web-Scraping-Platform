@@ -1,0 +1,288 @@
+/* ==================== ADMIN PANEL ==================== */
+
+.adm-modal {
+    max-width: 1080px;
+    width: 100%;
+}
+
+/* ── Headline numbers ─────────────────────────────────────────────────── */
+.adm-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.adm-stat {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    text-align: center;
+}
+
+.adm-stat span {
+    display: block;
+    font-size: 21px;
+    font-weight: 680;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+}
+
+.adm-stat label {
+    display: block;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.adm-stat.is-warn { border-color: var(--accent-warning); }
+.adm-stat.is-warn span { color: var(--accent-warning); }
+
+.adm-banner {
+    background: var(--tint-info-bg, rgba(88, 166, 255, 0.10));
+    border: 1px dashed var(--accent-primary);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+    margin-bottom: 14px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+}
+
+/* ── Filters ──────────────────────────────────────────────────────────── */
+.adm-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.adm-filters input[type="search"] {
+    flex: 1;
+    min-width: 190px;
+    padding: 8px 11px;
+    font-size: 13px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+}
+
+.adm-filters select {
+    padding: 8px 10px;
+    font-size: 13px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+}
+
+.adm-filters input:focus-visible,
+.adm-filters select:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 1px;
+}
+
+.adm-count {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    margin-left: auto;
+}
+
+/* ── Table ────────────────────────────────────────────────────────────── */
+/* Its own scroll container so a wide table never makes the page scroll. */
+.adm-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+}
+
+.adm-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.adm-table th {
+    text-align: left;
+    padding: 9px 12px;
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    font-weight: 600;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-default);
+    white-space: nowrap;
+}
+
+.adm-table td {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border-default);
+    vertical-align: top;
+    color: var(--text-secondary);
+}
+
+.adm-table tbody tr:last-child td { border-bottom: none; }
+
+.adm-table tbody tr {
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+.adm-table tbody tr:hover { background: var(--bg-hover); }
+.adm-table tbody tr:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: -2px;
+}
+.adm-table tbody tr.is-open { background: var(--bg-active); }
+
+/* Suspended rows carry a stripe as well as muted text, so state doesn't
+   depend on colour alone. */
+.adm-table tbody tr.is-suspended td:first-child {
+    box-shadow: inset 3px 0 0 var(--accent-danger);
+}
+
+.adm-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.adm-empty { text-align: center; color: var(--text-muted); padding: 22px 0; }
+.adm-dim { color: var(--text-muted); }
+
+.adm-user { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.adm-username { color: var(--text-primary); font-weight: 600; }
+.adm-email { font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+
+.adm-tag {
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.adm-tag.is-admin { background: var(--tint-info-bg, rgba(88,166,255,.15)); color: var(--accent-primary); }
+.adm-tag.is-susp  { background: var(--tint-danger-bg, rgba(248,81,73,.15)); color: var(--accent-danger); }
+.adm-tag.is-comp  { background: var(--tint-warn-bg, rgba(210,153,34,.15)); color: var(--accent-warning); }
+
+.adm-plan {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 7px;
+    border-radius: 3px;
+    margin-right: 5px;
+}
+.adm-plan.is-free     { background: var(--bg-elevated); color: var(--text-secondary); }
+.adm-plan.is-pro      { background: var(--tint-info-bg, rgba(88,166,255,.18)); color: var(--accent-primary); }
+.adm-plan.is-business { background: rgba(163,113,247,.18); color: var(--accent-purple); }
+
+.adm-row-actions select {
+    padding: 4px 7px;
+    font-size: 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+/* ── Detail ───────────────────────────────────────────────────────────── */
+.adm-detail {
+    margin-top: 16px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: 16px;
+}
+
+.adm-detail > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.adm-detail h3 {
+    margin: 0;
+    font-size: 17px;
+    color: var(--text-primary);
+}
+
+.adm-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.adm-detail-grid p {
+    margin: 2px 0 0;
+    font-size: 13px;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.adm-label {
+    display: block;
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.adm-mini { font-size: 12px; }
+.adm-mini th, .adm-mini td { padding: 6px 10px; }
+.adm-mini tbody tr { cursor: default; }
+.adm-mini tbody tr:hover { background: none; }
+
+.adm-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 16px 0;
+}
+
+.adm-actions .bill-btn { width: auto; flex: 0 0 auto; }
+
+.bill-btn.danger {
+    border-color: var(--accent-danger);
+    color: var(--accent-danger);
+    background: transparent;
+}
+.bill-btn.danger:hover:not(:disabled) {
+    background: var(--accent-danger-fill, var(--accent-danger));
+    color: var(--text-on-accent, #fff);
+}
+
+.adm-audit {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+}
+.adm-audit li {
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border-default);
+}
+.adm-audit li:last-child { border-bottom: none; }
+.adm-audit code {
+    background: var(--bg-primary);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11.5px;
+    color: var(--text-primary);
+}

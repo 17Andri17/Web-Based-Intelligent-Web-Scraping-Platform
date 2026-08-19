@@ -1,27 +1,38 @@
 /* =====================================================================
-   Basics tour — the beginner walkthrough on the bundled DemoMart shop.
+   The first-run walkthrough.
 
-   Two kinds of steps:
-     • forced  — a light guard lets you click ONLY the highlighted control
-                 (the rest of the platform stays visible, just dimmed a
-                 little); the step advances when you do that exact thing and
-                 it checks the right thing happened.
-     • soft    — a gentle amber highlight + a tip; nothing is blocked, so you
-                 can look around and click freely. Advances with Next
-                 (`soft: true`).
+   It is one job from start to finish, the job people actually turn up
+   with: "collect every product from this shop — all of them, across all
+   the pages — and give me the table." The practice shop is bundled
+   (backend/public/demo/shop.html) so it behaves identically every time,
+   and the AI step is answered from a fixture rather than a live model, so
+   the columns it produces are known in advance — which is what lets the
+   next step ask the user to add the one column it deliberately left out.
 
-   Consumed by GuidedTour:
-     target : app CSS selector | { canvas: "<demo selector>" } | null
-     gate(state) / domGate : advance conditions (forced steps)
-     soft : show a Next button instead of a gate
-     onEnter(api) : side-effect when the step opens
+   Nothing here blocks the app. Every step points at exactly one control
+   and waits; the user can click anywhere else, hide the guide, wander off
+   and come back. See components/GuidedTour.jsx for the step contract.
 
-   `state` (main.jsx): { mode, onDemoBase, onDemoAudio, selHasSingle,
-     selIsCard, selIsHeading, selMultiCards, hasExtractText, hasExtractList,
-     hasPaginate, paginationSuggested, activeTab, execDone }
-   `api`: { prefillUrl, goStream, showWorkflow, closePagination,
-     openInspector, pinStart }
+   Two things a step can do beyond "wait for this to be true":
+
+     hint(state)  — notice a wrong turn and offer the one click that fixes
+                    it. The single most common way to get lost here is
+                    grabbing a product's NAME instead of the product, and
+                    the fix is one call, so the tour offers it rather than
+                    letting someone stall.
+     undo(api)    — reverse what the step did, so Back is a real rollback
+                    and "Redo this step" can un-stick a mis-click.
+
+   `state` (assembled in main.jsx): { mode, onDemoBase, onDemoAudio,
+     onDemoSite, selIsCard, selInsideCard, selMultiCards, hasExtractList,
+     hasPaginate, hasStockField, listFieldPickActive, paginationSuggested,
+     paginationDetecting, activeTab, execDone, execRows }
+   `api`: { prefillUrl, goStream, showWorkflow, showData, openInspector,
+     closePagination, pinStart, goDemoStart, selectParent, clearSelection,
+     setMode, removeStepsOfType, openListEditor }
    ===================================================================== */
+
+const LIST_TYPES = ["EXTRACT_LIST", "COLLECT_LIST"];
 
 export function makeBasicsTour({ demoUrl }) {
   const baseUrl = demoUrl; // …/demo/shop.html
@@ -31,211 +42,189 @@ export function makeBasicsTour({ demoUrl }) {
       id: "welcome",
       soft: true,
       target: null,
-      title: "Let’s build your first scraper",
-      body: "We’ll collect data from a practice shop together. Blue steps ask you to do one thing; amber “tips” just point something out — on those you can click around freely. Ready?",
+      title: "Let's collect a whole catalogue",
+      body: "In the next few minutes you'll build a scraper that reads every product from a shop — name, price, rating — follows the pagination to the last page, and hands you the table. Nothing is locked while we do it: click anywhere, tuck this panel away with −, and use Back to undo a step and try it again.",
     },
+
+    /* ── Open the page ──────────────────────────────────────────────── */
     {
-      id: "go",
+      id: "open-page",
       target: '[data-tour="go"]',
-      title: "Open the practice shop",
-      body: "A scraper always starts on a web page. We’ve typed in our practice shop for you — click the highlighted arrow to open it.",
-      waiting: "Click the blue arrow to open the page…",
+      title: "Open the shop",
+      body: "A scraper always starts on a page. The practice shop's address is already in the bar — press the blue arrow to load it.",
+      waiting: "Press the blue arrow…",
       onEnter: (api) => { api.goStream?.(); api.prefillUrl?.(baseUrl); },
-      gate: (s) => s.onDemoBase,
+      gate: (s) => !!s.onDemoBase,
+      hint: (s) => (s.onDemoSite && !s.onDemoBase
+        ? { text: "You've landed somewhere else in the shop. Let's start from the front page.",
+            action: { label: "Go to the front page", run: (api) => api.goDemoStart?.() } }
+        : null),
     },
+
+    /* ── It's a real browser ────────────────────────────────────────── */
     {
-      id: "modes",
-      soft: true,
-      target: null,
-      place: "below",
-      highlights: [
-        { target: '[data-tour="mode-navigate"]', label: "Navigate — move around the page like normal" },
-        { target: '[data-tour="mode-select"]',   label: "Select — point at data to collect" },
-      ],
-      title: "Two ways to use the page",
-      body: "These two buttons change what a click does. You’re in Navigate right now — feel free to click around the shop, then hit Next.",
-    },
-    {
-      id: "navigate",
+      id: "browse",
       target: { canvas: 'nav.categories a[data-cat="audio"]' },
-      title: "Move around the page",
-      body: "In Navigate, clicks work like a normal browser. Click the highlighted “Audio” menu to open that section.",
-      waiting: "Click the “Audio” menu…",
+      title: "It's a real browser",
+      body: "You're in Navigate mode, so the page works exactly as it would in any other tab — links, menus, forms. Open the shop's Audio section to see.",
+      waiting: "Click the Audio menu on the page…",
       onEnter: (api) => { api.pinStart?.(baseUrl); },
-      gate: (s) => s.onDemoAudio,
+      gate: (s) => !!s.onDemoAudio,
     },
     {
-      id: "return",
+      id: "back-to-start",
       target: '[data-tour="url-back"]',
-      title: "Go back to the start",
-      body: "See how the web address at the top changed to the Audio page? To return to where your scraper begins, click the orange back arrow — don’t retype the address.",
-      waiting: "Click the orange back arrow…",
-      gate: (s) => s.onDemoBase,
+      title: "Back to where the scraper starts",
+      body: "Notice the address changed. Your scraper always begins at the page you opened first — press the orange arrow to return there instead of retyping the address.",
+      waiting: "Press the orange back arrow…",
+      gate: (s) => !!s.onDemoBase,
+      hint: (s) => (!s.onDemoSite
+        ? { text: "We've drifted off the practice shop entirely.",
+            action: { label: "Take me back", run: (api) => api.goDemoStart?.() } }
+        : null),
     },
+
+    /* ── Point at the data ──────────────────────────────────────────── */
     {
       id: "select-mode",
-      target: '[data-tour="mode"]',
-      title: "Switch to Select",
-      body: "Now click “Select”. From here, clicking the page points at data to collect instead of opening links.",
-      waiting: "Click “Select”…",
+      target: '[data-tour="mode-select"]',
+      title: "Now point at what you want",
+      body: "Switch to Select. From here a click no longer follows links — it picks out the thing under your cursor as data to collect.",
+      waiting: "Click Select…",
       gate: (s) => s.mode === "selection",
+      undo: (api) => api.setMode?.("navigation"),
     },
-    {
-      id: "pick-heading",
-      target: { canvas: "#heading" },
-      title: "Point at something",
-      body: "Let’s start small. Click the page’s title (“Featured products”). The panel on the right will show what you picked.",
-      waiting: "Click the page title…",
-      onEnter: (api) => api.openInspector?.(),
-      gate: (s) => s.selHasSingle || s.selMultiCards,
-    },
-    {
-      id: "sidebar",
-      soft: true,
-      target: null,
-      place: "left",
-      highlights: [
-        { target: '[data-tour="side-inspector"]', label: "Inspector — choose what to collect" },
-        { target: '[data-tour="side-workflow"]',  label: "Workflow — the steps you build" },
-        { target: '[data-tour="side-html"]',      label: "HTML — peek at the page’s code" },
-      ],
-      title: "The panel on the right",
-      body: "This is where you work with what you pick. It has three tabs (pointed out here). Inspector is open now — have a look, then Next.",
-      onEnter: (api) => api.openInspector?.(),
-    },
-
-    // ── single-element capture (Extraction tab → Extract Text → Add) ───────
-    {
-      id: "open-extraction",
-      target: '[data-tour="cat-extraction"]',
-      title: "Choose what to collect",
-      body: "In the panel, click the “Extraction” tab. It lists the things you can grab from what you clicked.",
-      waiting: "Click the “Extraction” tab…",
-      domGate: '[data-tour="capture-text"]',
-    },
-    {
-      id: "select-text",
-      target: '[data-tour="capture-text"]',
-      title: "Choose “Extract Text”",
-      body: "Click the “Extract Text” card. It grabs the words from what you clicked.",
-      waiting: "Click “Extract Text”…",
-      domGate: '[data-tour="add-step"]',
-    },
-    {
-      id: "add-text",
-      target: '[data-tour="add-step"]',
-      title: "Add it to your scraper",
-      body: "Click “Add to workflow”. That captures the page title — handy for a title, a total, or any single value.",
-      waiting: "Click “Add to workflow”…",
-      gate: (s) => s.hasExtractText,
-    },
-
-    // ── the list (the main event) ─────────────────────────────────────────
     {
       id: "pick-product",
       target: { canvas: ".product-card" },
-      title: "Now point at a product",
-      body: "Click any of the products in the highlighted box.",
+      title: "Click the highlighted product",
+      body: "Aim for the product's picture or the space around its text — that selects the whole product rather than one line of it.",
       waiting: "Click the highlighted product…",
-      // Advance once a PRODUCT is selected — not while the heading is still selected.
-      gate: (s) => s.selMultiCards || s.selIsCard || (s.selHasSingle && !s.selIsHeading),
+      onEnter: (api) => api.openInspector?.(),
+      gate: (s) => !!(s.selIsCard || s.selMultiCards),
+      hint: (s) => (s.selInsideCard && !s.selIsCard && !s.selMultiCards
+        ? { text: "That's one detail inside the product — the name or the price. You want the product itself, so every column comes along with it.",
+            action: { label: "Select the whole product", run: (api) => api.selectParent?.() } }
+        : null),
     },
     {
-      id: "page-structure",
-      target: '[data-tour="page-structure"]',
-      title: "Pick the whole product",
-      body: "You may have grabbed just a part of it (like the name). Open “Page structure” on the right and choose the whole product box — so we collect every product, not one detail.",
-      waiting: "Open “Page structure” and pick the whole product box…",
-      gate: (s) => s.selIsCard || s.selMultiCards,
-    },
-    {
-      id: "pick-many",
+      id: "pick-second",
       target: { canvas: ".product-card:nth-of-type(2)" },
-      title: "Grab the whole list",
-      body: "Now click a second product. Watch — the scraper selects every product on the page at once. That’s your list.",
+      title: "Now click a second one",
+      body: "Two examples are all it needs. Watch what happens on the page — it works out the pattern and grabs every product at once. That's your list.",
       waiting: "Click a second product…",
-      gate: (s) => s.selMultiCards,
+      gate: (s) => !!s.selMultiCards,
+      hint: (s) => (!s.selIsCard && !s.selMultiCards && !s.selInsideCard
+        ? { text: "The selection was cleared. Click one product, then a second." }
+        : null),
     },
+
+    /* ── Columns ────────────────────────────────────────────────────── */
     {
       id: "use-ai",
       target: '[data-tour="use-ai"]',
-      title: "Let it find the columns",
-      body: "Click “Use AI”. The scraper looks at your products and works out the columns for you.",
-      waiting: "Click “Use AI”…",
+      title: "Let it name the columns",
+      body: "You could pick each column by hand — but it can read the products and work them out for you. Press Use AI.",
+      waiting: "Press ✨ Use AI…",
       domGate: '[data-tour="add-ai"]',
     },
     {
       id: "add-ai",
       target: '[data-tour="add-ai"]',
-      title: "Add the list",
-      body: "Click “Add with AI”. Your columns — name, price, rating and link — are filled in automatically.",
-      waiting: "Click “Add with AI”…",
-      gate: (s) => s.hasExtractList,
+      title: "Add the list to your scraper",
+      body: "Press Add with AI. It reads two of the products, works out which bit is the name, which is the price and which is the rating, and writes the columns for you.",
+      waiting: "Press ✨ Add with AI…",
+      gate: (s) => !!s.hasExtractList,
+      undo: (api) => api.removeStepsOfType?.(LIST_TYPES),
     },
     {
-      id: "edit-fields",
-      soft: true,
-      target: ".elfe-fields",
-      title: "Tweak the columns (optional)",
-      body: "These are the columns the AI found. You can rename or remove any of them — or add your own: click “🎯 Pick from page”, then click something on a product (try the “in stock” number). Give it a go, then Next.",
+      id: "add-field",
+      target: '[data-tour="pick-field"]',
+      optional: true,
+      title: "Add the column it missed",
+      body: "Name, price, rating and link — but not the stock count. Press 🎯 Pick from page, click the \"in stock\" line on any product, and it becomes a column on every row. Then press \"Done picking\" — otherwise every further click keeps adding columns.",
+      waiting: "Pick the \"in stock\" line, then finish picking…",
+      onEnter: (api) => api.openListEditor?.(),
+      // Deliberately also waits for picking to be switched OFF. Leaving someone
+      // in a mode the tour turned on, while the next step tells them to go and
+      // click something else, is how you end up with six accidental columns.
+      gate: (s) => !!s.hasStockField && !s.listFieldPickActive,
+      hint: (s) => {
+        if (s.hasStockField && s.listFieldPickActive) {
+          return { text: "That's the stock column in. Press \"Done picking\" to switch picking off — otherwise your next click on the page adds another column." };
+        }
+        if (s.listFieldPickActive) {
+          return { text: "Picking is on — now click the \"14 in stock\" line on any product on the page." };
+        }
+        return null;
+      },
     },
 
-    // ── pagination ────────────────────────────────────────────────────────
     {
-      id: "pagination-open",
+      id: "clean-rating",
+      target: '[data-tour="clean-field-rating"]',
+      optional: true,
+      title: "Tidy up a messy column",
+      body: "The rating comes off the page as “★ 3.0 out of 5” — a number wearing decoration. Press ✨ Clean on the rating row, add a “Substring (slice)” step with Start 2 and End 5, and every row becomes just “3.0”. The rule runs on every row, on every future run.",
+      waiting: "Add a clean-up step to the rating column…",
+      onEnter: (api) => api.openListEditor?.(),
+      gate: (s) => !!s.ratingCleaned,
+      undo: (api) => api.clearFieldTransforms?.("rating"),
+    },
+
+    /* ── Every page, not just this one ──────────────────────────────── */
+    {
+      id: "pagination",
       target: '[data-tour="pagination"]',
-      title: "Check for more pages",
-      body: "This shop has several pages. Click “Pagination” and the scraper will check whether the list continues.",
-      waiting: "Click “Pagination” and wait a moment…",
-      gate: (s) => s.paginationSuggested,
+      title: "There are three pages of these",
+      body: "Right now you'd collect page one and stop. Press Pagination and it will look for the link that leads to the rest.",
+      waiting: "Press Pagination and give it a second…",
+      gate: (s) => !!s.paginationSuggested,
+      hint: (s) => (s.paginationDetecting
+        ? { text: "Looking for the next-page link — this takes a moment." }
+        : null),
     },
     {
       id: "pagination-add",
       target: '[data-tour="pagination-add"]',
-      title: "Collect every page",
-      body: "It found the “Next page” link. Click “Add to Workflow” so your scraper walks through all the pages.",
-      waiting: "Click “Add to Workflow”…",
-      gate: (s) => s.hasPaginate,
+      title: "Follow it to the last page",
+      body: "It found the shop's \"Next page\" link. Press Add to Workflow — then say yes when it offers to move your product list inside the loop, so it runs on every page and brings back all 24 products instead of the 8 in front of you.",
+      waiting: "Press Add to Workflow…",
+      gate: (s) => !!s.hasPaginate,
+      undo: (api) => api.removeStepsOfType?.([/^PAGINATE_/]),
     },
 
-    // ── review + run ──────────────────────────────────────────────────────
+    /* ── Check it, run it ───────────────────────────────────────────── */
     {
-      id: "explain-steps",
+      id: "review",
       soft: true,
       target: ".workflow-designer",
-      title: "Here’s what you built",
-      body: "These are your steps, in order: open the page, capture the title, grab the product list, and go through every page. Click any step to open it — you’ll see options you can change. Then Next.",
+      title: "That's the whole scraper",
+      body: "Open the shop, then keep turning pages — with your product list nested inside the loop, so it runs once per page. Open any step to change it: this is a real workflow, not a recording of your clicks.",
       onEnter: (api) => { api.closePagination?.(); api.showWorkflow?.(); },
     },
     {
-      id: "data-tab",
+      id: "preview-data",
       target: '[data-tour="tab-data"]',
-      title: "Preview the data",
-      body: "Open the “Data” tab to see a preview of what you’ll get — a tidy table.",
-      waiting: "Open the “Data” tab…",
+      title: "See the shape before you run",
+      body: "The Data tab previews the table your scraper will produce, so you can fix a column before spending a run on it.",
+      waiting: "Open the Data tab…",
       gate: (s) => s.activeTab === "data",
     },
     {
       id: "run",
       target: '[data-tour="run"]',
-      title: "Run your scraper",
-      body: "Press “Run” to collect the products for real. It only takes a moment.",
-      waiting: "Click “Run”…",
-      gate: (s) => s.execDone,
+      title: "Run it for real",
+      body: "Press Run. It opens the shop, collects the products, follows the pagination to the last page and brings back the rows — the same thing it would do on a schedule at 3am.",
+      waiting: "Press Run…",
+      gate: (s) => !!s.execDone,
     },
     {
-      id: "more-features",
+      id: "finish",
       soft: true,
       target: null,
-      title: "There’s a lot more up top",
-      body: "From the buttons and menu at the top you can download your scraper as code, run it on a schedule, watch for changes, and send results to Google Sheets — whenever you’re ready.",
-    },
-    {
-      id: "free-play",
-      soft: true,
-      target: null,
-      title: "🎉 You did it — now explore!",
-      body: "You built and ran a real scraper. Have a play with the shop and your workflow — nothing’s locked. When you want to go deeper, take the “Power Features” tour. Click Finish when you’re done.",
+      title: "🎉 That's a working scraper",
+      body: "Everything up top works on real sites too: put it on a schedule, get an email when the data changes, send rows straight to Google Sheets, call it from your own code, or download it as a standalone script. Your practice scraper is thrown away when you finish — build your next one on a site you actually care about.",
     },
   ];
 }

@@ -2,6 +2,7 @@
 
 const proxiesRepo = require('../db/repositories/proxies.repo');
 const proxyPoolsRepo = require('../db/repositories/proxyPools.repo');
+const entitlements = require('./entitlements.service');
 
 /* ===========================================================================
    proxyResolver.service
@@ -31,6 +32,18 @@ async function resolveWorkflowProxy(meta, userId) {
   if (!spec || spec.mode === 'none' || !spec.mode) return null;
 
   try {
+    /* Plan gate. Resolution happens per run, so this is what stops a workflow
+       that was configured with a proxy on Pro from silently keeping it after a
+       downgrade — the stored meta is untouched, but the proxy stops resolving.
+
+       Returning null rather than throwing is deliberate and matches how every
+       other failure here behaves: an unavailable proxy degrades the run to a
+       direct connection instead of failing it. A hard error would turn a
+       downgrade into every scheduled run breaking at once. */
+    const ent = await entitlements.getForUser(userId);
+    const needed = spec.mode === 'platform' ? 'sharedProxyPool' : 'proxies';
+    if (!ent.features[needed]) return null;
+
     switch (spec.mode) {
       case 'single':
         return spec.id ? await proxiesRepo.resolveForUse(spec.id, userId) : null;

@@ -17,6 +17,24 @@ import "../styles/ConfirmDialog.css";
 
    That keeps the guard where the decision is made instead of shattering each
    one into open/onConfirm/onCancel state.
+
+   ── More than two answers ────────────────────────────────────────────────
+   Pass `choices` and the same call becomes a small menu that resolves to the
+   chosen `value` instead of a boolean:
+
+       const pick = await confirm({
+         title: "…",
+         choices: [
+           { value: "all",  label: "…", detail: "…", primary: true },
+           { value: "none", label: "…" },
+         ],
+       });
+
+   Some decisions genuinely have three answers, and the alternative — asking
+   two yes/no questions in a row, or picking one for the user and hoping — is
+   worse than asking once. Dismissing (Escape, backdrop, Cancel) still
+   resolves `false`, so callers can tell "changed their mind" from any real
+   choice, and the boolean form is completely unchanged.
    ===================================================================== */
 
 const ConfirmContext = createContext(null);
@@ -48,6 +66,7 @@ export function ConfirmProvider({ children }) {
         confirmLabel: opts.confirmLabel || "Confirm",
         cancelLabel: opts.cancelLabel || "Cancel",
         danger: !!opts.danger,
+        choices: Array.isArray(opts.choices) && opts.choices.length ? opts.choices : null,
       });
     });
   }, []);
@@ -76,18 +95,38 @@ export function ConfirmProvider({ children }) {
       >
         {request?.message && <p className="cfm-message">{request.message}</p>}
         {request?.detail && <p className="cfm-detail">{request.detail}</p>}
-        <div className="cfm-actions">
-          <button className="wf-ghost-btn" onClick={() => settle(false)}>
-            {request?.cancelLabel}
-          </button>
-          <button
-            ref={confirmBtnRef}
-            className={`wf-save-btn ${request?.danger ? "cfm-danger" : ""}`}
-            onClick={() => settle(true)}
-          >
-            {request?.confirmLabel}
-          </button>
-        </div>
+
+        {request?.choices ? (
+          /* Each answer is its own button with its own consequence spelled
+             out, rather than a radio list plus an OK the user has to find.
+             One click, one outcome. */
+          <div className="cfm-choices">
+            {request.choices.map((c, i) => (
+              <button
+                key={c.value ?? i}
+                ref={c.primary ? confirmBtnRef : undefined}
+                className={`cfm-choice ${c.primary ? "cfm-choice--primary" : ""}`}
+                onClick={() => settle(c.value)}
+              >
+                <span className="cfm-choice-label">{c.label}</span>
+                {c.detail && <span className="cfm-choice-detail">{c.detail}</span>}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="cfm-actions">
+            <button className="wf-ghost-btn" onClick={() => settle(false)}>
+              {request?.cancelLabel}
+            </button>
+            <button
+              ref={confirmBtnRef}
+              className={`wf-save-btn ${request?.danger ? "cfm-danger" : ""}`}
+              onClick={() => settle(true)}
+            >
+              {request?.confirmLabel}
+            </button>
+          </div>
+        )}
       </Modal>
     </ConfirmContext.Provider>
   );

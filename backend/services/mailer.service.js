@@ -14,15 +14,36 @@ const nodemailer = require('nodemailer');
      SMTP_SECURE    "true" for implicit TLS (port 465); otherwise STARTTLS
      SMTP_USER      optional — omit for a relay that doesn't authenticate
      SMTP_PASS
-     MAIL_FROM      default "WebScraper <SMTP_USER>"
+     MAIL_FROM      required in practice — see the note on the fallback below
+     MAIL_FROM_AUTH optional; sender for account & security mail
+
+   ── Two message streams ───────────────────────────────────────────────────
+   One SMTP account, but not necessarily one From address. Mail here splits
+   into two kinds with genuinely different stakes:
+
+     'alerts' (default) — run failures and change notices. Automated, frequent,
+                          and the kind of thing people eventually mute.
+     'auth'             — address confirmation and password reset. Rare, and it
+                          absolutely has to arrive: a reset mail in the spam
+                          folder is an account someone cannot get back into.
+
+   Sending both as one address pools their reputation, so a run of alerts
+   getting marked as spam degrades delivery of the reset mail too. Set
+   MAIL_FROM_AUTH to separate them; leave it unset and both use MAIL_FROM,
+   which is what every existing deployment already does.
+
+   Callers name the STREAM rather than passing a raw From, deliberately. An
+   arbitrary address would be free to sit on a domain this account has no DKIM
+   signature for, which silently fails alignment and lands the mail in spam —
+   exactly the failure this split exists to avoid.
 
    Configuration is read lazily and cached: the transport is built on first
    send, so an instance with no SMTP set up pays nothing and simply reports
    itself as unconfigured.
    ========================================================================= */
 
-let cached = null;          // { transport, from } once built
-let cachedKey = null;       // config fingerprint, so env changes rebuild
+let cached = null;          // the nodemailer transport, once built
+let cachedKey = null;       // connection fingerprint, so env changes rebuild
 
 function config() {
   const host = (process.env.SMTP_HOST || '').trim();
@@ -31,7 +52,11 @@ function config() {
   const secure = String(process.env.SMTP_SECURE || '').toLowerCase() === 'true' || port === 465;
   const user = (process.env.SMTP_USER || '').trim();
   const pass = process.env.SMTP_PASS || '';
-  const from = (process.env.MAIL_FROM || '').trim() || (user ? `WebScraper <${user}>` : 'WebScraper <no-reply@localhost>');
+  // The fallback is a last resort for a relay whose username happens to be an
+  // address. It is NOT viable on a provider whose SMTP username is a fixed
+  // literal (Resend's is "resend"), which yields an invalid From and a
+  // rejected send — hence "required in practice" in the .env notes.
+  const from = (process.env.MAIL_FROM || '').trim() || (user ? `Scrapient <${user}>` : 'Scrapient <no-reply@localhost>');
   return { host, port, secure, user, pass, from };
 }
 
@@ -42,20 +67,31 @@ function isConfigured() {
   return config() !== null;
 }
 
+/** The From for a given message stream. 'auth' falls back to MAIL_FROM when
+    MAIL_FROM_AUTH is unset, so splitting the streams stays entirely opt-in. */
+function fromFor(kind) {
+  const cfg = config();
+  if (!cfg) return null;
+  if (kind === 'auth') {
+    const authFrom = (process.env.MAIL_FROM_AUTH || '').trim();
+    if (authFrom) return authFrom;
+  }
+  return cfg.from;
+}
+
+/* Only the CONNECTION is cached. From is resolved per message now that it
+   varies by stream, so it is deliberately absent from the fingerprint. */
 function transport() {
   const cfg = config();
   if (!cfg) return null;
-  const key = `${cfg.host}|${cfg.port}|${cfg.secure}|${cfg.user}|${cfg.from}`;
+  const key = `${cfg.host}|${cfg.port}|${cfg.secure}|${cfg.user}`;
   if (cached && cachedKey === key) return cached;
-  cached = {
-    transport: nodemailer.createTransport({
-      host: cfg.host,
-      port: cfg.port,
-      secure: cfg.secure,
-      ...(cfg.user ? { auth: { user: cfg.user, pass: cfg.pass } } : {}),
-    }),
-    from: cfg.from,
-  };
+  cached = nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    ...(cfg.user ? { auth: { user: cfg.user, pass: cfg.pass } } : {}),
+  });
   cachedKey = key;
   return cached;
 }
@@ -65,14 +101,18 @@ function transport() {
  * off a finished run, and a mail server having a bad day must not fail a
  * scrape that already succeeded.
  *
+ * @param {'alerts'|'auth'} [kind] which message stream this belongs to; picks
+ *        the From address. Defaults to 'alerts' — the higher-volume, lower-
+ *        stakes stream, so a caller that forgets cannot accidentally borrow
+ *        the reputation of the address reset mail depends on.
  * @returns {Promise<{ok:boolean, error?:string}>}
  */
-async function send({ to, subject, text, html }) {
+async function send({ to, subject, text, html, kind }) {
   const t = transport();
   if (!t) return { ok: false, error: 'E-mail is not configured on this server (SMTP_HOST is unset).' };
   if (!to) return { ok: false, error: 'No recipient address.' };
   try {
-    await t.transport.sendMail({ from: t.from, to, subject, text, html });
+    await t.sendMail({ from: fromFor(kind), to, subject, text, html });
     return { ok: true };
   } catch (e) {
     return { ok: false, error: (e && e.message) ? e.message : 'Send failed' };
@@ -85,7 +125,7 @@ async function verify() {
   const t = transport();
   if (!t) return { ok: false, error: 'E-mail is not configured on this server (SMTP_HOST is unset).' };
   try {
-    await t.transport.verify();
+    await t.verify();
     return { ok: true };
   } catch (e) {
     return { ok: false, error: (e && e.message) ? e.message : 'Could not reach the mail server' };
@@ -95,4 +135,4 @@ async function verify() {
 // Test hook: drop the memoised transport so a changed env is picked up.
 function _reset() { cached = null; cachedKey = null; }
 
-module.exports = { isConfigured, send, verify, _reset };
+module.exports = { isConfigured, send, verify, fromFor, _reset };

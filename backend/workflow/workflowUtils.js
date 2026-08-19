@@ -136,8 +136,15 @@ function collectSubflowIds(steps) {
 // visited set seeded with the root workflow id, matching resolveSubflows and
 // the codegen's inlining guard. `subflows` is the { [id]: { name, steps } }
 // map returned by resolveSubflows.
-function buildFlowTree(steps, subflows = {}, rootWorkflowId = null) {
+// `opts.withSelectors` adds each step's configured selector to its node. Off
+// by default and deliberately so: every watcher of every run receives this
+// tree, and a selector on every node is payload nobody reads. A DEBUG run is
+// the exception — its window names what the running step is targeting while
+// the run moves, which is the difference between "extract list is running" and
+// "extract list is looking for .product-card".
+function buildFlowTree(steps, subflows = {}, rootWorkflowId = null, opts = {}) {
   const seed = new Set(rootWorkflowId != null ? [String(rootWorkflowId)] : []);
+  const withSelectors = !!opts.withSelectors;
 
   const light = (step, visited) => {
     if (!step || typeof step !== 'object') return null;
@@ -147,6 +154,13 @@ function buildFlowTree(steps, subflows = {}, rootWorkflowId = null) {
       kind:  step.kind || 'action',
       label: step.label || '',
     };
+    if (withSelectors) {
+      const p = step.params || {};
+      // The one selector that identifies what this step acts on, by step type.
+      const sel = p.selector || p.containerSelector || p.tableSelector || null;
+      if (sel) node.selector = String(sel);
+      if (p.url) node.url = String(p.url);
+    }
     // RUN_SUBFLOW's mode drives the iteration badge (iterate / enrich).
     if (step.type === 'RUN_SUBFLOW') {
       node.params = { mode: (step.params && step.params.mode) || 'single' };

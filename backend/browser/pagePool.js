@@ -55,6 +55,53 @@ function buildCodegenPoolHelper(opts = {}) {
   const jitter = Number(opts.jitterMs) > 0 ? Math.floor(Number(opts.jitterMs)) : 0;
   const minInterval = rps > 0 ? Math.ceil(1000 / rps) : 0;
 
+  /* ── Page metering ──────────────────────────────────────────────────────
+     Billing counts pages, and __openPage is the only place a tab is ever
+     created — main page, sub-flow pages, enrich detail pages, new-tab
+     navigations all come through here. Hooking 'framenavigated' rather than
+     wrapping page.goto() means pagination clicks, in-page redirects, and
+     form submissions are counted too; goto() is only one of seven ways this
+     codebase navigates.
+
+     Gated on `instrument` for the same reason ITER_TICK is: a workflow the
+     user exported as a standalone Puppeteer script is theirs, runs on their
+     machine, and must not emit metering markers.
+
+     The count is emitted on every increment rather than once at exit. A
+     process.on('exit') handler cannot reliably flush to a piped stdout, and
+     a run that crashes at page 4,000 still consumed 4,000 pages — emitting
+     as we go means the parent has the true figure even when the child dies
+     badly. The parent keeps the highest value it sees.
+     -------------------------------------------------------------------- */
+  const meterHook = instrument ? '  __meterPage(_p);\n' : '';
+
+  /* Debug Mode follows the run from tab to tab. This is the only place a tab
+     is created, so hooking it here means the screencast tracks the page the
+     run is ACTUALLY using — the first page, a subflow's detail page, a
+     new-tab navigation — without the debug runtime having to guess. Awaited
+     because attaching starts a CDP session: a frame that arrives before the
+     first navigation is exactly the "blank page" a user needs to see. */
+  const debugHook = opts.debug ? '  await __dbgAttach(_p);\n' : '';
+  const meterSrc = instrument ? `
+let __pagesFetched = 0;
+function __meterPage(_p) {
+  try {
+    _p.on('framenavigated', function (f) {
+      try {
+        // Sub-frames (ads, embeds, trackers) are not billable pages — only
+        // a main-frame navigation is. about:blank and data: URLs are the
+        // tab being created, not a fetch of anything.
+        if (f !== _p.mainFrame()) return;
+        const u = f.url() || '';
+        if (u.indexOf('http://') !== 0 && u.indexOf('https://') !== 0) return;
+        __pagesFetched++;
+        console.log('PAGES_FETCHED:' + JSON.stringify({ pages: __pagesFetched }));
+      } catch (_) {}
+    });
+  } catch (_) {}
+}
+` : '';
+
   const tick = instrument
     ? `    if (stepId) console.log('ITER_TICK:' + JSON.stringify({ stepId: stepId, index: completed - 1, active: activeCount() }));\n`
       + `    __checkpoint();\n`
@@ -187,8 +234,9 @@ async function __openPage(browser) {
   const _p = await browser.newPage();
 ${proxyAuth}${proxyWebRtc}  await applyStealthToPage(_p);
   await applyResourceBlocking(_p);
-  return _p;
+${meterHook}${debugHook}  return _p;
 }
+${meterSrc}
 
 // Global request pacing. Serialised through a promise chain so that N workers
 // share ONE schedule rather than each pacing itself (which would multiply the

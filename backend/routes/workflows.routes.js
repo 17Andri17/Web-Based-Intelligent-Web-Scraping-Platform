@@ -15,9 +15,23 @@ const workflowImport = require('../services/workflowImport.service');
 const templates = require('../services/templates.service');
 const { validateInputs } = require('../utils/workflowInputs');
 const { requireAuth } = require('../middleware/auth');
+const entitlements = require('../services/entitlements.service');
 
 function safeJson(s) { try { return JSON.parse(s); } catch (_) { return null; } }
 const MAX_INPUTS_BYTES = 16 * 1024;   // per-row inputs cap (matches /v1)
+
+/* Free is a one-workflow plan — maxWorkflows is the limit that defines the
+   demo, so every route that can bring a workflow into existence has to check
+   it, not just POST /. There are four: create, import, use-a-template, and
+   duplicate. Gating only the obvious one would leave "duplicate" as a
+   one-click way around the entire free tier.
+
+   Throws EntitlementError; app.js renders it as a 402 carrying the limit and
+   the cheapest plan that lifts it. */
+async function assertCanAddWorkflow(userId) {
+  await entitlements.assertWithinLimit(
+    userId, 'maxWorkflows', await workflows.countForUser(userId), 'workflows');
+}
 const MAX_BULK_ROWS = 500;            // cap runs enqueued in one bulk request
 
 const router = express.Router();
@@ -102,6 +116,7 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   const v = validatePayload(req.body);
   if (typeof v === 'string') return res.status(400).json({ error: v });
+  await assertCanAddWorkflow(req.user.id);
   const row = await workflows.create({
     userId: req.user.id, name: v.name, stepsJson: v.stepsJson, metaJson: v.metaJson,
   });
@@ -387,6 +402,7 @@ router.get('/:id/monitor', async (req, res) => {
 router.put('/:id/monitor', async (req, res) => {
   const owned = await workflows.existsForUser(req.params.id, req.user.id);
   if (!owned) return res.status(404).json({ error: 'Not found' });
+  await entitlements.assertFeature(req.user.id, 'changeMonitoring', 'Change monitoring');
   const b = req.body || {};
   const isActive = b.isActive === undefined ? true : !!b.isActive;
   const outputKey = b.outputKey == null || b.outputKey === '' ? null : String(b.outputKey);
@@ -570,6 +586,7 @@ router.get('/:id/sheet', async (req, res) => {
 router.put('/:id/sheet', async (req, res) => {
   const owned = await workflows.existsForUser(req.params.id, req.user.id);
   if (!owned) return res.status(404).json({ error: 'Not found' });
+  await entitlements.assertFeature(req.user.id, 'sheetsDelivery', 'Google Sheets delivery');
   const b = req.body || {};
 
   const spreadsheetId = sheets.parseSpreadsheetId(b.spreadsheet || b.spreadsheetId || '');
@@ -621,6 +638,7 @@ router.get('/:id/export', async (req, res) => {
 // recreated (or reused by name) and their ids remapped in the steps — see
 // workflowImport.service, which the template gallery shares.
 router.post('/import', async (req, res) => {
+  await assertCanAddWorkflow(req.user.id);
   const out = await workflowImport.createFromEnvelope({
     env: req.body,
     userId: req.user.id,
@@ -653,6 +671,7 @@ router.post('/templates/:id/use', async (req, res) => {
   const env = templates.buildEnvelope(req.params.id);
   if (!env) return res.status(404).json({ error: 'Template not found' });
 
+  await assertCanAddWorkflow(req.user.id);
   const out = await workflowImport.createFromEnvelope({
     env,
     userId: req.user.id,
@@ -671,6 +690,7 @@ router.post('/templates/:id/use', async (req, res) => {
 router.post('/:id/duplicate', async (req, res) => {
   const wf = await workflows.getForUser(req.params.id, req.user.id);
   if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+  await assertCanAddWorkflow(req.user.id);
   const name = `${wf.name} (copy)`.slice(0, MAX_NAME_LEN);
   const copy = await workflows.create({
     userId: req.user.id, name, stepsJson: wf.steps_json, metaJson: wf.meta_json,

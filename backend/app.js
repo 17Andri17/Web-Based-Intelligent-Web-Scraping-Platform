@@ -14,6 +14,9 @@ const proxyPoolsRoutes = require('./routes/proxyPools.routes');
 const apiKeysRoutes = require('./routes/apiKeys.routes');
 const webhooksRoutes = require('./routes/webhooks.routes');
 const notificationsRoutes = require('./routes/notifications.routes');
+const billingRoutes = require('./routes/billing.routes');
+const adminRoutes = require('./routes/admin.routes');
+const tourRoutes = require('./routes/tour.routes');
 const v1Routes = require('./routes/v1');
 
 const app = express();
@@ -35,6 +38,14 @@ app.use('/api/proxy-pools', proxyPoolsRoutes);
 app.use('/api/api-keys', apiKeysRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/notifications', notificationsRoutes);
+// Plans, usage and the upgrade flow. GET /plans is public — the pricing page
+// renders from it before anyone has signed up.
+app.use('/api/billing', billingRoutes);
+// Operator tools. The router applies requireAuth + requireAdmin to itself.
+app.use('/api/admin', adminRoutes);
+// Guided-tour housekeeping — deletes the throwaway practice workflow the
+// walkthrough builds, so finishing it leaves nothing behind.
+app.use('/api/tour', tourRoutes);
 
 // Public REST API — versioned, API-key-authed surface for third-party
 // programs (docs/API_ARCHITECTURE.md). Internal frontend routes stay /api/*.
@@ -71,6 +82,46 @@ if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
 } else {
   app.get('/', (req, res) => res.send('Scraper API running'));
 }
+
+/* Plan/quota refusals from services/entitlements.service, raised by guards
+   deep inside route handlers. Express 5 forwards a rejected async handler
+   here automatically, so a guard is a bare `await assert…()` at the top of a
+   route rather than a try/catch in every one.
+
+   Registered BEFORE the /v1 handler so it sees these first. /v1 routes catch
+   EntitlementError themselves (they must translate it into the public API's
+   documented error codes), so anything reaching here is an /api route.
+
+   The `meta` block is what makes the frontend's upgrade prompt specific:
+   which feature or limit was hit, and which plan would lift it. */
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (!err || err.name !== 'EntitlementError') return next(err);
+  res.status(err.status || 402).json({
+    error: err.message,
+    code: err.code,
+    ...err.meta,
+  });
+});
+
+/* Deliberate, client-facing failures raised by services — billing refusing an
+   already-owned plan, a stubbed provider with no portal. They carry an
+   explicit `status`, which is what distinguishes them from a genuine crash:
+   without this they reach Express's default handler and a JSON client gets an
+   HTML error page it cannot parse.
+
+   Anything WITHOUT a status is a bug, so it is logged and answered with a
+   generic 500 rather than leaking a stack trace to the client. */
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (!req.path.startsWith('/api')) return next(err);
+  const status = Number(err && err.status);
+  if (Number.isFinite(status) && status >= 400 && status < 600) {
+    return res.status(status).json({ error: err.message, code: err.code });
+  }
+  console.error(`[api] ${req.method} ${req.path} failed:`, err);
+  res.status(500).json({ error: 'Something went wrong on our end.' });
+});
 
 // Errors under /v1 must keep the public API's one JSON error shape — this
 // also catches body-parser failures (malformed JSON, oversized payloads)

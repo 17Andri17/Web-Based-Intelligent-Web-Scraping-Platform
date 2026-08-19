@@ -7,6 +7,7 @@ const { buildCodegenPoolHelper } = require('../browser/pagePool');
 const { buildCodegenHttpExtractHelper, httpEligibleSteps } = require('./httpExtract');
 const { buildCodegenCaptchaHelper } = require('../browser/captcha');
 const { buildCodegenStealthHelper, getProxyLaunchArgs, PROXY_WEBRTC_GUARD_SCRIPT } = require('../browser/stealthCore');
+const { buildCodegenDebugHelper } = require('../browser/debugBridge');
 
 // ─── Extraction action types (steps that produce named data) ──────────────
 const EXTRACTION_TYPES = new Set([
@@ -2119,6 +2120,36 @@ function stepResumeGuard(step, body, outputs, aliases, clean) {
   ].join('\n');
 }
 
+/* ── Debug Mode gates ─────────────────────────────────────────────────────
+   A pause point before and after every step (see browser/debugBridge.js).
+
+   The selector list handed to the gate is the RUNTIME expression, not the
+   stored string: selectorList() compiles `{{variable}}` references into
+   template literals, so a step whose selector is built from a workflow
+   variable is probed with the value it will actually use. It is emitted at
+   exactly the point the step runs, so the variables it reads are in scope by
+   construction.
+
+   Probing before AND after with the same selectors is what makes the pair
+   informative: "0 matches → 24 matches" identifies a step as the thing that
+   brings an element into existence, which is the question a user opens the
+   debugger to answer. */
+function debugGates(step, ctx) {
+  if (!ctx.debug || !step.id) return { before: '', after: '' };
+  const info = JSON.stringify({
+    id: step.id, type: step.type || null, kind: step.kind || 'action',
+    label: step.label || '',
+  });
+  const sp = extractionSelectorParams(step);
+  const sel = sp && sp.selector && String(sp.selector).trim()
+    ? selectorList(sp, ctx.declaredVars)
+    : 'null';
+  return {
+    before: `await __dbgGate(${info}, 'before', ${sel});\n`,
+    after:  `await __dbgGate(${info}, 'after', ${sel});\n`,
+  };
+}
+
 function genStepList(steps, ctx, depth = 0, isRoot = false) {
   const pad = '  '.repeat(depth);
   return steps.map((step, i) => {
@@ -2143,8 +2174,14 @@ function genStepList(steps, ctx, depth = 0, isRoot = false) {
     // download filter can strip them cleanly.
     if (!ctx.clean && step.id) {
       const tVar = `__ts_${ctx.nextId()}`;
-      raw = `const ${tVar} = Date.now();\n${raw}`
-          + `__stepTime(${JSON.stringify(step.id)}, Date.now() - ${tVar});\n`;
+      // Debug gates, for the same reason, are bare `await` statements rather
+      // than a wrapper. The `before` gate sits OUTSIDE the timer so time spent
+      // parked at a breakpoint isn't charged to the step's duration — a paused
+      // step must not report itself as the slow one.
+      const gates = debugGates(step, ctx);
+      raw = `${gates.before}const ${tVar} = Date.now();\n${raw}`
+          + `__stepTime(${JSON.stringify(step.id)}, Date.now() - ${tVar});\n`
+          + gates.after;
     }
     if (isRoot) {
       raw = stepResumeGuard(step, raw, ctx.topOutputs, ctx.topAliases, ctx.clean);
@@ -2257,7 +2294,20 @@ let __rootResults = null;
 const __sentCounts  = Object.create(null);   // key → array elements already sent
 const __sentScalars = Object.create(null);   // key → last encoding sent
 let __lastCheckpointMs = 0;
-const __CHECKPOINT_MS = 1500;
+/* How often captured rows are reported to the platform. The interval exists to
+   bound stdout on a fast production run — a loop doing 50 items a second must
+   not emit 50 result chunks a second.
+
+   It is a let, not a const, because Debug Mode sets it to 0 (see
+   browser/debugBridge.js): a
+   run being watched by a human reports on every step instead. On a fast loop
+   the throttle otherwise means the whole loop finishes inside one window, so
+   the "rows captured" figure stays at whatever it was BEFORE the loop for the
+   entire run — which reads as the run capturing nothing, or as a stale count
+   belonging to an earlier step. Correct at the end, wrong throughout, and
+   wrong in exactly the place someone is watching to find out what is
+   happening. */
+let __CHECKPOINT_MS = 1500;
 
 /* ── "Done" means SAVED ────────────────────────────────────────────────────
    Completed items and completed steps are staged here and only leave the
@@ -3228,6 +3278,24 @@ function resolvePerf(meta) {
   };
 }
 
+/* Optimisations a debug run has to give up, and why each one would otherwise
+   make the picture lie:
+
+     blockResources — image/media/font are ALWAYS dropped when it is on (see
+       browser/resourceBlock.js), so the stream would show a page with no
+       images and the user would debug a rendering artefact of our own making.
+     concurrency — with N workers there are N pages and no answer to "which one
+       am I looking at?". At 1 the newest tab is unambiguously the live one.
+     httpFirst — an eligible step is answered by a plain HTTP request with no
+       browser involved, so there would be nothing to show for it.
+
+   Everything else (proxy, stealth, rate limits, timeouts) is left exactly as
+   configured: a debug run has to reproduce the real run's behaviour, or it is
+   debugging a different program than the one that failed. */
+function debugPerf(perf) {
+  return { ...perf, blockResources: false, blockStylesheets: false, httpFirst: false, concurrency: 1 };
+}
+
 /* =========================================================================
    MAIN EXPORT: generateCode(workflow) → string
    workflow = { steps: [...], meta: { startUrl, viewport } }
@@ -3246,8 +3314,12 @@ function generateCode(workflow, options = {}) {
   // server.js's downloadCode handler (which omits it; see the `clean`
   // branch below). { protocol, host, port, username?, password? } | null.
   const proxy = workflow.proxy || null;
+  /* Debug Mode. Never for a downloaded script: the gate would park it forever
+     waiting on a platform that isn't there. */
+  const debug = !clean && (!!options.debug || !!workflow.debug);
+
   // Performance switches for this workflow (all default off — see resolvePerf).
-  const perf = resolvePerf(workflow.meta);
+  const perf = debug ? debugPerf(resolvePerf(workflow.meta)) : resolvePerf(workflow.meta);
   const exec = resolveExecution(workflow.meta);
 
   // Picked fresh on every call — generateCode() runs once per execution
@@ -3304,6 +3376,8 @@ function generateCode(workflow, options = {}) {
     // Download mode — suppresses platform-only scaffolding that a line-level
     // filter can't remove (the multi-line resume guard).
     clean,
+    // Emit a pause gate around every step (see debugGates / debugBridge.js).
+    debug,
   };
 
   // isRoot: only top-level steps get a resume guard (see stepResumeGuard).
@@ -3332,6 +3406,10 @@ function generateCode(workflow, options = {}) {
     ? `\n// ─── Harvest runtime (collect a list while scrolling; virtual lists) ──────\n${HARVEST_RUNTIME_SRC}\n`
     : '';
   const instrumentationSrc = clean ? '' : `\n${INSTRUMENTATION_HELPERS_SRC}\n`;
+  // Debug Mode runtime — the pause gate, the page probe and the screencast.
+  // Placed after the instrumentation helpers because it calls one of them
+  // (__snapshotPageHtml) to answer the window's "show me the HTML" request.
+  const debugHelperSrc = debug ? `\n${buildCodegenDebugHelper()}\n` : '';
   // Cookie-consent auto-dismiss helper — always included so every navigation
   // (initial, pagination, subflow, new tab) clears CMP banners. Honours the
   // SCRAPER_CONSENT env var ('accept' default | 'reject' | 'off').
@@ -3395,7 +3473,12 @@ function generateCode(workflow, options = {}) {
       };
       console.log('STEP_ERROR:' + JSON.stringify(__payload__));
     } catch (_) {}
-    process.exitCode = 1;`;
+${debug ? `    // Freeze on the failure. The page is still open and still in the state
+    // that broke the step — which is the one moment a snapshot can never fully
+    // capture, because whatever you didn't think to record is the thing you
+    // needed. The gate holds it until the debug window lets go.
+    try { await __dbgGate(__currentStep__ || { id: '__error__', label: 'failed step' }, 'error', null); } catch (_) {}
+` : ''}    process.exitCode = 1;`;
   const headerDoc = clean
     ? `/**
  * Web-scraping script generated by WebScraper.
@@ -3461,8 +3544,15 @@ function generateCode(workflow, options = {}) {
 
   // Only inlined when some subflow actually compiled an HTTP path — it pulls
   // in cheerio, which a browser-only script has no reason to require.
+  // `instrument` mirrors the pool helper's: HTTP-mode fetches are billable
+  // pages too (they're the whole point of the mode — thousands of detail
+  // pages without a tab), so they must be metered on a hosted run and must
+  // NOT be metered in a script the user exported to run themselves.
   const httpExtractSrc = perf.httpFirst
-    ? buildCodegenHttpExtractHelper({ userAgent: stealth.profile && stealth.profile.userAgent })
+    ? buildCodegenHttpExtractHelper({
+        userAgent: stealth.profile && stealth.profile.userAgent,
+        instrument: !clean,
+      })
     : '';
 
   const poolHelperSrc = buildCodegenPoolHelper({
@@ -3471,6 +3561,7 @@ function generateCode(workflow, options = {}) {
     proxyWebRtc: proxyWebRtcGuardCode,
     requestsPerSecond: perf.requestsPerSecond,
     jitterMs: perf.jitterMs,
+    debug,
   });
 
   return `#!/usr/bin/env node
@@ -3703,7 +3794,7 @@ async function evalOnElements(page, selectors, fn, graceMs = 0) {
   if (!els.length) return [];
   return Promise.all(els.map(el => page.evaluate(fn, el)));
 }
-${fieldRuntimeSrc}${enrichRuntimeSrc}${harvestRuntimeSrc}${instrumentationSrc}${consentHelperSrc}${resourceBlockSrc}${httpExtractSrc}${poolHelperSrc}${captchaHelperSrc}
+${fieldRuntimeSrc}${enrichRuntimeSrc}${harvestRuntimeSrc}${instrumentationSrc}${debugHelperSrc}${consentHelperSrc}${resourceBlockSrc}${httpExtractSrc}${poolHelperSrc}${captchaHelperSrc}
 async function run() {
   const __results__ = {};
 ${rootResultsDecl}${currentStepDecl}${variablesCode}${capturedAliasesCode}

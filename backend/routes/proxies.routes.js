@@ -2,6 +2,7 @@
 
 const express = require('express');
 const proxies = require('../db/repositories/proxies.repo');
+const entitlements = require('../services/entitlements.service');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
@@ -99,6 +100,9 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   const v = validate(req.body);
   if (typeof v === 'string') return res.status(400).json({ error: v });
+  await entitlements.assertFeature(req.user.id, 'proxies', 'Proxies');
+  await entitlements.assertWithinLimit(
+    req.user.id, 'maxProxies', await proxies.countForUser(req.user.id), 'proxies');
   const row = await proxies.create({ ...v, userId: req.user.id, isShared: false });
   res.status(201).json({ proxy: serialize(row, req.user.id) });
 });

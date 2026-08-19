@@ -49,7 +49,7 @@ async function setHeartbeat(runId, msAgo) {
 (async () => {
   await migrate.run(db);
   const user = await db.get(
-    "INSERT INTO users (username, password_hash) VALUES ('reaper','x') RETURNING id", []);
+    "INSERT INTO users (username, password_hash, plan) VALUES ('reaper', 'x', 'business') RETURNING id", []);
   const wf = await db.get(
     "INSERT INTO workflows (user_id, name, steps_json) VALUES (?, 'wf', '[]') RETURNING id", [user.id]);
 
