@@ -1,0 +1,782 @@
+/* =====================================================================
+   DataGrid — the shared scraped-data table.
+
+   Sticky header and sticky leading columns need `border-collapse:
+   separate`; with `collapse` the browser drops the borders of a sticky
+   row, which is why every rule below hangs borders off the cells.
+   ===================================================================== */
+
+.dg {
+  position: relative;          /* the row drawer anchors to this */
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  --dg-num-w: 46px;
+  /* The filter row sticks directly under the header row, so the two have to
+     agree on the header's height exactly — a few pixels out and table rows
+     scroll through the gap between them. Pinning the height here makes them
+     agree by construction instead of by a guess that font metrics can
+     invalidate; the header never wraps, so a fixed height is safe. */
+  --dg-head-h: 34px;
+}
+
+/* ── Toolbar ──────────────────────────────────────────────────────── */
+.dg-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-muted);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.dg-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 180px;
+  max-width: 280px;
+  min-width: 140px;
+}
+.dg-search svg {
+  position: absolute;
+  left: 9px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.dg-search input {
+  width: 100%;
+  padding: 6px 10px 6px 27px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+.dg-search input::placeholder { color: var(--text-muted); }
+.dg-search input:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
+
+.dg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.dg-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.dg-btn.on {
+  background: var(--accent-primary-fill);
+  border-color: var(--accent-primary-fill);
+  color: var(--text-on-accent);
+}
+
+.dg-count {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 20px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+.dg-btn.on .dg-count { background: rgba(255, 255, 255, 0.22); color: var(--text-on-accent); }
+
+.dg-spacer { flex: 1; }
+
+.dg-seg { display: inline-flex; border: 1px solid var(--border-default); border-radius: var(--radius-sm); overflow: hidden; }
+.dg-seg button {
+  padding: 6px 9px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  border: 0;
+  border-right: 1px solid var(--border-default);
+  cursor: pointer;
+}
+.dg-seg button:last-child { border-right: 0; }
+.dg-seg button[aria-pressed="true"] { background: var(--bg-elevated); color: var(--text-primary); }
+
+/* ── Columns popover ──────────────────────────────────────────────── */
+.dg-pop-host { position: relative; }
+
+/* Catches the click that dismisses the popover without swallowing the
+   toolbar itself, so the Columns button still toggles. */
+.dg-pop-catch { position: fixed; inset: 0; z-index: 40; }
+
+.dg-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 41;
+  width: 262px;
+  max-height: 340px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.dg-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.dg-pop-actions { display: flex; gap: 8px; }
+.dg-pop-actions button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--accent-primary);
+  cursor: pointer;
+}
+.dg-pop-actions button:hover { text-decoration: underline; }
+
+.dg-pop-list { list-style: none; margin: 0; padding: 4px; overflow-y: auto; }
+
+.dg-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 6px;
+  border-radius: var(--radius-sm);
+  cursor: grab;
+}
+.dg-pop-row:hover { background: var(--bg-tertiary); }
+.dg-pop-row.dragging { opacity: 0.45; }
+.dg-pop-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.dg-pop-row input[type="checkbox"] { accent-color: var(--accent-primary); flex-shrink: 0; }
+.dg-pop-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dg-pop-tag {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-warning);
+}
+
+.dg-pop-move { display: flex; gap: 2px; flex-shrink: 0; }
+.dg-pop-move button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-muted);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.dg-pop-move button:hover:not(:disabled) { color: var(--text-primary); background: var(--bg-elevated); }
+.dg-pop-move button:disabled { opacity: 0.35; cursor: default; }
+
+/* ── Issue strip ──────────────────────────────────────────────────── */
+.dg-issues {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.dg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 4px 8px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.45;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.dg-chip > i {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+.dg-chip > b {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+.dg-chip:hover { filter: brightness(1.15); }
+
+.dg-chip.bad {
+  color: var(--accent-danger);
+  background: var(--tint-danger-bg);
+  border-color: color-mix(in srgb, var(--accent-danger) 35%, transparent);
+}
+.dg-chip.warn {
+  color: var(--accent-warning);
+  background: var(--tint-warn-bg);
+  border-color: color-mix(in srgb, var(--accent-warning) 35%, transparent);
+}
+.dg-chip.ok {
+  cursor: default;
+  color: var(--accent-success);
+  background: var(--bg-tertiary);
+  border-color: color-mix(in srgb, var(--accent-success) 30%, transparent);
+}
+.dg-chip.ok:hover { filter: none; }
+
+/* An active chip is a filter, and has to read as one. */
+.dg-chip.on {
+  color: var(--text-on-accent);
+  background: var(--accent-primary-fill);
+  border-color: var(--accent-primary-fill);
+}
+
+/* ── The table ────────────────────────────────────────────────────── */
+/* `flex` governs wherever the grid sits in a parent with a real height (the
+   run panel). `max-height` is the fallback for parents that don't give it
+   one (the debug window's data pane) — without it the table just grows and
+   the sticky header has nothing to stick inside. */
+.dg-scroll { flex: 1 1 auto; min-height: 0; max-height: 65vh; overflow: auto; }
+
+.dg-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+.dg-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: var(--dg-head-h);
+  padding: 0;
+  text-align: left;
+  vertical-align: bottom;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-default);
+  white-space: nowrap;
+}
+
+/* The header's two parts — the sort button and the fill bar — are held in a
+   fixed-height column so they sum to --dg-head-h exactly. Letting the th
+   grow to fit its content would push the header past the offset the sticky
+   filter row uses, and table rows would scroll through the gap. */
+.dg-th-wrap {
+  display: flex;
+  flex-direction: column;
+  height: var(--dg-head-h);
+}
+
+.dg-th {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  padding: 6px 10px;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.dg-th:hover { color: var(--accent-primary); }
+.dg-th-name { overflow: hidden; text-overflow: ellipsis; }
+.dg-th-kind {
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.dg-th-arrow { font-size: 9px; color: var(--accent-primary); }
+.dg-th-fill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  font-size: 9.5px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+/* Any gap at all, however small a fraction it is. A column at a rounded 99%
+   and a column at a true 100% must not look the same. */
+.dg-th-fill.has-gaps { color: var(--accent-danger); font-weight: 500; }
+.dg-gap-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent-danger);
+}
+
+/* ── Fill bar ─────────────────────────────────────────────────────── */
+.dg-bar {
+  display: flex;
+  width: 100%;
+  flex: 0 0 3px;
+  height: 3px;
+  padding: 0;
+  border: 0;
+  background: var(--bg-elevated);
+}
+.dg-bar-btn { cursor: pointer; }
+.dg-bar-btn:hover { filter: brightness(1.3); }
+.dg-bar > span { display: block; height: 100%; }
+.dg-bar-ok    { background: var(--accent-success); }
+/* One missing row in ten thousand is 0.01% of the bar — no pixels, and so no
+   warning. The minimum keeps the smallest possible gap visible; flex-shrink
+   stops it stealing space from the filled portion on a narrow column. */
+.dg-bar-gap   { background: var(--accent-danger); min-width: 3px; flex-shrink: 0; }
+/* Amber, not green: a constant column is 100% filled and still wrong. */
+.dg-bar-const { background: var(--accent-warning); }
+
+/* A column a chip pointed at, marked just long enough to find it. */
+.dg-table th.dg-flash,
+.dg-table td.dg-flash { animation: dg-flash 1.6s ease; }
+@keyframes dg-flash {
+  0%, 60% { box-shadow: inset 0 0 0 2px var(--accent-warning); }
+  100%    { box-shadow: inset 0 0 0 2px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dg-table th.dg-flash, .dg-table td.dg-flash { animation: none; box-shadow: inset 0 0 0 2px var(--accent-warning); }
+}
+
+/* A column whose every value is identical carries no information, so it
+   recedes rather than competing with the columns that do. */
+.dg-table td.dg-constcol .dg-v { color: var(--text-muted); }
+.dg-th-rank {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-on-accent);
+  background: var(--accent-primary-fill);
+  border-radius: 20px;
+  padding: 0 4px;
+}
+
+/* Filter row */
+.dg-filters td {
+  position: sticky;
+  /* +1 for the header's bottom border: with `border-collapse: separate` the
+     border adds to the row's height, so the header occupies one pixel more
+     than the content box the token describes. */
+  top: calc(var(--dg-head-h) + 1px);
+  z-index: 3;
+  padding: 4px 5px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-default);
+}
+.dg-filters input {
+  width: 100%;
+  min-width: 70px;
+  padding: 4px 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+}
+.dg-filters input::placeholder { color: var(--text-muted); }
+.dg-filters input.active { border-color: var(--accent-primary); }
+
+/* Body */
+.dg-table tbody td {
+  padding: 6px 10px;
+  vertical-align: top;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-muted);
+  max-width: 300px;
+}
+.dg-table tbody tr { cursor: pointer; }
+.dg-table tbody tr:hover td { background: var(--bg-tertiary); }
+.dg-table tbody tr[aria-selected="true"] td {
+  background: rgba(88, 166, 255, 0.12);
+  box-shadow: inset 0 0 0 9999px rgba(88, 166, 255, 0.05);
+}
+
+/* Row numbers and the pinned first column stay put while scrolling
+   sideways — the identifying field has to remain visible across 30
+   columns or the horizontal scroll is unreadable. */
+.dg-num {
+  position: sticky;
+  left: 0;
+  width: var(--dg-num-w);
+  min-width: var(--dg-num-w);
+  text-align: right;
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  border-right: 1px solid var(--border-muted);
+}
+.dg-table tbody td.dg-num { z-index: 2; background: var(--bg-secondary); }
+.dg-table tbody tr:hover td.dg-num { background: var(--bg-tertiary); }
+.dg-table thead th.dg-num,
+.dg-table thead .dg-filters td.dg-num { z-index: 5; background: var(--bg-tertiary); }
+.dg-filters td.dg-num { background: var(--bg-secondary); }
+
+.dg-pin { position: sticky; left: var(--dg-num-w); }
+.dg-table tbody td.dg-pin { z-index: 1; border-right: 1px solid var(--border-muted); }
+.dg-table thead th.dg-pin { z-index: 4; border-right: 1px solid var(--border-muted); }
+.dg-filters td.dg-pin { z-index: 4; border-right: 1px solid var(--border-muted); }
+
+/* Cell values */
+.dg-v {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+.dg-v-number {
+  font-family: ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.dg-v-url { font-family: ui-monospace, monospace; font-size: 11px; color: var(--accent-primary); }
+
+/* Whitespace the extraction should have trimmed. Invisible in the cell
+   and fatal in a CSV, so it gets a mark rather than being silently
+   normalised away. */
+.dg-messy { border-bottom: 1px dashed var(--accent-warning); }
+
+.dg-empty {
+  display: inline-block;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--accent-danger);
+  background: rgba(248, 81, 73, 0.12);
+  border-radius: 3px;
+  padding: 0 5px;
+}
+
+/* The keyboard cursor. Distinct from hover (which follows the mouse) and
+   from the open row (which is tinted): this is where the arrow keys are. */
+.dg-table tbody tr.dg-cursor td {
+  box-shadow: inset 0 1px 0 var(--accent-primary), inset 0 -1px 0 var(--accent-primary);
+}
+.dg-table tbody tr:focus { outline: none; }
+.dg-table tbody tr:focus-visible td {
+  box-shadow: inset 0 1px 0 var(--accent-primary), inset 0 -1px 0 var(--accent-primary);
+}
+
+.dg-copied { color: var(--accent-success); }
+
+.dg-roomy tbody td { padding: 10px; }
+.dg-roomy .dg-v {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.dg-norows td {
+  padding: 28px 14px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.dg-link {
+  margin-left: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--accent-primary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.dg-blank { padding: 28px 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+.dg-blank-err { color: var(--accent-danger); }
+
+/* A server page in flight dims the table rather than blanking it: keeping the
+   previous rows on screen makes paging feel like paging instead of like the
+   data vanishing and coming back. */
+.dg-scroll.is-loading { opacity: 0.55; transition: opacity var(--transition-fast); }
+.dg-scroll.is-loading .dg-table { pointer-events: none; }
+
+.dg-mode {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.dg-drawer-note {
+  margin: 6px 0 2px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--accent-danger);
+  font-size: 11.5px;
+}
+
+.dg-sr {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ── Footer ───────────────────────────────────────────────────────── */
+.dg-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.dg-foot-info b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.dg-warn { color: var(--accent-warning); }
+
+.dg-pagesize { display: flex; align-items: center; gap: 5px; }
+.dg-pagesize select {
+  padding: 3px 5px;
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+}
+
+.dg-pager { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.dg-pager button {
+  padding: 4px 9px;
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.dg-pager button:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text-primary); }
+.dg-pager button:disabled { opacity: 0.4; cursor: default; }
+.dg-range { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+/* ── Row detail drawer ────────────────────────────────────────────── */
+.dg-drawer-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.28);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.dg-drawer {
+  width: min(380px, 88%);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+  animation: dg-slide var(--transition-normal) ease;
+}
+@keyframes dg-slide { from { transform: translateX(14px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .dg-drawer { animation: none; } }
+
+.dg-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+.dg-drawer-head h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.dg-drawer-close {
+  display: flex;
+  padding: 4px;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.dg-drawer-close:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+
+.dg-drawer-body { margin: 0; padding: 4px 12px 16px; overflow-y: auto; }
+
+.dg-field { padding: 9px 0; border-bottom: 1px solid var(--border-muted); }
+.dg-field:last-child { border-bottom: 0; }
+.dg-field-copy {
+  margin-left: auto;
+  padding: 1px 5px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+.dg-field:hover .dg-field-copy,
+.dg-field-copy:focus-visible { opacity: 1; }
+.dg-field-copy:hover { color: var(--text-primary); background: var(--bg-elevated); }
+
+.dg-field dt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.dg-field-tag {
+  letter-spacing: 0.05em;
+  color: var(--accent-purple);
+}
+.dg-field dd {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* ── Filter operator menu ─────────────────────────────────────────────
+   The filter box speaks a small operator language; this is what makes it
+   visible. "Is empty" is the one people reach for most on scraped data and
+   was previously reachable only by typing a bare `=`. */
+.dg-filtercell { position: relative; display: flex; align-items: center; }
+.dg-filtercell input { padding-right: 20px; }
+
+.dg-filterop {
+  position: absolute;
+  right: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 18px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.dg-filterop:hover { color: var(--text-primary); background: var(--bg-elevated); }
+
+.dg-opmenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 41;
+  min-width: 210px;
+  padding: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+.dg-opmenu button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text-secondary);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.dg-opmenu button:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.dg-opmenu-label { flex: none; }
+.dg-opmenu code {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--accent-primary);
+  background: var(--bg-tertiary);
+}
+.dg-opmenu-hint {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.dg-opmenu-clear {
+  margin-top: 2px;
+  border-top: 1px solid var(--border-muted) !important;
+  border-radius: 0 !important;
+  color: var(--accent-danger) !important;
+}

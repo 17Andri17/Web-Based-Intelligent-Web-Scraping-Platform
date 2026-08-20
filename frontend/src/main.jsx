@@ -3921,6 +3921,7 @@ function AppShell({ user, token, onLogout }) {
         isOpen={execPanelOpen} onClose={() => setExecPanelOpen(false)}
         logs={execLogs} status={execStatus} results={execResults}
         runId={execRunId}
+        viewScope={`${draftScope}:wf:${currentWorkflowId || "unsaved"}`}
         onCancel={handleCancelExecution}
         steps={execFlowTree || steps}
         stepStates={execStepStates}

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { resultsToCsv } from "../utils/resultsExport";
 import { runsApi } from "../api/client";
 import useDialog from "./useDialog";
+import DataGrid from "./DataGrid";
 
 /* =====================================================================
    ExecutionPanel
@@ -14,9 +15,13 @@ import useDialog from "./useDialog";
      onCancel      fn
      runId         number | null   — persisted run id for this run; enables
                                      the server-rendered Excel (.xlsx) export
+     viewScope     string | null   — identifies the workflow whose results
+                                     these are, so each one's table layout is
+                                     remembered separately across runs
    ===================================================================== */
 export default function ExecutionPanel({
   isOpen, onClose, logs, status, results, onCancel, runId = null,
+  viewScope = null,
   steps = [], stepStates = {}, iterations = {}, lastStepId = null,
   rowsCaptured = 0, stepTimes = {}, workers = {}, lanes = {}, laneTotals = {},
   stalled = false,
@@ -249,7 +254,8 @@ export default function ExecutionPanel({
 
                       {/* Preview */}
                       <div className="ep-preview-area">
-                        <DataPreview data={currentData} />
+                        <DataPreview data={currentData} label={selectedKey}
+                          viewKey={viewScope ? `${viewScope}:${selectedKey}` : null} />
                       </div>
                     </>
                   )}
@@ -266,13 +272,25 @@ export default function ExecutionPanel({
 /* =====================================================================
    DataPreview — renders arrays as tables, objects as JSON, scalars as text
    ===================================================================== */
-export function DataPreview({ data }) {
+export function DataPreview({ data, label = null, viewKey = null }) {
   const [viewMode, setViewMode] = useState('auto');
 
   const isArray  = Array.isArray(data);
   const isObject = data !== null && typeof data === 'object' && !isArray;
-  const isTableable = isArray && data.length > 0 && typeof data[0] === 'object' && data[0] !== null;
+  /* A list is tableable when ANY row is a record, not just the first. The
+     old check looked at data[0] alone, so a run whose first row came back
+     empty fell through to raw JSON — exactly the run worth previewing. */
+  const isTableable = isArray && data.some(r => r && typeof r === 'object' && !Array.isArray(r));
   const effectiveMode = viewMode === 'auto' ? (isTableable ? 'table' : 'json') : viewMode;
+
+  // Scalars have nothing to toggle between; print the value and stop.
+  if (!isArray && !isObject) {
+    return (
+      <div className="ep-data-preview">
+        <pre className="ep-json-view">{String(data)}</pre>
+      </div>
+    );
+  }
 
   return (
     <div className="ep-data-preview">
@@ -288,44 +306,9 @@ export function DataPreview({ data }) {
         </div>
       )}
 
-      {/* Table view */}
-      {effectiveMode === 'table' && isTableable && (
-        <div className="ep-table-wrap">
-          <table className="ep-table">
-            <thead>
-              <tr>
-                <th className="ep-th ep-row-num">#</th>
-                {Object.keys(data[0]).map(k => <th key={k} className="ep-th">{k}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {data.slice(0, 200).map((row, i) => (
-                <tr key={i} className="ep-tr">
-                  <td className="ep-td ep-row-num">{i + 1}</td>
-                  {Object.keys(data[0]).map(k => (
-                    <td key={k} className="ep-td">
-                      <span className="ep-cell-value">{formatCell(row[k])}</span>
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {data.length > 200 && (
-            <div className="ep-table-truncated">Showing 200 of {data.length} rows</div>
-          )}
-        </div>
-      )}
-
-      {/* JSON view */}
-      {effectiveMode === 'json' && (
-        <pre className="ep-json-view">{JSON.stringify(data, null, 2)}</pre>
-      )}
-
-      {/* Scalar */}
-      {!isArray && !isObject && (
-        <pre className="ep-json-view">{String(data)}</pre>
-      )}
+      {effectiveMode === 'table' && isTableable
+        ? <DataGrid rows={data} label={label} viewKey={viewKey} />
+        : <pre className="ep-json-view">{JSON.stringify(data, null, 2)}</pre>}
     </div>
   );
 }
@@ -357,12 +340,6 @@ function getDataIcon(data) {
   if (Array.isArray(data)) return '▤';
   if (data !== null && typeof data === 'object') return '{ }';
   return '"';
-}
-
-function formatCell(val) {
-  if (val === null || val === undefined) return '';
-  if (typeof val === 'object') return JSON.stringify(val);
-  return String(val);
 }
 
 /* =====================================================================

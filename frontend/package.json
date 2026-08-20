@@ -4,7 +4,7 @@
   "description": "",
   "main": "vite.config.js",
   "scripts": {
-    "test": "node src/utils/urlVars.test.mjs && node src/utils/draftStore.test.mjs && node src/workflow/paginationWrap.test.mjs && node src/styles/theme.test.mjs && node src/components/dialogs.test.mjs",
+    "test": "node src/utils/urlVars.test.mjs && node src/utils/draftStore.test.mjs && node src/utils/dataGrid.test.mjs && node src/utils/columnProfile.test.mjs && node src/utils/dataGridContract.test.mjs && node src/utils/gridPrefs.test.mjs && node src/workflow/paginationWrap.test.mjs && node src/styles/theme.test.mjs && node src/components/dialogs.test.mjs",
     "dev": "vite",
     "lint": "eslint src",
     "build": "vite build",

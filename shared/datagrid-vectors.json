@@ -1,0 +1,608 @@
+{
+  "README": "Contract fixture shared by frontend/src/utils/{dataGrid,columnProfile}.js and backend/services/datasetView.service.js. Both test suites assert against it, so the two implementations cannot drift apart in what they report about a scrape. Expectations were generated from the frontend, which is independently pinned by its own hand-written tests - this file guards agreement, not correctness. Regenerate only when a behaviour change is intended, and update both suites.",
+  "rows": [
+    {
+      "title": "Aurora 27\" 4K Monitor",
+      "price": "$549.00",
+      "rating": "4.6",
+      "sku": "AUR-27",
+      "shipping": "Free shipping over $50",
+      "stock": "12",
+      "description": "27-inch IPS panel",
+      "notes": "",
+      "firstSeen": "2024-03-01"
+    },
+    {
+      "title": "Kestrel Wireless Mouse",
+      "price": "$39.99",
+      "rating": "4.4",
+      "sku": "KES-01",
+      "shipping": "Free shipping over $50",
+      "stock": "Out of stock",
+      "description": "",
+      "notes": "",
+      "firstSeen": "2024-03-02"
+    },
+    {
+      "title": "  Halcyon Keyboard",
+      "price": "$129.00",
+      "rating": "4.8",
+      "sku": "HAL-87",
+      "shipping": "Free shipping over $50",
+      "stock": "3",
+      "description": "Hot-swappable",
+      "notes": "",
+      "firstSeen": "2024-01-15"
+    },
+    {
+      "title": "Vertex USB-C Dock",
+      "price": "",
+      "rating": "4.1",
+      "sku": "VTX-11",
+      "shipping": "Free shipping over $50",
+      "stock": "7",
+      "description": "",
+      "notes": "",
+      "firstSeen": "2024-02-20"
+    },
+    {
+      "title": "Meridian Stand",
+      "price": "$64.50",
+      "rating": "4.7",
+      "sku": "MER-02",
+      "shipping": "Free shipping over $50",
+      "stock": "Call us",
+      "description": "Aluminium riser",
+      "notes": "",
+      "firstSeen": "2024-03-05"
+    },
+    {
+      "title": "Cobalt Webcam",
+      "price": "$79.00",
+      "rating": "3.9",
+      "sku": "COB-10",
+      "shipping": "Free shipping over $50",
+      "stock": "22",
+      "description": "Full HD",
+      "notes": "",
+      "firstSeen": "2024-01-02"
+    },
+    {
+      "title": "Ridge Desk Mat XL",
+      "price": "$34.00",
+      "rating": "4.5",
+      "sku": "RDG-XL",
+      "shipping": "Free shipping over $50",
+      "stock": "5",
+      "description": "Stitched edge",
+      "notes": "",
+      "firstSeen": "2024-02-11"
+    },
+    {
+      "title": "Solstice Desk Lamp",
+      "price": "",
+      "rating": "4.3",
+      "sku": "SOL-04",
+      "shipping": "Free shipping over $50",
+      "stock": "Out of stock",
+      "description": "2700K to 6000K",
+      "notes": "",
+      "firstSeen": "2024-03-09"
+    },
+    {
+      "title": "Fathom SSD 2TB",
+      "price": "$189.99",
+      "rating": "4.9",
+      "sku": "FTH-2T",
+      "shipping": "Free shipping over $50",
+      "stock": "40",
+      "description": "1050MB/s",
+      "notes": "",
+      "firstSeen": "2024-01-28"
+    },
+    {
+      "title": "Atlas Standing Desk",
+      "price": "$799.00",
+      "rating": "",
+      "sku": "ATL-120",
+      "shipping": "Free shipping over $50",
+      "stock": "2",
+      "description": "Dual-motor",
+      "notes": "",
+      "firstSeen": "2024-02-02"
+    },
+    {
+      "title": "Aurora 27\" 4K Monitor",
+      "price": "$549.00",
+      "rating": "4.6",
+      "sku": "AUR-27",
+      "shipping": "Free shipping over $50",
+      "stock": "12",
+      "description": "27-inch IPS panel",
+      "notes": "",
+      "firstSeen": "2024-03-01"
+    }
+  ],
+  "columns": [
+    "title",
+    "price",
+    "rating",
+    "sku",
+    "shipping",
+    "stock",
+    "description",
+    "notes",
+    "firstSeen"
+  ],
+  "profiles": {
+    "title": {
+      "total": 11,
+      "filled": 11,
+      "empty": 0,
+      "fillPct": 100,
+      "distinct": 10,
+      "constant": false,
+      "constantEverywhere": false,
+      "untrimmed": 1,
+      "typeCounts": {
+        "text": 11
+      },
+      "type": "text"
+    },
+    "price": {
+      "total": 11,
+      "filled": 9,
+      "empty": 2,
+      "fillPct": 82,
+      "distinct": 8,
+      "constant": false,
+      "constantEverywhere": false,
+      "untrimmed": 0,
+      "typeCounts": {
+        "money": 9
+      },
+      "type": "money"
+    },
+    "rating": {
+      "total": 11,
+      "filled": 10,
+      "empty": 1,
+      "fillPct": 91,
+      "distinct": 9,
+      "constant": false,
+      "constantEverywhere": false,
+      "untrimmed": 0,
+      "typeCounts": {
+        "number": 10
+      },
+      "type": "number"
+    },
+    "sku": {
+      "total": 11,
+      "filled": 11,
+      "empty": 0,
+      "fillPct": 100,
+      "distinct": 10,
+      "constant": false,
+      "constantEverywhere": false,
+      "untrimmed": 0,
+      "typeCounts": {
+        "text": 11
+      },
+      "type": "text"
+    },
+    "shipping": {
+      "total": 11,
+      "filled": 11,
+      "empty": 0,
+      "fillPct": 100,
+      "distinct": 1,
+      "constant": true,
+      "constantEverywhere": true,
+      "untrimmed": 0,
+      "typeCounts": {
+        "text": 11
+      },
+      "type": "text"
+    },
+    "stock": {
+      "total": 11,
+      "filled": 11,
+      "empty": 0,
+      "fillPct": 100,
+      "distinct": 9,
+      "constant": false,
+      "constantEverywhere": false,
+      "untrimmed": 0,
+      "typeCounts": {
+        "number": 8,
+        "text": 3
+      },
+      "type": "mixed"
+    },
+    "description": {
+      "total": 11,
+      "filled": 9,
+      "empty": 2,
+      "fillPct": 82,
+      "distinct": 8,
+      "constant": false,
+      "constantEverywhere": false,
+      "untrimmed": 0,
+      "typeCounts": {
+        "text": 9
+      },
+      "type": "text"
+    },
+    "notes": {
+      "total": 11,
+      "filled": 0,
+      "empty": 11,
+      "fillPct": 0,
+      "distinct": 0,
+      "constant": false,
+      "constantEverywhere": false,
+      "untrimmed": 0,
+      "typeCounts": {},
+      "type": "empty"
+    },
+    "firstSeen": {
+      "total": 11,
+      "filled": 11,
+      "empty": 0,
+      "fillPct": 100,
+      "distinct": 10,
+      "constant": false,
+      "constantEverywhere": false,
+      "untrimmed": 0,
+      "typeCounts": {
+        "date": 11
+      },
+      "type": "date"
+    }
+  },
+  "issues": [
+    {
+      "kind": "sparse",
+      "columns": [
+        "notes",
+        "price",
+        "rating",
+        "description"
+      ],
+      "rows": 4,
+      "rowColumns": [
+        "price",
+        "rating",
+        "description"
+      ]
+    },
+    {
+      "kind": "constant",
+      "columns": [
+        "shipping"
+      ],
+      "everywhere": true
+    },
+    {
+      "kind": "mixed",
+      "columns": [
+        "stock"
+      ]
+    },
+    {
+      "kind": "duplicates",
+      "rows": 2
+    }
+  ],
+  "types": {
+    "title": "text",
+    "price": "money",
+    "rating": "number",
+    "sku": "text",
+    "shipping": "text",
+    "stock": "mixed",
+    "description": "text",
+    "notes": "empty",
+    "firstSeen": "date"
+  },
+  "filterCases": [
+    {
+      "name": "contains",
+      "filters": {
+        "title": "desk"
+      },
+      "expect": [
+        "Ridge Desk Mat XL",
+        "Solstice Desk Lamp",
+        "Atlas Standing Desk"
+      ]
+    },
+    {
+      "name": "contains upper",
+      "filters": {
+        "title": "DESK"
+      },
+      "expect": [
+        "Ridge Desk Mat XL",
+        "Solstice Desk Lamp",
+        "Atlas Standing Desk"
+      ]
+    },
+    {
+      "name": "greater than",
+      "filters": {
+        "price": ">100"
+      },
+      "expect": [
+        "Aurora 27\" 4K Monitor",
+        "Halcyon Keyboard",
+        "Fathom SSD 2TB",
+        "Atlas Standing Desk",
+        "Aurora 27\" 4K Monitor"
+      ]
+    },
+    {
+      "name": "less than",
+      "filters": {
+        "price": "<50"
+      },
+      "expect": [
+        "Kestrel Wireless Mouse",
+        "Ridge Desk Mat XL"
+      ]
+    },
+    {
+      "name": "greater or equal",
+      "filters": {
+        "rating": ">=4.7"
+      },
+      "expect": [
+        "Halcyon Keyboard",
+        "Meridian Stand",
+        "Fathom SSD 2TB"
+      ]
+    },
+    {
+      "name": "is empty",
+      "filters": {
+        "price": "="
+      },
+      "expect": [
+        "Vertex USB-C Dock",
+        "Solstice Desk Lamp"
+      ]
+    },
+    {
+      "name": "is not empty",
+      "filters": {
+        "price": "!="
+      },
+      "expect": [
+        "Aurora 27\" 4K Monitor",
+        "Kestrel Wireless Mouse",
+        "Halcyon Keyboard",
+        "Meridian Stand",
+        "Cobalt Webcam",
+        "Ridge Desk Mat XL",
+        "Fathom SSD 2TB",
+        "Atlas Standing Desk",
+        "Aurora 27\" 4K Monitor"
+      ]
+    },
+    {
+      "name": "quoted exact",
+      "filters": {
+        "sku": "\"HAL-87\""
+      },
+      "expect": [
+        "Halcyon Keyboard"
+      ]
+    },
+    {
+      "name": "quoted rejects part",
+      "filters": {
+        "sku": "\"HAL\""
+      },
+      "expect": []
+    },
+    {
+      "name": "two filters AND",
+      "filters": {
+        "price": ">100",
+        "rating": ">4.7"
+      },
+      "expect": [
+        "Halcyon Keyboard",
+        "Fathom SSD 2TB"
+      ]
+    },
+    {
+      "name": "numeric op on text",
+      "filters": {
+        "stock": ">5"
+      },
+      "expect": [
+        "Aurora 27\" 4K Monitor",
+        "Vertex USB-C Dock",
+        "Cobalt Webcam",
+        "Fathom SSD 2TB",
+        "Aurora 27\" 4K Monitor"
+      ]
+    },
+    {
+      "name": "global query",
+      "filters": {},
+      "query": "halcyon",
+      "expect": [
+        "Halcyon Keyboard"
+      ]
+    },
+    {
+      "name": "query and filter",
+      "filters": {
+        "price": "!="
+      },
+      "query": "desk",
+      "expect": [
+        "Ridge Desk Mat XL",
+        "Atlas Standing Desk"
+      ]
+    }
+  ],
+  "sortCases": [
+    {
+      "name": "price asc",
+      "sorts": [
+        {
+          "id": "price",
+          "dir": "asc"
+        }
+      ],
+      "expect": [
+        "Ridge Desk Mat XL",
+        "Kestrel Wireless Mouse",
+        "Meridian Stand",
+        "Cobalt Webcam",
+        "Halcyon Keyboard",
+        "Fathom SSD 2TB",
+        "Aurora 27\" 4K Monitor",
+        "Aurora 27\" 4K Monitor",
+        "Atlas Standing Desk",
+        "Vertex USB-C Dock",
+        "Solstice Desk Lamp"
+      ]
+    },
+    {
+      "name": "price desc",
+      "sorts": [
+        {
+          "id": "price",
+          "dir": "desc"
+        }
+      ],
+      "expect": [
+        "Atlas Standing Desk",
+        "Aurora 27\" 4K Monitor",
+        "Aurora 27\" 4K Monitor",
+        "Fathom SSD 2TB",
+        "Halcyon Keyboard",
+        "Cobalt Webcam",
+        "Meridian Stand",
+        "Kestrel Wireless Mouse",
+        "Ridge Desk Mat XL",
+        "Vertex USB-C Dock",
+        "Solstice Desk Lamp"
+      ]
+    },
+    {
+      "name": "title asc",
+      "sorts": [
+        {
+          "id": "title",
+          "dir": "asc"
+        }
+      ],
+      "expect": [
+        "Atlas Standing Desk",
+        "Aurora 27\" 4K Monitor",
+        "Aurora 27\" 4K Monitor",
+        "Cobalt Webcam",
+        "Fathom SSD 2TB",
+        "Halcyon Keyboard",
+        "Kestrel Wireless Mouse",
+        "Meridian Stand",
+        "Ridge Desk Mat XL",
+        "Solstice Desk Lamp",
+        "Vertex USB-C Dock"
+      ]
+    },
+    {
+      "name": "rating desc",
+      "sorts": [
+        {
+          "id": "rating",
+          "dir": "desc"
+        }
+      ],
+      "expect": [
+        "Fathom SSD 2TB",
+        "Halcyon Keyboard",
+        "Meridian Stand",
+        "Aurora 27\" 4K Monitor",
+        "Aurora 27\" 4K Monitor",
+        "Ridge Desk Mat XL",
+        "Kestrel Wireless Mouse",
+        "Solstice Desk Lamp",
+        "Vertex USB-C Dock",
+        "Cobalt Webcam",
+        "Atlas Standing Desk"
+      ]
+    },
+    {
+      "name": "iso date asc",
+      "sorts": [
+        {
+          "id": "firstSeen",
+          "dir": "asc"
+        }
+      ],
+      "expect": [
+        "Cobalt Webcam",
+        "Halcyon Keyboard",
+        "Fathom SSD 2TB",
+        "Atlas Standing Desk",
+        "Ridge Desk Mat XL",
+        "Vertex USB-C Dock",
+        "Aurora 27\" 4K Monitor",
+        "Aurora 27\" 4K Monitor",
+        "Kestrel Wireless Mouse",
+        "Meridian Stand",
+        "Solstice Desk Lamp"
+      ]
+    },
+    {
+      "name": "multi",
+      "sorts": [
+        {
+          "id": "stock",
+          "dir": "asc"
+        },
+        {
+          "id": "price",
+          "dir": "desc"
+        }
+      ],
+      "expect": [
+        "Atlas Standing Desk",
+        "Halcyon Keyboard",
+        "Ridge Desk Mat XL",
+        "Vertex USB-C Dock",
+        "Aurora 27\" 4K Monitor",
+        "Aurora 27\" 4K Monitor",
+        "Cobalt Webcam",
+        "Fathom SSD 2TB",
+        "Meridian Stand",
+        "Kestrel Wireless Mouse",
+        "Solstice Desk Lamp"
+      ]
+    },
+    {
+      "name": "no sort",
+      "sorts": [],
+      "expect": [
+        "Aurora 27\" 4K Monitor",
+        "Kestrel Wireless Mouse",
+        "Halcyon Keyboard",
+        "Vertex USB-C Dock",
+        "Meridian Stand",
+        "Cobalt Webcam",
+        "Ridge Desk Mat XL",
+        "Solstice Desk Lamp",
+        "Fathom SSD 2TB",
+        "Atlas Standing Desk",
+        "Aurora 27\" 4K Monitor"
+      ]
+    }
+  ]
+}

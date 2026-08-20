@@ -617,10 +617,12 @@
   border: 1px solid rgba(248,81,73,0.3);
 }
 
-/* Preview area */
+/* Preview area. The grid inside owns its own scrolling (it has a sticky
+   header and pinned columns), so this must not scroll too — two nested
+   scrollers would unstick the header. */
 .ep-preview-area {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
   min-height: 0;
 }
 
@@ -657,64 +659,8 @@
 
 .ep-view-toggle button.active { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--accent-primary); }
 
-/* Table */
-.ep-table-wrap {
-  overflow: auto;
-  flex: 1;
-}
-
-.ep-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.ep-th {
-  position: sticky;
-  top: 0;
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  font-weight: 600;
-  text-align: left;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-default);
-  white-space: nowrap;
-  z-index: 1;
-}
-
-.ep-tr:nth-child(even) { background: var(--bg-hover); }
-.ep-tr:hover { background: rgba(88,166,255,0.05); }
-
-.ep-td {
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border-muted);
-  color: var(--text-secondary);
-  max-width: 280px;
-}
-
-.ep-th.ep-row-num,
-.ep-td.ep-row-num {
-  color: var(--text-muted);
-  font-size: 11px;
-  width: 40px;
-  text-align: right;
-  padding-right: 8px;
-}
-
-.ep-cell-value {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ep-table-truncated {
-  padding: 12px 16px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-muted);
-  border-top: 1px solid var(--border-muted);
-}
+/* The table that used to live here is now DataGrid (styles/DataGrid.css),
+   shared with the debug window and the cross-run dataset view. */
 
 /* JSON view */
 .ep-json-view {

@@ -124,8 +124,17 @@ export const workflowsApi = {
   dataSummary: () => api.get("/api/workflows/dataset/summary").then(r => r.data),
   // Self-healing history: how often this scraper repaired itself, and where.
   healing: (id, days = 90) => api.get(`/api/workflows/${id}/healing`, { params: { days } }).then(r => r.data),
-  // Cross-run dataset: rows accumulated across a workflow's runs.
-  // params: { output?, key?, limit?, offset? } (key = "__row__" for whole-row dedupe)
+  /* Cross-run dataset: rows accumulated across a workflow's runs.
+     params:
+       output, key          which list; key = "__row__" for whole-row dedupe
+       limit, offset        the page
+       q                    substring across the requested columns
+       filter               JSON { column: expression } — same operators the grid types
+       sort                 "price:desc,title:asc", ranked left to right
+       columns              only serialise these (the payload win on a wide scrape)
+       cellMax              clip long values to N characters
+       issue                "incomplete" | "duplicates" — the issue-chip filters
+       rowKey               fetch one full, unprojected row instead of a page  */
   dataset: (id, params = {}) => api.get(`/api/workflows/${id}/dataset`, { params }).then(r => r.data),
   datasetDownloadBlob: async (id, fmt = "csv", params = {}) => {
     const r = await api.get(`/api/workflows/${id}/dataset.${fmt}`, { params, responseType: "blob" });

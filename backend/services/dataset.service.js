@@ -182,4 +182,55 @@ function isRecordArray(v) {
   return Array.isArray(v) && v.some(isRecord);
 }
 
-module.exports = { listOutputs, buildDataset, defaultKeyField, rowKey };
+/* ── build cache ────────────────────────────────────────────────────────────
+   The union above is computed on read, which was an honest trade when the
+   dataset was fetched once per panel open. The grid now re-requests on every
+   sort, filter and keystroke, and re-parsing a hundred results blobs per
+   keystroke is not a trade, it is a bug waiting to be reported as "the data
+   screen is slow".
+
+   Keyed on a cheap fingerprint of the underlying runs
+   (runStore.datasetFingerprint), so a new run or a retention prune
+   invalidates it and nothing else has to remember to.
+
+   NOTE ON SAFETY: this cache is keyed by workflow, not by user. Callers MUST
+   verify ownership before consulting it — see loadDataset in
+   workflows.routes.js, which resolves the workflow for the user first and
+   only then looks in here. Never move the lookup above that check.        */
+
+const CACHE_MAX_ENTRIES = 8;
+// Above this the entry is served but not retained: holding several very large
+// datasets resident costs more memory than the rebuild costs time.
+const CACHE_MAX_ROWS = 100000;
+
+const cache = new Map();   // key -> value; Map keeps insertion order for LRU
+
+function cacheKey(parts) {
+  return parts.map(p => String(p === null || p === undefined ? '' : p)).join(' ');
+}
+
+function cacheGet(key) {
+  if (!cache.has(key)) return undefined;
+  const value = cache.get(key);
+  cache.delete(key);        // reinsert so the most recently used is last
+  cache.set(key, value);
+  return value;
+}
+
+function cacheSet(key, value, rowCount) {
+  if (rowCount > CACHE_MAX_ROWS) return value;
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > CACHE_MAX_ENTRIES) {
+    cache.delete(cache.keys().next().value);   // oldest first
+  }
+  return value;
+}
+
+function cacheClear() { cache.clear(); }
+function cacheSize()  { return cache.size; }
+
+module.exports = {
+  listOutputs, buildDataset, defaultKeyField, rowKey,
+  cacheKey, cacheGet, cacheSet, cacheClear, cacheSize,
+};

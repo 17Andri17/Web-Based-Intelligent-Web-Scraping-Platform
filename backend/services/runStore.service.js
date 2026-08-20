@@ -443,6 +443,23 @@ async function recentSuccessfulRunsWithResults(workflowId, limit = 100, { includ
   return out.reverse(); // oldest → newest
 }
 
+/* A cheap stamp for "has this workflow's dataset changed?".
+
+   The cross-run dataset is built by parsing the results blob of every
+   retained run, which is by far the most expensive read in the app — and the
+   answer only changes when a run lands or retention prunes one. This is the
+   indexed one-row query that lets the caller skip all of that on a cache hit.
+
+   The count matters as much as the id: when retention drops the OLDEST run
+   the newest id is unchanged, but the union genuinely shrank. */
+async function datasetFingerprint(workflowId, { includePartial = false } = {}) {
+  const r = await db.get(`
+    SELECT MAX(id) AS latest_run_id, COUNT(*) AS run_count FROM runs
+    WHERE workflow_id = ? AND ${dataStatusSql(includePartial)} AND results_json IS NOT NULL
+  `, [workflowId]);
+  return { latestRunId: (r && r.latest_run_id) || 0, runCount: (r && r.run_count) || 0 };
+}
+
 // The successful run immediately before `beforeRunId` (same workflow) that
 // carries results — the baseline a monitored run is diffed against. Ordered by
 // id so it's stable regardless of started_at clock skew. Returns
@@ -874,6 +891,7 @@ module.exports = {
   recentSuccessfulResults, updateWorkflowSteps,
   // cross-run dataset view
   recentSuccessfulRunsWithResults,
+  datasetFingerprint,
   // change monitoring
   previousSuccessfulRunWithResults, saveChangeSummary,
   runWithResults, successfulRunsBrief,

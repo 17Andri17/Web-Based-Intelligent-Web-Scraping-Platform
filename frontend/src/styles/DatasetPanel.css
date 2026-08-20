@@ -1,115 +1,143 @@
-/* DatasetPanel — cross-run "Data" view. Reuses the wf-* modal shell; these
-   rules cover the controls, the scrolling table, and the pager. */
+/* =====================================================================
+   DatasetPanel — the cross-run data view.
 
-.ds-modal {
-  max-width: 1100px;
-  width: 94vw;
-  max-height: 88vh;
-}
+   Full-height rather than a centred dialog. It used to be a small modal
+   opened from inside another modal, which is no room at all for a table
+   that can run to thirty columns; the grid inside now gets the whole
+   viewport and does its own scrolling.
+   ===================================================================== */
 
-.ds-body {
+.ds-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  background: var(--bg-scrim);
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-  height: 74vh;
-}
-
-/* ── Controls row ─────────────────────────────────────────────────────── */
-.ds-controls {
-  display: flex;
-  align-items: flex-end;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-.ds-controls-spacer { flex: 1 1 auto; }
-
-.ds-control {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--text-secondary, #9aa0a6);
-}
-.ds-control select {
-  min-width: 180px;
-  padding: 6px 8px;
-  font-size: 13px;
-  border-radius: 6px;
-  background: var(--surface-2, var(--bg-hover));
-  color: var(--text-primary, #e6e6e6);
-  border: 1px solid var(--border-soft, #2a2a2a);
-}
-
-.ds-downloads { display: flex; gap: 8px; }
-.ds-xlsx { background: var(--accent-success, #3fb950); color: var(--text-on-accent); }
-
-/* ── Table ────────────────────────────────────────────────────────────── */
-.ds-tablewrap {
-  flex: 1 1 auto;
-  overflow: auto;
-  border: 1px solid var(--border-soft, #2a2a2a);
-  border-radius: 8px;
-}
-
-.ds-table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 13px;
-}
-.ds-table th,
-.ds-table td {
-  text-align: left;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--border-soft, #2a2a2a);
-  white-space: nowrap;
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ds-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--surface-2, var(--bg-code));
-  color: var(--text-primary, #e6e6e6);
-  font-weight: 600;
-  border-bottom: 1px solid var(--border, #333);
-}
-.ds-table tbody tr:hover td {
-  background: var(--accent-soft, rgba(79, 156, 249, 0.06));
-}
-.ds-table .ds-keycol { color: var(--accent-primary, #4f9cf9); }
-
-/* Provenance columns sit visually apart from the scraped data. */
-.ds-table .ds-meta {
-  color: var(--text-secondary, #9aa0a6);
-  background: var(--surface-1, var(--bg-hover));
-}
-.ds-table .ds-meta-num { text-align: right; font-variant-numeric: tabular-nums; }
-
-/* ── Empty state ──────────────────────────────────────────────────────── */
-.ds-empty {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
-  text-align: center;
-  color: var(--text-secondary, #9aa0a6);
-  gap: 4px;
+  padding: clamp(0px, 2vh, 24px) clamp(0px, 2vw, 32px);
+  animation: ds-fade 150ms ease;
 }
-.ds-empty-emoji { font-size: 40px; margin-bottom: 8px; }
-.ds-empty h3 { margin: 0; color: var(--text-primary, #e6e6e6); }
-.ds-empty p { margin: 0; max-width: 420px; font-size: 13px; }
+@keyframes ds-fade { from { opacity: 0; } to { opacity: 1; } }
 
-/* ── Footer / pager ───────────────────────────────────────────────────── */
-.ds-foot {
+.ds-panel {
+  flex: 1;
+  min-width: 0;
+  max-width: 1600px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-overlay { animation: none; }
+}
+
+/* ── Header ───────────────────────────────────────────────────────── */
+.ds-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--bg-primary);
+}
+
+.ds-head-titles { min-width: 0; }
+.ds-head-titles h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ds-head-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-head-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
 }
-.ds-foot-info { font-size: 12px; color: var(--text-secondary, #9aa0a6); }
-.ds-pager { display: flex; align-items: center; gap: 8px; }
-.ds-pager-range { font-size: 12px; color: var(--text-secondary, #9aa0a6); font-variant-numeric: tabular-nums; }
+
+.ds-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.ds-control select {
+  max-width: 220px;
+  padding: 5px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.ds-downloads { display: flex; gap: 6px; }
+
+.ds-btn {
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.ds-btn:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text-primary); }
+.ds-btn:disabled { opacity: 0.5; cursor: default; }
+.ds-xlsx {
+  color: var(--text-on-accent);
+  background: var(--accent-success-fill);
+  border-color: var(--accent-success-fill);
+}
+.ds-xlsx:hover:not(:disabled) { filter: brightness(1.1); color: var(--text-on-accent); }
+
+.ds-close {
+  display: flex;
+  padding: 6px;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.ds-close:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+
+/* ── Body ─────────────────────────────────────────────────────────── */
+/* The grid owns every pixel below the header and scrolls internally. */
+.ds-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (max-width: 720px) {
+  .ds-overlay { padding: 0; }
+  .ds-panel { border-radius: 0; border: 0; }
+  .ds-head { padding: 10px 12px; }
+}

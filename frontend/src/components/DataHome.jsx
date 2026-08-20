@@ -185,8 +185,9 @@ export default function DataHome({ open, onClose, onOpenWorkflow, showToast }) {
         )}
       </div>
 
-      {/* The full cross-run table, unchanged — this screen replaces the way
-          in, not the detail view. */}
+      {/* The full cross-run table: a full-height panel over this one, with
+          its own filtering and sorting done server-side. This screen is the
+          way in; that one is the detail view. */}
       <DatasetPanel
         open={!!detailFor}
         onClose={() => setDetailFor(null)}
