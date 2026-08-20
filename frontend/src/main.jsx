@@ -138,6 +138,14 @@ const API_NUDGE_MIN_CONFIDENCE = 0.65;
 // where calling the site's own JSON endpoint instead is a real upgrade.
 const LIST_STEP_TYPES = new Set(["EXTRACT_LIST", "COLLECT_LIST"]);
 
+// Interaction lock (see interactionLockedRef). CONSENT_GRACE_MS is the window
+// handed to the consent cascade after `load`, whose first passes run on a
+// ~600ms cadence; a site that shows a banner releases early via
+// consentAutoHandled, so only a site with no banner waits this out.
+// MAX_LOCK_MS is the hard ceiling that guarantees the lock always lets go.
+const CONSENT_GRACE_MS = 1200;
+const MAX_LOCK_MS = 8000;
+
 const VAR_RX = /\{\{\s*([^.[\]{}]+(?:\.[^.[\]{}]+)*)\s*\}\}/g;
 function resolveVars(s, vars) {
   if (typeof s !== "string" || !s.includes("{{")) return s;
@@ -406,14 +414,21 @@ function AppShell({ user, token, onLogout }) {
   // dpr× larger than the remote page's coordinate space — mouse positions
   // must be mapped against THIS size, not canvas.width/height.
   const viewportCssRef       = useRef(null);
-  // While a page is loading AND the cookie-consent auto-dismiss is analysing
-  // it, we pause forwarding the user's clicks to the backend so a stray click
-  // can't land on a half-loaded page or fight the consent handler. Released
-  // shortly after `pageReady`, with a hard safety timeout so it can never stay
-  // stuck if the load/ready signal never arrives.
+  // While an explicitly requested page is loading AND the cookie-consent
+  // auto-dismiss is analysing it, we pause forwarding the user's clicks to the
+  // backend. The point is not the half-loaded page — it's that dismissing a
+  // banner reflows everything under the cursor, so in selection mode a click
+  // aimed at one element records a selector for another. Released as soon as
+  // the banner is handled, otherwise shortly after `pageReady`, with a hard
+  // safety timeout so it can never stay stuck if `load` never arrives.
   const interactionLockedRef = useRef(false);
   const unlockTimerRef       = useRef(null);
   const maxLockTimerRef      = useRef(null);
+  // What the overlay says while the lock is on: "loading" until the page is
+  // ready, then "consent" for the banner-analysis window. null = no overlay.
+  // Mirrors interactionLockedRef, which is what the event path reads (the
+  // canvas handlers close over their first render).
+  const [loadPhase, setLoadPhase] = useState(null);
 
   const [status,          setStatus]          = useState("");
   const [urlInput,        setUrlInput]        = useState("");
@@ -857,15 +872,21 @@ function AppShell({ user, token, onLogout }) {
     // Page navigated inside puppeteer (link click, redirect, history nav)
     socket.on("pageUrlChanged", ({ url }) => {
       if (typeof url === "string") setCurrentPageUrl(url);
-      // A navigation just started (e.g. the user clicked a link in nav mode):
-      // pause clicks again until this new page loads + consent settles.
-      lockInteraction();
+      // Deliberately does NOT re-arm the interaction lock. The backend emits
+      // this from page.on('framenavigated'), which puppeteer also fires for
+      // SAME-DOCUMENT navigations (pushState / replaceState / hash) — and those
+      // never produce a `load` event, so `pageReady` never came and the lock sat
+      // there until its hard timeout. An infinite-scroll page that rewrites
+      // ?page=N as you scroll re-armed that timeout on every scroll, which left
+      // clicks dead for as long as you kept scrolling. Explicit navigations
+      // (performNavigate) are the ones that reliably end in `pageReady`, and the
+      // only ones where a consent banner is actually expected.
     });
     // DOM is parsed and ready — re-fire all step previews so the Data tab
     // populates against the freshly loaded page (especially needed right
     // after opening a saved workflow, where the navigate is still in
     // flight when the steps-changed effect first ran).
-    socket.on("pageReady", () => { setPageReadyTick(t => t + 1); releaseInteractionSoon(); });
+    socket.on("pageReady", () => { setPageReadyTick(t => t + 1); enterConsentPhase(); });
     socket.on("actionResult", res => setStatus(res.success ? "Action executed." : "Action failed: " + (res.error || "")));
 
     // ── CAPTCHA detected on the streamed page (see browser/captcha.js) ──────
@@ -901,21 +922,33 @@ function AppShell({ user, token, onLogout }) {
     // ── Cookie banner auto-dismissed (see browser/consent.js) ───────────────
     // The cascade just clicked a consent banner on the live page. Record it
     // as a real workflow step so unattended runs do the same — stuck right
-    // after the start NAVIGATE (attach = moves together with it in DnD).
-    // With no selector the step uses the same automatic detection cascade.
-    socket.on("consentAutoHandled", ({ name }) => {
+    // after the start NAVIGATE (attach = moves together with it in DnD, and
+    // tells codegen that this step, not the Navigate, owns the dismissal).
+    socket.on("consentAutoHandled", ({ name, selector, selectorType, fallbackSelectors, buttonText }) => {
+      // The banner is gone, so the reflow the lock exists to protect against
+      // has already happened — no reason to keep holding clicks.
+      releaseInteraction();
       if (cookieStepAutoAddedRef.current) return;
       if (treeHasStepType(stepsRef.current, "DISMISS_COOKIE_BANNER")) return;
       cookieStepAutoAddedRef.current = true;
+      // Record WHICH control was clicked, not just that one was: a step
+      // carrying the real selector clicks straight through on every run
+      // instead of re-walking the CMP registry and the scoring heuristic. An
+      // empty selector (a CMP handled through its JS API, or a shadow-root-only
+      // match) falls back to automatic detection exactly as before, and so does
+      // a selector that stops matching after a banner redesign.
       const step = createAction("DISMISS_COOKIE_BANNER", {
-        selector: "", selectorType: "css", fallbackSelectors: [],
+        selector:          selector || "",
+        selectorType:      selectorType || "css",
+        fallbackSelectors: fallbackSelectors || [],
       });
       step.attach = true;
-      step.label = name && name !== "heuristic" && name !== "close-button"
-        ? `Close cookie banner (${name})`
-        : "Close cookie banner";
+      const via = (name && name !== "heuristic" && name !== "close-button") ? name : (buttonText || "");
+      step.label = via ? `Close cookie banner (${via})` : "Close cookie banner";
       addStep(step, [], stickyInsertIndex(stepsRef.current));
-      showToast("🍪 Cookie banner closed — recorded as a step after Navigate", "success");
+      showToast(selector
+        ? "🍪 Cookie banner closed — recorded as a step aimed at that button"
+        : "🍪 Cookie banner closed — recorded as a step after Navigate", "success");
     });
 
     socket.on("viewportUpdated", (data) => {
@@ -1686,24 +1719,32 @@ function AppShell({ user, token, onLogout }) {
     setCaptchaPrompt(null);
   };
 
+  const releaseInteraction = useCallback(() => {
+    clearTimeout(unlockTimerRef.current);
+    clearTimeout(maxLockTimerRef.current);
+    interactionLockedRef.current = false;
+    setLoadPhase(null);
+  }, []);
   // Pause click forwarding for the loading + consent-analysis window.
   const lockInteraction = useCallback(() => {
     interactionLockedRef.current = true;
+    setLoadPhase("loading");
     clearTimeout(unlockTimerRef.current);
-    // Safety net: never stay locked more than 8s, even if pageReady never
-    // fires (e.g. a hash navigation that doesn't trigger a load event).
+    // Safety net: never stay locked more than MAX_LOCK_MS, even if pageReady
+    // never fires (a navigation that ends in a download, a page whose `load`
+    // is held open by a hanging subresource).
     clearTimeout(maxLockTimerRef.current);
-    maxLockTimerRef.current = setTimeout(() => { interactionLockedRef.current = false; }, 8000);
-  }, []);
-  // Release shortly after the page is ready, giving the first consent passes
-  // (which run on a ~600ms cadence) a moment to dismiss any banner first.
-  const releaseInteractionSoon = useCallback((delay = 1500) => {
+    maxLockTimerRef.current = setTimeout(releaseInteraction, MAX_LOCK_MS);
+  }, [releaseInteraction]);
+  // The page is ready; what's left is the banner check. No-op when nothing is
+  // locked, so a `pageReady` from a background reconnect can't raise an overlay
+  // out of nowhere.
+  const enterConsentPhase = useCallback(() => {
+    if (!interactionLockedRef.current) return;
+    setLoadPhase("consent");
     clearTimeout(unlockTimerRef.current);
-    unlockTimerRef.current = setTimeout(() => {
-      interactionLockedRef.current = false;
-      clearTimeout(maxLockTimerRef.current);
-    }, delay);
-  }, []);
+    unlockTimerRef.current = setTimeout(releaseInteraction, CONSENT_GRACE_MS);
+  }, [releaseInteraction]);
 
   // Low-level: tell the backend to navigate and start streaming the new URL.
   const performNavigate = useCallback((url) => {
@@ -2530,32 +2571,37 @@ function AppShell({ user, token, onLogout }) {
   // mouse-button state ("'left' is already pressed") and from then on
   // every other click is silently dropped.
   const mouseDownForwardedRef = useRef(false);
+  // Returns whether the event was actually forwarded to the backend, so a
+  // caller can avoid reporting a click that never landed.
   const emit = (type, extra = {}) => {
     // Don't send mouse/keyboard events to the backend when there's no active
     // page — e.g. after "New workflow" before the next navigate. Otherwise
     // hover events race against a torn-down execution context.
-    if (!isStreamingRef.current) return;
+    if (!isStreamingRef.current) return false;
     // While the page is loading and the consent banner is being analysed,
-    // swallow clicks so a stray click can't hit a half-loaded page or race
-    // the auto-dismiss. Hover/scroll/keys still flow.
+    // swallow clicks: dismissing a banner reflows the page, so a click aimed
+    // at one element would land on another. Hover/scroll/keys still flow, so
+    // looking around while you wait is unaffected.
     if (type === "mousedown") {
       if (interactionLockedRef.current) {
         mouseDownForwardedRef.current = false;
-        setStatus("Loading… clicks paused");
-        return;
+        // Clicking through the overlay drops the lock: waiting is a courtesy,
+        // never a trap. This click is still swallowed (the page may be about to
+        // reflow under it) but the next one goes straight through.
+        releaseInteraction();
+        setStatus("Page was still loading — click again");
+        return false;
       }
       mouseDownForwardedRef.current = true;
     } else if (type === "mouseup") {
       // Paired with a swallowed mousedown → swallow too. Paired with a
       // forwarded mousedown → always forward, even if the lock has engaged
       // in the meantime.
-      if (!mouseDownForwardedRef.current) {
-        if (interactionLockedRef.current) setStatus("Loading… clicks paused");
-        return;
-      }
+      if (!mouseDownForwardedRef.current) return false;
       mouseDownForwardedRef.current = false;
     }
     socketRef.current?.emit("userAction", { type, ...extra });
+    return true;
   };
 
   // Keys that we should never preventDefault for, so the host browser can
@@ -3454,6 +3500,20 @@ function AppShell({ user, token, onLogout }) {
               ref={canvasContainerRef}
               style={htmlMaximized && sidebarTab === "html" ? { display: "none" } : undefined}
             >
+              {/* Says why clicks aren't landing. Sits ABOVE the canvas but is
+                  pointer-events:none, so the click that dismisses the lock is
+                  the canvas's own mousedown (see emit) rather than a separate
+                  hit target — otherwise the first click after a load would be
+                  eaten by the overlay instead of releasing it. */}
+              {loadPhase && (
+                <div className="canvas-loading" role="status" aria-live="polite">
+                  <span className="canvas-loading-spinner" aria-hidden="true" />
+                  <span className="canvas-loading-text">
+                    {loadPhase === "consent" ? "Checking for a cookie banner…" : "Loading page…"}
+                  </span>
+                  <span className="canvas-loading-hint">click to interact anyway</span>
+                </div>
+              )}
               <canvas ref={canvasRef} className="browser-canvas" tabIndex={0}
                 style={{ cursor: mode === "selection" ? "crosshair" : cursorType, outline: "none" }}
                 onContextMenu={e => e.preventDefault()}
@@ -3473,8 +3533,11 @@ function AppShell({ user, token, onLogout }) {
                   // stuck modifier (e.g. an Alt whose keyup was lost to Alt+Tab)
                   // before the click — otherwise a plain click can land as
                   // Alt+click and download the link instead of navigating.
-                  emit("mousedown", { x, y, altKey: e.altKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey });
-                  setStatus(`Clicked: x=${x}, y=${y}`);
+                  // Only report a click that actually reached the page — a
+                  // swallowed one leaves its own message (see emit).
+                  if (emit("mousedown", { x, y, altKey: e.altKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey })) {
+                    setStatus(`Clicked: x=${x}, y=${y}`);
+                  }
                 }}
                 onPointerMove={e => {
                   const {x, y} = scaled(e);

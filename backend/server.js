@@ -163,7 +163,19 @@ io.on('connection', async (socket) => {
         // as a workflow step so unattended runs repeat it.
         if (event && event.type === 'consent') {
           socket.emit('message', event.text);
-          socket.emit('consentAutoHandled', { name: event.name || null });
+          // Forward the control the cascade actually clicked, not just the CMP
+          // name: the frontend turns it into a step that targets THAT button,
+          // so an unattended run skips the registry + heuristic walk entirely.
+          // null selector = the cascade had nothing addressable to hand over
+          // (a CMP JS API, or a shadow-root-only match) — the step then falls
+          // back to automatic detection, as before.
+          socket.emit('consentAutoHandled', {
+            name:              event.name || null,
+            selector:          event.selector || null,
+            selectorType:      event.selectorType || 'css',
+            fallbackSelectors: Array.isArray(event.fallbackSelectors) ? event.fallbackSelectors : [],
+            buttonText:        event.buttonText || '',
+          });
           return;
         }
         // CAPTCHA detection (see browser/captcha.js) rides the same binding.
@@ -758,7 +770,19 @@ io.on('connection', async (socket) => {
         // the frontend record the dismissal as a workflow step.
         if (event && event.type === 'consent') {
           socket.emit('message', event.text);
-          socket.emit('consentAutoHandled', { name: event.name || null });
+          // Forward the control the cascade actually clicked, not just the CMP
+          // name: the frontend turns it into a step that targets THAT button,
+          // so an unattended run skips the registry + heuristic walk entirely.
+          // null selector = the cascade had nothing addressable to hand over
+          // (a CMP JS API, or a shadow-root-only match) — the step then falls
+          // back to automatic detection, as before.
+          socket.emit('consentAutoHandled', {
+            name:              event.name || null,
+            selector:          event.selector || null,
+            selectorType:      event.selectorType || 'css',
+            fallbackSelectors: Array.isArray(event.fallbackSelectors) ? event.fallbackSelectors : [],
+            buttonText:        event.buttonText || '',
+          });
           return;
         }
         // CAPTCHA detection (see browser/captcha.js) rides the same binding.

@@ -99,6 +99,38 @@ function extractionSelectorParams(step) {
  * first extraction that will run on the page being navigated to, or null when
  * it can't be determined safely.
  */
+/* ── Navigate ⇄ "Close cookie banner" pairing ───────────────────────────────
+   The editor glues a DISMISS_COOKIE_BANNER step to the Navigate whose banner
+   it watched get dismissed (step.attach — see consentAutoHandled in main.jsx).
+   That pairing makes the step the OWNER of the navigation's consent handling:
+   the Navigate emits no cascade call of its own, and the step inherits the
+   Navigate's 'accept' | 'reject' | 'off' preference.
+
+   Only a DIRECTLY following attached step counts. A cookie step the user
+   placed by hand somewhere else keeps its own independent behaviour, and the
+   Navigate keeps its cascade — dropping it there would silently change what
+   an existing workflow does.
+
+   Both directions are derived from the same step list, so neither side
+   depends on state the other left behind on ctx. */
+function attachedConsentStep(steps, i) {
+  const nav = steps[i];
+  if (!nav || nav.type !== 'NAVIGATE' || (nav.advanced && nav.advanced.skipOnRun)) return null;
+  const next = steps[i + 1];
+  if (!next || next.kind !== 'action' || next.type !== 'DISMISS_COOKIE_BANNER' || !next.attach) return null;
+  return next;
+}
+
+/* The consent preference a DISMISS_COOKIE_BANNER step inherits from the
+   Navigate it is attached to, or null when it stands on its own. */
+function attachedConsentPref(steps, i) {
+  const step = steps[i];
+  if (!step || step.kind !== 'action' || step.type !== 'DISMISS_COOKIE_BANNER' || !step.attach) return null;
+  const prev = steps[i - 1];
+  if (!prev || prev.type !== 'NAVIGATE' || (prev.advanced && prev.advanced.skipOnRun)) return null;
+  return (prev.advanced && prev.advanced.consent) || 'accept';
+}
+
 function lookaheadExtractionSelectors(steps, fromIndex, declaredVars) {
   const walk = (list, start) => {
     for (let i = start; i < (list || []).length; i++) {
@@ -599,7 +631,14 @@ function genAction(step, ctx) {
       }
       // Per-step cookie-consent preference: 'accept' (default) | 'reject' | 'off'.
       const consentPref = advanced.consent || 'accept';
-      const consentCall = consentPref === 'off'
+      // When the editor glued a "Close cookie banner" step to this Navigate
+      // (step.attach — see consentAutoHandled and the click-to-teach prompt in
+      // main.jsx), that step owns the dismissal, usually aimed at the exact
+      // control the editor watched get clicked. Running the cascade here too
+      // does the same work twice: the second call finds nothing, which is both
+      // slow and why the step looked like a no-op when stepping through a run.
+      // The step inherits this preference — see attachedConsentPref().
+      const consentCall = (consentPref === 'off' || ctx.__consentDeferred)
         ? ''
         : `\nawait dismissConsent(page, ${JSON.stringify(consentPref)});`;
       // Per-step CAPTCHA handling: 'auto' (default — detect, wait out
@@ -687,21 +726,38 @@ await Promise.all([
       // stored (repeat visit, persisted profile) — this step must NEVER
       // fail the workflow, so it clicks-if-present instead of waiting-then-
       // throwing like CLICK_ELEMENT.
+      //
+      // Attached to a Navigate, this step OWNS that navigation's consent
+      // handling and inherits its preference, so "leave popup visible" set on
+      // the Navigate is honoured here instead of being silently undone.
+      const inherited = ctx.__consentFromNav || null;
+      if (inherited === 'off') {
+        return `// Cookie banner left visible — its Navigate step is set to leave the popup up\n`;
+      }
+      const prefArg = inherited && inherited !== 'accept' ? JSON.stringify(inherited) : 'undefined';
       const hasSel = !!(params.selector || (params.fallbackSelectors || []).length);
-      const timeout = num(advanced.timeout, 8000);
+      // How long to keep looking for a banner that has not rendered yet.
+      // Configurable per step, short by default, and collapsed further once
+      // the page reports itself loaded (see __consentBudget) — the old 8s
+      // selector poll plus a 3s cascade was paid in full on every repeat visit,
+      // where the banner is simply never coming. The collapse is what keeps
+      // steps saved with the old 8000 default fast too.
+      const waitMs = num(advanced.timeout, 1500);
       if (!hasSel) {
         return `
 // Close cookie banner (automatic detection — skipped silently when absent)
-await dismissConsent(page);
+await dismissConsent(page, ${prefArg}, { waitMs: ${waitMs} });
 `.trim() + '\n';
       }
       const autoFallback = advanced.autoFallback !== false;
       return `
 // Close cookie banner: ${params.selector} (click if present — never fails)
 {
-  let _closed = await clickIfPresent(page, ${selList(params)}, ${timeout});${autoFallback ? `
-  // Selector didn't match (banner redesign?) → try automatic detection.
-  if (!_closed) _closed = await dismissConsent(page);` : ''}
+  const _budget = await __consentBudget(page, ${waitMs});
+  let _closed = await clickIfPresent(page, ${selList(params)}, _budget);${autoFallback ? `
+  // Selector didn't match (banner redesign?) → try automatic detection. The
+  // budget above already covered "not rendered yet", so this is a single pass.
+  if (!_closed) _closed = await dismissConsent(page, ${prefArg}, { waitMs: 0 });` : ''}
   console.log(_closed
     ? '🍪 Cookie banner closed.'
     : '🍪 Cookie banner not found — already consented or not shown; continuing.');
@@ -2164,10 +2220,17 @@ function genStepList(steps, ctx, depth = 0, isRoot = false) {
     if (step.type === 'NAVIGATE' && ctx.perf && ctx.perf.smartWait) {
       ctx.__lookaheadSelectors = lookaheadExtractionSelectors(steps, i + 1, ctx.declaredVars);
     }
+    // Consent ownership for this step (see attachedConsentStep). Handed over
+    // through ctx the same way, and cleared straight after for the same
+    // reason: it must never leak into an unrelated step.
+    ctx.__consentDeferred = !!attachedConsentStep(steps, i);
+    ctx.__consentFromNav  = attachedConsentPref(steps, i);
     let raw = step.kind === 'control'
       ? genControl(step, ctx, depth)
       : genAction(step, ctx);
     ctx.__lookaheadSelectors = null;
+    ctx.__consentDeferred = false;
+    ctx.__consentFromNav = null;
     // Time the step. Deliberately two bare statements rather than a wrapping
     // block: steps declare `const`s that later steps read, so introducing a
     // scope here would break the workflow. Both lines are standalone, so the

@@ -299,6 +299,7 @@ var __consentU = (function () {
 function __consentApplyOnce(preference, registryOnly) {
   preference = preference === 'reject' ? 'reject' : 'accept';
   var U = __consentU;
+  window.__consentLastMatch__ = null;
 
   // Cooldown: don't re-fire a click before the banner tears down (also avoids
   // fighting SPA re-renders that re-insert the banner momentarily).
@@ -307,6 +308,12 @@ function __consentApplyOnce(preference, registryOnly) {
     if (window.__consentLastClick__ && _now - window.__consentLastClick__ < 1500) return null;
   } catch (_) {}
 
+  // Records what the cascade clicked, so the live editor can turn a successful
+  // dismissal into a step that targets THAT control instead of re-running the
+  // whole cascade on every run. The recorded selector is set only on the registry
+  // path, where the selector is hand-written and stable; heuristic hits leave
+  // it null and the editor generates one from the element instead.
+  var _lastEl = null, _lastSel = null;
   function clickEl(el) {
     if (!el) return false;
     try { if (el.scrollIntoView) el.scrollIntoView({ block: 'center' }); } catch (_) {}
@@ -314,7 +321,10 @@ function __consentApplyOnce(preference, registryOnly) {
     window.__consentInProgress__ = true;
     window.__consentLastClick__ = Date.now();
     var ok = false;
+    var label = '';
+    try { label = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 60); } catch (_) {}
     try { el.click(); ok = true; } catch (_) {}
+    if (ok) window.__consentLastMatch__ = { el: el, selector: _lastSel, text: label };
     setTimeout(function () { window.__consentInProgress__ = false; }, 0);
     return ok;
   }
@@ -334,8 +344,16 @@ function __consentApplyOnce(preference, registryOnly) {
   function firstVisible(selectors) {
     for (var i = 0; i < selectors.length; i++) {
       var el = deepQueryOne(selectors[i]);
-      if (el && U.isVisible(el)) return el;
+      // A shadow-root hit is NOT addressable by this selector from the
+      // document, so it must not be reported as a learnable one.
+      if (el && U.isVisible(el)) {
+        var addressable = false;
+        try { addressable = document.querySelector(selectors[i]) === el; } catch (_) {}
+        _lastSel = addressable ? selectors[i] : null;
+        return el;
+      }
     }
+    _lastSel = null;
     return null;
   }
 
@@ -488,6 +506,9 @@ function __consentApplyOnce(preference, registryOnly) {
   // In sub-frames we only run the cheap registry pass — the broad heuristic
   // below could mis-fire inside unrelated iframes (ads, embeds).
   if (registryOnly) return null;
+
+  // Past the registry: nothing below has a hand-written selector to learn.
+  _lastSel = null;
 
   // ── Consent containers (for the container-first pass + close fallback) ───
   // Elements that structurally look like a consent surface AND whose text
@@ -749,6 +770,32 @@ function buildInjectedConsentScript() {
     catch (e) { return null; }
   };
 
+  // Turn the control the cascade just clicked into a selector the generated
+  // script can target directly, so an unattended run doesn't have to re-walk
+  // the whole registry + heuristic to find the same button. The registry's own
+  // hand-written selector wins when there is one (it is stable by design);
+  // otherwise we generate one the same way click-to-teach does. Sub-frame
+  // selectors are fine — clickIfPresent searches every frame at run time.
+  function __learnConsentTarget() {
+    var m = null;
+    try { m = window.__consentLastMatch__; } catch (_) {}
+    if (!m || !m.el) return null;
+    var out = { text: m.text || '' };
+    if (m.selector) { out.selector = m.selector; out.selectorType = 'css'; out.fallbackSelectors = []; return out; }
+    try {
+      if (window.SelectorGenerator && window.SelectorGenerator.getSelectorsForElement) {
+        var g = window.SelectorGenerator.getSelectorsForElement(m.el, { maxFallbacks: 4, actionType: 'CLICK_ELEMENT' });
+        if (g && g.primary && g.primary.value) {
+          out.selector = g.primary.value;
+          out.selectorType = g.primary.type || 'css';
+          out.fallbackSelectors = (g.fallbacks || []).map(function (f) { return { value: f.value, type: f.type || 'css' }; });
+          return out;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   // Throttle so a mutation-heavy page can't trigger the full cascade (which
   // walks shadow roots) more than ~2.5x/sec, regardless of mutation volume.
   var _lastRun = 0;
@@ -770,7 +817,16 @@ function buildInjectedConsentScript() {
       // if its getter fires), regardless of whether a visible DevTools panel
       // is open. addBinding never touches the Runtime domain, so it can't
       // trip that signal.
-      __reportToNode({ type: 'consent', name: name, text: '🍪 Consent handled: ' + name });
+      var learned = __learnConsentTarget();
+      __reportToNode({
+        type: 'consent', name: name,
+        selector:          learned ? learned.selector : null,
+        selectorType:      learned ? learned.selectorType : 'css',
+        fallbackSelectors: learned ? learned.fallbackSelectors : [],
+        buttonText:        learned ? learned.text : '',
+        inIframe: !_isTop,
+        text: '🍪 Consent handled: ' + name
+      });
     }
   }
 
@@ -843,25 +899,52 @@ function buildInjectedConsentScript() {
 
 /**
  * Node-side helper source inlined into generated scrape scripts. Defines an
- * async `dismissConsent(targetPage)` that runs the cascade across every frame
- * (top frame = full, sub-frames = registry-only), retrying briefly to catch
- * late banners. Preference comes from process.env.SCRAPER_CONSENT (default
- * 'accept'); set it to 'off' to disable. Returns true when a banner was
- * handled, false otherwise (absent banner is NOT an error — consent may
- * already be stored in the profile).
+ * async `dismissConsent(targetPage, preference, opts)` that runs the cascade
+ * across every frame, retrying until a wait budget runs out.
+ *
+ * `opts.waitMs` is that budget (per call — the DISMISS_COOKIE_BANNER step
+ * exposes it as "Banner wait"); it defaults to SCRAPER_CONSENT_WAIT_MS or
+ * 1.5s, and collapses to ~0.4s once the page reports readyState 'complete',
+ * because a finished page has already had its chance to render a banner.
+ * Preference comes from the caller or process.env.SCRAPER_CONSENT (default
+ * 'accept'); 'off' disables it. Returns true when a banner was handled, false
+ * otherwise (absent banner is NOT an error — consent may already be stored in
+ * the profile).
  */
 function buildCodegenConsentHelper() {
   return `
 // ─── Cookie-consent auto-dismiss (CMP banners) ─────────────────────────────
 const __CONSENT_SRC = ${JSON.stringify(CONSENT_CASCADE_SRC)};
 const __CONSENT_PREF = process.env.SCRAPER_CONSENT || 'accept';
-async function dismissConsent(targetPage, preference) {
+// How long to keep re-checking after a pass finds nothing. The ONLY reason to
+// wait at all is a CMP script that hasn't rendered its banner yet, so a page
+// that has already reached readyState 'complete' gets a single short second
+// look rather than the full budget. Without that, every navigation on a site
+// whose consent is already stored pays the whole budget for nothing — once per
+// paginated page and once per enriched row, where it dominates the run.
+const __CONSENT_WAIT_MS = Number(process.env.SCRAPER_CONSENT_WAIT_MS) || 1500;
+const __CONSENT_WAIT_LOADED_MS = 400;
+// Resolve how long a consent lookup may keep retrying on THIS page. Shared by
+// dismissConsent and by the selector path of the Close Cookie Banner step, so
+// both shrink the same way on an already-loaded page.
+async function __consentBudget(pg, waitMs) {
+  let b = Number.isFinite(waitMs) ? waitMs : __CONSENT_WAIT_MS;
+  if (b > __CONSENT_WAIT_LOADED_MS) {
+    let complete = false;
+    try { complete = await pg.evaluate(() => document.readyState === 'complete'); } catch (_) {}
+    if (complete) b = __CONSENT_WAIT_LOADED_MS;
+  }
+  return Math.max(0, b);
+}
+async function dismissConsent(targetPage, preference, opts) {
   const pg = targetPage || (typeof page !== 'undefined' ? page : null);
   // Per-call preference (from the step) wins; otherwise fall back to the env
   // default. 'off' = leave the banner alone.
   const __pref = preference || __CONSENT_PREF;
   if (!pg || __pref === 'off') return false;
-  for (let _a = 0; _a < 6; _a++) {
+  const __opts = opts || {};
+  const __deadline = Date.now() + await __consentBudget(pg, __opts.waitMs);
+  for (;;) {
     let _hit = false;
     let _frames = [];
     try { _frames = pg.frames(); } catch (_) { try { _frames = [pg.mainFrame()]; } catch (_2) { _frames = []; } }
@@ -878,9 +961,11 @@ async function dismissConsent(targetPage, preference) {
       } catch (_) {}
     }
     if (_hit) return true;
-    await new Promise(r => setTimeout(r, 500));
+    // Always take at least one retry: a banner that renders a tick after the
+    // first pass is exactly the case this loop exists for.
+    if (Date.now() >= __deadline) return false;
+    await new Promise(r => setTimeout(r, 300));
   }
-  return false;
 }
 `;
 }

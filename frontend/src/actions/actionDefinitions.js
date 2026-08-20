@@ -388,8 +388,11 @@ await page.click(${selector}, { timeout: ${timeout} });
     advanced: {
       timeout: {
         type: "number",
-        default: 8000,
-        label: "How long to watch for the banner (ms)"
+        default: 1500,
+        label: "How long to wait for a banner that hasn't appeared yet (ms)",
+        help: "Only spent while the page is still loading — once it reports itself "
+            + "loaded, the banner has already had its chance and the wait drops to "
+            + "~400ms. Raise this only for a site whose consent script is unusually slow."
       },
       autoFallback: {
         type: "boolean",
@@ -397,13 +400,17 @@ await page.click(${selector}, { timeout: ${timeout} });
         label: "If the selector isn't found, also try automatic detection"
       }
     },
-    generateCode: ({ params }) => {
-      if (!params.selector) return `\nawait dismissConsent(page); // automatic cookie-banner detection (never fails)\n`;
+    generateCode: ({ params, advanced = {} }) => {
+      const wait = Number(advanced.timeout) || 1500;
+      if (!params.selector) {
+        return `\nawait dismissConsent(page, undefined, { waitMs: ${wait} }); // automatic detection (never fails)\n`;
+      }
       return `
 // Close cookie banner if present — never fails when absent
 {
-  const _el = await page.$(${JSON.stringify(params.selector)});
-  if (_el) { try { await _el.click(); } catch (_) {} }
+  const _budget = await __consentBudget(page, ${wait});
+  let _closed = await clickIfPresent(page, [{ value: ${JSON.stringify(params.selector)}, type: ${JSON.stringify(params.selectorType || 'css')} }], _budget);
+  if (!_closed) _closed = await dismissConsent(page, undefined, { waitMs: 0 });
 }
 `;
     }

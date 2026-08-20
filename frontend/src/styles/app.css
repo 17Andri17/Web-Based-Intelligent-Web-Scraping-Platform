@@ -764,6 +764,76 @@ body {
     object-fit: fill;
 }
 
+/* ── "Still loading" overlay over the streamed page ───────────────────────
+   Shown while clicks are paused (see interactionLockedRef in main.jsx). Top
+   of the canvas rather than centred: it must not sit on top of whatever the
+   user is about to click, and it must not read as a modal — the page keeps
+   scrolling underneath the whole time. pointer-events:none so the click that
+   dismisses the lock lands on the canvas itself. */
+.canvas-loading {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 5;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    max-width: calc(100% - 24px);
+    /* On a canvas too narrow for both, the HINT is what gets clipped — the
+       message explaining why clicks aren't landing must always be readable. */
+    overflow: hidden;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    /* An opaque surface, not --bg-scrim: this sits over an arbitrary web page,
+       and the scrim token is a dark wash in BOTH themes — pairing it with
+       --text-primary is unreadable in light mode. */
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: 0 2px 10px var(--shadow-color);
+    /* A fast load shouldn't flash a banner at all — hold it back until the
+       wait is long enough to be worth explaining. */
+    animation: canvas-loading-in 120ms ease-out 400ms both;
+}
+
+.canvas-loading-spinner {
+    flex: none;
+    width: 13px;
+    height: 13px;
+    border: 2px solid var(--border-default);
+    border-top-color: var(--accent-primary);
+    border-radius: 50%;
+    animation: spin 700ms linear infinite;
+}
+
+.canvas-loading-text {
+    flex: none;
+    white-space: nowrap;
+}
+
+.canvas-loading-hint {
+    flex: none;
+    white-space: nowrap;
+    padding-left: 9px;
+    border-left: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    font-weight: 400;
+}
+
+@keyframes canvas-loading-in {
+    from { opacity: 0; transform: translate(-50%, -4px); }
+    to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .canvas-loading { animation-duration: 1ms; animation-delay: 400ms; }
+    .canvas-loading-spinner { animation-duration: 2s; }
+}
+
 .mode-indicator {
     position: absolute;
     bottom: 12px;
